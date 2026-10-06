@@ -35,6 +35,7 @@ import {
   sameRange,
   startBlocker,
 } from '@/lib/jobLakeDisplay';
+import { chosenTab, hasUnreadTabs, sheetTabOptions, unreadTabsNoteFor } from '@/lib/sheetTabs';
 import styles from './page.module.css';
 
 /**
@@ -43,8 +44,8 @@ import styles from './page.module.css';
  * The reporter picks a tab of their OWN job sheet and a range of rows,
  * previews them - which rows hold a job, and which a run will skip because
  * they reported that posting before, from any row or tab, with what became of
- * it then ("Reported before (Added)": the server's record, never the sheet's
- * Lake Status) - and presses "Add to job lake". The run goes on in the
+ * it then ("Reported before (Added)": the server's record - the sheet holds
+ * no lake status) - and presses "Add to job lake". The run goes on in the
  * server, in the background (POST /api/report/runs answers 202 at once); this
  * page follows it until the server says it ended, then shows the owner's line
  * - "N out of M was added, your current credit is $X" - and every row's
@@ -214,10 +215,14 @@ function ReportJobsBody() {
   const [tabs, setTabs] = useState<ReportTabs | null>(null);
   const [tabsError, setTabsError] = useState<unknown>(null);
 
-  const [tabName, setTabName] = useState('');
+  /** The tab picked by hand; empty means the sheet's default, All. */
+  const [pickedTab, setPickedTab] = useState('');
+  // All (the server's default), else the first job tab, until another job tab
+  // is picked - never a tab that is not one, however the select was driven.
+  const tabName = chosenTab(tabs, pickedTab);
   const [fromRow, setFromRow] = useState(String(REPORT_FIRST_ROW));
-  // The whole of what one run may take: a day's tab is rarely longer, and
-  // rows that hold nothing are left out of the preview and the run alike.
+  // The whole of what one run may take; rows that hold nothing are left out
+  // of the preview and the run alike.
   const [toRow, setToRow] = useState(String(REPORT_FIRST_ROW + DEFAULT_MAX_RUN_ROWS - 1));
 
   const [preview, setPreview] = useState<ReportPreview | null>(null);
@@ -255,7 +260,8 @@ function ReportJobsBody() {
 
   // Arrival: the sheet, the rate, today's earnings and the latest run - a
   // run still going is followed from here, one that ended within the hour
-  // shows its summary - then the sheet's tabs, today's chosen first.
+  // shows its summary - then the sheet's tabs, All chosen first (never a tab
+  // that is not a job tab).
   useEffect(() => {
     void (async () => {
       const first = await loadOverview();
@@ -266,7 +272,6 @@ function ReportJobsBody() {
         const listed = await reportApi.tabs();
         if (!mounted.current) return;
         setTabs(listed);
-        setTabName(listed.defaultTab ?? listed.tabs[0]?.title ?? '');
       } catch (caught) {
         if (mounted.current) setTabsError(caught ?? new Error('Could not list the tabs of your job sheet.'));
       }
@@ -394,11 +399,11 @@ function ReportJobsBody() {
 
   const sheet = overview?.sheet ?? null;
   const sheetReady = Boolean(sheet?.configured && !sheet.error);
-  const sheetHref = sheet?.configured ? safeWebLink(sheet.todayTabUrl ?? sheet.spreadsheetUrl ?? '') : null;
+  const sheetHref = sheet?.configured ? safeWebLink(sheet.defaultTabUrl ?? sheet.spreadsheetUrl ?? '') : null;
   const spreadsheetHref = sheet?.configured ? safeWebLink(sheet.spreadsheetUrl ?? '') : null;
   const blocker = startBlocker({ sheetReady, run, range, preview });
   const paid = overview?.paid ?? true;
-  const tabList = tabs?.tabs ?? [];
+  const tabOptions = sheetTabOptions(tabs?.tabs ?? []);
 
   return (
     <Page width="default">
@@ -436,22 +441,21 @@ function ReportJobsBody() {
         {overview && (
           <Card
             title="Your job sheet"
-            description="The jobs you report come from your own Google spreadsheet: a tab for each day, a row for each job."
+            description="The jobs you report come from your own Google spreadsheet, a row for each job: its All tab, unless you pick another job tab."
           >
             {sheet && !sheet.configured && (
               <Notice tone="warn">{sheet.message ?? 'Google Sheets is not set up on this server.'}</Notice>
             )}
             {sheet?.error && <ErrorNotice error={sheet.error} />}
+            {/* A tab of the reporter's own holds the name All or Temp For AI: the server's sentence says what to do. */}
+            {sheet?.conflict && <Notice tone="warn">{sheet.conflict.message}</Notice>}
             {sheetHref && (
               <div className="space-y-4">
-                {sheet?.todayTab && (
-                  <p className="text-sm text-muted">
-                    Today&apos;s tab is <span className="font-medium text-ink">{sheet.todayTab}</span>. After a run,
-                    each row&apos;s Lake Status column says what became of it, and duplicates are painted red there.
-                    A posting you reported before is skipped wherever it is pasted - another row, another tab - and
-                    is never paid for twice.
-                  </p>
-                )}
+                <p className="text-sm text-muted">
+                  After a run, this page says what became of each row, and duplicates are painted red in your sheet.
+                  A posting you reported before is skipped wherever it is pasted - another row, another tab - and is
+                  never paid for twice.
+                </p>
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
                   {/* A new tab: the sheet is Google's page, and this one should still be here when they come back. */}
                   <a href={sheetHref} target="_blank" rel="noreferrer" className="tl-button-quiet">
@@ -482,18 +486,24 @@ function ReportJobsBody() {
                   <select
                     id="report-tab"
                     value={tabName}
-                    onChange={(event) => edited(() => setTabName(event.target.value))}
-                    disabled={!tabs || tabList.length === 0 || previewing || live}
+                    onChange={(event) => edited(() => setPickedTab(event.target.value))}
+                    disabled={!tabs || !tabName || previewing || live}
                     className="tl-input mt-2"
                   >
-                    {tabList.length === 0 && <option value="">{tabs ? 'No tabs found' : 'Loading tabs...'}</option>}
-                    {tabList.map((tab) => (
-                      <option key={tab.title} value={tab.title}>
-                        {tab.title}
-                        {tab.title === sheet?.todayTab ? ' (today)' : ''}
+                    {/* Nothing chosen: a placeholder, so a sheet with no job tab says so. */}
+                    {!tabName && (
+                      <option value="">
+                        {!tabs ? 'Loading tabs...' : tabOptions.length === 0 ? 'No tabs found' : 'No job tab to report from'}
+                      </option>
+                    )}
+                    {/* A tab that is not a job tab - an older build's daily tab, a tab of their own - is listed, not chosen. */}
+                    {tabOptions.map((option) => (
+                      <option key={option.title} value={option.title} disabled={!option.usable}>
+                        {option.label}
                       </option>
                     ))}
                   </select>
+                  {tabs && hasUnreadTabs(tabs.tabs) && <p className="mt-2 text-sm text-subtle">{unreadTabsNoteFor(tabs.tabs)}</p>}
                 </div>
                 <div>
                   <label htmlFor="report-from-row" className="tl-label">
@@ -616,8 +626,9 @@ function ReportJobsBody() {
 
               {run.summary && !run.summary.sheetUpdated && (
                 <Notice tone="warn">
-                  The jobs are in the lake, but your sheet&apos;s Lake Status cells could not be written this time. Run
-                  the same rows again to mark them: nothing is analysed or paid twice.
+                  The jobs are in the lake, but your sheet could not be brought up to date this time - the analyses
+                  written into its rows, or the duplicates painted red. Run the same rows again to finish it: nothing is
+                  analysed or paid twice.
                 </Notice>
               )}
 

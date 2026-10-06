@@ -1,24 +1,29 @@
 /*
- * A stand-in for Google Sheets, for sheet-panel.js: every account's job sheet
- * exists, has three tabs, and its rows are held in memory.
+ * A stand-in for Google Sheets, for sheet-panel.js (and immediate-run.js,
+ * whose builder page reads the account's sheet): every account's job sheet
+ * exists, has four tabs, and its rows are held in memory.
  *
  * Loaded with `node --require` before the app, after stub-seat.js. Three
  * seams, the same ones the unit tests use: the account sheet's client
- * (`setSheetsClientForTests` - allocation and the tab list behind GET
- * /api/import/tabs), the range reader POST /api/import calls
- * (`fetchGoogleSheetsRange`, replaced on the module's exports, which the route
- * reads at call time), and the analysis columns' client
- * (`setAnalysisSheetsClientForTests` - the tab verify, the one batched read of
- * a sheet run's rows, and the write-back of an analysis into a row). All three
- * read and write the SAME rows, so an analysis written back after a build is
- * what the panel's next Load rows shows. The route's own checks - which sheet
- * an account may address - and the trust rule are the shipping code.
+ * (`setSheetsClientForTests` - allocation, and the tab list and the one
+ * batched read of every tab's row 1 behind GET /api/import/tabs), the range
+ * reader POST /api/import calls (`fetchGoogleSheetsRange`, replaced on the
+ * module's exports, which the route reads at call time), and the analysis
+ * columns' client (`setAnalysisSheetsClientForTests` - the tab verify, the one
+ * batched read of a sheet run's rows, and the write-back of an analysis into a
+ * row). All three read and write the SAME rows, so an analysis written back
+ * after a build is what the panel's next Load rows shows. The route's own
+ * checks - which sheet an account may address, which tab is a job tab - and
+ * the trust rule are the shipping code.
  *
- * The tabs, in the spreadsheet's order: an older day, TODAY's (what the panel
- * must select first), and a "Notes" tab. Columns are the own sheet's: NO(DATE),
- * Company, Job Title, Job Link, Job Description, five the build ignores, then
- * the six analysis columns K:P - Job Field, Salary, Job Hash, Analyzed At, Lake
- * Status, Analysis. Today's first row already holds its analysis.
+ * The tabs, in the spreadsheet's order, as a sheet an older build made looks
+ * after the upgrade: All (what the panel must select first) and Temp For AI,
+ * in the twelve-column layout - Date, NO(DATE), Company, Job Title, Job Link,
+ * Job Description, then the six analysis columns G:L, Job Field, Salary, Job
+ * Type, Clearance, Industry, Analysis - then an older build's daily tab in ITS
+ * layout (NO(DATE) in A, Company in B, sixteen columns: listed, never read),
+ * and "Notes", a job tab of the person's own in the new layout. All's first
+ * row already holds its analysis; Temp For AI has only its header.
  */
 
 const path = require('path');
@@ -31,18 +36,24 @@ const identity = require(path.join(DIST, 'services', 'jobAnalysis', 'identity'))
 
 const POSTING = 'Senior engineer wanted to ship TypeScript services packaged with Docker, for a small platform team.';
 const OLDER_TAB = '09/30/2026';
+/** Row 1 of a daily tab an older build made. */
+const OLD_HEADER = [
+  'NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder',
+  'Filter Result', 'Filter Reason', 'Job Field', 'Salary', 'Job Hash', 'Analyzed At', 'Lake Status', 'Analysis',
+];
 
 /**
- * Today's first row, as a build would have written it: the six analysis cells,
- * K to P. The Analysis cell records the posting it was made for, which is what
- * lets the server use it although its store never saw the row it names.
+ * All's first row, as a build would have written it: the six analysis cells,
+ * G to L, read back as Google shows them (the Clearance boolean as FALSE). The
+ * Analysis cell records the posting it was made for, which is what lets the
+ * server use it although its store never saw the row it names.
  */
 const ANALYSED = [
   'Backend',
   'USD 120,000 - 140,000 / annual',
-  '',
-  '2026-10-01T09:00:00.000Z',
-  '',
+  'Remote',
+  'FALSE',
+  'Technology',
   JSON.stringify({
     v: 1,
     id: '5d0c6a52-1f3e-4b7a-9c2d-8e4f6a1b3c5d',
@@ -60,6 +71,7 @@ const ANALYSED = [
       softSkills: [],
       keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
       jobField: 'backend',
+      industry: 'technology',
       salary: { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null },
       filter: {
         jobType: 'remote',
@@ -73,24 +85,28 @@ const ANALYSED = [
   }),
 ];
 
-const blank = (count) => Array.from({ length: count }, () => '');
+const TODAY = accountSheet.sheetDateText();
 
-/** Each tab's rows from row 2 (row 1 is the header), columns A..P, kept and written to in memory. */
+/** Each tab's rows from row 2 (row 1 is the header), columns A..L, kept and written to in memory. */
 const sheet = new Map();
 function rowsFor(tab) {
   if (!sheet.has(tab)) {
-    if (tab === OLDER_TAB) {
+    if (tab === 'All') {
       sheet.set(tab, [
-        ['1', 'Older Co', 'Platform Engineer', 'https://older.example/jobs/1', POSTING],
-        ['2', 'Elder Ltd', '', 'not a link', POSTING],
+        [TODAY, '1', 'Today Inc', 'Backend Engineer', 'https://today.example/jobs/1', POSTING, ...ANALYSED],
+        [TODAY, '2', 'Now LLC', 'Site Reliability Engineer', 'javascript:alert(1)', POSTING],
+        [TODAY, '3', '', 'No company here', '', POSTING],
+        [TODAY, '4', 'Current Co', '', '', POSTING],
       ]);
-    } else if (tab === accountSheet.todaySheetTitle()) {
+    } else if (tab === 'Notes') {
       sheet.set(tab, [
-        ['1', 'Today Inc', 'Backend Engineer', 'https://today.example/jobs/1', POSTING, ...blank(5), ...ANALYSED],
-        ['2', 'Now LLC', 'Site Reliability Engineer', 'javascript:alert(1)', POSTING],
-        ['3', '', 'No company here', '', POSTING],
-        ['4', 'Current Co', '', '', POSTING],
+        [OLDER_TAB, '1', 'Older Co', 'Platform Engineer', 'https://older.example/jobs/1', POSTING],
+        [OLDER_TAB, '2', 'Elder Ltd', '', 'not a link', POSTING],
       ]);
+    } else if (tab === OLDER_TAB) {
+      // The OLD layout: Company in B. Never read by a job page - if it were,
+      // its Job Title would show as the company.
+      sheet.set(tab, [['1', 'Ancient Co', 'Old Engineer', 'https://ancient.example/jobs/1', POSTING]]);
     } else {
       sheet.set(tab, []);
     }
@@ -98,8 +114,10 @@ function rowsFor(tab) {
   return sheet.get(tab);
 }
 
+const headerOf = (tab) => (tab === OLDER_TAB ? [...OLD_HEADER] : [...googleSheets.JOB_SHEET_HEADERS]);
+
 /** The cell at a 1-based row and column, as text. */
-const cellAt = (tab, row, col) => String(rowsFor(tab)[row - 2]?.[col - 1] ?? '');
+const cellAt = (tab, row, col) => (row === 1 ? String(headerOf(tab)[col - 1] ?? '') : String(rowsFor(tab)[row - 2]?.[col - 1] ?? ''));
 
 /** Rows `fromRow..toRow` of columns `fromCol..toCol`, as a grid of text. */
 function grid(tab, fromRow, toRow, fromCol, toCol) {
@@ -112,7 +130,7 @@ function grid(tab, fromRow, toRow, fromCol, toCol) {
   return values;
 }
 
-/** `'Tab'!B2:D11` as its parts. Single-letter columns are all this sheet has. */
+/** `'Tab'!C2:F11` as its parts. Single-letter columns are all this sheet has. */
 function parseRange(range) {
   const match = /^'((?:[^']|'')*)'!([A-Z])(\d+):([A-Z])(\d+)$/.exec(range);
   if (!match) throw new Error(`[e2e stub] cannot read the range ${range}`);
@@ -126,12 +144,14 @@ function parseRange(range) {
 }
 
 let minted = 0;
-let nextGid = 100;
-const tabs = () => [
-  { title: OLDER_TAB, gid: 1 },
-  { title: accountSheet.todaySheetTitle(), gid: 2 },
-  { title: 'Notes', gid: 3 },
+const TABS = [
+  { title: 'All', gid: 1 },
+  { title: 'Temp For AI', gid: 2 },
+  { title: OLDER_TAB, gid: 3 },
+  { title: 'Notes', gid: 4 },
 ];
+const tabs = () => TABS.map((tab) => ({ ...tab }));
+const gidOf = (title) => TABS.find((tab) => tab.title === title)?.gid;
 
 accountSheet.setSheetsClientForTests({
   async isConfigured() {
@@ -143,12 +163,13 @@ accountSheet.setSheetsClientForTests({
     return {
       spreadsheetId: `e2e-sheet-${minted}`,
       spreadsheetUrl: `https://docs.google.com/spreadsheets/d/e2e-sheet-${minted}/edit`,
-      firstTabGid: (nextGid += 1),
+      firstTabGid: gidOf('All'),
     };
   },
   async formatJobSheetTab() {},
-  async addSheetTabWithHeaders() {
-    return { gid: (nextGid += 1), created: false };
+  // All and Temp For AI are already there, laid out: verified, never added.
+  async addSheetTabWithHeaders(_spreadsheetId, title) {
+    return { gid: gidOf(title) ?? 99, created: false, jobTab: title !== OLDER_TAB };
   },
   async shareSpreadsheetWithEmail() {},
   async hasPersonalGrant() {
@@ -163,6 +184,14 @@ accountSheet.setSheetsClientForTests({
   async listSheetTabs() {
     return tabs();
   },
+  // Every tab's row 1, in one call: what the listing's layouts are read from.
+  async readRanges(_spreadsheetId, ranges) {
+    return ranges.map((range) => {
+      const title = /^'((?:[^']|'')*)'!1:1$/.exec(range)?.[1]?.replace(/''/g, "'");
+      if (title === undefined) throw new Error(`[e2e stub] cannot read the range ${range}`);
+      return [headerOf(title)];
+    });
+  },
 });
 
 googleSheets.fetchGoogleSheetsRange = async ({ sheetId, tabName, fromRow, toRow, fromCol, toCol }) => {
@@ -170,21 +199,22 @@ googleSheets.fetchGoogleSheetsRange = async ({ sheetId, tabName, fromRow, toRow,
   return {
     spreadsheetId: sheetId,
     spreadsheetTitle: 'E2E job sheet',
-    tabs: tabs(),
+    tabs: tabs().map((tab, index) => ({ title: tab.title, index, sheetId: tab.gid })),
     selectedTab: tabName,
     range: { fromRow, toRow, fromCol, toCol, a1Notation: `${tabName}!R${fromRow}C${fromCol}:R${toRow}C${toCol}` },
     values: grid(tabName, fromRow, toRow, fromCol, toCol),
     totalRows: all.length + 1,
-    totalColumns: 16,
+    totalColumns: 12,
   };
 };
 
-// The protection is reported intact, so a filled Analysis cell is trusted -
-// the trust rule itself (`protectionTrusted`) is the shipping code's.
+// The protection is reported intact on a job tab, so a filled Analysis cell
+// is trusted - the trust rule itself (`protectionTrusted`) is the shipping
+// code's. The older build's daily tab is not a job tab: never touched.
 analysisColumns.setAnalysisSheetsClientForTests({
   async verifyTab(_spreadsheetId, tabName) {
-    const gid = tabs().find((tab) => tab.title === tabName)?.gid ?? 0;
-    return { gid, protection: 'intact', grewColumns: false, wroteHeader: false, jobTab: true };
+    const jobTab = tabName !== OLDER_TAB;
+    return { gid: gidOf(tabName) ?? 0, protection: jobTab ? 'intact' : 'unconfirmed', grewColumns: false, wroteHeader: false, jobTab };
   },
   async readRanges(_spreadsheetId, ranges) {
     return ranges.map((range) => {
@@ -195,12 +225,15 @@ analysisColumns.setAnalysisSheetsClientForTests({
   async writeRaw(_spreadsheetId, data) {
     for (const { range, values } of data) {
       const { tab, fromRow, fromCol } = parseRange(range);
+      if (tab === OLDER_TAB) throw new Error(`[e2e stub] the app wrote into ${OLDER_TAB}, a tab that is not a job tab`);
       const rows = rowsFor(tab);
       values.forEach((cells, rowOffset) => {
         const row = (rows[fromRow - 2 + rowOffset] ??= []);
-        // A null leaves the cell alone, as Google's RAW write does.
+        // A null leaves the cell alone, as Google's RAW write does; a boolean
+        // reads back as Google shows it.
         cells.forEach((value, colOffset) => {
-          if (value !== null) row[fromCol - 1 + colOffset] = String(value);
+          if (value === null) return;
+          row[fromCol - 1 + colOffset] = typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : String(value);
         });
       });
       console.log(`[e2e stub] wrote the analysis cells ${range}`);
@@ -208,4 +241,33 @@ analysisColumns.setAnalysisSheetsClientForTests({
   },
 });
 
-console.log('[e2e stub] Google Sheets stubbed: three tabs, canned rows, the analysis columns in memory');
+/*
+ * The Job Filter's two reads, which call the integration directly: the tab's
+ * inspection (whether it is a job tab) and one read of C:E, whole columns -
+ * row 1 included, trailing empty rows left out, as Google answers. Replaced on
+ * the module's exports, which the route reads at call time. Nothing else
+ * that runs against this stub calls either (the analysis columns have their
+ * own client above).
+ */
+googleSheets.inspectJobSheetTab = async (_spreadsheetId, tabName) => ({
+  gid: gidOf(tabName) ?? 0,
+  title: tabName,
+  columnCount: tabName === OLDER_TAB ? 16 : 12,
+  rowCount: 1000,
+  headerRow: headerOf(tabName),
+  protectedRanges: [],
+  spreadsheetTitle: 'E2E job sheet',
+});
+googleSheets.batchGetValues = async (_spreadsheetId, ranges) =>
+  ranges.map((range) => {
+    const match = /^'((?:[^']|'')*)'!([A-Z]):([A-Z])$/.exec(range);
+    if (!match) throw new Error(`[e2e stub] cannot read the range ${range}`);
+    const tab = match[1].replace(/''/g, "'");
+    const fromCol = match[2].charCodeAt(0) - 64;
+    const toCol = match[3].charCodeAt(0) - 64;
+    const values = grid(tab, 1, rowsFor(tab).length + 1, fromCol, toCol);
+    while (values.length > 0 && values[values.length - 1].every((cell) => cell === '')) values.pop();
+    return values;
+  });
+
+console.log('[e2e stub] Google Sheets stubbed: four tabs (All, Temp For AI, an old daily tab, Notes), canned rows, the analysis columns in memory');

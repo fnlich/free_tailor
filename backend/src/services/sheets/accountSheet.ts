@@ -1,6 +1,8 @@
 import { sheetBackfillPauseMs } from '../../config/operational';
 import {
+  a1Rows,
   addSheetTabWithHeaders,
+  batchGetValues,
   createSpreadsheet,
   describeCredentialInUse,
   getAccessToken,
@@ -9,50 +11,77 @@ import {
   getSpreadsheetVisibility,
   hasPersonalGrant,
   isGoogleSheetsConfigured,
+  jobTabLayoutOf,
   listSheetTabs,
   setSpreadsheetVisibility,
   shareSpreadsheetWithEmail,
+  type AddTabOptions,
   type CreatedSpreadsheet,
   type EnsuredTab,
+  type JobTabLayout,
   type SheetTab,
   type SheetVisibility,
 } from '../../integrations/googleSheets';
 import {
   getUserById,
   getUserBySheetId,
+  listAccountsNeedingSheetLayout,
   listAccountsWithoutSheet,
   recordOwnerGrant,
   recordAccountSheet,
-  recordSheetTabDate,
+  recordSheetLayout,
 } from '../../database/userRepository';
 import type { UserAccount } from '../../types/account';
 import { PublicError } from '../../middleware/publicError';
 
 /**
- * One spreadsheet per account, one tab per day.
+ * One spreadsheet per account, with two tabs of its own: All and Temp For AI
+ * (owner decision S2).
  *
- * Both halves are skip-if-exists, and that is the whole contract: an account
- * that has a spreadsheet keeps it, and a day that has a tab does not get a
- * second one. Everything else here exists to make that true when two callers
- * arrive at once, when Google is down, or when the install has no key at all.
+ * Every step is skip-if-exists, and that is the whole contract: an account
+ * that has a spreadsheet keeps it, and a sheet that has its two tabs does not
+ * get a second of either. Everything else here exists to make that true when
+ * two callers arrive at once, when Google is down, or when the install has no
+ * key at all.
+ *
+ * A sheet an older build made - one tab per day, in its sixteen columns - is
+ * given the two tabs, All first and Temp For AI second, and its daily tabs are
+ * left exactly as they are: this build neither reads nor writes them (they are
+ * not job tabs, `isJobSheetTab`). A tab already called All or Temp For AI that
+ * is not a job tab is left alone too, and reported (`conflict`).
  *
  * Nothing in this module may throw at a caller who is signing somebody in. A
  * spreadsheet is a convenience; being able to log in is not.
  */
+
+/** The tab a job route reads and writes when the caller names none. */
+export const DEFAULT_TAB = 'All';
+/** The second tab: the one an administrator's Push to Google Sheet replaces (Phase 4). */
+export const TEMP_TAB = 'Temp For AI';
+/** The layout this build lays an account's sheet out to: both tabs there (users.sheet_layout). */
+export const SHEET_LAYOUT_VERSION = 2;
+
+/** Tabs whose name was taken by a tab that is not a job tab, so this build left them alone. */
+export type SheetTabConflict = {
+  tabs: string[];
+  /** For the account holder, in words they can act on. */
+  message: string;
+};
 
 export type AccountSheetState = {
   /** False when this install has no service-account key. Not an error. */
   configured: boolean;
   spreadsheetId?: string;
   spreadsheetUrl?: string;
-  /** The `MM/DD/YYYY` tab for today, whether or not it was just created. */
-  todayTab: string;
-  /**
-   * A link that opens today's tab rather than whichever one Google shows first.
-   * Absent when the gid is not known - an upgraded row from before it was
-   * stored, or a day whose tab this call did not touch.
-   */
-  todayTabUrl?: string;
+  /** `All`: the tab a job route uses when the caller names none. */
+  defaultTab: string;
+  /** A link that opens the All tab. Absent while its gid is not known, or the name clashes. */
+  defaultTabUrl?: string;
+  /** `Temp For AI`. */
+  tempTab: string;
+  tempTabUrl?: string;
+  /** Present when All or Temp For AI is a tab of the person's that is not a job tab. */
+  conflict?: SheetTabConflict;
 };
 
 /**
@@ -77,13 +106,20 @@ export type SheetsClient = {
   checkCredential(): Promise<void>;
   createSpreadsheet(title: string, firstTabTitle: string): Promise<CreatedSpreadsheet>;
   formatJobSheetTab(spreadsheetId: string, gid: number): Promise<void>;
-  addSheetTabWithHeaders(spreadsheetId: string, title: string): Promise<EnsuredTab>;
+  /**
+   * Adds a job tab (at `options.index`), or verifies the one of that title
+   * already there - which answers `jobTab: false`, untouched, when it is not
+   * a job tab.
+   */
+  addSheetTabWithHeaders(spreadsheetId: string, title: string, options?: AddTabOptions): Promise<EnsuredTab>;
   shareSpreadsheetWithEmail(spreadsheetId: string, email: string): Promise<void>;
   hasPersonalGrant(spreadsheetId: string, email: string): Promise<boolean>;
   getSpreadsheetVisibility(spreadsheetId: string): Promise<SheetVisibility>;
   setSpreadsheetVisibility(spreadsheetId: string, visibility: SheetVisibility): Promise<SheetVisibility>;
   /** Every tab of a spreadsheet, in Google's order, with its gid. */
   listSheetTabs(spreadsheetId: string): Promise<SheetTab[]>;
+  /** Several ranges in ONE call (`batchGetValues`): every tab's row 1, for a tab listing. */
+  readRanges(spreadsheetId: string, ranges: string[]): Promise<string[][][]>;
 };
 
 const warnedVisibility = new Set<string>();
@@ -134,12 +170,13 @@ const realClient: SheetsClient = {
   },
   createSpreadsheet: (title, firstTabTitle) => createSpreadsheet(title, firstTabTitle),
   formatJobSheetTab: (spreadsheetId, gid) => formatJobSheetTab(spreadsheetId, gid),
-  addSheetTabWithHeaders: (spreadsheetId, title) => addSheetTabWithHeaders(spreadsheetId, title),
+  addSheetTabWithHeaders: (spreadsheetId, title, options) => addSheetTabWithHeaders(spreadsheetId, title, options),
   shareSpreadsheetWithEmail,
   hasPersonalGrant,
   getSpreadsheetVisibility,
   setSpreadsheetVisibility,
   listSheetTabs,
+  readRanges: (spreadsheetId, ranges) => batchGetValues(spreadsheetId, ranges),
 };
 
 let client: SheetsClient = realClient;
@@ -160,14 +197,16 @@ export function resetInFlightForTests(): void {
 }
 
 /**
- * Today, as the tab is named.
+ * A day as the job sheet writes it, `MM/DD/YYYY` - today unless told
+ * otherwise: an export's Date column and its NO(DATE) numbering.
  *
  * `SHEET_TIMEZONE` matters more than it looks. A server running in UTC rolls
  * the day over at midnight UTC, which for a user in New York is seven in the
- * evening - so an evening's work would land on tomorrow's tab. Naming the zone
- * the users actually live in is what keeps a day's rows together.
+ * evening - so an evening's rows would be dated, and numbered, as tomorrow's.
+ * Naming the zone the users actually live in is what keeps a day's rows
+ * together.
  */
-export function todaySheetTitle(at: Date = new Date()): string {
+export function sheetDateText(at: Date = new Date()): string {
   const timeZone = process.env.SHEET_TIMEZONE?.trim();
   const options: Intl.DateTimeFormatOptions = {
     month: '2-digit',
@@ -183,6 +222,53 @@ export function todaySheetTitle(at: Date = new Date()): string {
     console.warn(`[sheets] SHEET_TIMEZONE="${timeZone}" is not a zone this runtime knows; using the server's.`);
     return new Intl.DateTimeFormat('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }).format(at);
   }
+}
+
+/** Days from Google's epoch (12/30/1899) to the Unix one. */
+const SHEETS_EPOCH_OFFSET_DAYS = 25569;
+const DAY_MS = 86_400_000;
+
+/**
+ * A `MM/DD/YYYY` day as the serial number a spreadsheet stores a date as -
+ * what a RAW write sends so the Date column holds a real, sortable date
+ * (the tab's number format shows it as `MM/DD/YYYY`). Null for anything else.
+ */
+export function sheetDateSerial(text: string): number | null {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(text.trim());
+  if (!match) return null;
+  const [month, day, year] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const time = Date.UTC(year, month - 1, day);
+  const back = new Date(time);
+  if (back.getUTCFullYear() !== year || back.getUTCMonth() !== month - 1 || back.getUTCDate() !== day) return null;
+  return time / DAY_MS + SHEETS_EPOCH_OFFSET_DAYS;
+}
+
+/**
+ * The day a Date cell holds, as `MM/DD/YYYY`, however it reads back: the
+ * date format this app gives the column, a date somebody typed (`M/D/YYYY`,
+ * `YYYY-MM-DD`), or a bare serial number whose format was lost. Null for a
+ * cell that is no date.
+ */
+export function sheetDateOfCell(cell: unknown): string | null {
+  const text = String(cell ?? '').trim();
+  if (!text) return null;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const asText = (year: number, month: number, day: number) => {
+    const formatted = `${pad(month)}/${pad(day)}/${year}`;
+    return sheetDateSerial(formatted) === null ? null : formatted;
+  };
+  let match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+  if (match) return asText(Number(match[3]), Number(match[1]), Number(match[2]));
+  match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+  if (match) return asText(Number(match[1]), Number(match[2]), Number(match[3]));
+  // A serial with its format gone: five digits, 1970 onwards, whole days only.
+  if (/^\d{5}$/.test(text)) {
+    const serial = Number(text);
+    if (serial < SHEETS_EPOCH_OFFSET_DAYS) return null;
+    const at = new Date((serial - SHEETS_EPOCH_OFFSET_DAYS) * DAY_MS);
+    return asText(at.getUTCFullYear(), at.getUTCMonth() + 1, at.getUTCDate());
+  }
+  return null;
 }
 
 function spreadsheetTitleFor(account: UserAccount): string {
@@ -206,15 +292,15 @@ const inFlight = new Map<string, Promise<AccountSheetState>>();
 
 export type EnsureOptions = {
   /**
-   * Ask Google whether today's tab is really there, instead of trusting the
-   * stored date.
+   * Ask Google whether the All and Temp For AI tabs are really there, instead
+   * of trusting the stored layout - and put back whichever is gone.
    *
    * Off by default, and deliberately off for sign-in: with the grant already
-   * confirmed, the stored date is the last thing between a repeat sign-in and
-   * zero network calls. But the sheet is one anybody
-   * with the link may edit, so the tab can be renamed or deleted under us, and
-   * a job route that then writes to a tab name Google does not have fails the
-   * whole run. The job routes are already several calls deep, so one listing is
+   * confirmed, the stored layout is the last thing between a repeat sign-in
+   * and zero network calls. But the sheet is one anybody with the link may
+   * edit, so a tab can be renamed or deleted under us, and a job route that
+   * then writes to a tab name Google does not have fails the whole run. The
+   * job routes are already several calls deep, so one listing is
    * proportionate there and wasteful on the hot path.
    */
   verifyTab?: boolean;
@@ -236,11 +322,43 @@ export function ensureAccountSheet(
   return run;
 }
 
-async function ensure(account: UserAccount, options: EnsureOptions = {}): Promise<AccountSheetState> {
-  const todayTab = todaySheetTitle();
+/** The state a stored row describes, with no Google call. */
+function stateOf(row: UserAccount | null, spreadsheetId: string, spreadsheetUrl: string): AccountSheetState {
+  const link = (gid: string | undefined) =>
+    gid && /^\d+$/.test(gid) ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${gid}` : undefined;
+  const allUrl = link(row?.sheetAllGid);
+  const tempUrl = link(row?.sheetTempGid);
+  const laidOut = (row?.sheetLayout ?? 0) >= SHEET_LAYOUT_VERSION;
+  const clashing = laidOut ? [...(allUrl ? [] : [DEFAULT_TAB]), ...(tempUrl ? [] : [TEMP_TAB])] : [];
+  return {
+    configured: true,
+    spreadsheetId,
+    spreadsheetUrl,
+    defaultTab: DEFAULT_TAB,
+    ...(allUrl ? { defaultTabUrl: allUrl } : {}),
+    tempTab: TEMP_TAB,
+    ...(tempUrl ? { tempTabUrl: tempUrl } : {}),
+    ...(clashing.length > 0 ? { conflict: describeConflict(clashing) } : {}),
+  };
+}
 
+/** What the Job Sheet page says about a name clash. */
+function describeConflict(tabs: string[]): SheetTabConflict {
+  const named = tabs.map((tab) => `"${tab}"`).join(' and ');
+  const plural = tabs.length > 1;
+  return {
+    tabs,
+    message:
+      `Your job sheet already has ${plural ? 'tabs' : 'a tab'} named ${named} that ${plural ? 'are' : 'is'} not laid ` +
+      `out as a job tab, so ${plural ? 'they were' : 'it was'} left exactly as ${plural ? 'they are' : 'it is'}. ` +
+      `Rename or delete ${plural ? 'them' : 'it'} in Google Sheets, then reload this page to get ` +
+      `${plural ? 'the job tabs' : 'the job tab'} added.`,
+  };
+}
+
+async function ensure(account: UserAccount, options: EnsureOptions = {}): Promise<AccountSheetState> {
   if (!(await client.isConfigured())) {
-    return { configured: false, todayTab };
+    return { configured: false, defaultTab: DEFAULT_TAB, tempTab: TEMP_TAB };
   }
 
   // Re-read rather than trusting the argument: the caller may be holding an
@@ -248,20 +366,23 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
   const current = getUserById(account.id) ?? account;
   let spreadsheetId = current.sheetId ?? '';
   let spreadsheetUrl = current.sheetUrl ?? '';
-  let todayGid: number | undefined;
 
   if (!spreadsheetId) {
-    // The spreadsheet arrives with today's tab already on it, so there is never
-    // a stray `Sheet1` and never a moment where the file has the wrong tab.
-    const created = await client.createSpreadsheet(spreadsheetTitleFor(current), todayTab);
+    // The spreadsheet arrives with All already on it, so there is never a
+    // stray `Sheet1` and never a moment where the file has the wrong tab.
+    const created = await client.createSpreadsheet(spreadsheetTitleFor(current), DEFAULT_TAB);
 
     if (recordAccountSheet(current.id, created.spreadsheetId, created.spreadsheetUrl)) {
       spreadsheetId = created.spreadsheetId;
       spreadsheetUrl = created.spreadsheetUrl;
-      todayGid = created.firstTabGid;
 
       await client.formatJobSheetTab(spreadsheetId, created.firstTabGid);
-      recordSheetTabDate(current.id, todayTab, created.firstTabGid);
+      // Temp For AI second. Told the one tab there is, so it is not listed.
+      const temp = await client.addSheetTabWithHeaders(spreadsheetId, TEMP_TAB, {
+        index: 1,
+        existing: [{ title: DEFAULT_TAB, gid: created.firstTabGid }],
+      });
+      recordSheetLayout(current.id, SHEET_LAYOUT_VERSION, created.firstTabGid, temp.jobTab === false ? null : temp.gid);
 
       /*
        * Link sharing, ONLY here and only if asked for.
@@ -299,7 +420,7 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
 
   if (!spreadsheetId) {
     // Only reachable if the winning write vanished between the two statements.
-    return { configured: true, todayTab };
+    return { configured: true, defaultTab: DEFAULT_TAB, tempTab: TEMP_TAB };
   }
 
   const stored = getUserById(current.id);
@@ -325,25 +446,60 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
       recordOwnerGrant(current.id, new Date().toISOString());
     }
   }
-  if (stored?.sheetTabDate !== todayTab || options.verifyTab) {
-    // `created: false` means the tab was already in the spreadsheet while our
-    // row had not caught up - the ordinary answer, not a failure.
-    const tab = await client.addSheetTabWithHeaders(spreadsheetId, todayTab);
-    todayGid = tab.gid;
-    recordSheetTabDate(current.id, todayTab, tab.gid);
-  } else if (todayGid === undefined && stored?.sheetTabGid) {
-    todayGid = Number(stored.sheetTabGid);
+  // An older build's sheet (or one whose two tabs never landed) is laid out
+  // now; a verifying call checks the two are still there. Anything else - a
+  // sign-in once layout 2 is recorded - asks Google nothing.
+  if ((stored?.sheetLayout ?? 0) < SHEET_LAYOUT_VERSION || options.verifyTab) {
+    await layOutTabs(current.id, spreadsheetId, stored);
   }
 
-  return {
-    configured: true,
-    spreadsheetId,
-    spreadsheetUrl,
-    todayTab,
-    ...(Number.isFinite(todayGid)
-      ? { todayTabUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${todayGid}` }
-      : {}),
+  return stateOf(getUserById(current.id), spreadsheetId, spreadsheetUrl);
+}
+
+/**
+ * Makes sure the sheet has its All (first) and Temp For AI (second) tabs:
+ * ONE listing, then, for each, nothing when it is there under the gid already
+ * recorded, else `addSheetTabWithHeaders` - which adds it at its place, or
+ * verifies the tab of that name already there (an empty one becomes a job
+ * tab) and reports one that is not a job tab, untouched. The result is
+ * recorded as layout 2: a gid for each job tab, NULL for a name clash.
+ *
+ * Nothing else in the spreadsheet is looked at: an older build's daily tabs
+ * stay as they are.
+ */
+async function layOutTabs(accountId: string, spreadsheetId: string, stored: UserAccount | null): Promise<void> {
+  const tabs = await client.listSheetTabs(spreadsheetId);
+  const laidOut = (stored?.sheetLayout ?? 0) >= SHEET_LAYOUT_VERSION;
+  const place = async (title: string, index: number, recordedGid: string | undefined): Promise<number | null> => {
+    const found = tabs.find((tab) => tab.title === title);
+    // Already laid out, and still the very tab that was: nothing to ask.
+    if (found && laidOut && recordedGid === String(found.gid)) return found.gid;
+    const ensured = await client.addSheetTabWithHeaders(spreadsheetId, title, { index, existing: tabs });
+    if (ensured.created) tabs.splice(Math.min(index, tabs.length), 0, { title, gid: ensured.gid });
+    if (ensured.jobTab === false) {
+      // Said once, when the clash is found - not again at every look the
+      // Job Sheet page asks for while it stays (a recorded layout with no gid
+      // for this tab IS the recorded clash).
+      if (!(laidOut && recordedGid === undefined)) {
+        console.warn(
+          `[sheets] ${spreadsheetId} already has a tab named "${title}" that is not a job tab; it is left as it is, ` +
+            'and the account is told to rename it.'
+        );
+      }
+      return null;
+    }
+    return ensured.gid;
   };
+  const allGid = await place(DEFAULT_TAB, 0, stored?.sheetAllGid);
+  /*
+   * Temp For AI goes first when All could not be placed (a name clash), so
+   * that the All added at index 0 once the name is free lands it second -
+   * the order owner decision S2 asks for. At index 1 it would sit behind
+   * whatever tab was first (an older build's daily tab), and stay there:
+   * once laid out it is never moved.
+   */
+  const tempGid = await place(TEMP_TAB, allGid === null ? 0 : 1, stored?.sheetTempGid);
+  recordSheetLayout(accountId, SHEET_LAYOUT_VERSION, allGid, tempGid);
 }
 
 /**
@@ -381,11 +537,36 @@ async function ensureOwnerAccess(spreadsheetId: string, email: string): Promise<
   }
 }
 
+export type DescribeOptions = {
+  /**
+   * Look at a recorded name clash again (GET /api/sheet?recheck=1), so the
+   * job tab is added the moment the name is free. Only the Job Sheet page
+   * asks: it is where the clash is reported and where somebody who renamed
+   * their tab reloads. Every other reader - the shell on every page load,
+   * Build Resumes, the job pages - is answered from the stored row, because
+   * a look is a listing plus a read of the clashing tab (all of it, when its
+   * row 1 is blank) on the read quota every account shares, for as long as
+   * the person keeps their tab.
+   */
+  recheck?: boolean;
+};
+
 /** Allocation plus the current sharing state, which is what the UI needs. */
 export async function describeAccountSheet(
-  account: UserAccount
+  account: UserAccount,
+  options: DescribeOptions = {}
 ): Promise<AccountSheetState & { visibility?: SheetVisibility }> {
-  const state = await ensureAccountSheet(account);
+  let state = await ensureAccountSheet(account);
+  if (state.conflict && options.recheck) {
+    try {
+      state = await ensureAccountSheet(account, { verifyTab: true });
+    } catch (error) {
+      // The look is a courtesy: Google refusing it must not take away the
+      // page that reports the clash, or the sheet's link. The stored row
+      // still says what is true as far as anybody here knows.
+      console.warn(`[sheets] Could not look at ${account.email}'s tab name clash again; answering from what is recorded.`, error);
+    }
+  }
   if (!state.spreadsheetId) return state;
   return { ...state, visibility: await client.getSpreadsheetVisibility(state.spreadsheetId) };
 }
@@ -415,6 +596,24 @@ function sheetsNotConfigured(): SheetAccessError {
     'Google Sheets is not configured on this server (no Google credential file). GET /api/sheet as an ' +
       'administrator, or "npm run sheets:doctor" in backend/, shows what is missing.'
   );
+}
+
+/**
+ * Why a job route will not use a tab: it is not a job tab - an older build's
+ * daily tab, a tab of the person's own, a tab with data under a blank row 1 -
+ * and the app neither reads its columns as a job sheet's nor writes into it.
+ * `cannot` completes "so it cannot be ..." (`reported from`, `exported into`,
+ * `filtered`). A 409, code `not-job-tab`.
+ */
+export function notJobTabSentence(tabName: string, cannot: string): string {
+  return (
+    `"${tabName}" is not laid out as a job sheet tab, so it cannot be ${cannot}. Choose ${DEFAULT_TAB} or ` +
+    `${TEMP_TAB}, or an empty tab, which is laid out as one the first time it is used.`
+  );
+}
+
+export function notJobTabError(tabName: string, cannot: string): PublicError {
+  return new PublicError(notJobTabSentence(tabName, cannot), { status: 409, code: 'not-job-tab' });
 }
 
 /** Flips link sharing, and reports what Drive says afterwards rather than what was asked for. */
@@ -448,32 +647,31 @@ export async function setAccountSheetVisibility(
 }
 
 /**
- * Which spreadsheet this person is allowed to point a job route at.
+ * Which spreadsheet this person is allowed to point a job route at: their
+ * own, and nothing else (owner decision S1).
  *
- * The guard exists because the service account now OWNS every account's
- * spreadsheet. Before that it could only reach sheets an administrator had
- * deliberately shared with it, so a route taking an id on trust was harmless;
- * now the same route would read - and write - anybody's sheet for anybody who
- * knows the id. Sheets are public by default, so the id travels in a URL people
- * pass around, and the private toggle does not help: these routes reach Google
- * as the service account rather than as the person.
+ * The guard exists because the service account OWNS every account's
+ * spreadsheet, so a route taking an id on trust would read - and write -
+ * anybody's sheet for anybody who knows the id. Sheets can be link-shared, so
+ * the id travels in a URL people pass around, and the private toggle does not
+ * help: these routes reach Google as the service account rather than as the
+ * person. An administrator is no exception: the saved "shared sources" an
+ * administrator could once name here are gone, and any id but their own
+ * sheet's is refused like anybody's.
  *
- * A non-admin may address exactly one spreadsheet: their own. An admin may also
- * address the shared sources they configured. Anything else is NOT FOUND rather
- * than forbidden, because the difference between those two answers confirms
- * that a given spreadsheet exists.
+ * Anything else is NOT FOUND rather than forbidden, because the difference
+ * between those two answers confirms that a given spreadsheet exists.
  */
 export async function resolveAddressableSheet(
   account: UserAccount,
   requested: unknown,
-  allowedForAdmins: readonly string[] = [],
   known?: AccountSheetState
 ): Promise<string> {
   const state = known ?? (await ensureAccountSheet(account));
   const own = state.spreadsheetId ?? '';
   const asked = typeof requested === 'string' ? requested.trim() : '';
 
-  // The common case, and the one the UI now takes: say nothing, get your own.
+  // The common case, and the one the UI takes: say nothing, get your own.
   if (!asked) {
     if (!state.configured) throw sheetsNotConfigured();
     if (!own) {
@@ -485,9 +683,7 @@ export async function resolveAddressableSheet(
     return own;
   }
 
-  if (asked === own) return own;
-  if (account.role === 'admin' && allowedForAdmins.some((id) => id.trim() === asked)) return asked;
-
+  if (own && asked === own) return own;
   throw new SheetAccessError('That spreadsheet was not found.', 404);
 }
 
@@ -515,61 +711,54 @@ export function assertSheetNotOwnedByAnotherAccount(account: UserAccount, sheetI
   throw new SheetAccessError('That spreadsheet was not found.', 404);
 }
 
+/** A tab as a listing reports it: its title, gid, and what its row 1 says it is (`jobTabLayoutOf`). */
+export type ListedSheetTab = SheetTab & { layout: JobTabLayout };
+
 export type AddressableSheetTabs = {
   spreadsheetId: string;
-  /** Every tab, in the spreadsheet's own order. */
-  tabs: SheetTab[];
+  /** Every tab, in the spreadsheet's own order, each with its layout. */
+  tabs: ListedSheetTab[];
   /**
-   * The tab a picker should start on: today's on the account's own sheet
-   * (which this call makes sure exists, like every read of it), else the
-   * first. Null for a spreadsheet with no tabs.
+   * The tab a picker should start on: All when it is a job tab (or still
+   * blank), else the first job tab, else the first blank one - never a tab
+   * that is not a job tab. Null when there is none.
    */
   defaultTab: string | null;
 };
 
 /**
- * The tabs of a spreadsheet this person may address - their own, or, for an
- * administrator, a shared source they configured (`resolveAddressableSheet`,
- * so anybody else's is 404).
+ * The tabs of the caller's own spreadsheet (`resolveAddressableSheet`, so any
+ * other id is 404), each with its layout from ONE batched read of every tab's
+ * row 1 - which a picker uses to offer only the job tabs, and to say why an
+ * older build's daily tab is not offered.
  *
- * What the builder's sheet panel lists in its Tab select, so a run can be
- * built from any day's tab rather than only today's.
+ * What the builder's sheet panel lists in its Tab select, and the reporter's.
  */
-export async function listAddressableSheetTabs(
-  account: UserAccount,
-  requested: unknown,
-  allowedForAdmins: readonly string[] = []
-): Promise<AddressableSheetTabs> {
+export async function listAddressableSheetTabs(account: UserAccount, requested: unknown): Promise<AddressableSheetTabs> {
   const state = await ensureAccountSheet(account);
-  const spreadsheetId = await resolveAddressableSheet(account, requested, allowedForAdmins, state);
+  const spreadsheetId = await resolveAddressableSheet(account, requested, state);
   const tabs = await client.listSheetTabs(spreadsheetId);
-  const own = spreadsheetId === state.spreadsheetId;
-  const defaultTab =
-    own && tabs.some((tab) => tab.title === state.todayTab) ? state.todayTab : tabs[0]?.title ?? null;
-  return { spreadsheetId, tabs, defaultTab };
+  const firstRows = tabs.length > 0 ? await client.readRanges(spreadsheetId, tabs.map((tab) => a1Rows(tab.title, 1, 1))) : [];
+  const listed: ListedSheetTab[] = tabs.map((tab, index) => ({
+    title: tab.title,
+    gid: tab.gid,
+    layout: jobTabLayoutOf(firstRows[index]?.[0] ?? []),
+  }));
+  const usable = (layout: JobTabLayout) => listed.find((tab) => tab.layout === layout)?.title;
+  const all = listed.find((tab) => tab.title === DEFAULT_TAB && tab.layout !== 'other');
+  const defaultTab = all?.title ?? usable('job') ?? usable('blank') ?? null;
+  return { spreadsheetId, tabs: listed, defaultTab };
 }
 
-/** The tab a job route writes to when the caller names none: today's. */
-export async function resolveAddressableTab(
-  account: UserAccount,
-  spreadsheetId: string,
-  requested: unknown,
-  known?: AccountSheetState
-): Promise<string> {
+/** The tab a job route reads and writes when the caller names none: All. */
+export function resolveAddressableTab(requested: unknown): string {
   const asked = typeof requested === 'string' ? requested.trim() : '';
-  if (asked) return asked;
-
-  const state = known ?? (await ensureAccountSheet(account));
-  // Only meaningful for the account's own sheet; an admin naming a shared
-  // source has to name its tab too, since we do not manage its layout.
-  if (spreadsheetId !== state.spreadsheetId) {
-    throw new SheetAccessError('A tab name is required for this spreadsheet.', 400);
-  }
-  return state.todayTab;
+  return asked || DEFAULT_TAB;
 }
 
 /**
- * Gives a spreadsheet to accounts that predate this feature.
+ * Gives a spreadsheet to accounts that predate this feature, and the All and
+ * Temp For AI tabs to sheets an older build laid out one tab per day.
  *
  * Serial, with a pause, because an install with two hundred accounts would
  * otherwise open two hundred conversations with Drive the moment it booted and
@@ -586,7 +775,9 @@ export async function backfillAccountSheets(
   if (process.env.SHEET_BACKFILL === 'off') return { done: 0, failed: 0 };
   if (!(await client.isConfigured())) return { done: 0, failed: 0 };
 
-  const pending = listAccountsWithoutSheet();
+  // Accounts with no sheet yet, then sheets an older build laid out (daily
+  // tabs), which are given All and Temp For AI the same way a sign-in would.
+  const pending = [...listAccountsWithoutSheet(), ...listAccountsNeedingSheetLayout(SHEET_LAYOUT_VERSION)];
 
   /*
    * The credential is checked FIRST, and a refusal ends the backfill.
@@ -619,7 +810,10 @@ export async function backfillAccountSheets(
 
   if (pending.length === 0) return { done: 0, failed: 0 };
 
-  console.log(`[sheets] Allocating spreadsheets for ${pending.length} account(s) from before this build.`);
+  console.log(
+    `[sheets] Preparing the job sheets of ${pending.length} account(s) from before this build (a spreadsheet, ` +
+      'or its All and Temp For AI tabs).'
+  );
   let done = 0;
   let failed = 0;
 
@@ -629,11 +823,11 @@ export async function backfillAccountSheets(
       done += 1;
     } catch (error) {
       failed += 1;
-      console.warn(`[sheets] Could not allocate a spreadsheet for ${account.email}.`, error);
+      console.warn(`[sheets] Could not prepare the job sheet of ${account.email}.`, error);
     }
     if (pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs));
   }
 
-  console.log(`[sheets] Backfill finished: ${done} allocated, ${failed} left for next time.`);
+  console.log(`[sheets] Backfill finished: ${done} prepared, ${failed} left for next time.`);
   return { done, failed };
 }

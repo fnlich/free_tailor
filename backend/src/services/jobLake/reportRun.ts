@@ -5,7 +5,7 @@ import type { UserAccount } from '../../types/account';
 import { findStoredAnalysis, getOrCreateAnalysis, loadAnalysis, type StoredJobAnalysis } from '../jobAnalysis/gate';
 import { resolveAnalysesAtSubmit, writeBackFor, type SubmittedJob } from '../jobAnalysis/submit';
 import { flushAnalysisWriteBacks } from '../sheets/analysisColumns';
-import { ensureAccountSheet, resolveAddressableSheet } from '../sheets/accountSheet';
+import { ensureAccountSheet, notJobTabSentence, resolveAddressableSheet } from '../sheets/accountSheet';
 import { requestAdminLakeSync } from './adminSheet';
 import {
   findJobReports,
@@ -16,16 +16,15 @@ import {
 import { lakeJobFromAnalysis, mergeIntoLake, type MergeOutcome } from './index';
 import {
   inspectReportTab,
-  LAKE_STATUS_TEXT,
   lastRowInGrid,
+  paintDuplicateRows,
   readReportRows,
   reportSheetsClient,
   rowHoldsAJob,
-  writeLakeStatuses,
-  type LakeStatusText,
-  type LakeStatusWrite,
+  type DuplicateRowPaint,
   type SheetReportRow,
 } from './reportSheet';
+
 
 /**
  * A reporter's run (Phase 7, `/report`): rows of their OWN job sheet added to
@@ -54,15 +53,16 @@ import {
  * one painted red - and the same POSTING twice in one run is a duplicate the
  * second time, whether or not it was reported before (only the first row of
  * it is "reported before"). Once every row is through, the analysis
- * write-backs are flushed, then each row's Job Hash and Lake Status written
- * and its duplicates painted - a row whose posting was a duplicate the first
- * time painted again - one batched call each, and the admin sheet's sync is
- * started for whatever was added.
+ * write-backs are flushed, then the duplicates painted red - a row whose
+ * posting was a duplicate the first time painted again - in one batched
+ * call, and the admin sheet's sync is started for whatever was added.
+ * Nothing else is written into the sheet: what became of each row is on the
+ * page, and in `job_reports`.
  *
- * Idempotent: a row whose status never reached the sheet (a crash, a failed
- * write) is reported before next time - no AI call, no second reward - and
- * its status is written then. Every row reported before still has its
- * analysis cells filled in when they are empty, by the submission step.
+ * Idempotent: a row reported before is "reported before" next time - no AI
+ * call, no second reward - and its paint is put back if it was a duplicate.
+ * Every row reported before still has its analysis cells filled in when they
+ * are empty, by the submission step.
  *
  * Runs live in memory: one per account at a time, the last one kept an hour
  * after it ends so a reloaded page finds its summary. A restart loses a run
@@ -97,8 +97,6 @@ export type ReportRowOutcome = {
    * posting the first time this account reported it. Null otherwise.
    */
   priorOutcome: JobReportOutcome | null;
-  /** What the run wrote into the row's Lake Status cell (null: nothing - pending or failed). */
-  lakeStatus: LakeStatusText | null;
   jobHash: string | null;
   lakeId: number | null;
   /** What this row paid, in thousandths of a dollar. */
@@ -127,7 +125,10 @@ export type ReportRunSummary = {
   earnedMilli: number;
   /** The reporter's balance when the run ended. */
   balanceMilli: number;
-  /** False when the Lake Status cells could not be written; the lake has the jobs regardless. */
+  /**
+   * False when the run's analysis cells or its red paint could not be
+   * written into the sheet; the lake has the jobs regardless.
+   */
   sheetUpdated: boolean;
 };
 
@@ -180,6 +181,15 @@ export function currentReportRun(accountId: string): ReportRunView | null {
   return run ? view(run) : null;
 }
 
+/**
+ * Why a tab cannot be reported from: it is not a job tab - an older build's
+ * daily tab, a tab of the person's own, a tab with data under a blank row 1.
+ * The page shows the same sentence (frontend lib/jobLakeDisplay.ts).
+ */
+export function notJobTabMessage(tabName: string): string {
+  return notJobTabSentence(tabName, 'reported from');
+}
+
 /** The rows a run is asked for, checked: a tab, and From/To within a sheet's data and the cap. */
 export function readRunRange(body: unknown): { tabName: string; fromRow: number; toRow: number } {
   const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
@@ -203,7 +213,7 @@ export function readRunRange(body: unknown): { tabName: string; fromRow: number;
 /** The reporter's own spreadsheet - never one named by the request. */
 export async function ownSpreadsheetId(account: UserAccount): Promise<string> {
   const state = await ensureAccountSheet(account);
-  return resolveAddressableSheet(account, undefined, [], state);
+  return resolveAddressableSheet(account, undefined, state);
 }
 
 /**
@@ -262,7 +272,6 @@ function outcomeRow(row: SheetReportRow, status: ReportRowStatus, reason: string
     title: row.title,
     status,
     priorOutcome: null,
-    lakeStatus: null,
     jobHash: null,
     lakeId: null,
     rewardMilli: 0,
@@ -296,15 +305,11 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
   // refused before anything in it is touched.
   const tab = await inspectReportTab(run.spreadsheetId, run.tabName);
   if (!tab.jobTab) {
-    throw new PublicError(
-      `"${run.tabName}" is not laid out as a job sheet tab, so it cannot be reported from. Choose one of the dated tabs of your job sheet.`,
-      { status: 409 }
-    );
+    throw new PublicError(notJobTabMessage(run.tabName), { status: 409, code: 'not-job-tab' });
   }
   // Then verified, on that same read: the protection over the analysis
   // columns goes on (or is put back) before anything is read from them or
-  // written into them, and an older build's twelve-column grid is grown so
-  // K:P can be read at all.
+  // written into them, and an empty tab is laid out as a job tab.
   const verified = await sheets.verifyTab(run.spreadsheetId, run.tabName, tab.inspection);
   const toRow = lastRowInGrid(tab, run.toRow);
 
@@ -359,21 +364,13 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
   });
 
   const analyses = analyseWithLimit(jobs, account.id);
-  const statusWrites: LakeStatusWrite[] = [];
-  const statusOf = (row: SheetReportRow, outcome: ReportRowOutcome) => {
-    if (!outcome.lakeStatus) return;
-    statusWrites.push({
-      row: row.row,
-      company: row.company,
-      link: row.link,
-      jobHash: outcome.jobHash,
-      status: outcome.lakeStatus,
-      red: isRed(outcome),
-    });
+  const paints: DuplicateRowPaint[] = [];
+  const paintIfRed = (row: SheetReportRow, outcome: ReportRowOutcome) => {
+    if (isRed(outcome)) paints.push({ row: row.row, company: row.company, link: row.link });
   };
-  // The rows reported before keep their first outcome in the sheet - a
-  // duplicate painted red again.
-  for (const row of reportedRows) statusOf(row, run.rows.find((entry) => entry.row === row.row)!);
+  // The rows reported before keep their first outcome - a duplicate painted
+  // red again.
+  for (const row of reportedRows) paintIfRed(row, run.rows.find((entry) => entry.row === row.row)!);
   const addedThisRun = new Set<number>();
   let earnedMilli = 0;
 
@@ -387,7 +384,6 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
     } else if (!result.stored) {
       outcome.status = 'skipped';
       outcome.reason = noAnalysisReason(row);
-      outcome.lakeStatus = LAKE_STATUS_TEXT.skipped;
     } else {
       try {
         const merged = mergeIntoLake(
@@ -404,27 +400,26 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
         earnedMilli += merged.rewardMilli;
       } catch (error) {
         // The merge and its reward are one transaction, so nothing of this
-        // row moved: it keeps no status and the next run tries it again.
+        // row moved: the next run tries it again.
         outcome.status = 'failed';
         outcome.reason = publicItemError(error, 'The job could not be added to the lake', `report row ${row.row}`);
       }
     }
-    statusOf(row, outcome);
+    paintIfRed(row, outcome);
     run.progress.done += 1;
   }
 
-  // The analysis cells first (their write leaves Job Hash and Lake Status
-  // alone, but replacing another posting's cells empties them), then the
-  // lake's two, so the lake's are the last word.
+  // The analysis cells first, then the paint.
   let sheetUpdated = true;
   try {
-    await flushAnalysisWriteBacks();
-    await writeLakeStatuses(run.spreadsheetId, run.tabName, verified.gid, statusWrites);
+    const written = await flushAnalysisWriteBacks();
+    if (written.failedSpreadsheets.includes(run.spreadsheetId)) sheetUpdated = false;
+    await paintDuplicateRows(run.spreadsheetId, run.tabName, verified.gid, paints);
   } catch (error) {
     sheetUpdated = false;
     console.warn(
-      `[lake] Report run ${run.id}: the Lake Status cells of "${run.tabName}" could not be written; the jobs are in ` +
-        'the lake regardless, and a run over the same rows marks them without paying again.',
+      `[lake] Report run ${run.id}: the duplicates of "${run.tabName}" could not be painted; the jobs are in the ` +
+        'lake regardless, and a run over the same rows paints them without paying again.',
       error
     );
   }
@@ -456,13 +451,12 @@ function reportedBeforeRow(row: SheetReportRow, prior: JobReport): ReportRowOutc
   return {
     ...outcomeRow(row, 'already-reported', `Reported before (${JOB_REPORT_OUTCOME_LABELS[prior.outcome]}).`),
     priorOutcome: prior.outcome,
-    lakeStatus: LAKE_STATUS_TEXT[prior.outcome],
     jobHash: prior.jobHash,
     lakeId: prior.lakeId,
   };
 }
 
-/** A merge's outcome on the row's line, and the Lake Status it writes. */
+/** A merge's outcome on the row's line. */
 function applyMerge(
   outcome: ReportRowOutcome,
   merged: MergeOutcome,
@@ -478,7 +472,6 @@ function applyMerge(
     case 'added':
     case 'replaced':
       outcome.status = merged.status;
-      outcome.lakeStatus = merged.status === 'added' ? LAKE_STATUS_TEXT.added : LAKE_STATUS_TEXT.replaced;
       if (merged.lakeId !== null) seen.addedThisRun.add(merged.lakeId);
       return;
     case 'already': {
@@ -487,7 +480,6 @@ function applyMerge(
         // The same posting on a row above, in this run: a duplicate of that
         // row - or, when it fits no job field, unclassified like that row.
         outcome.status = prior === 'unclassified' ? 'unclassified' : 'duplicate';
-        outcome.lakeStatus = prior === 'unclassified' ? LAKE_STATUS_TEXT.unclassified : LAKE_STATUS_TEXT.duplicate;
         outcome.reason =
           prior === 'unclassified' ? 'The posting fits none of the job fields.' : 'The same posting is on a row above.';
         return;
@@ -495,13 +487,11 @@ function applyMerge(
       // Reported before, and not caught before the run: nothing moved, nothing paid.
       outcome.status = 'already-reported';
       outcome.priorOutcome = prior;
-      outcome.lakeStatus = LAKE_STATUS_TEXT[prior];
       outcome.reason = `Reported before (${JOB_REPORT_OUTCOME_LABELS[prior]}).`;
       return;
     }
     case 'duplicate':
       outcome.status = 'duplicate';
-      outcome.lakeStatus = LAKE_STATUS_TEXT.duplicate;
       outcome.reason =
         merged.lakeId !== null && seen.addedThisRun.has(merged.lakeId)
           ? 'The same job is on a row above.'
@@ -509,12 +499,10 @@ function applyMerge(
       return;
     case 'unclassified':
       outcome.status = 'unclassified';
-      outcome.lakeStatus = LAKE_STATUS_TEXT.unclassified;
       outcome.reason = 'The posting fits none of the job fields.';
       return;
     case 'no-company':
       outcome.status = 'skipped';
-      outcome.lakeStatus = LAKE_STATUS_TEXT.skipped;
       outcome.reason = 'The row has no company name.';
       return;
   }

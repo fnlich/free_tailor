@@ -886,7 +886,7 @@ administrator).
 | | |
 |---|---|
 | **Profiles** | the resume profiles you build from |
-| **Find Jobs** | today's tab of your own job sheet, in a new tab - once the server has one for you |
+| **Find Jobs** | the All tab of your own job sheet, in a new tab - once the server has one for you |
 | **Build Resumes** | the builder |
 | **Orders** | what you ordered, and the files |
 | **Credits** | your balance, buying more, and the history of both |
@@ -981,7 +981,7 @@ everybody but a reporter.
 | **Refund requests** (asking) | nobody | removed: a user or administrator is answered 410 `refund-requests-closed` with a sentence asking them to contact the administrator, a reporter 403 `role-not-allowed` as before |
 | **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
 | **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
-| **Find Jobs** | anybody signed in | opens today's tab of their own job sheet in a new tab: from the sidebar for users and administrators, from the account menu and Report Jobs for a reporter |
+| **Find Jobs** | anybody signed in | opens the All tab of their own job sheet in a new tab: from the sidebar for users and administrators, from the account menu and Report Jobs for a reporter |
 | **Groups** | **Premium and above**, and administrators | an entitlement, checked on the subscription - a group is a way to build for several profiles at once |
 | **Building for several profiles** (Multiple, All profiles, Specific group, Select Group) | **Premium and above**, and administrators | a Default subscription supports one profile. The run, its quote and the multi-profile preview answer 403 `subscription-too-low`; a single-profile run - Generate Immediately or Order - is open to everybody |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
@@ -1355,11 +1355,11 @@ everybody after gets the stored one.
 - **A call that fails stores nothing**, so the next request is the first real
   analysis. That is the only way a posting is ever sent to a model twice.
 
-**In your own job sheet**, the analysis is written into the row once - Job
-Field, Salary, Analyzed At and the whole analysis as JSON in **Analysis** (cut
-with a marker at Google's 50,000-character cell limit). Values are written as
-plain values, never formulas. Job Hash and Lake Status are left for the Job
-Data Lake. A row that already has its analysis is **not analysed again**: a
+**In your own job sheet**, the analysis is written into the row once - all
+six of G to L: Job Field, Salary, Job Type, Clearance (TRUE/FALSE), Industry
+and the whole analysis as JSON in **Analysis** (cut with a marker at Google's
+50,000-character cell limit). Values are written as plain values, never
+formulas. A row that already has its analysis is **not analysed again**: a
 build from the sheet - Order or Generate Immediately - reads the rows' analysis
 cells itself, in one call per run, and uses what is there. That is only safe
 because nobody else can write those cells:
@@ -1388,28 +1388,45 @@ because nobody else can write those cells:
   prefer one if that matters to you.
 
 Only the app's own job sheets get the columns, and in them only **job tabs** -
-a tab whose first row is the job sheet's header (of any age), or a day's
-`MM/DD/YYYY` tab whose first row is still empty. A tab you made yourself keeps
-its own header and its own columns K to P: a build from it reads no analysis
-cells and writes none, and its postings are found in the database or analysed.
-A shared sheet an administrator configured keeps its analyses in the database
-only.
+a tab whose first row starts with Date, NO(DATE), Company, Job Title, Job Link,
+Job Description, or a tab with nothing in it at all (see [The job
+sheet](#the-job-sheet)). Any other tab - one you made yourself, or a daily tab
+an older build laid out - keeps its own header and its own columns: a build
+from it reads no analysis cells and writes none, and its postings are found in
+the database or analysed.
 
 ### The job sheet
 
-Every account gets **one Google spreadsheet of its own**, and inside it **one tab
-per day**, named `MM/DD/YYYY`. The tab is created on the first sign-in of that
-date and skipped on every sign-in after, so a day's rows stay together and a
-quiet day costs nothing. A new tab opens with the job columns - `NO(DATE)`,
-`Company`, `Job Title`, `Job Link`, `Job Description`, `Rate`, `note`,
-`Job Finder`, `Filter Result`, `Filter Reason`, then `Job Field`, `Salary`,
-`Job Hash`, `Analyzed At`, `Lake Status`, `Analysis` - frozen, filtered and
-formatted. The first eight are yours to fill in; the next two belong to the job
-filter; the last six are the job analysis's, and **protected**: only the
-server's own Google identity can edit them (see [Job analysis: once per
-posting](#job-analysis-once-per-posting)). A tab made by an older build is
-widened and given the new header and the protection the next time the app
-checks it.
+Every account gets **one Google spreadsheet of its own**, with two tabs of the
+app's: **All**, first, which every job page reads and writes unless you pick
+another tab, and **Temp For AI**, second. Both open with the job columns,
+frozen, filtered and formatted, every row 21 px high with long text clipped
+rather than wrapped:
+
+| | A | B | C | D | E | F | G | H | I | J | K | L |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| | Date | NO(DATE) | Company | Job Title | Job Link | Job Description | Job Field | Salary | Job Type | Clearance | Industry | Analysis |
+
+**A to F are yours** to fill in (an export fills them too). **G to L are the job
+analysis's, and protected**: only the server's own Google identity can edit
+them, and the app fills all six from a posting's one analysis - Job Type is
+Remote, Hybrid or Onsite (empty when the posting does not say), Clearance a
+real TRUE/FALSE, and the Analysis cell the whole analysis, which is what lets a
+later build skip analysing the row (see [Job analysis: once per
+posting](#job-analysis-once-per-posting)).
+
+A **job tab** is a tab whose row 1 starts with those six user headers - or a
+tab with **nothing in it at all**, under any name, which is laid out as one the
+first time the app uses it. Every other tab is left exactly as it is: the app
+never re-heads, protects, clears, reads or writes it. That includes a tab with
+data under an empty row 1, and every **daily `MM/DD/YYYY` tab an older build
+made**: those keep their rows and their old sixteen columns, and the app no
+longer reads them (copy rows into All by hand to use them - the columns are in
+other places). A sheet an older build made is given All and Temp For AI in front
+of its daily tabs the next time its owner signs in, or at the startup backfill.
+If the sheet already has a tab called All or Temp For AI that is not a job tab,
+that tab is left alone and Settings > Job Sheet says so; rename it and reload the
+page, and the app adds its own.
 
 Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
 being able to log in is not, so a Google outage must not become an outage of
@@ -1542,37 +1559,49 @@ One thing to check that is neither the old server's nor the new one's: an OAuth
 consent screen still in **Testing** expires its refresh tokens after seven days,
 on every machine equally. Publish it.
 
-**The job pages write into it.** Scraping jobs and filtering them used to make
-you supply a spreadsheet id, a tab name and four column letters. They now default
-to your own sheet, today's tab, and the layout above - `Company`, `Job Title`,
-`Job Link` and `Job Description` for an export; the job link read back, with the
-filter's verdict in `Filter Result` and its reason in `Filter Reason` - two
-columns the filter owns, so `Rate`, `note` and `Job Finder` stay yours. Rows are appended after
-what is already there, and jobs already in the tab are skipped.
+**The job pages use it, and only it.** The saved "shared" Google Sheets an
+administrator could once add (Bid History and the like) are gone: Build
+Resumes, the Job Filter, the export and the range importer read and write the
+signed-in account's own sheet and nothing else - an administrator's included.
+A spreadsheet id a request names is checked rather than trusted, and any id
+but your own is a 404, decided before Google is asked. This matters more than
+it looks - the server's Google identity *owns* every account's spreadsheet, so
+a route that took an id on trust would read and overwrite anybody's for anyone
+who knew it, and a link-shared sheet hands that id out in its URL. (The saved
+list itself stays in the settings, untouched, for a rollback.)
 
-**And the builder reads back out of it.** Sheet mode on the builder offers
-your own sheet first and by default, with a **Tab** select listing every tab
-(`GET /api/import/tabs`; today's selected) and `Company`, `Job Title` and
-`Job Description` already mapped - because the layout is one this app wrote. Each row's role is its own `Job Title`; a row with none is
-built with the title the posting's analysis reads from its description, as a
-manual build is. (The builder's *Fallback Role* field is gone: it put one
-typed role on every untitled row, whatever each job was.) A saved source is somebody else's spreadsheet and keeps the
-older column guesses. Only an administrator is offered the saved sources at all:
-they are not a user-addressable sheet, so listing them for everyone did nothing
-but offer a 404.
+- **Find Jobs -> export** appends the jobs it found to All (or the tab you
+  pick, if it is a job tab), after the last row used: **Date** (today, in
+  `SHEET_TIMEZONE`, as a real date you can sort by), **NO(DATE)** (1 + the
+  highest number already on today's rows, so a second export the same day
+  carries on the count), Company, Job Title, Job Link and Job Description - A
+  to F only. A company already in the tab is skipped. Each batch of rows is
+  read again just before it is written, so a row somebody typed meanwhile is
+  stepped over, never written over.
+- **The Job Filter** reads Company, Job Title and Job Link (C to E) of the tab,
+  judges every row that has a link on its posting's one analysis - a posting
+  already analysed costs no page fetch and no AI call - and shows each row's
+  Pass or Fail and the reason **on the page**. It writes nothing into the
+  sheet.
+- **Build Resumes** offers your own sheet's tabs, All selected; a tab that is
+  not a job tab is listed greyed out with why - *(old layout, not read)* for
+  an older build's daily tab, *(not a job tab)* for one of your own - and
+  cannot be picked. Find Jobs' export, the Job Filter and Report Jobs list the
+  tabs the same way. There is no sheet to choose and no column mapping: the
+  rows' C to F are read, and G to L beside them to show which rows already
+  hold their analysis. Each row's role is its own `Job Title`; a row with none
+  is built with the title the posting's analysis reads from its description,
+  as a manual build is.
+- **Admin -> Google Sheets** (the range importer) reads and writes a range of
+  the administrator's own sheet, and refuses a write into **G to L of a job
+  tab** - those cells are the program's, and the server's identity is the only
+  editor the protection lets through, so a write from here is the one way a
+  person could forge an Analysis cell a later build would trust.
 
-**Who may point them where.** A spreadsheet id supplied by a request is checked
-rather than trusted: an ordinary account may address only its own sheet, and an
-administrator may also address the shared sources they configured on the admin
-page. Anything else is a 404. This matters more than it looks - the service
-account *owns* every account's spreadsheet, so a route that took an id on trust
-would read and overwrite anybody's for anyone who knew it, and a link-shared
-sheet hands that id out in its URL.
-
-`SHEET_TIMEZONE` decides which day a tab belongs to. A server running in UTC
-rolls the day over at midnight UTC, which for a user in New York is seven in the
-evening - so an evening's work would land on the next day's tab. Set it to the
-zone the users actually live in.
+`SHEET_TIMEZONE` decides which day an exported row is dated, and so numbered. A
+server running in UTC rolls the day over at midnight UTC, which for a user in
+New York is seven in the evening - so an evening's rows would be dated, and
+counted, as the next day's. Set it to the zone the users actually live in.
 
 ### The Job Data Lake
 
@@ -1660,27 +1689,27 @@ for an hour after it ends; for each row:
    again pays nothing and analyses nothing - bar a row an earlier build marked
    *Duplicate* or *Unclassified*, which is merged once more after the upgrade
    (above), still with no model call. The database decides it, by the
-   posting, not the row's **Lake Status** (which the run writes but never
-   reads): a row moved or copied elsewhere is still skipped, and a new posting
-   pasted over an old row's is reported like any other;
+   posting - nothing in the row says it: a row moved or copied elsewhere is
+   still skipped, and a new posting pasted over an old row's is reported like
+   any other;
 2. its posting's analysis is found, sheet first: the row's own **Analysis**
    cell, else the stored analysis of the posting, else **one** model call
    (written back into the row) - a posting analysed before costs nothing;
 3. the job is merged: **added**, **replaced** or **duplicate**, as above.
 
-Then the run writes each row's **Job Hash** and **Lake Status** - *Added*,
-*Replaced*, *Duplicate*, *Unclassified* or *Skipped*; a row reported before
-gets its first outcome again - into the row (the protected columns, written as
-plain values), paints the duplicates' rows red (a row whose posting was a
-duplicate the first time too),
-and ends with *N out of M was added, your current credit is $X* - M being the
-rows it took to the lake, a row reported before not counted - over every row's
-outcome, the duplicates red there as well. *Skipped* means the
+Then the run paints the duplicates' rows red in the sheet (a row whose posting
+was a duplicate the first time too) - and writes nothing else into a row but
+its analysis columns: each row's outcome - *Added*, *Replaced*, *Duplicate*,
+*Unclassified*, *Skipped* or *Reported before* - is on the page, and in the
+database - and ends with *N out of M was added, your current credit is $X* -
+M being the rows it took to the lake, a row reported before not counted - over
+every row's outcome, the duplicates red there as well. *Skipped* means the
 row could not be reported this time - no company, or no description long
 enough to read a job field from - and the next run tries it again once the row
-is filled in. A row whose analysis failed (a seat down) is left without a
-status and tried again next time. The reporter's own rows only: nothing in the
-page or the request can name another spreadsheet.
+is filled in. A row whose analysis failed (a seat down) is tried again next
+time. A run reads only a job tab - All, Temp For AI, or another laid out the
+same way - and refuses any other before touching it. The reporter's own rows
+only: nothing in the page or the request can name another spreadsheet.
 
 **Rewards.** Paid the moment a job is added, in the same database transaction
 as the lake row - at the reporter's own **rate per job** if an administrator
@@ -1878,7 +1907,7 @@ For a page or a script, the queue's contract is:
 | `POST /api/generation/batches/:id/release?tab=<tabId>` | Stops an immediate run now. No body, and the session cookie suffices, so a `keepalive` fetch or `sendBeacon` from `pagehide` works |
 | `GET /api/generation/batches/:id/tasks/:taskId/:kind` | One file of one finished resume (`resume-pdf`, `resume-docx`, `cover-letter-pdf`, `cover-letter-docx`), to its owner only |
 | `POST /api/generation/batches/:id/cancel`, `POST /api/orders/:id/cancel` | Cancels what is left of a run or an order |
-| `GET /api/import/tabs` | The tabs of your job sheet (or `?sheetId=` of one you may address), with `defaultTab` - today's |
+| `GET /api/import/tabs` | The tabs of your own job sheet, each with its `layout` (`job`, `blank` or `other` - only an `other` tab is never read), and `defaultTab`: All, or the first tab a job route reads when All is not one. `?sheetId=` may name only your own sheet; any other id is a 404 |
 
 ### Where data lives
 
@@ -1886,7 +1915,7 @@ For a page or a script, the queue's contract is:
 |------|---------|
 | Profiles, groups, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
-| Which spreadsheet belongs to an account, and the last day tab prepared in it | The same database, on the account's row - along with `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
+| Which spreadsheet belongs to an account, and how far it is laid out | The same database, on the account's row: `sheet_layout` (2 once its All and Temp For AI tabs are there) with their gids, `sheet_all_gid` and `sheet_temp_gid` (NULL at layout 2 = a tab of that name was already there and is not a job tab, so it was left alone). `sheet_tab_date` and `sheet_tab_gid` are an older build's daily tab and are no longer written. Along with them, `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
 | Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir`. A Generate Immediately run has a row there too, `kind = 'immediate'`, which **Orders** never lists - it is what files its resumes per account, checks who downloads them, keeps what each was charged for a refund, and tells the sweep when its files are due (`finished_at` + `IMMEDIATE_FILE_RETENTION_MS`). An older build reads those rows as ordinary orders, so after a rollback they show up on its Orders page |
 | Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
@@ -3036,6 +3065,7 @@ unique across the install, which settles all of it in one segment.
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
 | **Job Lake** | The [Job Data Lake](#the-job-data-lake): query it (company, job field, salary, who reported it, when, free text), open a job and its history, delete one with or without taking its reward back; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
+| **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only - the saved shared sheets of older builds are gone - and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
 
@@ -3139,9 +3169,9 @@ matching it.
 | `PDF_RENDER_TIMEOUT_MS` | How long one PDF render step, or starting Chrome for it, may take (default `30000`, puppeteer's own; range 5000-300000) |
 | `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
-| `SHEET_TIMEZONE` | IANA zone deciding which day a sheet tab belongs to (e.g. `America/New_York`). Defaults to the server's own |
+| `SHEET_TIMEZONE` | IANA zone deciding which day an exported job row is dated - and so its NO(DATE) - (e.g. `America/New_York`). Defaults to the server's own |
 | `SHEET_DEFAULT_VISIBILITY` | Whether a newly allocated spreadsheet is link-shared: `private` (default) or `public`. `public` means **anyone with the link may edit**. Only that exact string opens a sheet up - anything else resolves to `private` with a warning, because the unsafe value cannot be taken back once a link is out. The account holder's own access comes from a writer grant made at allocation either way, and each account can flip its own sheet under Settings > Job Sheet |
-| `SHEET_BACKFILL` | Set to `off` to skip allocating spreadsheets for pre-existing accounts at startup |
+| `SHEET_BACKFILL` | Set to `off` to skip, at startup, allocating spreadsheets for pre-existing accounts and adding the All and Temp For AI tabs to sheets an older build made |
 | `SHEET_BACKFILL_PAUSE_MS` | Pause between two accounts in that startup backfill (default `250`, range 0-60000; `0` is no pause) - a throttle against your Cloud project's Drive and Sheets quota |
 | `APIFY_API_TOKEN` | Required for every job scraper run, which bills your Apify account; without it a run fails naming this variable. `APIFY_API_KEY` is the older name, still read when this one is empty |
 | `SCRAPER_DEFAULT_LOCATION` / `SCRAPER_COUNTRY` | The job market searched: the location used when the form's is empty, memo23's fixed location and the form's starting value (default `United States`, served to the page by the API), and the Indeed actor's country and memo23's proxy country (default `US`, a two-letter ISO code). Keep the two in agreement |
@@ -3200,21 +3230,27 @@ file. Export them in the shell, for the install and the server alike:
 | Removing a provider answers *This provider is building N resume(s) right now* | It is building those with its sign-in at this moment. Switch it **off** instead: nothing new reaches it, its waiting resumes move to another provider of its type at once, and what it is building finishes; remove it when its card shows nothing running. A built-in provider (`claude-cli`, `codex-cli`, `gemini-cli`) cannot be removed at all - only switched off - because every stored model names its type. |
 | Generating a resume again came back exactly as before, and the log says `Tailoring reused from the cache, no model call` | The tailoring cache: the same profile, posting, model and tailoring prompt as last time - and the same skills checklist from the shared library - so the stored answer was reused, and the resume charged as usual. Change any of them (an edit to the profile, another model, an edited prompt, a library skill the posting names) and the model is asked afresh. An answer a fallback model wrote is never kept (`[tailor-cache] Not keeping this tailoring: it was written by ...`), so a repeat of that one asks again. Answers are kept `TAILOR_CACHE_DAYS` (30 days by default); to empty the cache, `DELETE FROM tailor_cache;` with the server stopped. |
 | Somebody editing their job sheet gets Google's *You are trying to edit a protected cell or object* on the **Job Field** to **Analysis** columns | Working as intended: those six columns are written by the program alone, so a build can trust what they say and skip analysing the row again (see [Job analysis: once per posting](#job-analysis-once-per-posting)). Everything else in the row stays editable. To get a row analysed afresh there is nothing to clear - a posting is analysed once, ever; a different posting needs a different link or text. |
-| The backend log says `[sheets] The analysis columns of "<tab>" in <spreadsheet> were not protected` (or *protected wrongly*) *... restoring the protection ... and clearing the Analysis cells somebody else could have written meanwhile* | The protection over the six analysis columns was missing - a tab an older build made, which is normal once after the upgrade, or a job tab somebody added by hand - or somebody with the owner's account removed or changed it. It is put back on the spot, and the **Analysis** column (only it - your notes in K and L on an old tab stay) is emptied in the same step, since anybody with the link could have typed into it meanwhile. Nothing is lost: every analysis is in the database, so those rows are read from it, or analysed once, and their cells are written again on each row's next run. If it repeats on every run for the same tab, somebody is removing it: with `npm run sheets:login` that can only be the operator's own Google account. |
+| The backend log says `[sheets] The analysis columns of "<tab>" in <spreadsheet> were not protected` (or *protected wrongly*) *... restoring the protection ... and clearing the Analysis cells somebody else could have written meanwhile* | The protection over the six analysis columns (G to L) was missing - an empty tab being laid out as a job tab, which is normal once, or a job tab somebody headed by hand - or somebody with the owner's account removed or changed it. It is put back on the spot, and the **Analysis** column (L, only it) is emptied in the same step, since anybody with the link could have typed into it meanwhile. Nothing is lost: every analysis is in the database, so those rows are read from it, or analysed once, and their cells are written again on each row's next run. If it repeats on every run for the same tab, somebody is removing it: with `npm run sheets:login` that can only be the operator's own Google account. |
 | The log says `[sheets] Could not check the protection of the analysis columns ...` or `Google did not say which account this server's sign-in belongs to` | The server could not learn its own Google identity, which a protection must name as its only editor. With a `sheets:login` credential that is asked of Drive, so the **Drive API** must be enabled for the credential's project - `npm run sheets:doctor` in `backend/` checks it. Until it works, sheet runs still build, but they ignore the analysis cells and analyse from the database. |
 | The log says `[analysis] Sheet row N's Analysis cell is cut short` (or *unreadable*) *; falling back to the store* | The cell holds more than Google's 50,000 characters, or is not the program's JSON - an old cell, or a paste from before the column was protected. The row's posting is read from the database instead (the cell still names its stored analysis when only its end was cut), and analysed once if the database has never seen it. Nothing is lost; a cell the program wrote for the row's own posting is not rewritten. |
 | The log says `[sheets] Google answered 429 (quota) to ...; retry n of 5 in ...ms`, or a page says *Google Sheets is busy right now* | Google's per-minute Sheets quota is per project and per user, and every account of this install is the same user - the server's one credential - so a big filter run, a few sheet orders and their write-backs share one budget. A 429 is waited out with growing, randomised delays (and Google's own `Retry-After`), up to five times and 32 s a wait; only then is it reported. If it keeps reaching people, raise the Sheets quota in the credential's Cloud project, or run fewer sheet jobs at once. |
-| **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 16` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a tab an older build made is twelve columns wide, and is widened to the sixteen the analysis columns need the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
+| **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 12` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a job tab somebody headed by hand narrower than twelve columns is widened to twelve the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
 | The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
 | Every new posting comes back **Unclassified**, or Admin → Prompts flags the analysis prompt as predating job fields (or industries) | The Analyze Job Description prompt was edited before postings had a job field, so its text never asks for one. The field list is sent beside it on every call anyway, so postings should still be classified - when they are not, the edited text is fighting it (an instruction to return exactly some other JSON shape, say). Paste the shipped text (`backend/static/prompts/analyze-job-description.json` - there is no reset button) over it, or add `[[jobFieldList]]` before the posting and the `jobField`, `salary` and `filter` keys to its output. Only postings analysed from then on are affected: a stored analysis is never redone. A prompt flagged as predating **industries** names the field list but not the industry list: the list and the instruction are sent beside it on every call, so postings still get an industry; add `[[industryList]]` (after `[[jobFieldList]]`) and `"industry": ""` to its output to move them into the cached part, which clears the flag. |
-| The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A row moved or sorted since loading (`no longer matches`) is neither read nor written. On an administrator's shared sheet the column always says *When built*: only an account's own sheet has the protected columns. |
+| The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A row moved or sorted since loading (`no longer matches`) is neither read nor written. |
 | The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
-| The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab; its own columns are left as they are` | Sheet mode was pointed at a tab you made yourself (its first row is not the job sheet's header). That is allowed - its rows are read through the column mapping - but such a tab gets no analysis columns: nothing in it is re-headered, protected or written, and its postings are found in the database or analysed once. To have a tab's analyses written back, build from one of the app's dated tabs. |
-| A reporter's row stays without a **Lake Status** after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the status could not be written: the run's summary says the sheet was not updated, and the log has `[lake] Report run rep_...: the Lake Status cells of "<tab>" could not be written` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since)`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds the posting reported before - no model call, no second reward - and writes its first outcome (*Added*). |
-| **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: every row the lost run reported is *Reported before* - skipped, no model call, no second reward - and written its first outcome (*Added*) if its status never reached the sheet; the rest are reported. |
-| **Report Jobs** says *"My notes" is not laid out as a job sheet tab, so it cannot be reported from.* (with the tab's own name) | The tab chosen is one the reporter made for themselves (notes, a list of their own): its first row is not the job sheet's header, so the program will not read it, protect it or write into it. Choose one of the dated tabs the program made; a job listed elsewhere has to be copied into one first. |
+| The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab (a tab of the person's own, or an older build's daily tab); its columns are left as they are` | A build ran on a tab that is not a job tab: its first row does not start with *Date, NO(DATE), Company, Job Title, Job Link, Job Description*, and it is not empty. Nothing in it is re-headered, protected, read as an analysis or written, and its postings are found in the database or analysed once. The builder offers only job tabs, so this is a page from before the upgrade or a request made by hand. Build from **All** or **Temp For AI**. |
+| After upgrading, the job pages no longer show the daily `MM/DD/YYYY` tabs' rows - Build Resumes, Find Jobs, the Job Filter and Report Jobs list those tabs greyed out as *(old layout, not read)* | Expected (owner decision S2): every account's sheet now has two tabs of the app's, **All** and **Temp For AI**, in a new twelve-column layout (*Date, NO(DATE), Company, Job Title, Job Link, Job Description*, then the six analysis columns G to L), and the daily tabs an older build made are left exactly as they were - never read, written, re-headed, protected or cleared, since their columns are in other places. Their rows are not lost: copy the ones you still want into **All** by hand (Company, Job Title, Job Link and Job Description go into C to F). The two new tabs are added in front of the old ones at the account's next sign-in, or by the startup backfill. |
+| **Settings → Job Sheet** says *Your job sheet already has a tab named "All" that is not laid out as a job tab, so it was left exactly as it is.* (or *"Temp For AI"*, or both) | The sheet already had a tab of that name - one of the person's own, or a tab with data under an empty first row - so the app did not take it over and has no **All** (or **Temp For AI**) of its own: the job pages list that tab greyed out as *All (not a job tab)* and start on the first job tab instead, the note under their tab select says to rename or delete it before copying old jobs into All (rather than to copy them into it, where nothing would read them), and the log says `[sheets] <spreadsheet> already has a tab named "All" that is not a job tab`. Rename or delete that tab in Google Sheets, then reload **Settings → Job Sheet**: that page - and only that page, so the clash costs no Google reads on every other page load - looks again and the app adds its own tab, first (**All**) or second (**Temp For AI**). Until then the other pages go on saying what was recorded. An EMPTY tab of that name is simply taken over. |
+| The **Tab** select on Build Resumes says *No job tab to read* (Find Jobs: *No job tab to write to*, the Job Filter: *No job tab to filter*, Report Jobs: *No job tab to report from*), with every tab of the sheet listed greyed out | No tab of the sheet is a job tab: the app's **All** and **Temp For AI** are not there - their names are taken by tabs of the person's own (Settings → Job Sheet says so, see the row above), or the sheet has not been laid out yet - and every other tab is an older build's daily tab or one of the person's own. Open **Settings → Job Sheet**: it lays the sheet out (or says which name to free), then reload the page. An empty tab added in Google Sheets also works: it is offered, and laid out the first time it is used. |
+| **Admin → Google Sheets** refuses a write: *Columns G to L of a job tab are written by the app only (Job Field, Salary, Job Type, Clearance, Industry, Analysis). Choose a range within columns A to F.* - or *Columns K to P of "<tab>" are the app's protected analysis columns, written by the app only. Choose a range outside them.* (409 `protected-columns`) | The range reaches into the protected analysis columns of a job tab, or into any columns the app's own protection covers on that tab - an older build's daily tab keeps its **K to P**, and a tab whose first row was changed (so it no longer reads as a job tab) keeps its **G to L**. The server's Google identity is the only editor the protection lets through, so a write from the range importer is the one write a person could make into those cells - and a forged **Analysis** cell would be trusted by the next build as the program's own. It is decided on the protection, not on the first row, which anybody may change and change back. Write A to F (or columns past the protected ones, or a tab the app never protected); the analysis columns fill themselves from each row's analysis. The importer also reads and writes only the administrator's own sheet now: any other spreadsheet id - another account's, or a sheet saved under an older build - is *That spreadsheet was not found.* |
+| An administrator's saved Google Sheets ("Bid History" or the like) are gone from **Admin → Google Sheets**, the builder and the job pages | Removed (owner decision S1): every sheet route uses the signed-in account's own sheet only, and naming any other spreadsheet id is *That spreadsheet was not found.* (404). The saved list is still in the settings row, untouched by every save, so rolling back to an older build brings it back. To work with jobs from such a sheet, copy them into **All**. (The Bid Assistant's own saved sources are a separate list and unchanged.) |
+| **Find Jobs** says *Your job sheet kept changing while the jobs were being written, so the rest were not exported. Try again.* (409 `sheet-changed`) | Before each batch of rows an export reads the rows it is about to fill again, and moves below anything that appeared there - somebody typing into the tab, or another export into the same tab from another server process. Five moves in a row and it stops rather than chase the sheet; the rows already written stay. Run the export again when nobody else is writing to the tab. |
+| A reporter's run says *the sheet was not updated*, or a duplicate's row is not red, or a row's analysis columns stay empty after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the sheet could not be written: the log has `[lake] Report run rep_...: the duplicates of "<tab>" could not be painted` or `[sheets] Could not write the analysis of N row(s) back` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since); it is not painted`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds the posting reported before - no model call, no second reward - fills its analysis columns and paints it if it was a duplicate. The run no longer writes a *Lake Status* or *Job Hash* into the row: there are no such columns now - each row's outcome is on the page. |
+| **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: every row the lost run reported is *Reported before* - skipped, no model call, no second reward, painted red again if it was a duplicate - and the rest are reported. |
+| **Report Jobs** says *"My notes" is not laid out as a job sheet tab, so it cannot be reported from. Choose All or Temp For AI, or an empty tab, which is laid out as one the first time it is used.* (with the tab's own name); **Find Jobs** says the same with *cannot be exported into*, the **Job Filter** with *cannot be filtered* (409 `not-job-tab`) | The tab chosen is not a job tab: one the person made for themselves (notes, a list of their own), a tab with data under an empty first row, or a daily `MM/DD/YYYY` tab an older build made - its first row is not *Date, NO(DATE), Company, Job Title, Job Link, Job Description*. The program will not read it, protect it or write into it. The pages list such a tab greyed out and will not pick it - except a tab with data under an empty first row, which only the server can tell from an empty one - so this is said for that tab, for a tab whose first row changed after the page listed the tabs (reload it), or for a request made by hand. Choose **All** or **Temp For AI**; a job listed elsewhere has to be copied into one first. |
 | A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting twice in one run is a duplicate the second time, and another reporter's copy of a posting is a duplicate too. A row whose posting was a duplicate the first time is painted red again by every later run over it (*Reported before (Duplicate)*) - except a row an earlier build marked *Duplicate*, which this release does not remember: the first run over it after the upgrade merges it again, a duplicate again while the job is inside the window (seen once more) and a paid replacement once it is not, and remembers that. After the window, the same job reported again - another posting of it, or by somebody else - **replaces** the old one and is paid. |
-| A row a new posting was pasted into still shows the old posting's **Lake Status**, **Job Hash** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. Whether a row was reported is never read from its **Lake Status**: it is the database's record of the posting, so a status left beside a new posting changes nothing. |
+| A row a new posting was pasted into still shows the old posting's **Job Field**, **Salary** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. Whether a row was reported is never read from the sheet: it is the database's record of the posting. |
 | A reporter's row says *Reported before (Added)* - or *(Duplicate)*, *(Replaced)*, *(Unclassified)* - and is skipped, though it was never reported from that row or tab | The same reporter reported the same posting before - same link (tracking and `#fragment` aside) or same text - from another row, another tab, or this row before it was sorted or moved; in brackets is what became of it then. A posting is reported, paid and counted once per reporter, wherever it is pasted. For *(Added)*, *(Replaced)* or *(Duplicate)*, to have it reported again an administrator deletes the job on **Admin → Job Lake** (Details, Delete), which forgets every report that reached it - a job deleted while an older build was rolled back to is forgotten too, and one that build then took again is remembered against its new line, which Delete forgets. An *(Unclassified)* posting reached no job in the lake, so there is nothing to delete and it stays *Reported before*: its analysis is final, and reported again it would be unclassified again. A row whose company was missing is not remembered, and is reported once the company is filled in. |
 | On **Admin → Job Lake** a job's **Job Type**, **Clearance** or **Industry** is blank (a dash in the table; **Details** says *Not stated* or *Not filled in yet*) | Blank Job Type or Industry - *Not stated* - is what the posting gave: no remote, hybrid or on-site arrangement stated, nothing to tell its industry by (a posting analysed before industries existed gets one from its company category or its own industry word when it has one; it is never sent to a model again for it). All three blank, Clearance included - *Not filled in yet* - means the job was added by an older build (before this release, or while rolled back) and is not filled in yet: every start fills such jobs from their analyses - the log says *[lake] Filled in job type, clearance and industry for N lake row(s)...* - and *[lake] Could not fill in the lake's job type, clearance and industry* with the cause when it could not, in which case the next start tries again. |
 | A reported row says *Skipped* | It could not be reported this time: the row has no company, or no job description long enough to read a job field from. Fill it in and run the rows again - *Skipped* rows are tried again, unlike *Added*, *Replaced*, *Duplicate* and *Unclassified* ones. |

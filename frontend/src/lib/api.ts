@@ -1,6 +1,7 @@
 import { readScraperCatalog, readScraperSettings } from './scraperForm';
 import { formatMoney } from './format';
 import type { JobFilterFacts, JobSalary } from './jobAnalysis';
+import type { SheetTabListing } from './sheetTabs';
 import {
   hasEnabledProviderOfType,
   normalizeAdminProviders,
@@ -563,14 +564,6 @@ export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';
 export type DefaultResumeSelection = 'single' | 'all' | 'group';
 
-export interface GoogleSheetSource {
-  id: string;
-  name: string;
-  sheetId: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /**
  * The most a resume may be priced at: $1,000, in thousandths of a dollar.
  * Mirrors the backend's MAX_PRICE_PER_RESUME_MILLI; the server is the one that
@@ -685,14 +678,25 @@ export interface ScraperSettings {
   runTimeoutS: number | null;
 }
 
+/**
+ * What an export wrote into the account's own sheet: A to F of the rows after
+ * the last one used, dated `date` (MM/DD/YYYY, the server's SHEET_TIMEZONE)
+ * and numbered `firstNo`..`lastNo` in NO(DATE), carrying on the day's count.
+ */
 export interface JobSheetExportSummary {
   spreadsheetId: string;
   spreadsheetTitle: string;
   selectedTab: string;
+  /** A link that opens the tab written to; absent from a server before it. */
+  tabUrl?: string;
+  date?: string;
   updatedRanges: string[];
   rowsWritten: number;
   startRow: number;
   endRow: number;
+  /** The NO(DATE) of the first and last rows written; null when nothing was. */
+  firstNo?: number | null;
+  lastNo?: number | null;
   unresolvedJobLinks: number;
   skippedCompanyDuplicates: number;
   beforeExportResultCount?: number;
@@ -742,6 +746,25 @@ export interface ScraperExportResponse extends ScraperRunResponse {
   export: JobSheetExportSummary;
 }
 
+/**
+ * One row of a Job Filter run, as the page lists it: its verdict and why -
+ * nothing of it is written into the sheet. `result` is null for a row that
+ * was not judged: one with no link (its `reason` says so) or one that failed
+ * (`error`, a public sentence with its `(Ref: ...)`).
+ */
+export interface JobFilterRowResult {
+  row: number;
+  company: string;
+  title: string;
+  link: string;
+  result: 'Pass' | 'Fail' | null;
+  /** Why it failed ('' for a Pass), or why it was not judged. */
+  reason: string;
+  /** Judged on an analysis the posting already had: no page fetched, no model asked. */
+  reused: boolean;
+  error?: string;
+}
+
 export interface GoogleSheetJobFilterResponse {
   spreadsheetId: string;
   spreadsheetTitle: string;
@@ -755,9 +778,6 @@ export interface GoogleSheetJobFilterResponse {
   modelLabel?: string;
   startRow: number;
   endRow: number;
-  jobLinkCol: number;
-  resultCol: number;
-  reasonCol: number;
   scannedRows: number;
   processedRows: number;
   skippedRows: number;
@@ -769,11 +789,14 @@ export interface GoogleSheetJobFilterResponse {
    */
   reusedAnalyses?: number;
   errorRows: number;
-  updatedRanges: string[];
   rowErrors: Array<{
     row: number;
     message: string;
   }>;
+  /** Every row that holds anything in C:E, in sheet order. Absent from a server before the filter stopped writing. */
+  rows?: JobFilterRowResult[];
+  /** Said instead of results, e.g. for a tab with no job rows yet. */
+  message?: string;
 }
 
 /**
@@ -861,15 +884,14 @@ export interface UserAppSettings extends BuilderDefaults {
 /**
  * The administrator's settings payload. Its own type rather than an extension
  * of the user one: it carries the RAW model records (so a disabled or locked one
- * stays manageable), the locks with their reasons, the per-seat model-name
- * lists and the shared sheet sources - everything the user payload leaves out.
+ * stays manageable), the locks with their reasons and the per-seat model-name
+ * lists - everything the user payload leaves out.
  */
 export interface AdminAppSettings extends BuilderDefaults {
   /** Canonical enable flags, keyed by provider id. */
   providersEnabled: Record<AIProvider, boolean>;
   outputPathUsesJobTitle: boolean;
   aiModels: AIModelRecord[];
-  googleSheetsSources: GoogleSheetSource[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
   /**
@@ -966,21 +988,6 @@ function normalizePaymentLimits(value: unknown): PaymentTargetLimits[] {
         : [],
     }))
     .filter((entry) => entry.target !== '');
-}
-
-function normalizeGoogleSheetSources(value: unknown): GoogleSheetSource[] {
-  if (!Array.isArray(value)) return [];
-
-  return value
-    .filter((entry): entry is GoogleSheetSource => typeof entry === 'object' && entry !== null)
-    .map((entry) => ({
-      id: typeof entry.id === 'string' ? entry.id : '',
-      name: typeof entry.name === 'string' ? entry.name : '',
-      sheetId: typeof entry.sheetId === 'string' ? entry.sheetId : '',
-      createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
-      updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
-    }))
-    .filter((entry) => entry.id && entry.name && entry.sheetId);
 }
 
 /**
@@ -1246,7 +1253,6 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
     aiModels: normalizeModelRecords(source.aiModels),
-    googleSheetsSources: normalizeGoogleSheetSources(source.googleSheetsSources),
     providerLocks: normalizeProviderLocks(source.providerLocks),
     aiProviders: normalizeAdminProviders(source.aiProviders),
     providerModelOptions: normalizeProviderModelOptions(source.providerModelOptions),
@@ -1266,7 +1272,6 @@ export interface AdminAppSettingsUpdate extends Partial<BuilderDefaults> {
   providersEnabled?: Record<AIProvider, boolean>;
   /** '' clears it (the app default model). A changed id must name a model that can run. */
   analysisModelId?: string;
-  googleSheetsSources?: GoogleSheetSource[];
   outputBaseDir?: string;
   outputPathTemplate?: string;
   /** In dollars. `[]` restores the shipped defaults. */
@@ -1332,8 +1337,13 @@ export interface GoogleSheetMergeRange {
   endCol: number;
 }
 
+/**
+ * A range of the account's own job sheet. `sheetId` may name that sheet and
+ * nothing else (any other id is 404); left out, the server uses the
+ * caller's own, which is what every page does.
+ */
 export interface GoogleSheetsRangeRequest {
-  sheetId: string;
+  sheetId?: string;
   tabName?: string;
   fromRow?: number;
   toRow?: number;
@@ -1513,12 +1523,13 @@ export const adminApi = {
     })),
 };
 
-/** The tabs of a spreadsheet the caller may build from, from `GET /import/tabs`. */
-export interface ImportSheetTabs {
+/**
+ * The tabs of the account's own sheet, from `GET /import/tabs`: each with its
+ * layout (lib/sheetTabs.ts says which a page may offer), and the one to start
+ * on - All while it is a job tab; null for none.
+ */
+export interface ImportSheetTabs extends SheetTabListing {
   spreadsheetId: string;
-  tabs: Array<{ title: string; gid?: number }>;
-  /** Today's tab on the account's own sheet when it has one, else the first tab; null for none. */
-  defaultTab: string | null;
 }
 
 export const importApi = {
@@ -1529,30 +1540,20 @@ export const importApi = {
     }),
 
   /**
-   * Every tab of a spreadsheet, in the spreadsheet's order: the account's own
-   * sheet without `sheetId`, or a sheet the caller may address (theirs, or an
-   * administrator's saved source) by id - 404 for any other.
+   * Every tab of the account's own sheet, in the spreadsheet's order. It is
+   * the only sheet anybody may address (owner decision S1): any other id is
+   * 404, so none is sent.
    */
-  listTabs: (sheetId?: string) =>
-    apiFetch<ImportSheetTabs>(`/import/tabs${sheetId ? `?sheetId=${encodeURIComponent(sheetId)}` : ''}`),
+  listTabs: () => apiFetch<ImportSheetTabs>('/import/tabs'),
 };
 
 /**
- * Every sheet field is optional now.
- *
- * Leaving them out is what asks for the account's own job sheet, today's tab
- * and the fixed column layout - which is what the ordinary flow sends. They
- * remain for an administrator writing into a shared source they configured,
- * where none of those defaults apply.
+ * Where an export writes: always the account's own sheet, on the tab named -
+ * All when none is. The columns and the row are the server's (A to F, after
+ * the last row used), so there is nothing else to say.
  */
 export type JobSheetDestination = {
-  sheetId?: string;
   tabName?: string;
-  startRow?: number;
-  companyNameCol?: number;
-  jobTitleCol?: number;
-  jobLinkCol?: number;
-  jobDescriptionCol?: number;
 };
 
 export const jobsApi = {
@@ -1578,15 +1579,12 @@ export const jobsApi = {
       body: JSON.stringify(data),
     }),
 
+  /** The account's own sheet, All when no tab is named. Writes nothing into the sheet. */
   filterGoogleSheetJobs: (data: {
-    sheetId?: string;
     tabName?: string;
     startRow?: number;
-    /** Left out, the filter runs to the last row that has a job link. */
+    /** Left out, the filter runs to the last row holding anything in Company to Job Link. */
     endRow?: number;
-    jobLinkCol?: number;
-    resultCol?: number;
-    reasonCol?: number;
   }) =>
     apiFetch<GoogleSheetJobFilterResponse>('/jobs/filter-google-sheet', {
       method: 'POST',

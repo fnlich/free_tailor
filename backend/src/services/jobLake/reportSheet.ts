@@ -2,13 +2,11 @@ import {
   a1Range,
   batchGetValues,
   batchUpdateSpreadsheet,
-  batchUpdateValuesRaw,
   DUPLICATE_ROW_COLOR,
   inspectJobSheetTab,
   isJobSheetTab,
   JOB_SHEET_COLUMNS,
   JOB_SHEET_FIRST_DATA_ROW,
-  JOB_SHEET_HEADERS,
   rowBackgroundRequest,
   verifyJobSheetTab,
   type JobSheetTabInspection,
@@ -19,34 +17,21 @@ import { rowRuns, sameCompany, sameLink } from '../sheets/analysisColumns';
 /**
  * The reporter's own job sheet, as the Job Data Lake reads and marks it.
  *
- * Read: a tab's rows - Company, Job Title, Job Link and Job Description (B:E)
- * - in one call. Nothing the lake wrote into a row is read back: whether a
+ * Read: a job tab's rows - Company, Job Title, Job Link and Job Description
+ * (C:F) - in one call. Nothing the lake did to a row is read back: whether a
  * row's posting was reported before is the database's (`job_reports`, by the
  * posting's analysis), which follows the posting to whichever row it is in.
  * The row's protected analysis cells are read by the submission step
  * (services/jobAnalysis/submit.ts), as for any build.
  *
- * Written, once per run and after the analysis write-backs: each reported
- * row's Job Hash and Lake Status - a row reported before gets what became of
- * its posting the first time - RAW, only into the row that still holds the
- * posting reported from it (company and link read again first: rows can be
- * sorted or deleted meanwhile), and a duplicate's whole row painted red
- * (`repeatCell`), a posting that was a duplicate the first time included,
- * all of the run's rows in one `:batchUpdate`. Both cells sit in the
- * protected block, which the run's verify of the tab has put right before
- * anything is written; the program is their only writer.
+ * Marked, once per run and after the analysis write-backs: a duplicate's
+ * whole row painted red (`repeatCell`, background only) - a posting that was
+ * a duplicate the first time included - all of the run's rows in one
+ * `:batchUpdate`, and only the rows that still hold the posting reported from
+ * them (company and link read again first: rows can be sorted or deleted
+ * meanwhile). Nothing is written into a row's cells: the lake's outcome is on
+ * the page, and in the database.
  */
-
-/** What a Lake Status cell says. */
-export const LAKE_STATUS_TEXT = {
-  added: 'Added',
-  replaced: 'Replaced',
-  duplicate: 'Duplicate',
-  unclassified: 'Unclassified',
-  skipped: 'Skipped',
-} as const;
-
-export type LakeStatusText = (typeof LAKE_STATUS_TEXT)[keyof typeof LAKE_STATUS_TEXT];
 
 /** The Google calls the reporter run makes, as a seam the tests drive with a fake. */
 export type ReportSheetsClient = {
@@ -54,17 +39,14 @@ export type ReportSheetsClient = {
   /** `known`: the inspection the caller just made, so the verify does not read the tab again. */
   verifyTab(spreadsheetId: string, tabName: string, known?: JobSheetTabInspection): Promise<VerifiedJobSheetTab>;
   readRanges(spreadsheetId: string, ranges: string[]): Promise<string[][][]>;
-  writeRaw(spreadsheetId: string, data: Array<{ range: string; values: Array<Array<string | number | null>> }>): Promise<void>;
   batchUpdate(spreadsheetId: string, requests: Array<Record<string, unknown>>): Promise<void>;
 };
 
 const realClient: ReportSheetsClient = {
   inspectTab: (spreadsheetId, tabName) => inspectJobSheetTab(spreadsheetId, tabName),
-  // A tab the person made for themselves is not touched (re-headered, protected) by a report run.
-  verifyTab: (spreadsheetId, tabName, known) =>
-    verifyJobSheetTab(spreadsheetId, tabName, JOB_SHEET_HEADERS, known, { onlyJobTabs: true }),
+  // A tab that is not a job tab is not touched (re-headered, protected) by a report run.
+  verifyTab: (spreadsheetId, tabName, known) => verifyJobSheetTab(spreadsheetId, tabName, known),
   readRanges: (spreadsheetId, ranges) => batchGetValues(spreadsheetId, ranges),
-  writeRaw: (spreadsheetId, data) => batchUpdateValuesRaw(spreadsheetId, data),
   batchUpdate: (spreadsheetId, requests) => batchUpdateSpreadsheet(spreadsheetId, requests),
 };
 
@@ -93,11 +75,10 @@ export function rowHoldsAJob(row: Pick<SheetReportRow, 'company' | 'link' | 'job
 }
 
 /**
- * Rows `fromRow`..`toRow` of a tab: Company, Job Title, Job Link and Job
- * Description (B:E), in one call. The lake's own cells (Job Hash, Lake
- * Status) are written, never read: what a row's posting became is in
+ * Rows `fromRow`..`toRow` of a job tab: Company, Job Title, Job Link and Job
+ * Description (C:F), in one call. What a row's posting became is in
  * `job_reports`, which a sorted, moved or pasted-over row cannot leave
- * behind it.
+ * behind it - nothing in the sheet says it.
  */
 export async function readReportRows(
   spreadsheetId: string,
@@ -149,38 +130,33 @@ export function lastRowInGrid(tab: Pick<ReportTab, 'rowCount'>, toRow: number): 
   return tab.rowCount !== null ? Math.min(toRow, tab.rowCount) : toRow;
 }
 
-export type LakeStatusWrite = {
+/** A row to paint red, with what it said when it was read for the run - checked again before painting. */
+export type DuplicateRowPaint = {
   row: number;
-  /** What the row said when it was read for the run - checked again before writing. */
   company: string;
   link: string;
-  jobHash: string | null;
-  status: LakeStatusText;
-  /** Paint the row red: the job is a duplicate. */
-  red: boolean;
 };
 
-export type LakeStatusReport = { written: number; skipped: number; painted: number };
+export type DuplicatePaintReport = { painted: number; skipped: number };
 
 /**
- * Writes the run's Job Hash and Lake Status cells and paints its duplicates,
- * in at most three calls: read the rows' company and link again, write the
- * cells (M:O, Analyzed At between them left as it is - a null), paint.
+ * Paints the run's duplicate rows red, in at most two calls: read the rows'
+ * Company and Job Link (C:E) again, then ONE `:batchUpdate` of background-only
+ * `repeatCell`s.
  *
  * A row whose company or link no longer match is skipped: somebody sorted or
- * deleted rows since it was read, and the status belongs to the posting, not
- * to the row number. Its posting is in the lake regardless, and its row reads
- * as not reported - a later run finds the job already there, from the
- * database, and pays nothing twice.
+ * deleted rows since it was read, and the paint belongs to the posting, not
+ * to the row number. Its posting is in the lake regardless, and a later run
+ * finds it reported, from the database, and pays nothing twice.
  */
-export async function writeLakeStatuses(
+export async function paintDuplicateRows(
   spreadsheetId: string,
   tabName: string,
   gid: number,
-  writes: LakeStatusWrite[]
-): Promise<LakeStatusReport> {
-  const report: LakeStatusReport = { written: 0, skipped: 0, painted: 0 };
-  const entries = [...writes].filter((entry) => entry.row >= JOB_SHEET_FIRST_DATA_ROW).sort((a, b) => a.row - b.row);
+  rows: DuplicateRowPaint[]
+): Promise<DuplicatePaintReport> {
+  const report: DuplicatePaintReport = { painted: 0, skipped: 0 };
+  const entries = [...rows].filter((entry) => entry.row >= JOB_SHEET_FIRST_DATA_ROW).sort((a, b) => a.row - b.row);
   if (entries.length === 0) return report;
 
   const runs = rowRuns(entries.map((entry) => entry.row));
@@ -199,31 +175,23 @@ export async function writeLakeStatuses(
     }
   });
 
-  const data: Array<{ range: string; values: Array<Array<string | number | null>> }> = [];
   const paint: Array<Record<string, unknown>> = [];
   const done = new Set<number>();
   for (const entry of entries) {
     const now = current.get(entry.row);
-    if (done.has(entry.row) || !now || !sameCompany(now.company, entry.company) || (entry.link && !sameLink(now.link, entry.link))) {
+    if (done.has(entry.row)) continue;
+    if (!now || !sameCompany(now.company, entry.company) || (entry.link && !sameLink(now.link, entry.link))) {
       report.skipped += 1;
-      if (!done.has(entry.row)) {
-        console.warn(
-          `[lake] Row ${entry.row} of "${tabName}" in ${spreadsheetId} no longer holds ${entry.company || 'the reported posting'} ` +
-            '(rows were sorted or deleted since); its Lake Status is not written there.'
-        );
-      }
+      console.warn(
+        `[lake] Row ${entry.row} of "${tabName}" in ${spreadsheetId} no longer holds ${entry.company || 'the reported posting'} ` +
+          '(rows were sorted or deleted since); it is not painted.'
+      );
       continue;
     }
     done.add(entry.row);
-    data.push({
-      range: a1Range(tabName, entry.row, entry.row, JOB_SHEET_COLUMNS.jobHash, JOB_SHEET_COLUMNS.lakeStatus),
-      values: [[entry.jobHash ?? '', null, entry.status]],
-    });
-    if (entry.red) paint.push(rowBackgroundRequest(gid, entry.row, DUPLICATE_ROW_COLOR));
+    paint.push(rowBackgroundRequest(gid, entry.row, DUPLICATE_ROW_COLOR));
   }
 
-  await client.writeRaw(spreadsheetId, data);
-  report.written = data.length;
   if (paint.length > 0) {
     await client.batchUpdate(spreadsheetId, paint);
     report.painted = paint.length;

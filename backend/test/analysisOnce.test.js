@@ -246,18 +246,30 @@ test('row 10: the Job Filter, then a build of the same posting - one analysis, w
   const written = [];
   let fetched = 0;
   swap(require('../dist/services/sheets/jobSheetTarget'), 'resolveJobSheetTarget', async () => ({
-    spreadsheetId: 'shared-source',
-    tabName: '10/05/2026',
+    spreadsheetId: 'own-sheet',
+    tabName: 'All',
   }));
-  swap(googleSheets, 'fetchGoogleSheetsRange', async () => ({
-    spreadsheetId: 'shared-source',
+  swap(googleSheets, 'inspectJobSheetTab', async () => ({
+    gid: 7,
+    title: 'All',
+    columnCount: 12,
+    rowCount: 1000,
+    headerRow: [...googleSheets.JOB_SHEET_HEADERS],
+    protectedRanges: [],
     spreadsheetTitle: 'Jobs',
-    values: [[LINK, '', ''], ['https://jobs.example.com/other', '', '']],
   }));
-  swap(googleSheets, 'updateGoogleSheetsRow', async (input) => {
-    written.push(input);
-    return {};
-  });
+  // C:E, the whole columns: the header, then two rows.
+  swap(googleSheets, 'batchGetValues', async () => [[
+    ['Company', 'Job Title', 'Job Link'],
+    ['Acme', 'Engineer', LINK],
+    ['Other', 'Engineer', 'https://jobs.example.com/other'],
+  ]]);
+  // The filter never writes into the sheet: anything that would is recorded.
+  for (const name of ['batchUpdateValuesRaw', 'batchUpdateSpreadsheet', 'appendValuesRaw']) {
+    swap(googleSheets, name, async (...args) => {
+      written.push([name, ...args]);
+    });
+  }
   swap(require('../dist/services/jobPageContent'), 'extractJobPageContent', async (link) => {
     fetched += 1;
     return link === LINK ? posting(10) : posting(11);
@@ -268,7 +280,15 @@ test('row 10: the Job Filter, then a build of the same posting - one analysis, w
   assert.equal(filtered.body.processedRows, 2);
   assert.equal(filtered.body.modelLabel, 'Claude Sonnet', 'the analysis model, by its display name');
   assert.equal(h.seats.analyses().length, 2, 'one analysis per posting');
-  assert.deepEqual(written[0].updates.map((update) => update.value), ['Pass', ''], 'judged on the analysis: remote, US, senior');
+  assert.deepEqual(
+    filtered.body.rows.map((row) => [row.row, row.company, row.result, row.reason, row.reused]),
+    [
+      [2, 'Acme', 'Pass', '', false],
+      [3, 'Other', 'Pass', '', false],
+    ],
+    'judged on the analysis: remote, US, senior - and answered to the page'
+  );
+  assert.deepEqual(written, [], 'nothing written into the sheet');
 
   // The build of the first posting: the sheet's own text for it, its link.
   const built = await h.post('/resume/preview', { profileId: 'p-claude', jobDescription: `${posting(10)} As the sheet has it.`, jobLink: LINK });
@@ -278,6 +298,7 @@ test('row 10: the Job Filter, then a build of the same posting - one analysis, w
   // And the other way round: a filter after a build reads no page and asks no model.
   const again = await h.post('/jobs/filter-google-sheet', { startRow: 2, endRow: 3 });
   assert.equal(again.body.reusedAnalyses, 2);
+  assert.deepEqual(again.body.rows.map((row) => row.reused), [true, true]);
   assert.equal(fetched, 2, 'no page fetched for a posting already analysed');
   assert.equal(h.seats.analyses().length, 2);
 });

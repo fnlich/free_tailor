@@ -68,7 +68,7 @@ export const SIDEBAR_MAIN: NavItem[] = [
     label: 'Find Jobs',
     icon: 'search',
     external: true,
-    title: "Opens today's tab of your job sheet in a new tab",
+    title: 'Opens the All tab of your job sheet in a new tab',
   },
   { href: '/', label: 'Build Resumes', icon: 'build' },
   { href: '/orders', label: 'Orders', icon: 'orders' },

@@ -3,13 +3,24 @@ import { apiFetch } from './api';
 /**
  * The account's own Google spreadsheet.
  *
- * One spreadsheet per account, one tab per day, named `MM/DD/YYYY`. The backend
- * allocates it in the background at sign-in and again on this read, so the
- * first call after a new account is created can take a few seconds and every
- * one after it is quick.
+ * One spreadsheet per account, with two tabs of the app's: All, first, which
+ * every job page reads and writes unless another is picked, and Temp For AI.
+ * The backend allocates it in the background at sign-in and again on this
+ * read, so the first call after a new account is created can take a few
+ * seconds and every one after it is quick.
  */
 
 export type SheetVisibility = 'public' | 'private';
+
+/**
+ * A tab name the sheet already used for a tab of the person's own (not laid
+ * out as a job tab), which the app therefore left alone instead of making its
+ * All or Temp For AI there - with the sentence the page says it in.
+ */
+export type SheetTabConflict = {
+  tabs: string[];
+  message: string;
+};
 
 export type AccountSheet = {
   /** False when the server has no Google service account key. Not an error. */
@@ -19,14 +30,25 @@ export type AccountSheet = {
   spreadsheetId?: string;
   spreadsheetUrl?: string;
   visibility?: SheetVisibility;
-  /** Today's tab, whether or not this call is what created it. */
-  todayTab: string;
-  /** A link that opens today's tab rather than whichever Google opens first. */
-  todayTabUrl?: string;
+  /** `All`: the tab a job page uses unless another is picked. */
+  defaultTab: string;
+  /** A link that opens All rather than whichever tab Google opens first. Absent while All is not the app's. */
+  defaultTabUrl?: string;
+  /** `Temp For AI`. */
+  tempTab: string;
+  tempTabUrl?: string;
+  /** Present when All or Temp For AI is a tab of the person's own, left alone. */
+  conflict?: SheetTabConflict;
 };
 
 export const sheetApi = {
-  get: () => apiFetch<AccountSheet>('/sheet'),
+  /**
+   * `recheck` asks the server to look at a tab name clash again, so a tab the
+   * person renamed is replaced by the job tab now. Only the Job Sheet page
+   * asks - the shell reads this on every page load, and a look costs Google
+   * reads for as long as the clash stays.
+   */
+  get: (options: { recheck?: boolean } = {}) => apiFetch<AccountSheet>(options.recheck ? '/sheet?recheck=1' : '/sheet'),
   setVisibility: (visibility: SheetVisibility) =>
     apiFetch<{ visibility: SheetVisibility }>('/sheet/visibility', {
       method: 'POST',

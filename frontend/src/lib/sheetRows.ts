@@ -5,9 +5,10 @@
  *
  * Imports nothing at runtime, so the backend suite can test it
  * (backend/test/immediateRunHelpers.test.js, and frontendAnalysis.test.js for
- * the Analysis cell against the server's own reader). Columns arrive here as
- * OFFSETS into the loaded range; turning a typed letter into one is
- * lib/sheet.ts's `parseSpreadsheetColumnInput`, which the panel calls.
+ * the Analysis cell and the columns against the server's own). Columns arrive
+ * here as OFFSETS into the loaded range; turning a letter of
+ * `OWN_SHEET_LAYOUT` into one is lib/sheet.ts's `parseSpreadsheetColumnInput`,
+ * which the panel calls.
  */
 
 /**
@@ -21,24 +22,20 @@
 export type SheetAnalysisState = 'empty' | 'ok' | 'truncated' | 'unparseable';
 
 /**
- * Where the fields sit, per kind of sheet, as the columns a person reads.
+ * Where the fields sit in the account's own sheet, as the columns a person
+ * reads.
  *
- * The account's own sheet is written BY this app, so its columns are known
- * exactly - `NO(DATE)`, `Company`, `Job Title`, `Job Link`, `Job Description`,
- * then columns a build has no use for, then the six the program alone writes
- * (integrations/googleSheets.ts `JOB_SHEET_HEADERS`): Job Field (K), Salary
- * (L), Job Hash, Analyzed At, Lake Status, Analysis (P) - letters
- * backend/test/frontendAnalysis.test.js holds to the server's
- * `JOB_SHEET_COLUMNS`. So B:E covers the job and row 2 is the first after
- * the header, and K:P is read beside it to
- * say which rows already hold their analysis - the protected Analysis cell is
- * what the server itself reads to skip analysing a row. Those three are not
- * editable here: the server reads column P whatever this page says.
- *
- * A saved source is somebody else's spreadsheet and keeps the D:G it always
- * had: a guess, editable under Advanced. It has no analysis columns - the
- * server neither reads nor writes analyses in a sheet it does not own - so its
- * rows are analysed (or found in the store) when built.
+ * The sheet is written BY this app, so its columns are known exactly
+ * (integrations/googleSheets.ts `JOB_SHEET_HEADERS`): `Date`, `NO(DATE)`,
+ * `Company` (C), `Job Title`, `Job Link`, `Job Description` (F), then the six
+ * the program alone writes: Job Field (G), Salary (H), Job Type, Clearance,
+ * Industry, Analysis (L) - letters backend/test/frontendAnalysis.test.js
+ * holds to the server's `JOB_SHEET_COLUMNS`. So C:F covers the job and row 2
+ * is the first after the header, and G:L is read beside it to say which rows
+ * already hold their analysis - the protected Analysis cell is what the
+ * server itself reads to skip analysing a row. None of it is editable on the
+ * page: the server reads these columns whatever a page says, and a sheet of
+ * anybody else's is not one a build may read (owner decision S1).
  */
 export type SheetLayout = {
   fromRow: string;
@@ -57,29 +54,15 @@ export type SheetLayout = {
 export const OWN_SHEET_LAYOUT: SheetLayout = {
   fromRow: '2',
   toRow: '11',
-  fromCol: 'B',
-  toCol: 'E',
-  company: 'B',
-  jobTitle: 'C',
-  jobLink: 'D',
-  jobDescription: 'E',
-  jobField: 'K',
-  salary: 'L',
-  analysis: 'P',
-};
-
-export const SAVED_SOURCE_LAYOUT: SheetLayout = {
-  fromRow: '1',
-  toRow: '10',
-  fromCol: 'D',
-  toCol: 'G',
-  company: 'D',
-  jobTitle: '',
-  jobLink: '',
-  jobDescription: 'G',
-  jobField: '',
-  salary: '',
-  analysis: '',
+  fromCol: 'C',
+  toCol: 'F',
+  company: 'C',
+  jobTitle: 'D',
+  jobLink: 'E',
+  jobDescription: 'F',
+  jobField: 'G',
+  salary: 'H',
+  analysis: 'L',
 };
 
 /** One job read from a sheet row. */
@@ -94,9 +77,8 @@ export type SheetJob = {
    */
   jobLink: string;
   /**
-   * The row's Analysis cell, as the server will read it; null when no
-   * analysis column was read (another sheet than the account's own, whose
-   * cells the server never trusts, or a range that leaves it out).
+   * The row's Analysis cell, as the server will read it; null when the
+   * analysis columns could not be read (the second read is best-effort).
    */
   analysis: SheetAnalysisState | null;
   /** The row's Job Field and Salary cells - written with the Analysis cell - or ''. */
@@ -236,15 +218,15 @@ export function buildSheetJobs(
   });
 
   if (jobs.length === 0) {
-    throw new Error('No jobs were found in those rows. Check the rows and the mapped columns.');
+    throw new Error('No jobs were found in those rows. Each job needs a Company and a Job Description.');
   }
   return { jobs, skippedRows };
 }
 
 /**
  * The loaded rows with a second read's columns put after them, row by row -
- * how the panel joins the account sheet's analysis columns (K:P, read on
- * their own) to the job columns it loaded. Each loaded row is padded to
+ * how the panel joins the account sheet's analysis columns (G:L, read on
+ * their own) to the job columns it loaded (C:F). Each loaded row is padded to
  * `width` first, so the second read's columns sit at `width + n` whatever a
  * short row held. Rows the second read has none for get nothing appended.
  */

@@ -180,12 +180,17 @@ and charged behind the check. Set
 `E2E_OUTPUT_DIR` too: it writes the admin *Output folder* setting at boot, so
 the runs' PDFs land there and not in the repository's `generated/`.
 `stub-sheets.js` adds Google Sheets for `sheet-panel.js` - every account's job
-sheet exists, with an older day's tab, today's and a Notes tab, and rows held
-in memory, today's first row already carrying its six analysis cells (K:P) -
-through the same three seams the unit tests use (the account sheet's client,
-the range reader `POST /api/import` calls, and the analysis columns' client:
-the tab verify, reported intact, the one batched read of a sheet run's rows,
-and the write-back). All three share the rows, so what a run writes back is
+sheet exists, as an upgraded sheet looks: **All** and **Temp For AI** in the
+twelve-column layout (A to F the user's, G to L the analysis's), an older
+build's daily tab in ITS layout (Company in B, sixteen columns), and *Notes*, a
+job tab of the person's own; rows held in memory, All's first row already
+carrying its six analysis cells (G:L) - through the same three seams the unit
+tests use (the account sheet's client - the tab list and the one batched read
+of every tab's row 1 the layouts come from - the range reader `POST
+/api/import` calls, and the analysis columns' client: the tab verify, reported
+intact on a job tab, the one batched read of a sheet run's rows, and the
+write-back, which throws on the old tab) - plus the Job Filter's tab
+inspection and its read of C:E, which the route calls directly. All three share the rows, so what a run writes back is
 what the next *Load rows* shows. `stub-seat.js`'s canned analysis carries a job
 field, a salary and the filter facts. Everything else is the shipping code:
 routes, the analysis gate and its trust rule, the queue, the tab lease, order
@@ -237,25 +242,35 @@ real person sees (README, Troubleshooting) and why the page lists the run's
 files to download again. The handed-over count is the page's promise; the saved
 count only has to be more than nothing.
 
-`sheet-panel.js` — 30 claims. The sheet card has no *Import from Google Sheet*
-button; the Tab select lists every tab in the spreadsheet's order and starts
-on today's, marked *(today)*; nothing can be built before rows are loaded.
-*Load rows* shows a job per row with a company and a description (rows 2, 3
-and 5 of today's tab), a link only where the cell is a web address (not the
+`sheet-panel.js` — 36 claims. The sheet card has no *Import from Google Sheet*
+button, no sheet to choose and no column mapping (the own sheet and its
+columns are the app's); the Tab select lists every tab in the spreadsheet's
+order and starts on **All**, the old daily tab listed as *09/30/2026 (old
+layout, not read)* and disabled - driven to it anyway, the select stays on All
+- with the sentence that says where its rows go; nothing can be built before
+rows are loaded. *Load rows* shows a job per row with a company and a
+description (rows 2, 3 and 5 of All), a link only where the cell is a web
+address (not the
 `javascript:` one), *From the posting* where there is no title, and the count
 of rows skipped; then Order and Generate Immediately, with the run priced. The
 table's Analysis column says *Skips analysis* - with the row's Job Field and
 Salary - for the row whose Analysis cell is filled, and *When built* for the
 others, and the line above it counts them (*1 of 3 already analysed*); a tab
 with nothing in its analysis columns has no row that skips.
-Another tab drops what was loaded and loads its own rows. Order answers with an
+Another tab (*Notes*) drops what was loaded and loads its own rows. Order answers with an
 order number and Cancel on the receipt asks, cancels, and the order reads
 cancelled on Orders; Generate Immediately builds the loaded rows here and
 hands each of their twelve files to the browser once - and, reloaded after it,
 every row says *Skips analysis*: the two it analysed (or found stored) were
-written back. At 390px the loaded table scrolls inside its box rather than
-widening the page. The server's log shows the run's analysis calls (`[e2e
-stub] call N: analyze-job-description`): today's run makes none.
+written back, all six G:L cells. At 390px the loaded table scrolls inside its
+box rather than widening the page. The server's log shows the run's analysis
+calls (`[e2e stub] call N: analyze-job-description`) and each write-back
+(`[e2e stub] wrote the analysis cells 'All'!G3:L3`). Last, the **Job Filter**
+on All lists the same tabs (the old one disabled) and shows each row's
+verdict on the page - *1 pass, 3 not judged*: Today Inc passes on its stored
+analysis with no page fetched, Now LLC's `javascript:` link cannot be opened,
+and the two rows with no link say so - and writes nothing into the sheet (the
+stub answers the filter's tab inspection and its one read of C:E).
 
 ## A second tab, in each dev mode
 
@@ -298,13 +313,15 @@ the scripts to that.
 
 `report-run.js` drives a reporter's run and the administrators' lake in a
 browser. `stub-report-sheets.js` is its Google: every account's job sheet
-exists with an older day's tab, today's and a tab of the reporter's own (*My
-notes*, whose header is not the job sheet's), rows in memory, and the admin
-sheet a list in memory - through the four seams the unit tests use (the account
-sheet's client, the report run's, the analysis columns' and the admin sheet's).
-The first three share the rows, so what a run writes is what the next preview
-reads. `stub-seat.js` answers every analysis as a Backend posting (a SaaS
-company: *Technology*). Today's tab is `report-sheet-rows.js`'s: *Acme Corp*
+exists with **All**, **Temp For AI**, an older build's daily tab in its own
+layout and a tab of the reporter's own (*My notes*, whose header is not the
+job sheet's), rows in memory, and the admin sheet a list in memory - through
+the four seams the unit tests use (the account sheet's client, the report
+run's, the analysis columns' and the admin sheet's). The first three share the
+rows, so what a run writes back (G:L, and nothing else in a row) is what the
+next preview reads. `stub-seat.js` answers every analysis as a Backend posting
+(a SaaS company: *Technology*). All's rows are `report-sheet-rows.js`'s, in the
+twelve-column layout: *Acme Corp*
 (added), *ACME, Inc.* (the same company once normalised, so a duplicate),
 *Globex LLC* (added), *Initech* (reported by this reporter before, and added
 then), a row with no company and one with no description and a `javascript:`
@@ -325,9 +342,11 @@ DB_DIR=/tmp/e2e-db node test/e2e/report-run.js
 
 `report-run.js` — 38 claims, on a fresh database (the stub's rows live in the
 server's memory, so a second run against the same server finds them reported).
-The two earlier reports are on record; Report Jobs opens on today's tab, rows
+The two earlier reports are on record; Report Jobs opens on **All**, rows
 2-501, with the rate per job; Add to job lake waits for a preview; *My notes*
-is refused in the run's own words before anything starts; the preview lists
+and the old daily tab are listed as *(not a job tab)* and *(old layout, not
+read)* and cannot be chosen - driven to *My notes* anyway, the select stays on
+All; the preview lists
 the eight rows, *Initech* as *Reported before (Added) - skipped* and *Hooli*
 as *Reported before (Duplicate) - skipped*, and the `javascript:` link as
 text; the run shows its bar and ends with *2 out of 6 was added, your current

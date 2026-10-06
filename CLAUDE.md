@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~85s with the tsc step, 1642 tests)
+npm test                       # backend node:test suite (~85s with the tsc step, 1664 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack)
 ```
 
@@ -271,10 +271,12 @@ backend/src/
                       #   are described under "Money" below. generation.ts is
                       #   the queue's HTTP side - see services/queue/ below for
                       #   its run kinds, the release route and the per-file
-                      #   download. import.ts's GET /tabs lists an addressable
-                      #   sheet's tabs (`listAddressableSheetTabs`: the
-                      #   resolveAddressableSheet guard, then the sheets
-                      #   client's listSheetTabs) with `defaultTab` = today's;
+                      #   download. import.ts's GET /tabs lists the caller's
+                      #   OWN sheet's tabs (`listAddressableSheetTabs`: the
+                      #   resolveAddressableSheet guard - own sheet only, any
+                      #   other id 404, an admin's too - then one listing and
+                      #   ONE batched read of every tab's row 1), each with
+                      #   `layout` job | blank | other, `defaultTab` All;
                       #   POST / still reads a tab's rows. POST
                       #   /resume/generate (synchronous, admin output
                       #   template, refundable as `charge:`) is KEPT for any
@@ -410,7 +412,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 136 files; fixtures/cli, codex and gemini
+  test/               # node:test, 137 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -599,9 +601,10 @@ frontend/src/
                       #   lib/immediateRun.ts, and the sheet panel's rows
                       #   (components/SheetsSourcePanel) lib/sheetRows.ts, both
                       #   run by test/immediateRunHelpers.test.js; sheetRows.ts
-                      #   also holds the two sheet LAYOUTS and the Analysis
-                      #   cell's states, which test/frontendAnalysis.test.js
-                      #   holds to JOB_SHEET_COLUMNS and parseAnalysisCell. The
+                      #   also holds the own sheet's LAYOUT (C:F, then G, H
+                      #   and L) and the Analysis cell's states, which
+                      #   test/frontendAnalysis.test.js holds to
+                      #   JOB_SHEET_COLUMNS and parseAnalysisCell. The
                       #   multi-profile choices lock on lib/subscriptions.ts
                       #   `canBuildForManyProfiles` (the backend's
                       #   hasSubscription, admins exempt; frontendHelpers.test.js
@@ -1527,37 +1530,115 @@ is refused by name) - never in an ordinary account's payload.
 **The Job Filter** (routes/jobs.ts) makes no model call of its own (J8): a row
 whose link is stored is judged on that analysis with no page fetch; otherwise
 the page is fetched and handed to the gate. The verdict is
-`evaluateJobFilterAnalysis(jobFilterAnalysisOf(analysis))`. The
+`evaluateJobFilterAnalysis(jobFilterAnalysisOf(analysis))`. It runs on the
+caller's own sheet only (the tab named, else All, a job tab only - 409
+`not-job-tab` otherwise), reads C:E once, judges EVERY row with a link and
+answers each to the page (`rows: [{ row, company, title, link, result:
+'Pass'|'Fail'|null, reason, reused, error? }]`), and writes NOTHING into the
+sheet - no verdict, no analysis cell (owner's default). The
 `filter-google-sheet-job` prompt is retired (an edited copy of it is not
 listed), and so are the `AI_*_TIMEOUT_MS_FILTER` budgets.
 
-**The app sheet's six columns** (J5): `JOB_SHEET_HEADERS` ends Job Field,
-Salary, Job Hash, Analyzed At, Lake Status, Analysis (K-P; Job Hash and Lake
-Status are the lake's, written `null` = left alone). Only the app's OWN sheets
-(`isAppOwnedSheet`: allocated to an account) get them; a shared source keeps
-analyses in the database only. They are a protected range over the six whole
-columns, header included, `warningOnly: false`, editors = only the server's
-identity (`getCredentialEmail`: the service account's `client_email`, or Drive
-`about` for a `sheets:login` credential), `domainUsersCanEdit: false` - added
-by `formatJobSheetTab` on a new tab, and checked on every `verifyJobSheetTab`
+**The account's own sheet** (owner decisions S1-S3;
+`services/sheets/accountSheet.ts`). Every job route - Build Resumes' sheet
+mode, the Job Filter, the export, the reporter run, Admin -> Google Sheets -
+reads and writes the caller's OWN spreadsheet and no other
+(`resolveAddressableSheet`: any other id is 404 before Google is asked, an
+administrator's included). The saved "shared" sheets are gone:
+`googleSheetsSources` is in no payload, but stays in the stored settings row,
+unchanged by every save (a stale page sending one is dropped), so a rollback
+finds it. A sheet has two tabs of the app's: **All** (first, the default of
+every route) and **Temp For AI** (second, what Phase 4's push replaces). A new
+sheet is created with All and gets Temp For AI at index 1; a sheet an older
+build made (one `MM/DD/YYYY` tab a day) gets whichever is missing, All at 0
+and Temp at 1 (at 0 while All's name clashes, so the All added once it is
+free lands it second), and its daily tabs are never read, written, re-headed,
+protected or cleared again - they are not job tabs. A tab already called All
+or Temp For AI that is not a job tab is left alone and reported (`conflict: {
+tabs, message }` on the state, logged once when found). Only the Job Sheet
+page looks at a recorded clash again - `GET /api/sheet?recheck=1`
+(`describeAccountSheet`'s `recheck`), so a renamed tab is replaced at its next
+load; every other read, the shell's on every page load included, answers from
+the row, and a look Google refuses falls back to it. It is
+recorded in `users.sheet_layout` (2) with `sheet_all_gid` / `sheet_temp_gid`
+(NULL at layout 2 = that name clashes), added columns; `sheet_tab_date` /
+`sheet_tab_gid` are an older build's and never written, so a rollback resumes
+its daily tabs. Once layout 2 is recorded a sign-in makes NO Google call; a
+verifying ensure (the export) lists the tabs once and puts back a deleted All;
+the boot backfill also lays out sheets below layout 2
+(`listAccountsNeedingSheetLayout`). The state is `{ configured,
+spreadsheetId, spreadsheetUrl, defaultTab, defaultTabUrl, tempTab,
+tempTabUrl, conflict? }`. `sheetDateText` is a day in SHEET_TIMEZONE,
+`sheetDateSerial` / `sheetDateOfCell` its serial number and its reading back.
+
+**The job tab** (`integrations/googleSheets.ts`): twelve columns. A-F are the
+person's - Date, NO(DATE), Company, Job Title, Job Link, Job Description - and
+G-L the program's - Job Field, Salary, Job Type, Clearance, Industry, Analysis
+(`JOB_SHEET_HEADERS` / `JOB_SHEET_COLUMNS`; Rate, note, Job Finder, the
+filter's two and the lake's Job Hash, Analyzed At and Lake Status are gone). A
+tab is a JOB TAB (`isJobSheetTab`) when its row 1 starts with the six user
+headers, or when the WHOLE tab is empty (`inspectJobSheetTab` reads the whole
+tab once more only when row 1 is blank; `empty`) - an empty tab, under any
+name, becomes one the first time it is used. Nothing else ever is: not a tab
+with data under a blank row 1, not an older build's daily tab, not the
+person's own. `verifyJobSheetTab` has NO option to touch any other tab - it
+returns `jobTab: false` and sends nothing - and every caller (the analysis
+columns' read and write-back, the reporter run, `addSheetTabWithHeaders`, the
+export) goes through it. Every row of a job tab is 21 px high with its data
+cells CLIPPED and the Date column formatted as a date (`jobRowLayoutRequests`,
+the header's own format CLIP too): sent on every format, on a conversion, with
+every verify that sends anything, and before every export write.
+`addSheetTabWithHeaders(id, title, { index, existing })` adds a tab at its
+place or verifies the one there (`jobTab: false` = a name clash). The range
+importer (routes/admin.ts, own sheet only) refuses a write touching G-L of a
+job tab, and any write into a column under a protection of the program's
+(`analysisProtectionHit`: our description, or exactly G:L - so an older
+build's K:P too) whatever row 1 says (409 `protected-columns`): the server's
+identity is the protection's only editor, so a write through it could
+otherwise forge a trusted Analysis cell - and row 1 is not protected, so
+deciding on the header alone let A1 be changed, L written and A1 changed
+back. A protected range Google reads back without a `sheetId` is the tab's
+own (it leaves a 0 out - All's gid on every new sheet).
+
+**The export** (`POST /api/jobs/scrapers/export`): own sheet, the tab named or
+All, a job tab only (409 `not-job-tab` before the search runs; an empty tab is
+laid out). After the search, ONE read of A:E gives the duplicate check (a
+company already in the tab is skipped), the first row after the last used one
+and NO(DATE) - 1 + the highest number on rows dated today (in any form
+`sheetDateOfCell` reads). It writes A:F RAW in chunks of 50 - Date as a serial
+number (a real date), NO(DATE), Company, Job Title, Job Link, Job Description -
+never a column the caller names (they are ignored), never G-L; before each
+chunk its rows are read again (A:F) and a row holding anything moves the rest
+below the last used row (409 `sheet-changed` after five tries), and one
+`:batchUpdate` grows the grid when the chunk runs past it and lays the rows
+out. Exports to one tab are serialised in-process. The answer's `export`
+carries `date, firstNo, lastNo, startRow, endRow, updatedRanges, tabUrl`.
+
+**The analysis columns** (G-L, J5): only the app's OWN sheets
+(`isAppOwnedSheet`: allocated to an account) get them, in job tabs. They are a
+protected range over the six whole columns G to L, header included,
+`warningOnly: false`, editors = only the server's identity
+(`getCredentialEmail`: the service account's `client_email`, or Drive `about`
+for a `sheets:login` credential), `domainUsersCanEdit: false` - added by
+`formatJobSheetTab` on a new tab, and checked on every `verifyJobSheetTab`
 (every verifying ensure, every sheet run, every write-back: ONE read of grid
 size, protections and header row, then at most one `:batchUpdate` that
-`appendDimension`s the grid past an older build's twelve columns, rewrites a
-stale header and puts the protection back, logging the repair - and, in that
-same atomic call, CLEARS the Analysis column below the header
-(`analysisClearRequest`; P only, K and L may be an old tab's notes), since it
-was writable meanwhile). A sheet's Analysis cell is trusted only when the
-protection was found INTACT in that run, so every cell ever trusted was
-written by the program under the protection. A sheet run or write-back
-verifies with `onlyJobTabs`: a tab whose row 1 is not the job header (its
-first eight, any build's) and is not an empty `MM/DD/YYYY` tab is the
-person's own (`isJobSheetTab`) - not re-headered, protected, read or written
-(`jobTab: false`). At a sheet
-submission (`sheet: { spreadsheetId?, tabName }` + each job's
+`appendDimension`s the grid to twelve columns, rewrites a stale header and
+puts the protection back, logging the repair - and, in that same atomic call,
+CLEARS the Analysis column below the header (`analysisClearRequest`; L only),
+since it was writable meanwhile). A sheet's Analysis cell is trusted only when
+the protection was found INTACT in that run, so every cell ever trusted was
+written by the program under the protection. A tab that is not a job tab is
+not re-headered, protected, read or written (`jobTab: false`). The values
+(`analysisColumnValues`) are the Job Field label, the salary, the Job Type
+label (Remote, Hybrid, Onsite, or ''), Clearance as a real TRUE/FALSE
+(`clearanceRequiredOf`), the Industry label (`industryOf`, so an analysis from
+before Industry is mapped, never asked again) and the full Analysis cell. At
+a sheet submission (`sheet: { spreadsheetId?, tabName }` + each job's
 `sourceRowNumber`) the rows' Company and Job Link and their six analysis cells
-are read in ONE batched call (`values:batchGetByDataFilter`, B:D and K:P per run
-of consecutive rows); a row that no longer names the job's company (or link) is
-neither read nor written; a cut (`...[cut at 50,000 characters]`) or
+are read in ONE batched call (`values:batchGetByDataFilter`, C:E and G:L per
+run of consecutive rows); a row that no longer names the job's company (or
+link) is neither read nor written; a cut (`...[cut at 50,000 characters]`) or
 unreadable cell falls back to the stored row it names, then the store, then
 the gate, logged with its row. The cell records its posting's keys
 (`{ v, id, posting: { hash, link }, jobField, analysis }`); `cellIsForPosting`
@@ -1566,13 +1647,12 @@ program's cell for ANOTHER posting, is written back once per row and analysis
 (`analysisColumns.ts`'s `queueAnalysisWriteBack`, batched per spreadsheet for
 1.5 s, RAW, after re-reading the rows: skipped, and NOT settled, when moved;
 skipped when the cell already holds this posting's analysis, when it is not
-the program's JSON, or when it is empty but K, L or N hold something - a spare
-column an older build's tab left that somebody typed into; never M or O, the
-lake's own, which it writes before a row has an analysis (a Skipped row) and
-whose write lands when this one failed; a stale program
-cell is replaced whole, Job Hash and Lake Status emptied; `settled` is keyed
-on row + analysis id, and a tab whose protection had to be put back is
-forgotten from it; best-effort, never fails a resume).
+the program's JSON, or when it is empty but G to K hold something other than
+this posting's own facts - typed while the protection was off; a stale
+program cell is replaced whole; `settled` is keyed on row + analysis id, and a
+tab whose protection had to be put back is forgotten from it; best-effort,
+never fails a resume; `WriteBackReport.failedSpreadsheets` names where a write
+failed).
 A deleted analysis model clears the setting.
 
 **The pages** hold an analysis, never send one. The builder keeps the one
@@ -1586,11 +1666,29 @@ a 400 from a request that named it lets it go (`dropsHeldAnalysis`).
 components/AnalysisFacts shows its title, job field label and salary
 (`formatSalary`, a copy of the server's) under the description, in both
 preview dialogs and on Prompt Test, which has no prompt or model select any
-more. The sheet panel sends `sheet: { tabName, spreadsheetId? }` (no id for
-the account's own sheet) and each row's `jobLink`, never a cell; on the own
-sheet it reads K:P in a SECOND, best-effort range read (a tab an older build
-made has a grid that ends at L, and Google refuses a range past it - the rows
-then say *When built*) to show which rows skip analysis. Admin -> Settings ->
+more. The sheet panel sends `sheet: { tabName }` (the account's own sheet,
+the server's default - there is no other) and each row's `jobLink`, never a
+cell; it reads the rows' C:F, then G:L in a SECOND, best-effort range read (a
+job tab narrower than twelve columns refuses a range past its grid - the rows
+then say *When built*) to show which rows skip analysis. It has no sheet
+select and no column mapping. Every page that picks a tab - the panel, Find
+Jobs' export, the Job Filter, Report Jobs - draws the server's listing through
+lib/sheetTabs.ts: `sheetTabOptions` lists a `layout: 'other'` tab DISABLED
+with why (*old layout, not read* for a `MM/DD/YYYY` title, else *not a job
+tab*) and `chosenTab` starts on the server's `defaultTab` (All) and never
+yields an `other` tab, however the select was driven;
+test/frontendJobSheet.test.js runs both against `listAddressableSheetTabs`.
+The note under the select is `unreadTabsNoteFor(tabs)`: `UNREAD_TABS_NOTE`
+(copy an old daily tab's jobs into C to F of All), or, while the tab named
+All is an `other` one (the name clash), `UNREAD_TABS_NOTE_ALL_CLASH`, which
+says to rename or delete it and open Settings > Job Sheet first - never to
+paste into a tab no route reads. Both spell the tab names out on purpose: Next 16.1's
+Turbopack folds an EXPORTED constant built from template literals joined
+with `+` at build time and dropped the middle literal of three, so write such
+a constant as plain string literals. The Job Filter page shows each row's
+verdict (lib/jobFilterDisplay.ts - its reason words are drift-checked against
+services/jobFilter.ts's reasons by the same test) and sends only `{ tabName,
+startRow, endRow? }`. Admin -> Settings ->
 General has the Analysis model select (its own Save; a stored model that
 stopped running stays listed as "cannot run here"); Admin -> Prompts offers no
 New Variant, Duplicate, Save Active or model override for the analysis
@@ -1732,8 +1830,9 @@ refuses `*Milli`. Admin -> Accounts' list carries `globalReportRateMilli`.
 **The reporter run** (`services/jobLake/reportRun.ts`, routes/report.ts under
 `requireReporter`, the caller's OWN sheet only - no spreadsheet id is read from
 any request): inspect the tab (a tab that is not a job tab is refused before it
-is touched), verify it on that same read, read B:E once (the lake's own cells
-are written, never READ), then skip as `already-reported` - "Reported before
+is touched - 409 `not-job-tab`, `notJobTabMessage`, which names All, Temp For
+AI and an empty tab), verify it on that same read, read C:F once (nothing the
+lake did is in the sheet to read), then skip as `already-reported` - "Reported before
 (Added)", `priorOutcome` on the row, not in `total` - each row whose posting is
 STORED (gate's `findStoredAnalysis`, no model) and has this account's
 `job_reports` row, the FIRST row of that posting in the range only; the
@@ -1744,11 +1843,13 @@ task's first analysis); merges in ROW ORDER - a merge answering `already` for a
 posting a row ABOVE already stands for in this run (`seenThisRun`) is shown as
 a red `duplicate`, "The same posting is on a row above." (unclassified when its
 posting is), otherwise as reported before; then `flushAnalysisWriteBacks()`
-FIRST (a stale program cell's replacement empties M and O), then
-`writeLakeStatuses` - one RAW write of M:O per row still holding its posting
-(re-read first; a row reported before gets its first outcome's word) and one
-`repeatCell` batch painting `DUPLICATE_ROW_COLOR` on duplicates and on rows
-whose first outcome was a duplicate. GET /rows answers each row's `reported`,
+FIRST, then `paintDuplicateRows` - the rows' C:E read again, then ONE
+`repeatCell` batch painting `DUPLICATE_ROW_COLOR` (background only) on
+duplicates and on rows whose first outcome was a duplicate, each only while it
+still holds its posting. Nothing is written into a row's cells but its
+analysis columns: there is no Job Hash or Lake Status column any more, and a
+run's rows carry no `lakeStatus`. `sheetUpdated` is false when the run's own
+write-backs or its paint failed. GET /rows answers each row's `reported`,
 `priorOutcome` and `jobHash` from the same database lookup, read-only
 (`findStoredAnalysis(..., { readOnly: true })`), first row of a posting only -
 exactly what a run would skip; it no longer serves `lakeStatus`. In memory, one run

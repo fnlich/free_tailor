@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
-  adminApi,
   ApiResponseError,
   profilesApi,
   groupsApi,
@@ -11,7 +10,6 @@ import {
   DEFAULT_USER_APP_SETTINGS,
   UserAppSettings,
   AiPreferences,
-  GoogleSheetSource,
   isInsufficientCredits,
   normalizeAiPreferences,
   toAiRequestOverrides,
@@ -39,11 +37,7 @@ import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
 import ImmediateRunConfirm from '@/components/ImmediateRunConfirm';
 import ImmediateRunFiles from '@/components/ImmediateRunFiles';
-import SheetsSourcePanel, {
-  type ImportSheetSource,
-  type SheetRunKind,
-  type SheetRunSource,
-} from '@/components/SheetsSourcePanel';
+import SheetsSourcePanel, { type SheetRunKind, type SheetRunSource } from '@/components/SheetsSourcePanel';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import type { SheetJob } from '@/lib/sheetRows';
@@ -125,15 +119,6 @@ const LEAVE_CONFIRM =
 /** Where the multi-profile choices' Premium pill leads, and what it says on hover. */
 const SUBSCRIPTION_PATH = '/settings/subscription';
 const ONE_PROFILE_NOTE = 'Your subscription supports one profile';
-
-/**
- * The id standing for "this account's own job sheet".
- *
- * Not the spreadsheet id: that arrives asynchronously and changes the first
- * time a sheet is allocated, and a selection keyed on it would be dropped the
- * moment it did.
- */
-const OWN_SHEET_SOURCE_ID = 'own';
 
 type UnconfirmedSkill = { original: string; value: string };
 
@@ -310,7 +295,6 @@ export default function Home() {
   // `refresh` re-reads the account after a run, so the balance in the top bar
   // moves when credits are spent or refunded rather than on the next reload.
   const { account, refresh: refreshAccount } = useAuth();
-  const isAdmin = account?.role === 'admin';
   /**
    * Whether this account may build for more than one profile at once:
    * Premium and up, or an administrator (owner decisions B1, B3). Below that,
@@ -339,7 +323,6 @@ export default function Home() {
   const sheetsTargetMode: SheetsTargetMode = manyProfiles ? sheetsTargetChoice : 'single';
   const [selectedSheetsProfileId, setSelectedSheetsProfileId] = useState<string | null>(null);
   const [selectedSheetsGroupId, setSelectedSheetsGroupId] = useState<string>('');
-  const [selectedSheetsSourceId, setSelectedSheetsSourceId] = useState<string>('');
   const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState('');
@@ -347,8 +330,6 @@ export default function Home() {
   const [modelSettings, setModelSettings] = useState<UserAppSettings>(DEFAULT_USER_APP_SETTINGS);
   /** Whether `modelSettings` is the server's answer, rather than the empty stand-in. */
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  /** The administrator's saved sheets, loaded only for an administrator. */
-  const [sharedSheetSources, setSharedSheetSources] = useState<GoogleSheetSource[]>([]);
   /**
    * The quote for the run the page is set up for, tagged with the request it
    * answers so a slow answer to an earlier selection is never shown as the
@@ -587,50 +568,12 @@ export default function Home() {
   });
   const shouldShowRoleInput = modelSettings.outputPathUsesJobTitle;
   /**
-   * Which spreadsheets this account may import from.
-   *
-   * Its own, first and by default - that is the one every account has, and the
-   * only one an ordinary account is allowed to address. The saved sources
-   * belong to the administrator who configured them, so offering them to
-   * everybody sent a user at a spreadsheet the backend would rightly refuse:
-   * "That spreadsheet was not found." They stay, for the administrator, behind
-   * the account's own sheet.
+   * The spreadsheet a sheet run reads: the account's own, and only that
+   * (owner decision S1) - every account has one, and the saved "shared"
+   * sheets an administrator could once pick are gone. Null while there is
+   * none to read (no Google on the server, or not allocated yet).
    */
-  const sheetImportSources = useMemo<ImportSheetSource[]>(() => {
-    const own: ImportSheetSource[] =
-      accountSheet?.configured && accountSheet.spreadsheetId
-        ? [
-            {
-              id: OWN_SHEET_SOURCE_ID,
-              name: 'My job sheet',
-              sheetId: accountSheet.spreadsheetId,
-              isOwnSheet: true,
-              todayTab: accountSheet.todayTab,
-            },
-          ]
-        : [];
-
-    return isAdmin ? [...own, ...sharedSheetSources] : own;
-  }, [accountSheet, isAdmin, sharedSheetSources]);
-
-  /*
-   * The saved sources live in the administrator's settings, which nobody else
-   * may read - so only an administrator's builder asks for them. Never fatal:
-   * the account's own sheet is the import every account has.
-   */
-  useEffect(() => {
-    if (!isAdmin) return;
-    let cancelled = false;
-    adminApi
-      .getSettings()
-      .then((settings) => {
-        if (!cancelled) setSharedSheetSources(settings.googleSheetsSources);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [isAdmin]);
+  const ownSpreadsheetId = accountSheet?.configured && accountSheet.spreadsheetId ? accountSheet.spreadsheetId : null;
 
   /**
    * The profiles a manual run will build for, exactly as the run picks them:
@@ -744,22 +687,12 @@ export default function Home() {
     setError(err ?? fallback);
   };
 
-  const hasImportableSheet = sheetImportSources.length > 0;
+  const hasImportableSheet = ownSpreadsheetId !== null;
   /** Why there is nothing to import from, in the words that fit the reason. */
   const sheetImportNotice =
     accountSheet && !accountSheet.configured
       ? accountSheet.message ?? 'Google Sheets is not set up on this server yet.'
       : 'Your job sheet is not ready yet. Open Settings > Job Sheet and try again.';
-
-  // Keep a sheet selected: the account's own unless the administrator has
-  // deliberately chosen a saved source that is still in the list.
-  useEffect(() => {
-    setSelectedSheetsSourceId((current) =>
-      current && sheetImportSources.some((source) => source.id === current)
-        ? current
-        : sheetImportSources[0]?.id ?? ''
-    );
-  }, [sheetImportSources]);
 
   /**
    * The page's lifetime, and what it hands back when it ends.
@@ -3020,13 +2953,12 @@ export default function Home() {
               </Card>
 
               <SheetsSourcePanel
-                sources={sheetImportSources}
-                selectedSourceId={selectedSheetsSourceId}
-                onSelectSource={setSelectedSheetsSourceId}
+                spreadsheetId={ownSpreadsheetId}
                 busy={isGenerating}
                 onRowsChange={setSheetJobCount}
                 onRun={handleSheetRun}
                 costLine={<CostLine quote={quote} label={sheetJobCount ? 'This run' : 'Each sheet row'} />}
+                unavailableNotice={<p className="text-sm text-muted">There is no job sheet to read rows from yet.</p>}
               />
             </div>
           </div>

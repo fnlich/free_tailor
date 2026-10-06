@@ -625,17 +625,31 @@ const SCHEMA = `
     updated_at    TEXT NOT NULL,
     last_login_at TEXT,
     /*
-     * The account's own Google spreadsheet, and the last date tab prepared in
-     * it. The date is a cache, not a record: it lets a repeat sign-in on the
-     * same day decide it has nothing to do without asking Google. Visibility is
-     * deliberately absent - Drive owns that, and a copy here would go stale the
-     * first time somebody changed the sharing in Google's own UI.
+     * The account's own Google spreadsheet. Visibility is deliberately absent
+     * - Drive owns that, and a copy here would go stale the first time
+     * somebody changed the sharing in Google's own UI.
+     *
+     * sheet_tab_date / sheet_tab_gid are an older build's: the last daily
+     * MM/DD/YYYY tab it prepared. This build never writes them, so an older
+     * build rolled back to finds its own cache as it left it and carries on
+     * with its daily tabs.
+     *
+     * sheet_layout is how far this build has laid the sheet out: NULL (an
+     * older build's sheet, or one whose tabs were never finished) or 2 - its
+     * All and Temp For AI tabs are there, their gids beside it. A gid left
+     * NULL at layout 2 means a tab of that name was already in the sheet and
+     * is not a job tab, so it was left alone (the name clash the Job Sheet
+     * page reports). These are a cache, not a record, like the date was: they
+     * let a sign-in decide it has nothing to do without asking Google.
      */
     sheet_id       TEXT,
     sheet_url      TEXT,
     sheet_tab_date TEXT,
     sheet_tab_gid  TEXT,
     sheet_shared_at TEXT,
+    sheet_layout   INTEGER,
+    sheet_all_gid  TEXT,
+    sheet_temp_gid TEXT,
     /*
      * When this account last opened the notifications panel. NULL means never,
      * which is the correct starting state - a new account genuinely has not
@@ -1105,6 +1119,13 @@ function addMissingColumns(db: Database.Database): void {
     // with the Order button, which is what the default says. `immediate` rows
     // (Generate Immediately) are never listed on /orders.
     { table: 'orders', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'order'" },
+    // How far this build has laid out the account's sheet (All and Temp For
+    // AI) and their gids. In the CREATE TABLE too; NULL on every upgraded
+    // row, which is what makes the next sign-in, or the boot backfill, add
+    // the two tabs to a sheet an older build made.
+    { table: 'users', column: 'sheet_layout', definition: 'INTEGER' },
+    { table: 'users', column: 'sheet_all_gid', definition: 'TEXT' },
+    { table: 'users', column: 'sheet_temp_gid', definition: 'TEXT' },
     // A reporter's own rate per accepted job. NULL, every upgraded row, is
     // "the global rate", which is what every account was paid before there
     // was a per-account one - there was no reporter before it either.

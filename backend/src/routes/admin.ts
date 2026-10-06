@@ -8,8 +8,18 @@ import {
   updateAIModel,
   updateAppSettings,
 } from '../config/aiModelConfig';
-import { fetchGoogleSheetsRange, updateGoogleSheetsRange } from '../integrations/googleSheets';
-import { sendPublicError } from '../middleware/publicError';
+import {
+  ANALYSIS_FIRST_COLUMN,
+  ANALYSIS_LAST_COLUMN,
+  analysisProtectionHit,
+  fetchGoogleSheetsRange,
+  inspectJobSheetTab,
+  isJobSheetTab,
+  toColumnLetters,
+  updateGoogleSheetsRange,
+} from '../integrations/googleSheets';
+import { PublicError, sendPublicError } from '../middleware/publicError';
+import { resolveAddressableSheet } from '../services/sheets/accountSheet';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
@@ -62,9 +72,17 @@ router.post('/browse-output-directory', requireAdmin, async (req: Request, res: 
   }
 });
 
+/**
+ * The range importer (Admin -> Google Sheets): reads and writes a range of
+ * the administrator's OWN job sheet, and no other (owner decision S1 - the
+ * saved shared sheets it used to open are gone). `sheetId` may name that
+ * sheet; any other id is 404, as on every route that takes one.
+ */
 router.post('/google-sheets/range', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const result = await fetchGoogleSheetsRange(req.body ?? {});
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sheetId = await resolveAddressableSheet(req.user!, body.sheetId);
+    const result = await fetchGoogleSheetsRange({ ...body, sheetId } as Parameters<typeof fetchGoogleSheetsRange>[0]);
     res.json(result);
   } catch (error) {
     // Admin-only, so the reader always gets Google's reason as `detail`.
@@ -72,9 +90,61 @@ router.post('/google-sheets/range', requireAdmin, async (req: Request, res: Resp
   }
 });
 
+/**
+ * A column span read exactly as the write reads it (googleSheets.ts
+ * `toPositiveInteger`), or null for anything the write refuses itself, with
+ * its own 400 - so no spelling of a number is a column here and another there.
+ */
+function columnSpan(fromCol: unknown, toCol: unknown): { from: number; to: number } | null {
+  const read = (value: unknown) => (typeof value === 'string' ? Number(value.trim()) : value);
+  const from = read(fromCol);
+  const to = read(toCol);
+  if (typeof from !== 'number' || typeof to !== 'number' || !Number.isInteger(from) || !Number.isInteger(to)) return null;
+  return { from, to };
+}
+
+const PROTECTED_JOB_COLUMNS =
+  'Columns G to L of a job tab are written by the app only (Job Field, Salary, Job Type, Clearance, ' +
+  'Industry, Analysis). Choose a range within columns A to F.';
+
 router.put('/google-sheets/range', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const result = await updateGoogleSheetsRange(req.body ?? {});
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sheetId = await resolveAddressableSheet(req.user!, body.sheetId);
+    /*
+     * Never into the program's analysis columns. The server's identity is the
+     * protection's only editor, so a write through here is the one write a
+     * person could make that the protection would let through - and an
+     * Analysis cell written by it would be trusted by the next build as the
+     * program's own (sheet first). Job Field to Industry are the program's too.
+     *
+     * Decided on the tab's PROTECTION, not on its row 1: row 1 is the
+     * person's, so A1 changed (here, or by hand) makes a job tab "not a job
+     * tab" for exactly as long as it takes to write L under a protection that
+     * never moved, and a verify then finds it intact and trusts the cell. An
+     * older build's daily tab keeps its K:P protection the same way. A job
+     * tab's G-L are refused even before its protection exists - an empty tab
+     * is about to become one. Anything that reaches past F is looked at.
+     */
+    const span = columnSpan(body.fromCol, body.toCol);
+    if (span && span.to >= ANALYSIS_FIRST_COLUMN && typeof body.tabName === 'string' && body.tabName.trim()) {
+      const tabName = body.tabName.trim();
+      const tab = await inspectJobSheetTab(sheetId, tabName);
+      if (isJobSheetTab(tab) && span.from <= ANALYSIS_LAST_COLUMN) {
+        throw new PublicError(PROTECTED_JOB_COLUMNS, { status: 409, code: 'protected-columns' });
+      }
+      const hit = analysisProtectionHit(tab, span.from, span.to);
+      if (hit) {
+        throw new PublicError(
+          hit.fromCol === ANALYSIS_FIRST_COLUMN && hit.toCol === ANALYSIS_LAST_COLUMN
+            ? PROTECTED_JOB_COLUMNS
+            : `Columns ${toColumnLetters(hit.fromCol)} to ${toColumnLetters(hit.toCol)} of "${tabName}" are the ` +
+                "app's protected analysis columns, written by the app only. Choose a range outside them.",
+          { status: 409, code: 'protected-columns' }
+        );
+      }
+    }
+    const result = await updateGoogleSheetsRange({ ...body, sheetId } as Parameters<typeof updateGoogleSheetsRange>[0]);
     res.json(result);
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to update the Google Sheets data');

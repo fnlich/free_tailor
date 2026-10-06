@@ -74,7 +74,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
       try {
         const sheet = await sheetApi.get();
         if (!alive) return;
-        setSheetUrl(sheet.configured ? (sheet.todayTabUrl ?? sheet.spreadsheetUrl ?? '') : '');
+        // The All tab when it is the app's, so the link opens where the job
+        // pages write rather than whichever tab Google shows first.
+        setSheetUrl(sheet.configured ? (sheet.defaultTabUrl ?? sheet.spreadsheetUrl ?? '') : '');
       } catch {
         // No link is the right answer here - one that opens about:blank is
         // worse than none - and that is already the starting state.

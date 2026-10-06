@@ -47,7 +47,7 @@ const rows = loadFrontendModule('lib/sheetRows.ts');
 const facts = require('../dist/services/jobAnalysis/facts');
 const identity = require('../dist/services/jobAnalysis/identity');
 const cells = require('../dist/services/sheets/analysisColumns');
-const { JOB_SHEET_COLUMNS } = require('../dist/integrations/googleSheets');
+const { ANALYSIS_FIRST_COLUMN, ANALYSIS_LAST_COLUMN, JOB_SHEET_COLUMNS } = require('../dist/integrations/googleSheets');
 
 const POSTING = 'Senior backend engineer to build TypeScript services on Postgres for a payments team.';
 
@@ -201,13 +201,15 @@ test("the panel reads the account sheet's columns where the server writes them",
   assert.equal(columnNumber(own.jobField), JOB_SHEET_COLUMNS.jobField);
   assert.equal(columnNumber(own.salary), JOB_SHEET_COLUMNS.salary);
   assert.equal(columnNumber(own.analysis), JOB_SHEET_COLUMNS.analysis);
-  // Read in one second range, so they must be one block in that order.
+  // Read in one second range, G:L - the protected block, Job Field first and
+  // Analysis last - so they must be one block in that order.
   assert.ok(JOB_SHEET_COLUMNS.jobField < JOB_SHEET_COLUMNS.salary && JOB_SHEET_COLUMNS.salary < JOB_SHEET_COLUMNS.analysis);
-
-  // Another spreadsheet has none: the server never reads or writes analyses in a sheet it does not own.
-  assert.equal(rows.SAVED_SOURCE_LAYOUT.analysis, '');
-  assert.equal(rows.SAVED_SOURCE_LAYOUT.jobField, '');
-  assert.equal(rows.SAVED_SOURCE_LAYOUT.salary, '');
+  assert.equal(columnNumber(own.jobField), ANALYSIS_FIRST_COLUMN);
+  assert.equal(columnNumber(own.analysis), ANALYSIS_LAST_COLUMN);
+  // The rows read are the job's own four, C:F - never A and B, which the
+  // export writes and the build has no use for.
+  assert.equal(columnNumber(own.fromCol), JOB_SHEET_COLUMNS.company);
+  assert.equal(columnNumber(own.toCol), JOB_SHEET_COLUMNS.jobDescription);
 });
 
 test("an Analysis cell's state is the server's, for every kind of cell", () => {
@@ -250,10 +252,13 @@ test("an Analysis cell's state is the server's, for every kind of cell", () => {
 
 test('a loaded row says whether its build skips analysis, with the Job Field and Salary the sheet holds', () => {
   const analysed = stored();
-  // K:P as the server writes them (analysisColumnValues): Job Field, Salary,
-  // Job Hash, Analyzed At, Lake Status, Analysis - nulls left empty.
-  const written = cells.analysisColumnValues(analysed).map((value) => value ?? '');
-  // B:E as the panel loads them, then K:P from the second read.
+  // G:L as the server writes them (analysisColumnValues): Job Field, Salary,
+  // Job Type, Clearance, Industry, Analysis - read back FORMATTED, so the
+  // Clearance boolean is the text Google shows.
+  const written = cells.analysisColumnValues(analysed).map((value) =>
+    typeof value === 'boolean' ? (value ? 'TRUE' : 'FALSE') : value ?? ''
+  );
+  // C:F as the panel loads them, then G:L from the second read.
   const jobColumns = [
     ['Acme', 'Backend Engineer', 'https://acme.example/jobs/1', POSTING],
     ['Beta', '', '', `${POSTING} Beta.`],

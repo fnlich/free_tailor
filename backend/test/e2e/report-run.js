@@ -7,12 +7,12 @@
  * HTTP, and test/frontendJobLake.test.js the pages' pure decisions against
  * the server's rules. This proves the pages and the server are joined up:
  *
- *   - a reporter picks today's tab (chosen for them) and the rows, previews
- *     them - the two rows whose postings the database records as reported by
- *     them before are marked skipped, with what became of them then
+ *   - a reporter's tab is All (chosen for them) and the rows, which they
+ *     preview - the two rows whose postings the database records as reported
+ *     by them before are marked skipped, with what became of them then
  *     ("Reported before (Added)", "(Duplicate)"), and a `javascript:` link
- *     typed into the sheet is never an anchor - and a tab of their own is
- *     refused before a run is started
+ *     typed into the sheet is never an anchor - while a tab of their own and
+ *     an older build's daily tab are listed, marked, and cannot be chosen
  *   - "Add to job lake" runs in the background with a progress bar, and ends
  *     with the owner's line, "2 out of 6 was added, your current credit is
  *     $0.1", and every row's outcome - red exactly where the run paints the
@@ -46,7 +46,6 @@ const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
 const settings = require(path.join(DIST, 'services', 'jobLake', 'settings'));
-const { todaySheetTitle } = require(path.join(DIST, 'services', 'sheets', 'accountSheet'));
 const { seedEarlierReports } = require('./report-sheet-rows');
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
@@ -114,7 +113,7 @@ const pillText = () => document.querySelector('.tl-topbar')?.innerText ?? docume
 
 async function main() {
   const stamp = Date.now().toString(36);
-  const today = todaySheetTitle();
+  const all = 'All';
   const admin = users.createUser({ email: `e2e-lake-admin-${stamp}@example.com`, name: 'Lake Admin' });
   users.updateUser(admin.id, { role: 'admin' });
   const reporter = users.createUser({ email: `e2e-lake-reporter-${stamp}@example.com`, name: 'Rita Reporter' });
@@ -151,7 +150,11 @@ async function main() {
     const opened = await page.evaluate(() => ({
       title: document.querySelector('.tl-main h1')?.textContent.trim(),
       tab: document.getElementById('report-tab')?.value,
-      tabs: Array.from(document.getElementById('report-tab')?.options ?? []).map((option) => option.value),
+      tabs: Array.from(document.getElementById('report-tab')?.options ?? []).map((option) => ({
+        value: option.value,
+        text: option.textContent.trim(),
+        disabled: option.disabled,
+      })),
       from: document.getElementById('report-from-row')?.value,
       to: document.getElementById('report-to-row')?.value,
       rate: /per job added\s*\$0\.05(?!\d)/i.test(document.body.innerText),
@@ -159,10 +162,10 @@ async function main() {
       sheetLinks: Array.from(document.querySelectorAll('.tl-main a[target="_blank"]')).map((a) => a.getAttribute('href')),
     }));
     check(
-      'Report Jobs opens on today\'s tab, rows 2 to 501, the rate per job shown, no "later release" note',
+      'Report Jobs opens on All, rows 2 to 501, the rate per job shown, no "later release" note',
       opened.title === 'Report Jobs' &&
-        opened.tab === today &&
-        opened.tabs.length === 3 &&
+        opened.tab === all &&
+        opened.tabs.length === 4 &&
         opened.from === '2' &&
         opened.to === '501' &&
         opened.rate &&
@@ -182,20 +185,23 @@ async function main() {
       })
     );
 
-    // A tab of the reporter's own is refused before a run is started.
-    await page.select('#report-tab', 'My notes');
-    check('Preview rows is pressed on My notes', await pressButton(page, 'Preview rows'));
-    await until(page, () => /is not laid out as a job sheet tab/.test(document.body.innerText), 15_000);
+    // A tab of the reporter's own and an older build's daily tab are listed,
+    // each saying why, and cannot be chosen: their columns are not a job tab's.
     check(
-      'My notes: refused as not a job sheet tab, and Add to job lake stays disabled',
-      await page.evaluate(() => {
-        const button = Array.from(document.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Add to job lake');
-        return Boolean(button?.disabled) && /"My notes" is not laid out as a job sheet tab/.test(document.body.innerText);
-      })
+      'My notes and the old daily tab are listed, marked, and cannot be chosen; Temp For AI can',
+      opened.tabs.map((tab) => `${tab.text}${tab.disabled ? ' [disabled]' : ''}`).join(' | ') ===
+        'All | Temp For AI | 09/30/2026 (old layout, not read) [disabled] | My notes (not a job tab) [disabled]',
+      JSON.stringify(opened.tabs)
+    );
+    await page.select('#report-tab', 'My notes');
+    await wait(300);
+    check(
+      'picked anyway - a select can be driven past its disabled options - the tab is still All',
+      (await page.evaluate(() => document.getElementById('report-tab')?.value)) === all
     );
 
-    await page.select('#report-tab', today);
-    check('Preview rows is pressed on today\'s tab', await pressButton(page, 'Preview rows'));
+    await page.select('#report-tab', all);
+    check('Preview rows is pressed on All', await pressButton(page, 'Preview rows'));
     await until(page, () => /8 rows hold a job/.test(document.body.innerText), 15_000);
     const preview = await readTable(page, 'rows in that range that hold a job');
     const umbrella = preview?.find((row) => row.cells[1] === 'Umbrella');

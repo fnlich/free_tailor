@@ -35,12 +35,15 @@ export interface UserAccount {
   sheetId?: string;
   sheetUrl?: string;
   /**
-   * The last `MM/DD/YYYY` tab prepared in it. A cache of work already done, not
-   * a fact about the spreadsheet - see the column comment in sqlite.ts.
+   * How far this build laid the spreadsheet out (2: its All and Temp For AI
+   * tabs are there). A cache of work already done, not a fact about the
+   * spreadsheet - see the column comment in sqlite.ts.
    */
-  sheetTabDate?: string;
-  /** The gid of that tab, for a link that opens the right day. */
-  sheetTabGid?: string;
+  sheetLayout?: number;
+  /** The All tab's gid, for a link that opens it. Absent at layout 2: the name is a tab that is not a job tab. */
+  sheetAllGid?: string;
+  /** The Temp For AI tab's gid, likewise. */
+  sheetTempGid?: string;
   /**
    * When the owner's own Drive grant was last confirmed. Absent means it never
    * has been, which is what makes sign-in keep retrying it.

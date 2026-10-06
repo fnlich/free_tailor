@@ -2,385 +2,182 @@
 
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
-import { Card, Field, Notice, Page, PageHeader } from '@/components/ui/kit';
+import { Card, ContactAdminFor, ErrorNotice, Field, Notice, Page, PageHeader, Pill } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  parsePositiveWholeNumber,
-  parseSpreadsheetColumnInput,
-  toSpreadsheetColumnLabel,
-  sheetApi,
-  type AccountSheet,
-} from '@/lib/sheet';
-import {
-  adminApi,
-  GoogleSheetJobFilterResponse,
-  GoogleSheetSource,
-  GoogleSheetTab,
-  importApi,
-  jobsApi,
-} from '@/lib/api';
-import { messageWithDetail } from '@/lib/userMessage';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
+import { importApi, jobsApi, type GoogleSheetJobFilterResponse } from '@/lib/api';
+import { chosenTab, hasUnreadTabs, sheetTabOptions, unreadTabsNoteFor, type SheetTabListing } from '@/lib/sheetTabs';
+import { describeFilterCounts, describeFilterRow, readFilterRange } from '@/lib/jobFilterDisplay';
+import { safeJobLink } from '@/lib/sheetRows';
 
-type FilterFormState = {
-  sheetId: string;
-  tabName: string;
-  startRow: string;
-  endRow: string;
-  jobLinkCol: string;
-  resultCol: string;
-  reasonCol: string;
-};
-
-const DEFAULT_FORM: FilterFormState = {
-  sheetId: '',
-  tabName: '',
-  startRow: '2',
-  endRow: '200',
-  jobLinkCol: 'F',
-  resultCol: 'H',
-  reasonCol: 'I',
-};
-
+/**
+ * The Job Filter: a tab of the account's own job sheet (All unless another
+ * job tab is picked - owner decision S1, there is no other sheet), each row
+ * judged on its posting's one analysis, and every verdict shown HERE. Nothing
+ * is written into the sheet: its G to L are the analysis's, and the columns a
+ * verdict used to go in are gone with the old layout.
+ */
 export default function JobFilterPage() {
-  const [sheetSources, setSheetSources] = useState<GoogleSheetSource[]>([]);
-  const [sheetTabs, setSheetTabs] = useState<GoogleSheetTab[]>([]);
-  const [sheetTitle, setSheetTitle] = useState('');
   const { account } = useAuth();
   const isAdmin = account?.role === 'admin';
   const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
-  // Ordinary accounts filter their own sheet and nothing else.
-  const [target, setTarget] = useState<'mine' | 'shared'>('mine');
-  const [form, setForm] = useState<FilterFormState>(DEFAULT_FORM);
+  const [listing, setListing] = useState<SheetTabListing | null>(null);
+  /** The listing's failure, for <ErrorNotice> to word - often "job sheets are not set up". */
+  const [tabsError, setTabsError] = useState<unknown>(null);
+  /** The tab picked by hand; empty means the sheet's default, All. */
+  const [pickedTab, setPickedTab] = useState('');
+  const [startRow, setStartRow] = useState('2');
+  /** Empty: to the last row holding a job, which the server finds. */
+  const [endRow, setEndRow] = useState('');
   const [summary, setSummary] = useState<GoogleSheetJobFilterResponse | null>(null);
-  const [error, setError] = useState('');
+  /** A sentence of the page's own, or a caught failure for <ErrorNotice> to word. */
+  const [error, setError] = useState<unknown>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingTabs, setIsLoadingTabs] = useState(false);
-
-  const setField = <K extends keyof FilterFormState>(field: K, value: FilterFormState[K]) => {
-    setForm((current) => ({ ...current, [field]: value }));
-  };
-
-  /*
-   * The shared sheets are an administrator's, configured under Admin, and only
-   * an administrator may filter one - so only an administrator's page asks for
-   * them, from the admin settings that hold them. Everybody else filters their
-   * own job sheet, which needs no list at all.
-   */
-  useEffect(() => {
-    if (!isAdmin) return;
-    let isMounted = true;
-
-    const loadSettings = async () => {
-      try {
-        const nextSettings = await adminApi.getSettings();
-        if (!isMounted) {
-          return;
-        }
-
-        setSheetSources(nextSettings.googleSheetsSources);
-        setForm((current) => ({
-          ...current,
-          sheetId: current.sheetId.trim() ? current.sheetId : (nextSettings.googleSheetsSources[0]?.sheetId ?? ''),
-        }));
-      } catch (err) {
-        if (!isMounted) {
-          return;
-        }
-
-        setError(messageWithDetail(err, 'Failed to load the shared Google Sheets'));
-      }
-    };
-
-    void loadSettings();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isAdmin]);
 
   useEffect(() => {
+    let alive = true;
     void (async () => {
       try {
-        setAccountSheet(await sheetApi.get());
+        const sheet = await sheetApi.get();
+        if (alive) setAccountSheet(sheet);
       } catch {
-        setAccountSheet(null);
+        // Only the link to the sheet depends on it; the tab list says what is wrong.
       }
     })();
+    void (async () => {
+      try {
+        const answer = await importApi.listTabs();
+        if (alive) setListing({ tabs: answer.tabs ?? [], defaultTab: answer.defaultTab ?? null });
+      } catch (caught) {
+        if (alive) setTabsError(caught ?? new Error('Could not list the tabs of your job sheet.'));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  const handleLoadTabs = async () => {
-    const sheetId = form.sheetId.trim();
-    if (!sheetId) {
-      setError('Select a saved Google Sheet before loading tabs.');
-      return;
-    }
-
-    setIsLoadingTabs(true);
-    setError('');
-
-    try {
-      const response = await importApi.fetchGoogleSheetRange({ sheetId });
-      setSheetTitle(response.spreadsheetTitle);
-      setSheetTabs(response.tabs);
-      setForm((current) => ({
-        ...current,
-        tabName: response.tabs.some((tab) => tab.title === current.tabName) ? current.tabName : (response.tabs[0]?.title ?? ''),
-      }));
-    } catch (err) {
-      setSheetTitle('');
-      setSheetTabs([]);
-      setError(messageWithDetail(err, 'Failed to load Google Sheet tabs'));
-    } finally {
-      setIsLoadingTabs(false);
-    }
-  };
+  const options = sheetTabOptions(listing?.tabs ?? []);
+  const tabName = chosenTab(listing, pickedTab);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const range = readFilterRange({ startRow, endRow });
+    if (!range.ok) {
+      setError(range.error);
+      return;
+    }
+    if (!tabName) {
+      setError('Choose a tab of your job sheet to filter.');
+      return;
+    }
 
+    setIsLoading(true);
+    setError(null);
+    setSummary(null);
     try {
-      // Own sheet: send nothing. The server knows the spreadsheet, today's
-      // tab, which column the job links are in, and that the verdict belongs
-      // in `Filter Result` with its reason in `Filter Reason`. It also decides
-      // the last row, so
-      // "everything in today's tab" needs no arithmetic here.
-      let payload: Parameters<typeof jobsApi.filterGoogleSheetJobs>[0] = {};
-
-      if (target === 'shared') {
-        const startRow = parsePositiveWholeNumber('Start row', form.startRow);
-        const endRow = parsePositiveWholeNumber('End row', form.endRow);
-        const jobLinkCol = parseSpreadsheetColumnInput('Job link column', form.jobLinkCol);
-        const resultCol = parseSpreadsheetColumnInput('Result column', form.resultCol);
-        const reasonCol = parseSpreadsheetColumnInput('Reason column', form.reasonCol);
-
-        // Same reason as the export page: an empty id would resolve to the
-        // caller's own sheet, which is not what "a shared sheet" asked for.
-        if (!form.sheetId.trim()) {
-          throw new Error('Choose a shared Google Sheet, or switch back to your own job sheet.');
-        }
-
-        if (!form.tabName.trim()) {
-          throw new Error('Sheet tab is required.');
-        }
-
-        if (startRow > endRow) {
-          throw new Error('Start row must be less than or equal to end row.');
-        }
-
-        const distinctColumns = [jobLinkCol, resultCol, reasonCol];
-
-        if (new Set(distinctColumns).size !== distinctColumns.length) {
-          throw new Error('Job link and output columns must all be different.');
-        }
-
-        payload = {
-          sheetId: form.sheetId.trim(),
-          tabName: form.tabName.trim(),
-          startRow,
-          endRow,
-          jobLinkCol,
-          resultCol,
-          reasonCol,
-        };
-      }
-
-      setIsLoading(true);
-      setError('');
-      setSummary(null);
-
-      const response = await jobsApi.filterGoogleSheetJobs(payload);
-
-      setSummary(response);
-    } catch (err) {
-      setSummary(null);
-      setError(messageWithDetail(err, 'Failed to filter jobs from Google Sheets'));
+      setSummary(
+        await jobsApi.filterGoogleSheetJobs({
+          tabName,
+          startRow: range.startRow,
+          ...(range.endRow !== undefined ? { endRow: range.endRow } : {}),
+        })
+      );
+    } catch (caught) {
+      setError(caught ?? new Error('Failed to filter the job sheet.'));
     } finally {
       setIsLoading(false);
     }
   };
 
-  const hasSavedSheets = sheetSources.length > 0;
+  const sheetLink = accountSheet?.configured ? accountSheet.defaultTabUrl ?? accountSheet.spreadsheetUrl ?? '' : '';
+  const rows = summary?.rows ?? [];
 
   return (
     <Page>
       <PageHeader
         title="Job Filter"
-        description="Select a sheet and tab, and each job is judged on its posting's one job analysis - fetched from its link and analysed once, or reused when the posting was analysed before - then a final Pass or Fail result is written back to Google Sheets."
+        description="Pick a tab of your job sheet, and each job is judged on its posting's one job analysis - fetched from its link and analysed once, or reused when the posting was analysed before. Every row's Pass or Fail, and why, is shown here."
         actions={
           // What the run leaves behind, beside the title - the same place the
           // balance sits on /credits. `border-l-4` is not one of the dark-mode
           // shim's names; the bare `border-l` is.
           <div className="w-64 border-l-4 border-line pl-4 text-sm">
             <p className="font-semibold text-ink">Result</p>
-            <p className="mt-1 text-muted">Writes `Pass` or `Fail`, plus a fail reason when one applies.</p>
+            <p className="mt-1 text-muted">Pass or Fail for each row, with the reason. Nothing is written into your sheet.</p>
           </div>
         }
       />
 
-      <Card title="Filter Google Sheet Jobs">
+      <Card title="Filter your job sheet">
         <form className="space-y-6" onSubmit={handleSubmit}>
-          {isAdmin && (
-            <div className="tl-card inline-flex flex-wrap gap-1 p-1">
-              {(['mine', 'shared'] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setTarget(option)}
-                  disabled={isLoading}
-                  className="tl-subtab"
-                  data-active={target === option}
-                  aria-pressed={target === option}
+          <Notice tone="neutral">
+            Reads Company, Job Title and Job Link (columns C to E) of the tab you pick in{' '}
+            {sheetLink ? (
+              <a className="tl-link" href={sheetLink} target="_blank" rel="noreferrer">
+                your job sheet
+              </a>
+            ) : (
+              'your job sheet'
+            )}
+            . A row whose posting was analysed before - by a build, a report or an earlier filter - is judged
+            without opening its page.
+          </Notice>
+
+          <ErrorNotice error={tabsError} fallback="The tabs of your job sheet could not be listed" />
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="sm:col-span-2">
+              <Field label="Tab" htmlFor="job-filter-tab">
+                <select
+                  id="job-filter-tab"
+                  value={tabName}
+                  onChange={(event) => setPickedTab(event.target.value)}
+                  className="tl-input"
+                  disabled={isLoading || !tabName}
                 >
-                  {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
-                </button>
-              ))}
+                  {!tabName && (
+                    <option value="">
+                      {!listing && !tabsError ? 'Loading tabs...' : options.length === 0 ? 'No tabs found' : 'No job tab to filter'}
+                    </option>
+                  )}
+                  {/* A tab that is not a job tab - an older build's daily tab, a tab of your own - is listed, not chosen. */}
+                  {options.map((option) => (
+                    <option key={option.title} value={option.title} disabled={!option.usable}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {listing && hasUnreadTabs(listing.tabs) && <p className="mt-2 text-sm text-subtle">{unreadTabsNoteFor(listing.tabs)}</p>}
             </div>
-          )}
 
-          {target === 'mine' ? (
-            <Notice tone="neutral">
-              {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
-                <>
-                  Filters every job on the{' '}
-                  <a
-                    className="tl-link"
-                    href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {accountSheet.todayTab}
-                  </a>{' '}
-                  tab of your job sheet, reading the Job Link column and writing the verdict into
-                  <span className="font-semibold"> Filter Result</span> with its reason in
-                  <span className="font-semibold"> Filter Reason</span>. Your own fields — Rate,
-                  note and Job Finder — are never written to. Rows already judged are skipped.
-                </>
-              ) : (
-                "Filters every job on today's tab of your own job sheet."
-              )}
-            </Notice>
-          ) : (
-          <>
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto] lg:items-end">
-            <Field label="Google Sheet" htmlFor="job-filter-sheet">
-              <select
-                id="job-filter-sheet"
-                value={form.sheetId}
-                onChange={(event) => {
-                  setField('sheetId', event.target.value);
-                  setField('tabName', '');
-                  setSheetTabs([]);
-                  setSheetTitle('');
-                }}
-                className="tl-input"
-                disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
-              >
-                <option value="">
-                  {hasSavedSheets ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
-                </option>
-                {sheetSources.map((source) => (
-                  <option key={source.id} value={source.sheetId}>
-                    {source.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Sheet tab" htmlFor="job-filter-tab">
-              <select
-                id="job-filter-tab"
-                value={form.tabName}
-                onChange={(event) => setField('tabName', event.target.value)}
-                className="tl-input"
-                disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
-              >
-                <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
-                {sheetTabs.map((tab) => (
-                  <option key={tab.sheetId} value={tab.title}>
-                    {tab.title}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <button
-              type="button"
-              onClick={handleLoadTabs}
-              disabled={isLoading || isLoadingTabs || !form.sheetId.trim()}
-              className="tl-button-quiet w-full lg:w-auto"
-            >
-              {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
-            </button>
-          </div>
-
-          {sheetTitle && (
-            <Notice tone="success">
-              Connected to <span className="font-semibold">{sheetTitle}</span>.
-            </Notice>
-          )}
-
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <Field label="Start row" htmlFor="job-filter-start-row">
+            <Field label="From row" htmlFor="job-filter-start-row">
+              {/* Text, not a number box: a number box hands over what the browser made of the keys. */}
               <input
                 id="job-filter-start-row"
-                type="number"
-                min={1}
-                step={1}
-                value={form.startRow}
-                onChange={(event) => setField('startRow', event.target.value)}
-                className="tl-input"
+                type="text"
+                inputMode="numeric"
+                value={startRow}
+                onChange={(event) => setStartRow(event.target.value)}
+                className="tl-input tabular-nums"
                 disabled={isLoading}
               />
             </Field>
 
-            <Field label="End row" htmlFor="job-filter-end-row">
+            <Field label="To row" htmlFor="job-filter-end-row" hint="Empty for every row.">
               <input
                 id="job-filter-end-row"
-                type="number"
-                min={1}
-                step={1}
-                value={form.endRow}
-                onChange={(event) => setField('endRow', event.target.value)}
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Job link column" htmlFor="job-filter-link-col">
-              <input
-                id="job-filter-link-col"
                 type="text"
-                value={form.jobLinkCol}
-                onChange={(event) => setField('jobLinkCol', event.target.value.toUpperCase())}
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Result column" htmlFor="job-filter-result-col">
-              <input
-                id="job-filter-result-col"
-                type="text"
-                value={form.resultCol}
-                onChange={(event) => setField('resultCol', event.target.value.toUpperCase())}
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Reason column" htmlFor="job-filter-reason-col">
-              <input
-                id="job-filter-reason-col"
-                type="text"
-                value={form.reasonCol}
-                onChange={(event) => setField('reasonCol', event.target.value.toUpperCase())}
-                className="tl-input"
+                inputMode="numeric"
+                value={endRow}
+                placeholder="Last row"
+                onChange={(event) => setEndRow(event.target.value)}
+                className="tl-input tabular-nums"
                 disabled={isLoading}
               />
             </Field>
           </div>
-          </>
-          )}
 
           {/*
             Where the analysis is decided is for the person who can change it.
@@ -406,35 +203,16 @@ export default function JobFilterPage() {
           )}
 
           <div className="flex flex-wrap gap-3">
-            <button
-              type="submit"
-              // Gated on the shared source ONLY when that is what was chosen.
-              // Gating it always made the ordinary path - your own sheet, which
-              // needs no configuration at all - impossible to run on an install
-              // where no administrator had ever saved a shared sheet.
-              disabled={isLoading || (target === 'shared' && !hasSavedSheets)}
-              className="tl-button"
-            >
+            <button type="submit" disabled={isLoading || !tabName} className="tl-button">
               {isLoading ? 'Filtering jobs...' : 'Run job filter'}
             </button>
           </div>
         </form>
 
-        {error && (
-          <Notice tone="error" className="mt-4">
-            {error}
-          </Notice>
-        )}
-
-        {/* Only where a shared sheet was asked for: the own-sheet path needs none. */}
-        {isAdmin && target === 'shared' && !hasSavedSheets && (
-          <Notice tone="warn" className="mt-4">
-            Save at least one Google Sheet in the Admin Google Sheets panel before using this filter.
-          </Notice>
-        )}
+        <ErrorNotice error={error} fallback="Failed to filter the job sheet" className="mt-4" onDismiss={() => setError(null)} />
       </Card>
 
-      {summary && !error && (
+      {summary && (
         <div className="mt-8">
           <Card
             title={
@@ -454,13 +232,9 @@ export default function JobFilterPage() {
                   // Judged on an analysis the posting already had, found by
                   // its link: no page fetched and no model asked.
                   ['Already analysed', summary.reusedAnalyses ?? 0],
-                  ['Skipped rows', summary.skippedRows],
+                  ['Rows without a link', summary.skippedRows],
                   ['Rows with errors', summary.errorRows],
-                  ['Job link column', toSpreadsheetColumnLabel(summary.jobLinkCol)],
-                  ['Result column', toSpreadsheetColumnLabel(summary.resultCol)],
-                  ['Reason column', toSpreadsheetColumnLabel(summary.reasonCol)],
-                  ['Rows', `${summary.startRow} to ${summary.endRow}`],
-                  ['Updated ranges', summary.updatedRanges.join(', ')],
+                  ['Rows', summary.endRow >= summary.startRow ? `${summary.startRow} to ${summary.endRow}` : 'None'],
                 ] as const
               ).map(([label, value]) => (
                 <div key={label} className="min-w-0">
@@ -470,28 +244,75 @@ export default function JobFilterPage() {
               ))}
             </dl>
 
-            {summary.rowErrors.length > 0 && (
-              // Colours on a .tl-table cell go on an inner span - the unlayered
-              // `td` rule beats a utility on the cell itself.
-              <div className="tl-table-box mt-6">
-                <table className="tl-table">
-                  <thead>
-                    <tr>
-                      <th scope="col" className="w-24">Row</th>
-                      <th scope="col">Error</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.rowErrors.map((item) => (
-                      <tr key={`${item.row}-${item.message}`}>
-                        <td>
-                          <span className="tabular-nums text-ink">{item.row}</span>
-                        </td>
-                        <td>{item.message}</td>
+            {summary.message && (
+              <Notice tone="neutral" className="mt-6">
+                {summary.message}
+              </Notice>
+            )}
+
+            {rows.length > 0 && (
+              <div className="mt-6 space-y-3">
+                <p className="text-sm text-muted" data-testid="filter-counts">
+                  {describeFilterCounts(rows)}.
+                </p>
+                {/*
+                  Colours on a .tl-table cell go on an inner span - the
+                  unlayered `td` rule beats a utility on the cell itself.
+                */}
+                <div className="tl-table-box">
+                  <table className="tl-table">
+                    <caption className="sr-only">Each row&apos;s verdict</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col" className="w-16">Row</th>
+                        <th scope="col">Company</th>
+                        <th scope="col">Job title</th>
+                        <th scope="col">Link</th>
+                        <th scope="col">Result</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {rows.map((row) => {
+                        const note = describeFilterRow(row);
+                        const link = safeJobLink(row.link);
+                        return (
+                          <tr key={row.row}>
+                            <td>
+                              <span className="tabular-nums text-ink">{row.row}</span>
+                            </td>
+                            <td className="min-w-32">
+                              <span className="break-words">{row.company || '-'}</span>
+                            </td>
+                            <td className="min-w-32">
+                              <span className="break-words">{row.title || '-'}</span>
+                            </td>
+                            <td className="max-w-56">
+                              {link ? (
+                                <a href={link} target="_blank" rel="noopener noreferrer" className="tl-link block truncate" title={link}>
+                                  {new URL(link).hostname}
+                                </a>
+                              ) : (
+                                <span className="text-subtle">-</span>
+                              )}
+                            </td>
+                            <td className="min-w-48">
+                              <span className="flex flex-col items-start gap-1" title={row.result === 'Fail' ? row.reason : undefined}>
+                                <Pill tone={note.tone}>{note.label}</Pill>
+                                {note.detail && (
+                                  <span className="break-words text-xs text-muted">
+                                    {note.detail}
+                                    {/* A row that failed says the server's sentence, which may ask for an administrator. */}
+                                    {row.error && <ContactAdminFor text={row.error} />}
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </Card>

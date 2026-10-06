@@ -53,15 +53,20 @@ function fail(req: Request, res: Response, error: unknown): void {
  * Allocation happens in the background at sign-in, so most of the time this is
  * a read. Doing it here too is what covers the account whose sign-in ran while
  * Google was down, and the one that predates the feature entirely.
+ *
+ * `?recheck=1` - sent by the Job Sheet page alone - looks at a recorded tab
+ * name clash again (`describeAccountSheet`); without it a clash is reported
+ * from the stored row, since the shell asks this on every page load.
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const state = await describeAccountSheet(req.user!);
+    const state = await describeAccountSheet(req.user!, { recheck: req.query.recheck === '1' });
     if (!state.configured) {
       res.json({
         configured: false,
         message: isAdmin(req) ? NOT_CONFIGURED_ADMIN : NOT_CONFIGURED,
-        todayTab: state.todayTab,
+        defaultTab: state.defaultTab,
+        tempTab: state.tempTab,
       });
       return;
     }

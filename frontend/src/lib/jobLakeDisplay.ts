@@ -136,7 +136,7 @@ export function describePriorOutcome(outcome: JobReportOutcome | null | undefine
 /**
  * What the preview says about one row before a run: skipped as reported
  * before, with what became of its posting then - the server's record of what
- * this reporter reported, never the row's Lake Status - or the gap a run will
+ * this reporter reported, never anything in the sheet - or the gap a run will
  * trip on: no company, no description. Only `reported` is a promise; the gaps
  * are what to fix in the sheet first.
  */
@@ -155,13 +155,14 @@ export function describePreviewRow(
 }
 
 /**
- * The server's refusal of a tab that is not one of the job sheet's own (a
- * tab the reporter keeps notes on): the run's words
+ * The server's refusal of a tab that is not a job tab (a tab the reporter
+ * keeps notes on, or a daily tab an older build made in other columns): the
+ * run's words
  * (services/jobLake/reportRun.ts), said by the preview before a run is
  * started, so the two never disagree about the same tab.
  */
 export function notJobTabMessage(tabName: string): string {
-  return `"${tabName}" is not laid out as a job sheet tab, so it cannot be reported from. Choose one of the dated tabs of your job sheet.`;
+  return `"${tabName}" is not laid out as a job sheet tab, so it cannot be reported from. Choose All or Temp For AI, or an empty tab, which is laid out as one the first time it is used.`;
 }
 
 /**

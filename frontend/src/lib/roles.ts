@@ -114,7 +114,7 @@ export function canOpenReportJobs(role: unknown): boolean {
 
 /**
  * The link to a reporter's own job sheet, for their account menu: the shell's
- * read of /sheet when it has arrived (it opens today's tab), else the
+ * read of /sheet when it has arrived (it opens the All tab), else the
  * spreadsheet the session already names - but only as an https address, so a
  * value that is not one is no link rather than a link somewhere else.
  */

@@ -33,7 +33,7 @@ import { ensureAccountSheet, listAddressableSheetTabs } from '../services/sheets
  * caller's own sheet, as /api/sheet does - the reporter picks a TAB and rows.
  *
  *   GET  /            what the page opens on: the sheet, the rate in effect, today's earnings, the latest run
- *   GET  /tabs        the sheet's tabs, today's first
+ *   GET  /tabs        the sheet's tabs, each with its layout; All the default
  *   GET  /rows        ?tab=&from=&to= - the rows, and which this account reported before (and what became of them)
  *   POST /runs        { tabName, fromRow, toRow } -> 202 { run }: the background run
  *   GET  /runs/current  the latest run, or null
@@ -57,8 +57,11 @@ router.get('/', async (req: Request, res: Response) => {
           configured: true,
           spreadsheetId: state.spreadsheetId ?? null,
           spreadsheetUrl: state.spreadsheetUrl ?? null,
-          todayTab: state.todayTab,
-          todayTabUrl: state.todayTabUrl ?? null,
+          defaultTab: state.defaultTab,
+          defaultTabUrl: state.defaultTabUrl ?? null,
+          tempTab: state.tempTab,
+          tempTabUrl: state.tempTabUrl ?? null,
+          conflict: state.conflict ?? null,
         }
       : {
           configured: false,
@@ -87,7 +90,7 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/tabs', async (req: Request, res: Response) => {
   try {
     // Undefined: the caller's own spreadsheet, and only that.
-    res.json(await listAddressableSheetTabs(req.user!, undefined, []));
+    res.json(await listAddressableSheetTabs(req.user!, undefined));
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to list the tabs of your job sheet');
   }

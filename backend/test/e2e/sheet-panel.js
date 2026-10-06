@@ -2,12 +2,16 @@
  * The builder's sheet mode, in a real browser: the inline panel that replaced
  * the "Import from Google Sheet" dialog.
  *
- * Google is stubbed (stub-sheets.js: three tabs, canned rows) and so is the
+ * Google is stubbed (stub-sheets.js: four tabs, canned rows) and so is the
  * seat (stub-seat.js); the routes, the account-sheet checks, the queue, the
  * order rows and the files are the shipping code. It checks what the owner
  * asked for:
  *
- *   - the Tab select is on the page, lists EVERY tab, and starts on today's
+ *   - the account's own sheet is the only one: there is no sheet to choose,
+ *     and no column mapping
+ *   - the Tab select is on the page, lists EVERY tab, and starts on All; an
+ *     older build's daily tab is listed, marked as an old layout that is not
+ *     read, and cannot be chosen
  *   - Load rows shows the jobs found - company, title, a link only when it is
  *     a web address - and counts the rows skipped, before anything is built
  *   - another tab is another set of rows, loaded again
@@ -15,9 +19,11 @@
  *   - Generate Immediately builds the loaded rows here and hands every file
  *     to the browser once
  *   - the Analysis column says which rows already hold their analysis (the
- *     protected Analysis cell, K:P read beside the job columns) and so skip
+ *     protected Analysis cell, G:L read beside the job columns C:F) and so skip
  *     analysis, with the Job Field and Salary the row shows; and once a
  *     build has analysed the others, they are written back and say so too
+ *   - the Job Filter, on the same tab, shows every row's Pass, Fail or why it
+ *     was not judged on the page, and writes nothing into the sheet
  *   - all of it on the Default subscription, and without a horizontal
  *     scrollbar at 390px
  *
@@ -36,7 +42,6 @@ require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
 const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
 const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
-const { todaySheetTitle } = require(path.join(DIST, 'services', 'sheets', 'accountSheet'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -83,7 +88,11 @@ async function readTabs(page) {
     return {
       disabled: select.disabled,
       value: select.value,
-      options: Array.from(select.options).map((option) => ({ value: option.value, text: option.textContent.trim() })),
+      options: Array.from(select.options).map((option) => ({
+        value: option.value,
+        text: option.textContent.trim(),
+        disabled: option.disabled,
+      })),
     };
   });
 }
@@ -116,7 +125,7 @@ async function readPreview(page) {
 
 async function main() {
   const stamp = Date.now().toString(36);
-  const today = todaySheetTitle();
+  const all = 'All';
   const user = users.createUser({ email: `e2e-sheet-${stamp}@example.com`, name: 'Sheet User' });
   const profileId = `p-sheet-${stamp}`;
   saveProfile({
@@ -196,14 +205,32 @@ async function main() {
     const tabs = await readTabs(page);
     check(
       'the Tab select lists every tab of the sheet, in its order',
-      Boolean(tabs) && tabs.options.map((option) => option.value).join(' | ') === `${OLDER_TAB} | ${today} | Notes`,
+      Boolean(tabs) && tabs.options.map((option) => option.value).join(' | ') === `All | Temp For AI | ${OLDER_TAB} | Notes`,
       JSON.stringify(tabs)
     );
+    check('it starts on All', tabs?.value === all, JSON.stringify(tabs));
+    const olderOption = tabs?.options.find((option) => option.value === OLDER_TAB);
     check(
-      "it starts on today's tab, marked as today",
-      tabs?.value === today && tabs.options.some((option) => option.value === today && /\(today\)/.test(option.text)),
-      JSON.stringify(tabs)
+      "an older build's daily tab is listed as an old layout that is not read, and cannot be chosen",
+      Boolean(olderOption) && olderOption.disabled && olderOption.text === `${OLDER_TAB} (old layout, not read)` &&
+        tabs.options.filter((option) => option.disabled).length === 1,
+      JSON.stringify(tabs?.options)
     );
+    const sheetChrome = await page.evaluate(() => ({
+      sheetSelect: Boolean(document.getElementById('sheet-source')),
+      advanced: Array.from(document.querySelectorAll('button')).some((b) => /Advanced columns/i.test(b.textContent)),
+      columnInputs: Boolean(document.getElementById('sheet-from-col') || document.getElementById('sheet-col-company')),
+      note: /Tabs that are not laid out as job tabs .* are listed but not read/.test(document.body.innerText),
+    }));
+    check(
+      'no sheet to choose and no column mapping: the own sheet and its columns are the app\'s; the page says why a tab is not read',
+      !sheetChrome.sheetSelect && !sheetChrome.advanced && !sheetChrome.columnInputs && sheetChrome.note,
+      JSON.stringify(sheetChrome)
+    );
+    // Picked anyway - a select can be driven past its disabled options - it is still All.
+    await page.select('#sheet-tab', OLDER_TAB);
+    await wait(300);
+    check('choosing the old tab anyway leaves All chosen', (await readTabs(page))?.value === all, JSON.stringify(await readTabs(page)));
     const importButton = await page.evaluate(() =>
       Array.from(document.querySelectorAll('button')).some((b) => /Import from Google Sheet/i.test(b.textContent))
     );
@@ -217,7 +244,7 @@ async function main() {
     const loaded = await readPreview(page);
     const companies = (loaded.rows ?? []).map((cells) => cells[1]?.text);
     check(
-      "today's rows are shown before anything is built: a job per row with a company and a description",
+      "All's rows are shown before anything is built: a job per row with a company and a description",
       companies.join(' | ') === 'Today Inc | Now LLC | Current Co' &&
         (loaded.rows ?? []).map((cells) => cells[0]?.text).join(',') === '2,3,5',
       JSON.stringify(loaded.rows)
@@ -261,7 +288,7 @@ async function main() {
     await page.screenshot({ path: `${SHOTS}/sheet-1-loaded.png`, fullPage: true });
 
     // Another tab is another set of rows: what was loaded goes, and is loaded again.
-    await page.select('#sheet-tab', OLDER_TAB);
+    await page.select('#sheet-tab', 'Notes');
     await wait(300);
     const switched = await readPreview(page);
     check('choosing another tab drops the rows loaded from the last one', switched.rows === null && switched.actions.length === 0, JSON.stringify(switched));
@@ -306,7 +333,7 @@ async function main() {
     );
 
     /* ------------------------------------------- Generate Immediately, from rows */
-    await page.select('#sheet-tab', today);
+    await page.select('#sheet-tab', all);
     await wait(300);
     await pressButton(page, 'Load rows');
     await until(page, () => Boolean(document.querySelector('table caption')), 10_000);
@@ -326,7 +353,8 @@ async function main() {
 
     // The two rows that had no analysis are written back once their posting
     // is analysed (or found stored), batched a moment after the run starts -
-    // so the next load of the same rows finds every one analysed.
+    // into their G:L, all six cells - so the next load of the same rows finds
+    // every one analysed.
     await wait(2500);
     check('Reload rows is pressed', await pressButton(page, 'Reload rows'));
     await until(
@@ -342,6 +370,53 @@ async function main() {
         /^3 of 3 already analysed in the sheet/.test(reloaded.analysisLine ?? ''),
       JSON.stringify([reloaded.rows?.map((cells) => cells[4]?.text), reloaded.analysisLine])
     );
+
+    /* ------------------------------------------- the Job Filter, same tab */
+    // The filter reads All's C:E and shows every verdict on the page - it
+    // writes nothing into the sheet. Today Inc's posting is analysed (its
+    // cell, then this build): judged with no page fetch. Now LLC's link is
+    // not a web address, so its page cannot be opened; the two rows with no
+    // link are listed, not judged.
+    await page.goto(`${APP}/jobs/filter`, { waitUntil: 'networkidle2' });
+    await until(page, () => document.getElementById('job-filter-tab')?.value === 'All', 15_000);
+    const filterTabs = await page.evaluate(() =>
+      Array.from(document.getElementById('job-filter-tab')?.options ?? []).map((option) => `${option.textContent.trim()}${option.disabled ? ' [disabled]' : ''}`)
+    );
+    check(
+      'the Job Filter lists the same tabs, starts on All, and the old daily tab cannot be chosen',
+      filterTabs.join(' | ') === `All | Temp For AI | ${OLDER_TAB} (old layout, not read) [disabled] | Notes`,
+      JSON.stringify(filterTabs)
+    );
+    check('Run job filter is pressed', await pressButton(page, 'Run job filter'));
+    await until(page, () => Boolean(document.querySelector('[data-testid="filter-counts"]')), 30_000);
+    const verdicts = await page.evaluate(() => ({
+      counts: document.querySelector('[data-testid="filter-counts"]')?.textContent.trim() ?? null,
+      rows: Array.from(document.querySelectorAll('table tbody tr')).map((tr) =>
+        Array.from(tr.querySelectorAll('td')).map((td) => td.innerText.replace(/\s+/g, ' ').trim())
+      ),
+      written: /Nothing is written into your sheet/.test(document.body.innerText),
+    }));
+    check(
+      "the Job Filter shows each row's verdict and why, on the page",
+      verdicts.counts === '1 pass, 3 not judged.' &&
+        verdicts.rows.map((cells) => `${cells[0]}:${cells[1]}:${cells[4]}`).join(' | ') ===
+          [
+            '2:Today Inc:Pass',
+            '3:Now LLC:Not judged Job link must be an absolute http(s) URL.',
+            '4:-:Not judged The row has no job link to read.',
+            '5:Current Co:Not judged The row has no job link to read.',
+          ].join(' | ') &&
+        verdicts.written,
+      JSON.stringify(verdicts)
+    );
+    await page.screenshot({ path: `${SHOTS}/sheet-5-filter.png`, fullPage: true });
+    await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
+    await page.evaluate(() => {
+      Array.from(document.querySelectorAll('button')).find((b) => b.textContent.includes('Building Automatically from Google Sheet'))?.click();
+    });
+    await until(page, () => document.getElementById('sheet-tab')?.value === 'All', 15_000);
+    await pressButton(page, 'Load rows');
+    await until(page, () => Boolean(document.querySelector('table caption')), 10_000);
 
     /* ------------------------------------------------------------------ 390 */
     await page.setViewport(PHONE);

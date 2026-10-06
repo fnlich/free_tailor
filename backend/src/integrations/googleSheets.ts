@@ -400,64 +400,6 @@ export type GoogleSheetsUpdateRangeResponse = {
   updatedCells: number;
 };
 
-export type GoogleSheetsColumnValuesUpdate = {
-  col?: unknown;
-  values?: unknown;
-};
-
-export type GoogleSheetsBatchColumnUpdateRequest = {
-  sheetId?: unknown;
-  tabName?: unknown;
-  startRow?: unknown;
-  updates?: unknown;
-};
-
-export type GoogleSheetsBatchColumnUpdateResponse = {
-  spreadsheetId: string;
-  spreadsheetTitle: string;
-  selectedTab: string;
-  updatedRanges: string[];
-  updatedRows: number;
-  updatedColumns: number;
-  updatedCells: number;
-};
-
-export type GoogleSheetsSingleRowCellUpdate = {
-  col?: unknown;
-  value?: unknown;
-};
-
-export type GoogleSheetsSingleRowUpdateRequest = {
-  sheetId?: unknown;
-  tabName?: unknown;
-  row?: unknown;
-  updates?: unknown;
-};
-
-export type GoogleSheetsSingleRowUpdateResponse = {
-  spreadsheetId: string;
-  spreadsheetTitle: string;
-  selectedTab: string;
-  row: number;
-  updatedRanges: string[];
-  updatedColumns: number;
-  updatedCells: number;
-};
-
-export type GoogleSheetsColumnValuesRequest = {
-  sheetId?: unknown;
-  tabName?: unknown;
-  col?: unknown;
-};
-
-export type GoogleSheetsColumnValuesResponse = {
-  spreadsheetId: string;
-  spreadsheetTitle: string;
-  selectedTab: string;
-  column: number;
-  values: string[];
-};
-
 type CachedAccessToken = {
   token: string;
   expiresAt: number;
@@ -470,17 +412,6 @@ type GoogleSheetsUpdateValuesResponse = {
   updatedCells?: number;
 };
 
-type GoogleSheetsBatchUpdateValuesResponse = {
-  totalUpdatedRows?: number;
-  totalUpdatedColumns?: number;
-  totalUpdatedCells?: number;
-  responses?: Array<{
-    updatedRange?: string;
-    updatedRows?: number;
-    updatedColumns?: number;
-    updatedCells?: number;
-  }>;
-};
 
 /**
  * One entry per scope. Keyed rather than single, because the Sheets token and
@@ -1414,26 +1345,6 @@ function normalizeUpdateValues(
   });
 }
 
-function normalizeColumnUpdateValues(values: unknown): string[] {
-  if (!Array.isArray(values)) {
-    throw new GoogleSheetsRequestError(400, 'Column update values must be an array.');
-  }
-
-  return values.map((value) => {
-    if (value === null || value === undefined) return '';
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-    throw new GoogleSheetsRequestError(400, 'Column update values must contain only strings, numbers, booleans, or empty cells.');
-  });
-}
-
-function normalizeSingleCellValue(fieldName: string, value: unknown): string {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  throw new GoogleSheetsRequestError(400, `${fieldName} must be a string, number, boolean, or empty value.`);
-}
-
 async function getSpreadsheetMetadata(sheetId: string): Promise<GoogleSheetsRangeResponse> {
   const metadata = await googleSheetsFetch<SpreadsheetMetadataResponse>(
     `/spreadsheets/${encodeURIComponent(sheetId)}?fields=spreadsheetId,properties(title),sheets(properties(title,sheetId,index))`
@@ -1580,220 +1491,45 @@ export async function updateGoogleSheetsRange(input: GoogleSheetsUpdateRangeRequ
   };
 }
 
-export async function batchUpdateGoogleSheetsColumns(
-  input: GoogleSheetsBatchColumnUpdateRequest
-): Promise<GoogleSheetsBatchColumnUpdateResponse> {
-  const sheetId = requireNonEmptyString('sheetId', input.sheetId);
-  const metadata = await getSpreadsheetMetadata(sheetId);
-  const tabName = requireNonEmptyString('tabName', input.tabName);
-  const startRow = toPositiveInteger('startRow', input.startRow);
-
-  const matchingTab = metadata.tabs.find((tab) => tab.title === tabName);
-  if (!matchingTab) {
-    throw new GoogleSheetsRequestError(400, `Tab "${tabName}" was not found in the spreadsheet.`);
-  }
-
-  if (!Array.isArray(input.updates) || input.updates.length === 0) {
-    throw new GoogleSheetsRequestError(400, 'updates must contain at least one column update.');
-  }
-
-  const normalizedUpdates = input.updates.map((entry, index) => {
-    if (!entry || typeof entry !== 'object') {
-      throw new GoogleSheetsRequestError(400, `updates[${index + 1}] must be an object.`);
-    }
-
-    const typedEntry = entry as GoogleSheetsColumnValuesUpdate;
-    const col = toPositiveInteger(`updates[${index + 1}].col`, typedEntry.col);
-    const values = normalizeColumnUpdateValues(typedEntry.values);
-
-    return { col, values };
-  });
-
-  const rowCount = Math.max(...normalizedUpdates.map((entry) => entry.values.length), 0);
-  if (rowCount === 0) {
-    return {
-      spreadsheetId: metadata.spreadsheetId,
-      spreadsheetTitle: metadata.spreadsheetTitle,
-      selectedTab: matchingTab.title,
-      updatedRanges: [],
-      updatedRows: 0,
-      updatedColumns: normalizedUpdates.length,
-      updatedCells: 0,
-    };
-  }
-
-  const data = normalizedUpdates.map((entry) => {
-    const toRow = startRow + rowCount - 1;
-    const range = buildA1Notation(tabName, startRow, toRow, entry.col, entry.col);
-    const values = Array.from({ length: rowCount }, (_, rowIndex) => [entry.values[rowIndex] ?? '']);
-    return {
-      range,
-      majorDimension: 'ROWS',
-      values,
-    };
-  });
-
-  const updateResponse = await googleSheetsFetch<GoogleSheetsBatchUpdateValuesResponse>(
-    `/spreadsheets/${encodeURIComponent(sheetId)}/values:batchUpdate`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        valueInputOption: 'USER_ENTERED',
-        data,
-      }),
-    }
-  );
-
-  return {
-    spreadsheetId: metadata.spreadsheetId,
-    spreadsheetTitle: metadata.spreadsheetTitle,
-    selectedTab: matchingTab.title,
-    updatedRanges: updateResponse.responses?.map((entry) => entry.updatedRange ?? '').filter(Boolean) ?? data.map((entry) => entry.range),
-    updatedRows: updateResponse.totalUpdatedRows ?? rowCount,
-    updatedColumns: updateResponse.totalUpdatedColumns ?? normalizedUpdates.length,
-    updatedCells: updateResponse.totalUpdatedCells ?? rowCount * normalizedUpdates.length,
-  };
-}
-
-export async function fetchGoogleSheetsColumnValues(
-  input: GoogleSheetsColumnValuesRequest
-): Promise<GoogleSheetsColumnValuesResponse> {
-  const sheetId = requireNonEmptyString('sheetId', input.sheetId);
-  const metadata = await getSpreadsheetMetadata(sheetId);
-  const tabName = requireNonEmptyString('tabName', input.tabName);
-  const col = toPositiveInteger('col', input.col);
-
-  const matchingTab = metadata.tabs.find((tab) => tab.title === tabName);
-  if (!matchingTab) {
-    throw new GoogleSheetsRequestError(400, `Tab "${tabName}" was not found in the spreadsheet.`);
-  }
-
-  const range = `${quoteSheetTitle(tabName)}!${toColumnLetters(col)}:${toColumnLetters(col)}`;
-  const response = await googleSheetsFetch<GoogleSheetsValuesResponse>(
-    `/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}`
-  );
-
-  return {
-    spreadsheetId: metadata.spreadsheetId,
-    spreadsheetTitle: metadata.spreadsheetTitle,
-    selectedTab: matchingTab.title,
-    column: col,
-    values: (response.values ?? []).map((row) => normalizeSingleCellValue('value', row?.[0] ?? '')),
-  };
-}
-
-/**
- * Writes a few cells of one row, as the values they are (RAW).
- *
- * No metadata read first, unlike the helpers above: this runs once per row of
- * a Job Filter run, and the read only asked whether the tab exists - which
- * the write itself answers, with Google's own refusal. RAW rather than
- * USER_ENTERED, so a value that happens to start with `=` is a value, never a
- * formula.
- */
-export async function updateGoogleSheetsRow(
-  input: GoogleSheetsSingleRowUpdateRequest
-): Promise<GoogleSheetsSingleRowUpdateResponse> {
-  const sheetId = requireNonEmptyString('sheetId', input.sheetId);
-  const tabName = requireNonEmptyString('tabName', input.tabName);
-  const row = toPositiveInteger('row', input.row);
-
-  if (!Array.isArray(input.updates) || input.updates.length === 0) {
-    throw new GoogleSheetsRequestError(400, 'updates must contain at least one cell update.');
-  }
-
-  const normalizedUpdates = input.updates.map((entry, index) => {
-    if (!entry || typeof entry !== 'object') {
-      throw new GoogleSheetsRequestError(400, `updates[${index + 1}] must be an object.`);
-    }
-
-    const typedEntry = entry as GoogleSheetsSingleRowCellUpdate;
-    const col = toPositiveInteger(`updates[${index + 1}].col`, typedEntry.col);
-    const value = normalizeSingleCellValue(`updates[${index + 1}].value`, typedEntry.value);
-
-    return { col, value };
-  });
-
-  const data = normalizedUpdates.map((entry) => {
-    const range = buildA1Notation(tabName, row, row, entry.col, entry.col);
-    return {
-      range,
-      majorDimension: 'ROWS',
-      values: [[entry.value]],
-    };
-  });
-
-  const updateResponse = await googleSheetsFetch<GoogleSheetsBatchUpdateValuesResponse>(
-    `/spreadsheets/${encodeURIComponent(sheetId)}/values:batchUpdate`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        valueInputOption: 'RAW',
-        data,
-      }),
-    }
-  );
-
-  return {
-    spreadsheetId: sheetId,
-    spreadsheetTitle: '',
-    selectedTab: tabName,
-    row,
-    updatedRanges: updateResponse.responses?.map((entry) => entry.updatedRange ?? '').filter(Boolean) ?? data.map((entry) => entry.range),
-    updatedColumns: updateResponse.totalUpdatedColumns ?? normalizedUpdates.length,
-    updatedCells: updateResponse.totalUpdatedCells ?? normalizedUpdates.length,
-  };
-}
-
 /* ------------------------------------------------- creating and sharing ---- */
 
 /**
- * The columns a new dated tab starts with, in order.
+ * The six columns a person fills, A to F, in order (owner decision S3): the
+ * day the row was added, its number within that day, then the posting.
  *
- * `NO(DATE)` first because that is what the sheet this was modelled on uses:
- * the row number doubles as the day's sequence. The names are reproduced
- * exactly, lower-case `note` included - a header somebody later matches on by
- * string should match what they see.
+ * `NO(DATE)` is the day's sequence beside its Date, as the tracking sheet this
+ * was modelled on numbers it. The names are reproduced exactly - a header
+ * somebody later matches on by string should match what they see - and a tab
+ * whose row 1 starts with these six is a job tab (`isJobSheetTab`).
  */
-/** The analysis columns, in order, after Filter Reason. Their order is part of the sheet's contract. */
-export const ANALYSIS_COLUMN_HEADERS = [
-  'Job Field',
-  'Salary',
-  'Job Hash',
-  'Analyzed At',
-  'Lake Status',
-  'Analysis',
-] as const;
-
-export const JOB_SHEET_HEADERS = [
+export const USER_COLUMN_HEADERS = [
+  'Date',
   'NO(DATE)',
   'Company',
   'Job Title',
   'Job Link',
   'Job Description',
-  'Rate',
-  'note',
-  'Job Finder',
-  // The filter's own two, and the reason they exist: everything above is a
-  // field somebody types into. Writing a verdict into one of them would
-  // overwrite the rate or the note it had, so the filter gets columns nothing
-  // else owns.
-  'Filter Result',
-  'Filter Reason',
-  // The job analysis's six (owner decision J5), written by the program alone:
-  // the protected range below covers exactly these, header included, and
-  // nobody but the server's own Google identity may edit them. Job Hash and
-  // Lake Status belong to the Job Data Lake and stay empty until it fills
-  // them. The Analysis cell is the whole analysis as JSON, which is what a
-  // later run reads back instead of asking a model again (PLAN check 1).
-  ...ANALYSIS_COLUMN_HEADERS,
 ] as const;
+
+/**
+ * The job analysis's six, G to L, written by the program alone: the protected
+ * range below covers exactly these, header included, and nobody but the
+ * server's own Google identity may edit them. Job Field to Industry are the
+ * analysis's facts as a person reads them; the Analysis cell is the whole
+ * analysis as JSON, which is what a later run reads back instead of asking a
+ * model again (PLAN check 1). Their order is part of the sheet's contract.
+ */
+export const ANALYSIS_COLUMN_HEADERS = [
+  'Job Field',
+  'Salary',
+  'Job Type',
+  'Clearance',
+  'Industry',
+  'Analysis',
+] as const;
+
+/** The whole header row of a job tab: twelve columns, A to L. */
+export const JOB_SHEET_HEADERS = [...USER_COLUMN_HEADERS, ...ANALYSIS_COLUMN_HEADERS] as const;
 
 function columnOf(header: (typeof JOB_SHEET_HEADERS)[number]): number {
   const index = JOB_SHEET_HEADERS.indexOf(header);
@@ -1810,21 +1546,17 @@ function columnOf(header: (typeof JOB_SHEET_HEADERS)[number]): number {
  * not, and every export afterwards writes company names over job links.
  */
 export const JOB_SHEET_COLUMNS = {
+  date: columnOf('Date'),
   no: columnOf('NO(DATE)'),
   company: columnOf('Company'),
   jobTitle: columnOf('Job Title'),
   jobLink: columnOf('Job Link'),
   jobDescription: columnOf('Job Description'),
-  rate: columnOf('Rate'),
-  note: columnOf('note'),
-  jobFinder: columnOf('Job Finder'),
-  filterResult: columnOf('Filter Result'),
-  filterReason: columnOf('Filter Reason'),
   jobField: columnOf('Job Field'),
   salary: columnOf('Salary'),
-  jobHash: columnOf('Job Hash'),
-  analyzedAt: columnOf('Analyzed At'),
-  lakeStatus: columnOf('Lake Status'),
+  jobType: columnOf('Job Type'),
+  clearance: columnOf('Clearance'),
+  industry: columnOf('Industry'),
   analysis: columnOf('Analysis'),
 } as const;
 
@@ -1905,12 +1637,17 @@ export async function createSpreadsheet(
 
 export type SheetTab = { title: string; gid: number };
 
-/** Every tab with its gid, so a caller can tell new from existing and deep-link. */
+/**
+ * Every tab with its gid, so a caller can tell new from existing and deep-link.
+ * Grid tabs only: a chart on a sheet of its own has no cells to hold a job,
+ * and a range read naming it is refused.
+ */
 export async function listSheetTabs(spreadsheetId: string): Promise<SheetTab[]> {
-  const metadata = await googleSheetsFetch<SpreadsheetMetadataResponse>(
-    `/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(title,sheetId))`
-  );
+  const metadata = await googleSheetsFetch<{
+    sheets?: Array<{ properties?: { title?: string; sheetId?: number; sheetType?: string } }>;
+  }>(`/spreadsheets/${encodeURIComponent(spreadsheetId)}?fields=sheets(properties(title,sheetId,sheetType))`);
   return (metadata.sheets ?? [])
+    .filter((sheet) => (sheet.properties?.sheetType ?? 'GRID') === 'GRID')
     .map((sheet) => ({ title: sheet.properties?.title, gid: sheet.properties?.sheetId }))
     .filter((tab): tab is SheetTab => typeof tab.title === 'string' && typeof tab.gid === 'number');
 }
@@ -2003,15 +1740,78 @@ export function analysisProtectionRange(gid: number, editorEmail: string): Requi
 export type AnalysisProtectionState = 'intact' | 'missing' | 'altered';
 
 /**
+ * Whether a protected range from tab `gid`'s own `protectedRanges` covers
+ * exactly the analysis columns, G to L.
+ *
+ * A range read back without a `sheetId` is on that tab: Google leaves a field
+ * at its default out of a response, and 0 is the default - the gid of every
+ * new sheet's first tab, which is All. Reading the missing id as "another tab"
+ * would find All's protection wrong on every verify, clear its Analysis column
+ * each time and never trust it.
+ */
+function coversAnalysisColumns(gid: number, range: ProtectedRangeApi['range']): boolean {
+  return (
+    Boolean(range) &&
+    (range!.sheetId ?? gid) === gid &&
+    range!.startColumnIndex === ANALYSIS_FIRST_COLUMN - 1 &&
+    range!.endColumnIndex === ANALYSIS_LAST_COLUMN
+  );
+}
+
+/**
+ * Whether a protected range of tab `gid` is the program's: it carries our
+ * description (this build's G:L, or an older build's K:P on its daily tab),
+ * or covers exactly G:L. The same test a verify adopts a range by - and so
+ * the ranges whose cells a later verify may find intact and trust.
+ */
+function isOurProtection(gid: number, entry: ProtectedRangeApi): boolean {
+  return (
+    (entry.range?.sheetId ?? gid) === gid &&
+    (entry.description === ANALYSIS_PROTECTION_DESCRIPTION || coversAnalysisColumns(gid, entry.range))
+  );
+}
+
+/**
+ * The columns (1-based, inclusive) of the first protection of the program's
+ * on this tab that a write of columns `fromCol` to `toCol` would land in, or
+ * null when it lands in none.
+ *
+ * For the range importer, which writes as the server's identity - the one
+ * editor the protection lets through. A write inside it is therefore the one
+ * write a person could make there, and a verify that later found the
+ * protection intact would trust the cell as the program's. So this asks the
+ * PROTECTION, not row 1: row 1 is not protected, and changing it (through the
+ * importer or by hand) changes whether the tab is a job tab without touching
+ * the protection or anything under it. Row bounds are ignored - any row of a
+ * protected column is refused.
+ */
+export function analysisProtectionHit(
+  tab: Pick<JobSheetTabInspection, 'gid' | 'protectedRanges'>,
+  fromCol: number,
+  toCol: number
+): { fromCol: number; toCol: number } | null {
+  for (const entry of tab.protectedRanges) {
+    if (!isOurProtection(tab.gid, entry)) continue;
+    const start = entry.range?.startColumnIndex ?? 0;
+    const end = entry.range?.endColumnIndex ?? Number.POSITIVE_INFINITY;
+    // [start, end) is 0-based; [fromCol - 1, toCol) is the write's.
+    if (fromCol - 1 < end && start < toCol) {
+      return { fromCol: start + 1, toCol: Number.isFinite(end) ? end : Math.max(toCol, start + 1) };
+    }
+  }
+  return null;
+}
+
+/**
  * Whether the tab's analysis columns are protected as they must be, and the
  * requests that make them so.
  *
- * Ours is found by its description or by covering exactly the six columns.
- * It is INTACT only when it covers the six whole columns of this tab (no row
- * bounds), is a real protection rather than a warning, and lists no editor
- * but the server's identity - no other user, no group, not the domain. An
- * altered one is put back with `updateProtectedRange`, a missing one added,
- * and a duplicate of ours deleted, so exactly one remains.
+ * Ours is found by its description or by covering exactly the six columns
+ * (`isOurProtection`). It is INTACT only when it covers the six whole columns
+ * of this tab (no row bounds), is a real protection rather than a warning,
+ * and lists no editor but the server's identity - no other user, no group,
+ * not the domain. An altered one is put back with `updateProtectedRange`, a
+ * missing one added, and a duplicate of ours deleted, so exactly one remains.
  */
 export function analysisProtectionRequests(
   gid: number,
@@ -2020,16 +1820,8 @@ export function analysisProtectionRequests(
 ): { state: AnalysisProtectionState; requests: Array<Record<string, unknown>> } {
   const email = editorEmail.trim().toLowerCase();
   const wanted = analysisProtectionRange(gid, email);
-  const coversColumns = (range: ProtectedRangeApi['range']) =>
-    Boolean(range) &&
-    range!.sheetId === gid &&
-    range!.startColumnIndex === wanted.range.startColumnIndex &&
-    range!.endColumnIndex === wanted.range.endColumnIndex;
-  const ours = existing.filter(
-    (entry) =>
-      (entry.range?.sheetId ?? gid) === gid &&
-      (entry.description === ANALYSIS_PROTECTION_DESCRIPTION || coversColumns(entry.range))
-  );
+  const coversColumns = (range: ProtectedRangeApi['range']) => coversAnalysisColumns(gid, range);
+  const ours = existing.filter((entry) => isOurProtection(gid, entry));
 
   if (ours.length === 0) {
     return { state: 'missing', requests: [{ addProtectedRange: { protectedRange: wanted } }] };
@@ -2084,10 +1876,13 @@ function headerFormatRequests(gid: number, headers: readonly string[]): Array<Re
           {
             values: headers.map((header) => ({
               userEnteredValue: { stringValue: header },
+              // The whole format, since `fields` replaces it: CLIP here too,
+              // or the header row is the one row that can grow past 21 px.
               userEnteredFormat: {
                 backgroundColor: HEADER_BACKGROUND,
                 textFormat: { bold: true, foregroundColor: HEADER_FOREGROUND },
                 verticalAlignment: 'MIDDLE',
+                wrapStrategy: 'CLIP',
               },
             })),
           },
@@ -2129,16 +1924,75 @@ export async function batchUpdateSpreadsheet(
   });
 }
 
+/** Every row of a job tab is this tall (owner's default: 21 px, Google's own). */
+export const JOB_ROW_HEIGHT_PIXELS = 21;
+
+/** How the Date column shows the serial number an export writes: the account sheet's MM/DD/YYYY. */
+export const JOB_SHEET_DATE_PATTERN = 'mm/dd/yyyy';
+
+/**
+ * The row layout of a job tab, for rows `fromRow`..`toRow` (1-based; no
+ * `toRow` = to the end of the grid, rows added later included): 21 px high,
+ * and the data cells CLIPPED rather than wrapped, so a job description can
+ * never grow a row back past it. Row 1 is sized with the rest but formatted
+ * by the header's own request, which carries CLIP too. The Date column's data
+ * cells show their serial number as a date.
+ *
+ * Sent with every format, conversion and grid growth of a job tab, and after
+ * every app write that adds rows - a row Google inserts takes the format of
+ * the row above it, not this, when that row was never laid out.
+ */
+export function jobRowLayoutRequests(gid: number, fromRow = 1, toRow?: number): Array<Record<string, unknown>> {
+  const startIndex = Math.max(0, fromRow - 1);
+  const end = typeof toRow === 'number' ? { endIndex: toRow } : {};
+  const dataStart = Math.max(startIndex, JOB_SHEET_FIRST_DATA_ROW - 1);
+  const dataEnd = typeof toRow === 'number' ? { endRowIndex: toRow } : {};
+  const requests: Array<Record<string, unknown>> = [
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex, ...end },
+        properties: { pixelSize: JOB_ROW_HEIGHT_PIXELS },
+        fields: 'pixelSize',
+      },
+    },
+  ];
+  if (typeof toRow === 'number' && toRow <= dataStart) return requests;
+  requests.push(
+    {
+      repeatCell: {
+        range: { sheetId: gid, startRowIndex: dataStart, ...dataEnd, startColumnIndex: 0, endColumnIndex: JOB_SHEET_HEADERS.length },
+        cell: { userEnteredFormat: { wrapStrategy: 'CLIP' } },
+        fields: 'userEnteredFormat.wrapStrategy',
+      },
+    },
+    {
+      repeatCell: {
+        range: {
+          sheetId: gid,
+          startRowIndex: dataStart,
+          ...dataEnd,
+          startColumnIndex: JOB_SHEET_COLUMNS.date - 1,
+          endColumnIndex: JOB_SHEET_COLUMNS.date,
+        },
+        cell: { userEnteredFormat: { numberFormat: { type: 'DATE', pattern: JOB_SHEET_DATE_PATTERN } } },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    }
+  );
+  return requests;
+}
+
 /**
  * Lays out the header row on a tab that already exists.
  *
  * Separate from creating the tab because the two happen in different orders in
  * the two cases that matter: a brand new spreadsheet arrives with its first tab
- * already made, while a new day adds one. Both need the identical header - and
- * both are new tabs, so this is also where their analysis columns are first
- * protected (`protect`, on by default). When the server's identity cannot be
- * found, the tab is laid out unprotected and the next verify adds it; until
- * then nothing in it is trusted (see `verifyJobSheetTab`).
+ * already made, while a later tab is added. Both need the identical header and
+ * row layout - and both are new tabs, so this is also where their analysis
+ * columns are first protected (`protect`, on by default). When the server's
+ * identity cannot be found, the tab is laid out unprotected and the next
+ * verify adds it; until then nothing in it is trusted (see
+ * `verifyJobSheetTab`).
  */
 export async function formatJobSheetTab(
   spreadsheetId: string,
@@ -2146,7 +2000,7 @@ export async function formatJobSheetTab(
   headers: readonly string[] = JOB_SHEET_HEADERS,
   options: { protect?: boolean } = {}
 ): Promise<void> {
-  const requests = headerFormatRequests(gid, headers);
+  const requests = [...headerFormatRequests(gid, headers), ...jobRowLayoutRequests(gid)];
   if (options.protect !== false && headers.length >= ANALYSIS_LAST_COLUMN) {
     try {
       requests.push({ addProtectedRange: { protectedRange: analysisProtectionRange(gid, await getCredentialEmail()) } });
@@ -2178,30 +2032,38 @@ export function jobSheetHeaderIsCurrent(
 }
 
 /**
- * The headers every job tab this app ever laid out starts with - the eight the
- * first build wrote, before the filter's two and the analysis's six were
- * added after them. A tab whose row 1 starts with these is one of ours, of
- * whichever age, and is brought up to date; a tab that does not is somebody's
- * own, and is left exactly as it is.
+ * What a tab's row 1 says about it, as a tab listing reports it: `job` when it
+ * starts with the six user headers (Date to Job Description, this layout's -
+ * an older build's NO(DATE)-first tab is not one), `blank` when it is empty,
+ * and `other` for anything else - a tab the person made for themselves, or a
+ * daily tab an older build laid out, which this build never reads or writes.
+ *
+ * `blank` says only that row 1 is empty: whether the WHOLE tab is - which is
+ * what makes it a job tab - takes a read of its own (`inspectJobSheetTab`).
  */
-const JOB_SHEET_HEADER_PREFIX = JOB_SHEET_HEADERS.slice(0, JOB_SHEET_COLUMNS.jobFinder);
+export type JobTabLayout = 'job' | 'blank' | 'other';
 
-/** The `MM/DD/YYYY` title of a day's tab, as the account sheet allocates them. */
-const DATED_TAB_TITLE = /^\d{2}\/\d{2}\/\d{4}$/;
+export function jobTabLayoutOf(headerRow: ReadonlyArray<unknown>): JobTabLayout {
+  if (USER_COLUMN_HEADERS.every((header, index) => String(headerRow[index] ?? '').trim() === header)) return 'job';
+  return headerRow.every((cell) => String(cell ?? '').trim() === '') ? 'blank' : 'other';
+}
 
 /**
- * Whether a tab is a job tab this app laid out - and so one it may widen,
- * re-header and protect. Its row 1 starts with the job sheet's first eight
- * headers (a tab of any build's), or it is a day's tab whose row 1 is still
- * empty: an allocation that died between adding the tab and laying it out.
+ * Whether a tab is a job tab - and so one the app may widen, re-header,
+ * protect, read the analysis columns of and write into. Its row 1 starts with
+ * the six user headers (owner decision S3), or the WHOLE tab is empty (owner's
+ * default): an empty tab, under any name, becomes a job tab the first time it
+ * is used - the All or Temp For AI tab an allocation added and died before
+ * laying out, or one the person added for the app.
  *
- * Anything else is a tab the person made for themselves - sheet mode reads any
- * tab, through a column mapping of its own - whose row 1 is their header and
- * whose columns K to P are theirs.
+ * Nothing else is, ever: not a tab with data under a blank row 1, not a daily
+ * `MM/DD/YYYY` tab an older build laid out in its sixteen columns (whose K:P
+ * are that build's), not a tab the person made. Converting any of those would
+ * write a header over their row 1 and clear their column L.
  */
-export function isJobSheetTab(tab: Pick<JobSheetTabInspection, 'title' | 'headerRow'>): boolean {
-  if (JOB_SHEET_HEADER_PREFIX.every((header, index) => String(tab.headerRow[index] ?? '').trim() === header)) return true;
-  return DATED_TAB_TITLE.test(tab.title) && tab.headerRow.every((cell) => String(cell ?? '').trim() === '');
+export function isJobSheetTab(tab: Pick<JobSheetTabInspection, 'headerRow'> & { empty?: boolean }): boolean {
+  const layout = jobTabLayoutOf(tab.headerRow);
+  return layout === 'job' || (layout === 'blank' && tab.empty === true);
 }
 
 /** What one read of a tab says about it: enough to verify it without reading it again. */
@@ -2212,21 +2074,35 @@ export type JobSheetTabInspection = {
   /** The grid's rows, when Google said. */
   rowCount?: number;
   headerRow: string[];
+  /**
+   * True only when row 1 is blank AND a read of the whole tab found no value
+   * anywhere in it; false for a blank row 1 above data. Absent when row 1 is
+   * not blank, which makes the question moot.
+   */
+  empty?: boolean;
   protectedRanges: ProtectedRangeApi[];
+  /** The spreadsheet's own title, which the same read carries. */
+  spreadsheetTitle?: string;
 };
 
 /**
  * One GET for everything a verify needs: the tab's id and grid size, its
  * protected ranges, and its first row. The row is asked for as `1:1`, which
- * never runs past the grid - `A1:P1` would, on a tab an older build made
- * twelve columns wide, and Google refuses that read outright.
+ * never runs past the grid - `A1:L1` would, on a tab narrower than twelve
+ * columns, and Google refuses that read outright.
+ *
+ * A tab whose row 1 is blank costs one more read, of the whole tab
+ * (`'Tab'`, every value it has): only a tab with nothing in it at all may be
+ * turned into a job tab, and a blank row 1 says nothing about row 2.
  */
 export async function inspectJobSheetTab(spreadsheetId: string, title: string): Promise<JobSheetTabInspection> {
   const fields =
+    'properties(title),' +
     'sheets(properties(sheetId,title,gridProperties(columnCount,rowCount)),' +
     'protectedRanges(protectedRangeId,description,warningOnly,range,editors(users,groups,domainUsersCanEdit)),' +
     'data(rowData(values(formattedValue))))';
   const response = await googleSheetsFetch<{
+    properties?: { title?: string };
     sheets?: Array<{
       properties?: { sheetId?: number; title?: string; gridProperties?: { columnCount?: number; rowCount?: number } };
       protectedRanges?: ProtectedRangeApi[];
@@ -2242,16 +2118,31 @@ export async function inspectJobSheetTab(spreadsheetId: string, title: string): 
   if (!sheet || typeof gid !== 'number') {
     throw new GoogleSheetsRequestError(400, `Tab "${title}" was not found in the spreadsheet.`);
   }
-  return {
+  const headerRow = (sheet.data?.[0]?.rowData?.[0]?.values ?? []).map((cell) => cell.formattedValue ?? '');
+  const inspection: JobSheetTabInspection = {
     gid,
     title: sheet.properties?.title ?? title,
     columnCount: sheet.properties?.gridProperties?.columnCount ?? 0,
     ...(typeof sheet.properties?.gridProperties?.rowCount === 'number'
       ? { rowCount: sheet.properties.gridProperties.rowCount }
       : {}),
-    headerRow: (sheet.data?.[0]?.rowData?.[0]?.values ?? []).map((cell) => cell.formattedValue ?? ''),
+    headerRow,
     protectedRanges: sheet.protectedRanges ?? [],
+    ...(typeof response.properties?.title === 'string' ? { spreadsheetTitle: response.properties.title } : {}),
   };
+  if (jobTabLayoutOf(headerRow) === 'blank') {
+    inspection.empty = await tabHoldsNoValues(spreadsheetId, inspection.title);
+  }
+  return inspection;
+}
+
+/** Whether a tab holds no value in any cell: one read of the whole tab, which Google answers without trailing blanks. */
+async function tabHoldsNoValues(spreadsheetId: string, title: string): Promise<boolean> {
+  const response = await googleSheetsFetch<GoogleSheetsValuesResponse>(
+    `/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(quoteSheetTitle(title))}` +
+      '?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE'
+  );
+  return (response.values ?? []).every((row) => (row ?? []).every((cell) => String(cell ?? '').trim() === ''));
 }
 
 /**
@@ -2267,8 +2158,8 @@ export async function inspectJobSheetTab(spreadsheetId: string, title: string): 
  * therefore written while the protection stood - by the program. Only
  * `intact` lets the cells already in the tab be trusted in this run.
  *
- * `jobTab` is false for a tab the app never laid out (`isJobSheetTab`), which
- * a verify asked to touch only job tabs leaves exactly as it was found.
+ * `jobTab` is false for a tab that is not a job tab (`isJobSheetTab`), which
+ * a verify leaves exactly as it was found.
  */
 export type VerifiedJobSheetTab = {
   gid: number;
@@ -2279,11 +2170,10 @@ export type VerifiedJobSheetTab = {
 };
 
 /**
- * Empties the Analysis column below the header - the one analysis cell a build
- * trusts. Only it: Job Field to Lake Status are never read back as an
- * analysis, and on a tab an older build made, the first two of them were spare
- * columns that may hold the person's own notes. Nothing is lost - every
- * analysis is in the database, and its row is written again on its next run.
+ * Empties the Analysis column (L) below the header - the one analysis cell a
+ * build trusts. Only it: Job Field to Industry are never read back as an
+ * analysis. Nothing is lost - every analysis is in the database, and its row
+ * is written again on its next run.
  */
 export function analysisClearRequest(gid: number): Record<string, unknown> {
   return {
@@ -2300,26 +2190,30 @@ export function analysisClearRequest(gid: number): Record<string, unknown> {
 }
 
 /**
- * Makes an existing tab what this build expects, in at most two calls: one
- * read (`inspectJobSheetTab`), then one `:batchUpdate` that grows the grid to
- * hold every header (`appendDimension` - never a column count set outright,
- * which would delete columns somebody added past ours), rewrites a stale or
- * missing header, and puts the analysis protection back - clearing the
- * Analysis column in the same, atomic, call when it does. Every repair of the
- * protection is logged.
+ * Makes a JOB TAB what this build expects, in at most two calls (three for a
+ * tab whose row 1 is blank): the read (`inspectJobSheetTab`), then one
+ * `:batchUpdate` that grows the grid to hold every header (`appendDimension`
+ * - never a column count set outright, which would delete columns somebody
+ * added past ours), writes a stale or missing header (an empty tab gets its
+ * frozen header row too), puts the analysis protection back - clearing the
+ * Analysis column in the same, atomic, call when it does - and, whenever it
+ * sends anything, lays the rows out again (`jobRowLayoutRequests`). Every
+ * repair of the protection is logged.
  *
- * `onlyJobTabs` is for a tab the person chose rather than one the app
- * allocated: a tab that is not a job tab is not touched at all.
+ * A tab that is NOT a job tab (`isJobSheetTab`) is not touched at all, by
+ * any caller: an older build's daily tab, a tab with data under a blank row 1,
+ * a tab the person made. There is no option to do otherwise - re-heading one
+ * would write over its row 1, and clearing its column L would delete what the
+ * person, or an older build, kept there.
  */
 export async function verifyJobSheetTab(
   spreadsheetId: string,
   title: string,
-  headers: readonly string[] = JOB_SHEET_HEADERS,
-  known?: JobSheetTabInspection,
-  options: { onlyJobTabs?: boolean } = {}
+  known?: JobSheetTabInspection
 ): Promise<VerifiedJobSheetTab> {
+  const headers = JOB_SHEET_HEADERS;
   const tab = known ?? (await inspectJobSheetTab(spreadsheetId, title));
-  if (options.onlyJobTabs && !isJobSheetTab(tab)) {
+  if (!isJobSheetTab(tab)) {
     return { gid: tab.gid, protection: 'unconfirmed', grewColumns: false, wroteHeader: false, jobTab: false };
   }
   const requests: Array<Record<string, unknown>> = [];
@@ -2332,36 +2226,46 @@ export async function verifyJobSheetTab(
   }
   const wroteHeader = !jobSheetHeaderIsCurrent(tab.headerRow, headers);
   if (wroteHeader) requests.push(...headerFormatRequests(tab.gid, headers));
-
-  let protection: VerifiedJobSheetTab['protection'] = 'unconfirmed';
-  if (headers.length >= ANALYSIS_LAST_COLUMN) {
-    try {
-      const email = await getCredentialEmail();
-      const check = analysisProtectionRequests(tab.gid, tab.protectedRanges, email);
-      protection = check.state;
-      if (check.state !== 'intact') {
-        // After the grid is grown (the column may not exist before), and in
-        // the same call as the protection, so no cell can be typed in between.
-        if (tab.rowCount === undefined || tab.rowCount >= JOB_SHEET_FIRST_DATA_ROW) {
-          requests.push(analysisClearRequest(tab.gid));
-        }
-        console.warn(
-          `[sheets] The analysis columns of "${title}" in ${spreadsheetId} were ${
-            check.state === 'missing' ? 'not protected' : 'protected wrongly (other editors, a warning only, or the wrong columns)'
-          }; restoring the protection so only ${email} can edit them, and clearing the Analysis cells somebody else ` +
-            'could have written meanwhile. Their rows are written again from the database on their next run.'
-        );
-      }
-      requests.push(...check.requests);
-    } catch (error) {
-      console.warn(
-        `[sheets] Could not check the protection of the analysis columns of "${title}" in ${spreadsheetId}; ` +
-          'its analysis cells are not trusted in this run.',
-        error
-      );
-    }
+  if (tab.empty === true) {
+    // An empty tab the person added has no frozen header row; a job tab does.
+    requests.push({
+      updateSheetProperties: {
+        properties: { sheetId: tab.gid, gridProperties: { frozenRowCount: 1 } },
+        fields: 'gridProperties.frozenRowCount',
+      },
+    });
   }
 
+  let protection: VerifiedJobSheetTab['protection'] = 'unconfirmed';
+  try {
+    const email = await getCredentialEmail();
+    const check = analysisProtectionRequests(tab.gid, tab.protectedRanges, email);
+    protection = check.state;
+    if (check.state !== 'intact') {
+      // After the grid is grown (the column may not exist before), and in
+      // the same call as the protection, so no cell can be typed in between.
+      if (tab.rowCount === undefined || tab.rowCount >= JOB_SHEET_FIRST_DATA_ROW) {
+        requests.push(analysisClearRequest(tab.gid));
+      }
+      console.warn(
+        `[sheets] The analysis columns of "${title}" in ${spreadsheetId} were ${
+          check.state === 'missing' ? 'not protected' : 'protected wrongly (other editors, a warning only, or the wrong columns)'
+        }; restoring the protection so only ${email} can edit them, and clearing the Analysis cells somebody else ` +
+          'could have written meanwhile. Their rows are written again from the database on their next run.'
+      );
+    }
+    requests.push(...check.requests);
+  } catch (error) {
+    console.warn(
+      `[sheets] Could not check the protection of the analysis columns of "${title}" in ${spreadsheetId}; ` +
+        'its analysis cells are not trusted in this run.',
+      error
+    );
+  }
+
+  // Riding along with a call that is being made anyway: a conversion, a grown
+  // grid, a repair. A verify that finds everything in order sends nothing.
+  if (requests.length > 0) requests.push(...jobRowLayoutRequests(tab.gid));
   await batchUpdateSpreadsheet(spreadsheetId, requests);
   return { gid: tab.gid, protection, grewColumns, wroteHeader, jobTab: true };
 }
@@ -2379,30 +2283,45 @@ export type EnsuredTab = {
   created: boolean;
   /** What the protection of its analysis columns was found as; see VerifiedJobSheetTab. */
   protection?: VerifiedJobSheetTab['protection'] | 'added';
+  /**
+   * False when a tab of that name was already there and is NOT a job tab -
+   * the person's own tab, or an older build's: it was left exactly as it was,
+   * and the caller has a name clash to report. True (or absent) otherwise.
+   */
+  jobTab?: boolean;
+};
+
+export type AddTabOptions = {
+  /** Where a new tab goes among the others, 0 = first. Absent = last. Ignored for a tab already there. */
+  index?: number;
+  /** The tabs as a listing the caller just made found them, so this does not list them again. */
+  existing?: SheetTab[];
 };
 
 /**
- * Adds a dated tab and lays out its header, or reports the one already there.
+ * Adds a job tab and lays out its header, or verifies the one already there.
  *
- * `created: false` is the ordinary answer on every sign-in after the first of a
- * day, and is not a failure - it is the skip the whole feature is built around.
+ * `created: false` is an ordinary answer, not a failure: the tab was there.
+ * A tab of that name that is not a job tab is reported (`jobTab: false`) and
+ * left alone - never renamed, re-headed or protected.
  */
 export async function addSheetTabWithHeaders(
   spreadsheetId: string,
   title: string,
-  headers: readonly string[] = JOB_SHEET_HEADERS
+  options: AddTabOptions = {}
 ): Promise<EnsuredTab> {
-  const existing = await listSheetTabs(spreadsheetId);
+  const headers = JOB_SHEET_HEADERS;
+  const existing = options.existing ?? (await listSheetTabs(spreadsheetId));
   const already = existing.find((tab) => tab.title === title);
   if (already) {
     // Existing is not the same as finished. If a previous attempt created the
     // tab and then failed before laying out the header - a 429 between the two
     // calls is enough - nothing would ever write one, because every later
-    // attempt sees the tab and stops here. So the tab is verified: its header,
-    // its width, and the protection of its analysis columns, which is checked
-    // again on every verifying ensure and put back if anybody took it off.
-    const verified = await verifyJobSheetTab(spreadsheetId, title, headers);
-    return { gid: verified.gid, created: false, protection: verified.protection };
+    // attempt sees the tab and stops here. So the tab is verified: its header
+    // (an empty tab becomes a job tab), its width, and the protection of its
+    // analysis columns, put back if anybody took it off.
+    const verified = await verifyJobSheetTab(spreadsheetId, title);
+    return { gid: verified.gid, created: false, protection: verified.protection, jobTab: verified.jobTab };
   }
 
   const added = await googleSheetsFetch<{
@@ -2416,6 +2335,7 @@ export async function addSheetTabWithHeaders(
           addSheet: {
             properties: {
               title,
+              ...(typeof options.index === 'number' ? { index: options.index } : {}),
               gridProperties: {
                 rowCount: NEW_TAB_ROW_COUNT,
                 columnCount: Math.max(headers.length, NEW_TAB_MIN_COLUMNS),
@@ -2434,7 +2354,7 @@ export async function addSheetTabWithHeaders(
   }
 
   await formatJobSheetTab(spreadsheetId, gid, headers);
-  return { gid, created: true, protection: 'added' };
+  return { gid, created: true, protection: 'added', jobTab: true };
 }
 
 /* ------------------------------------------------------ batched values -- */
@@ -2498,6 +2418,15 @@ export async function batchUpdateValuesRaw(
 /** A1 notation for a block of a tab, the title quoted as Google wants it. */
 export function a1Range(tabName: string, fromRow: number, toRow: number, fromCol: number, toCol: number): string {
   return buildA1Notation(tabName, fromRow, toRow, fromCol, toCol);
+}
+
+/**
+ * Whole rows of a tab in A1 notation (`'All'!1:1`). Unlike a bounded range
+ * (`A1:L1`) it never runs past the grid, which Google refuses outright - what
+ * a read of a tab of unknown width asks for.
+ */
+export function a1Rows(tabName: string, fromRow: number, toRow: number): string {
+  return `${quoteSheetTitle(tabName)}!${fromRow}:${toRow}`;
 }
 
 /** Whole columns of a tab in A1 notation (`'Job Lake'!A:H`): where an append looks for the table's end. */

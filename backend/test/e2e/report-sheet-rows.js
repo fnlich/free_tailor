@@ -1,17 +1,17 @@
 /*
- * The rows of today's tab that stub-report-sheets.js serves and report-run.js
+ * The rows of the All tab that stub-report-sheets.js serves and report-run.js
  * reads back, in one place - and the earlier reports the script records for
  * its reporter before the run, which name two of those rows' postings.
  *
  * "Reported before" is the database's word, not the sheet's: a run skips a
  * row when its posting is stored and the reporter has a record of reporting
- * it (`job_reports`), wherever the row is. Nothing in the sheet decides it, so
- * the stub writes no Lake Status for those rows; `seedEarlierReports` records
+ * it (`job_reports`), wherever the row is. Nothing in the sheet decides it -
+ * the sheet holds no lake status at all; `seedEarlierReports` records
  * the reports through the lake's own merge, the way an earlier run would
  * have, in the database the server shares.
  *
- * Today's tab, row by row (B Company, C Job Title, D Job Link, E Job
- * Description):
+ * All, row by row (A Date, B NO(DATE), C Company, D Job Title, E Job Link,
+ * F Job Description - the twelve-column layout, whose G:L the run fills):
  *
  *   2  Acme Corp    a posting           -> Added
  *   3  ACME, Inc.   another posting     -> Duplicate: the same company in the
@@ -38,17 +38,20 @@ const HOOLI = { company: 'Hooli', title: 'Staff Engineer', link: 'https://hooli.
 /** Hooli's other posting, merged into the lake from a build before the reporter reported theirs. */
 const HOOLI_MERGED = { company: 'Hooli', link: 'https://hooli.example/jobs/1', jd: posting('Hooli one') };
 
-/** Today's tab from row 2, columns A..E. */
-function todayRows() {
+/** The day the rows were exported on, in column A. Any day: nothing reads it back. */
+const DAY = '10/01/2026';
+
+/** All from row 2, columns A..F. */
+function allRows() {
   return [
-    ['1', 'Acme Corp', 'Backend Engineer', 'https://acme.example/jobs/1', posting('Acme one')],
-    ['2', 'ACME, Inc.', 'Platform Engineer', 'https://acme.example/jobs/2', posting('Acme two')],
-    ['3', 'Globex LLC', 'API Engineer', 'https://globex.example/careers/7', posting('Globex')],
-    ['4', INITECH.company, INITECH.title, INITECH.link, INITECH.jd],
-    ['5', '', 'Engineer with no company', '', posting('Nameless')],
-    ['6', 'Umbrella', 'Engineer', 'javascript:alert(1)', ''],
-    ['7', HOOLI.company, HOOLI.title, HOOLI.link, HOOLI.jd],
-    ['8', 'Acme Corp', 'Backend Engineer', 'https://acme.example/jobs/1', posting('Acme one')],
+    [DAY, '1', 'Acme Corp', 'Backend Engineer', 'https://acme.example/jobs/1', posting('Acme one')],
+    [DAY, '2', 'ACME, Inc.', 'Platform Engineer', 'https://acme.example/jobs/2', posting('Acme two')],
+    [DAY, '3', 'Globex LLC', 'API Engineer', 'https://globex.example/careers/7', posting('Globex')],
+    [DAY, '4', INITECH.company, INITECH.title, INITECH.link, INITECH.jd],
+    [DAY, '5', '', 'Engineer with no company', '', posting('Nameless')],
+    [DAY, '6', 'Umbrella', 'Engineer', 'javascript:alert(1)', ''],
+    [DAY, '7', HOOLI.company, HOOLI.title, HOOLI.link, HOOLI.jd],
+    [DAY, '8', 'Acme Corp', 'Backend Engineer', 'https://acme.example/jobs/1', posting('Acme one')],
   ];
 }
 
@@ -114,4 +117,4 @@ function seedEarlierReports(dist, { reporterId, adminId }) {
   };
 }
 
-module.exports = { posting, todayRows, seedEarlierReports, INITECH, HOOLI };
+module.exports = { posting, allRows, seedEarlierReports, INITECH, HOOLI };

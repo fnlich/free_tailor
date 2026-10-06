@@ -17,6 +17,19 @@ test('app settings persist in the SQLite settings table', async () => {
   assert.equal(defaults.defaultMode, 'preview');
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), null);
 
+  // The saved shared sheet an older build kept ("Bid History"): in the row,
+  // as that build wrote it, before this one first saves.
+  writeSettingRaw(dbDir, APP_SETTINGS_KEY, JSON.stringify({
+    googleSheetsSources: [{
+      id: 'sheet-1',
+      name: 'Bid History',
+      sheetId: 'abc123',
+      createdAt: '2026-04-18T00:00:00.000Z',
+      updatedAt: '2026-04-18T00:00:00.000Z',
+    }],
+  }));
+  config.invalidateSettingsCache();
+
   const updated = await config.updateAppSettings({
     providersEnabled: {
       'claude-cli': true,
@@ -31,10 +44,11 @@ test('app settings persist in the SQLite settings table', async () => {
     defaultCoverLetterDocxEnabled: false,
     outputBaseDir: outputDir,
     outputPathTemplate: '/{{date}}/{{profile name}}/{{company name}}',
+    // A stale page still sending its list: not taken.
     googleSheetsSources: [{
-      id: 'sheet-1',
+      id: 'sheet-2',
       name: 'Applications',
-      sheetId: 'abc123',
+      sheetId: 'zzz999',
       createdAt: '2026-04-18T00:00:00.000Z',
       updatedAt: '2026-04-18T00:00:00.000Z',
     }],
@@ -55,13 +69,16 @@ test('app settings persist in the SQLite settings table', async () => {
   assert.equal(updated.defaultMode, 'generate');
   assert.equal(updated.defaultTheme, 'dark');
   assert.equal(updated.outputBaseDir, outputDir);
-  assert.equal(updated.googleSheetsSources.length, 1);
+  // The saved shared sheets are gone from every payload (owner decision S1)...
+  assert.equal('googleSheetsSources' in updated, false);
+  assert.equal('googleSheetsSources' in (await config.getAdminAppSettings()), false);
   // Settings no longer carry keys in either direction.
   assert.equal('apiKeys' in updated, false);
 
   const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
   assert.equal('apiKeys' in stored, false, 'no credential may be written to the database');
-  assert.equal(stored.googleSheetsSources[0].sheetId, 'abc123');
+  // ...but the list in the row survives every save, unchanged, for a rollback.
+  assert.deepEqual(stored.googleSheetsSources.map((source) => [source.name, source.sheetId]), [['Bid History', 'abc123']]);
 });
 
 test('reading settings does not rewrite an existing settings record', async () => {

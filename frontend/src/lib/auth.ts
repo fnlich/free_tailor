@@ -37,12 +37,9 @@ export type Account = {
   /**
    * The account's own Google spreadsheet, once one has been allocated - the
    * link a reporter's menu offers until the shell's own read of /sheet (which
-   * opens today's tab) arrives.
+   * opens the All tab) arrives.
    */
   sheetUrl?: string;
-  /** The last day's tab prepared in it, `MM/DD/YYYY`, and that tab's gid. */
-  sheetTabDate?: string;
-  sheetTabGid?: string;
 };
 
 export type AccountSubscription = {

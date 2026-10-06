@@ -5,21 +5,25 @@ import {
   batchGetValues,
   batchUpdateValuesRaw,
   JOB_SHEET_COLUMNS,
-  JOB_SHEET_HEADERS,
   protectionTrusted,
   verifyJobSheetTab,
+  type SheetCellValue,
   type VerifiedJobSheetTab,
 } from '../../integrations/googleSheets';
+import { industryLabel } from '../../config/industries';
 import { jobFieldLabel } from '../../config/jobFields';
 import { getUserBySheetId } from '../../database/userRepository';
 import { getJobAnalysisById, type StoredJobAnalysis } from '../../database/jobAnalysisRepository';
-import { formatSalary } from '../jobAnalysis/facts';
+import { clearanceRequiredOf, formatSalary, industryOf, jobTypeLabel, jobTypeOf } from '../jobAnalysis/facts';
 import { linkKey, postingKeysOf, samePosting, type PostingKeys } from '../jobAnalysis/identity';
 
 /**
- * The six analysis columns of an app sheet (owner decision J5): Job Field,
- * Salary, Job Hash, Analyzed At, Lake Status, Analysis - after Filter Reason,
- * protected so only the server's own Google identity can edit them.
+ * The six analysis columns of an app sheet's job tab, G to L (owner decision
+ * S3): Job Field, Salary, Job Type, Clearance, Industry, Analysis - after the
+ * six a person fills, protected so only the server's own Google identity can
+ * edit them. The first five are the analysis's facts as a person reads them;
+ * the Analysis cell is the whole analysis, which is what a later build reads
+ * back instead of asking a model (P7).
  *
  * Two directions:
  *
@@ -47,10 +51,9 @@ import { linkKey, postingKeysOf, samePosting, type PostingKeys } from '../jobAna
  *
  * Only the app's OWN sheets get any of this - a spreadsheet allocated to an
  * account, which the server's identity owns and can protect - and in them
- * only the tabs laid out as job tabs (`isJobSheetTab`): sheet mode reads any
- * tab, and a tab the person made for themselves keeps its header and its
- * columns. An administrator's shared sources keep analyses in the database
- * only.
+ * only the job tabs (`isJobSheetTab`): a tab the person made for themselves,
+ * or a daily tab an older build laid out in its own columns, keeps its header
+ * and its columns, and is neither read for an analysis nor written.
  */
 
 /** Google's limit on one cell. The Analysis cell is cut to fit, with a marker. */
@@ -67,13 +70,12 @@ const CELL_VERSION = 1;
 export type AnalysisSheetsClient = {
   verifyTab(spreadsheetId: string, tabName: string): Promise<VerifiedJobSheetTab>;
   readRanges(spreadsheetId: string, ranges: string[]): Promise<string[][][]>;
-  writeRaw(spreadsheetId: string, data: Array<{ range: string; values: Array<Array<string | number | null>> }>): Promise<void>;
+  writeRaw(spreadsheetId: string, data: Array<{ range: string; values: Array<Array<SheetCellValue>> }>): Promise<void>;
 };
 
 const realClient: AnalysisSheetsClient = {
-  // Only a job tab is touched: a tab the person made is not re-headered or protected.
-  verifyTab: (spreadsheetId, tabName) =>
-    verifyJobSheetTab(spreadsheetId, tabName, JOB_SHEET_HEADERS, undefined, { onlyJobTabs: true }),
+  // Only a job tab is touched: any other tab is not re-headered, protected or cleared.
+  verifyTab: (spreadsheetId, tabName) => verifyJobSheetTab(spreadsheetId, tabName),
   readRanges: (spreadsheetId, ranges) => batchGetValues(spreadsheetId, ranges),
   writeRaw: (spreadsheetId, data) => batchUpdateValuesRaw(spreadsheetId, data),
 };
@@ -118,16 +120,21 @@ export function analysisCellText(stored: StoredJobAnalysis): string {
 }
 
 /**
- * The six cells, Job Field to Analysis. Job Hash and Lake Status are `null`,
- * which leaves whatever is in them alone: they are the lake's to fill.
+ * The six cells, G to L: Job Field, Salary, Job Type (Remote, Hybrid, Onsite,
+ * or '' when the posting does not say), Clearance as a real TRUE/FALSE (TRUE
+ * for any clearance the posting requires, an unknown one included), Industry,
+ * and the Analysis cell. Every one is written, so a row's six always come
+ * from one analysis. The facts are worked out from the stored analysis as it
+ * is read (`facts.ts`) - an analysis from before Industry existed is never
+ * asked for it again.
  */
-export function analysisColumnValues(stored: StoredJobAnalysis): Array<string | null> {
+export function analysisColumnValues(stored: StoredJobAnalysis): SheetCellValue[] {
   return [
     jobFieldLabel(stored.jobFieldId),
     formatSalary(stored.analysis.salary),
-    null,
-    stored.createdAt,
-    null,
+    jobTypeLabel(jobTypeOf(stored.analysis)),
+    clearanceRequiredOf(stored.analysis),
+    industryLabel(industryOf(stored.analysis)),
     analysisCellText(stored),
   ];
 }
@@ -255,7 +262,7 @@ export type SheetAnalysisRead = {
 /**
  * Verifies the tab, then reads the submitted rows' Company and Job Link and
  * their six analysis cells in ONE batched call - two ranges per run of
- * consecutive rows, B:D and K:P. Never throws: a sheet that cannot be read is a
+ * consecutive rows, C:E and G:L. Never throws: a sheet that cannot be read is a
  * run without sheet-first, and every row falls back to the store, then to one
  * analysis.
  */
@@ -270,8 +277,9 @@ export async function readAnalysisRows(spreadsheetId: string, tabName: string, r
     if (result.verified.jobTab === false) {
       result.jobTab = false;
       console.log(
-        `[sheets] "${tabName}" in ${spreadsheetId} is not laid out as a job tab; its own columns are left as they ` +
-          'are, and its postings are analysed from the store instead.'
+        `[sheets] "${tabName}" in ${spreadsheetId} is not laid out as a job tab (a tab of the person's own, or an ` +
+          "older build's daily tab); its columns are left as they are, and its postings are analysed from the store " +
+          'instead.'
       );
       return result;
     }
@@ -330,7 +338,13 @@ export type WriteBackEntry = {
   stored: StoredJobAnalysis;
 };
 
-export type WriteBackReport = { written: number; skipped: number; failed: number };
+export type WriteBackReport = {
+  written: number;
+  skipped: number;
+  failed: number;
+  /** The spreadsheets a write failed in, so a caller can tell whether its own did. */
+  failedSpreadsheets: string[];
+};
 
 /** How long a write-back waits for others in the same spreadsheet before it goes. */
 const WRITE_BACK_DELAY_MS = 1_500;
@@ -349,7 +363,7 @@ const settled = new Set<string>();
 /** More than this and the set starts again: it only spares Google a read, and every write re-reads its row. */
 const SETTLED_LIMIT = 20_000;
 let timer: NodeJS.Timeout | null = null;
-let flushing: Promise<WriteBackReport> = Promise.resolve({ written: 0, skipped: 0, failed: 0 });
+let flushing: Promise<WriteBackReport> = Promise.resolve({ written: 0, skipped: 0, failed: 0, failedSpreadsheets: [] });
 
 function tabKey(entry: Pick<WriteBackEntry, 'spreadsheetId' | 'tabName'>): string {
   return `${entry.spreadsheetId}\u0000${entry.tabName}\u0000`;
@@ -422,7 +436,7 @@ export function flushAnalysisWriteBacks(): Promise<WriteBackReport> {
 }
 
 async function writeAll(entries: WriteBackEntry[]): Promise<WriteBackReport> {
-  const report: WriteBackReport = { written: 0, skipped: 0, failed: 0 };
+  const report: WriteBackReport = { written: 0, skipped: 0, failed: 0, failedSpreadsheets: [] };
   const groups = new Map<string, WriteBackEntry[]>();
   for (const entry of entries) {
     const key = `${entry.spreadsheetId}\u0000${entry.tabName}`;
@@ -439,6 +453,7 @@ async function writeAll(entries: WriteBackEntry[]): Promise<WriteBackReport> {
       } catch (error) {
         report.failed += slice.length;
         const { spreadsheetId, tabName } = slice[0];
+        if (!report.failedSpreadsheets.includes(spreadsheetId)) report.failedSpreadsheets.push(spreadsheetId);
         console.warn(
           `[sheets] Could not write the analysis of ${slice.length} row(s) back into "${tabName}" of ${spreadsheetId}; ` +
             'the analyses are stored, and the next run on these rows writes them.',
@@ -474,9 +489,11 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
   }
   forgetClearedTab(spreadsheetId, tabName, verified);
 
-  // All six analysis cells, not only Analysis: on a tab an older build made,
-  // the first two of them were spare columns somebody may have typed into,
-  // and a row holding anything there is left as it is rather than written over.
+  // All six analysis cells, not only Analysis: a row holding anything in G
+  // to K while its Analysis cell is empty - anything but this posting's own
+  // facts, which a protection repair clearing L leaves behind - was not
+  // written by the program (it writes all six at once), and is left as it is
+  // rather than written over: the protection was off when somebody typed it.
   const runs = rowRuns(entries.map((entry) => entry.row));
   const ranges = runs.flatMap(([from, to]) => [
     a1Range(tabName, from, to, JOB_SHEET_COLUMNS.company, JOB_SHEET_COLUMNS.jobLink),
@@ -484,18 +501,17 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
   ]);
   const grids = await client.readRanges(spreadsheetId, ranges);
   const analysisOffset = JOB_SHEET_COLUMNS.analysis - ANALYSIS_FIRST_COLUMN;
-  // What may hold somebody's own text: Job Field, Salary and Analyzed At. Not
-  // Job Hash and Lake Status - the Job Data Lake is their only writer, and
-  // writes them before a row has any analysis (a Skipped row) or when this
-  // write failed (its status still lands) - and this write leaves them as
-  // they are. Counting them would leave such a row without its analysis
-  // cells for good.
+  // What may hold somebody's own text: Job Field to Industry, G to K.
   const personal = new Set(
-    [JOB_SHEET_COLUMNS.jobField, JOB_SHEET_COLUMNS.salary, JOB_SHEET_COLUMNS.analyzedAt].map(
-      (column) => column - ANALYSIS_FIRST_COLUMN
-    )
+    [
+      JOB_SHEET_COLUMNS.jobField,
+      JOB_SHEET_COLUMNS.salary,
+      JOB_SHEET_COLUMNS.jobType,
+      JOB_SHEET_COLUMNS.clearance,
+      JOB_SHEET_COLUMNS.industry,
+    ].map((column) => column - ANALYSIS_FIRST_COLUMN)
   );
-  const current = new Map<number, { company: string; link: string; cell: ParsedAnalysisCell; others: boolean }>();
+  const current = new Map<number, { company: string; link: string; cell: ParsedAnalysisCell; facts: string[] }>();
   runs.forEach(([from, to], runIndex) => {
     for (let row = from; row <= to; row += 1) {
       const identity = grids[runIndex * 2]?.[row - from] ?? [];
@@ -504,12 +520,19 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
         company: identity[0] ?? '',
         link: identity[JOB_SHEET_COLUMNS.jobLink - JOB_SHEET_COLUMNS.company] ?? '',
         cell: parseAnalysisCell(analysisCells[analysisOffset]),
-        others: analysisCells.some((cell, index) => personal.has(index) && String(cell ?? '').trim() !== ''),
+        facts: [...personal].map((index) => String(analysisCells[index] ?? '').trim()),
       });
     }
   });
+  /**
+   * Somebody's own text in G to K: anything there that is not exactly what
+   * this write would put there. The program's own five for this very posting
+   * - left behind when a protection repair cleared L - are not.
+   */
+  const theirs = (facts: string[], values: SheetCellValue[]) =>
+    facts.some((text, index) => text !== '' && text.toLowerCase() !== cellText(values[index]).toLowerCase());
 
-  const data: Array<{ range: string; values: Array<Array<string | number | null>> }> = [];
+  const data: Array<{ range: string; values: Array<Array<SheetCellValue>> }> = [];
   const done: WriteBackEntry[] = [];
   const writing = new Set<number>();
   let skipped = 0;
@@ -529,11 +552,11 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
       skipped += 1;
       continue;
     }
-    let values = analysisColumnValues(entry.stored);
+    const values = analysisColumnValues(entry.stored);
     if (now.cell.state === 'empty') {
-      if (now.others) {
-        // Something the program did not write - a note in what an older
-        // build left as a spare column - is left as it is.
+      if (theirs(now.facts, values)) {
+        // Something the program did not write - G to K filled with L empty
+        // is never its own - is left as it is.
         skipped += 1;
         done.push(entry);
         continue;
@@ -551,8 +574,7 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
       continue;
     } else {
       // The program's cells for the posting that sat in this row before:
-      // replaced whole, the lake's two emptied with them.
-      values = values.map((value) => value ?? '');
+      // replaced whole.
       console.log(
         `[sheets] Row ${entry.row} of "${tabName}" in ${spreadsheetId} held the analysis of another posting ` +
           `(${now.cell.analysisId}); writing ${entry.companyName}'s over it.`
@@ -572,11 +594,17 @@ async function writeGroup(unordered: WriteBackEntry[]): Promise<{ written: numbe
   return { written: data.length, skipped };
 }
 
+/** A cell value as a FORMATTED read gives it back: a boolean as TRUE / FALSE. */
+function cellText(value: SheetCellValue | undefined): string {
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  return value === null || value === undefined ? '' : String(value).trim();
+}
+
 /** Tests share one process: queued rows, the timer and what was settled are forgotten. */
 export function resetAnalysisWriteBacksForTests(): void {
   if (timer) clearTimeout(timer);
   timer = null;
   pending.clear();
   settled.clear();
-  flushing = Promise.resolve({ written: 0, skipped: 0, failed: 0 });
+  flushing = Promise.resolve({ written: 0, skipped: 0, failed: 0, failedSpreadsheets: [] });
 }

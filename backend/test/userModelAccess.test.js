@@ -161,10 +161,13 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
       assert.equal(text.includes(leak), false, `the user payload carries ${leak}`);
     }
 
-    // The administrator's payload keeps all of it.
+    // The administrator's payload keeps the models' detail - and no saved
+    // shared sheet any more: they are gone (owner decision S1), the save
+    // above that named one taken as a stale page.
     const admin = await config.getAdminAppSettings();
     assert.equal(admin.aiModels.find((model) => model.id === 'claude-cli-opus').pricePerResumeMilli, 7);
-    assert.equal(admin.googleSheetsSources[0].sheetId, 'SECRET-SHEET-ID');
+    assert.equal('googleSheetsSources' in admin, false);
+    assert.equal(JSON.stringify(admin).includes('SECRET-SHEET-ID'), false);
     assert.ok(Array.isArray(admin.providerModelOptions) && admin.providerModelOptions.length === 3);
   } finally {
     server.close();

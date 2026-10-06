@@ -66,7 +66,6 @@ import { openBatchStream } from './batchStream';
 import { loadAnalysis } from '../services/jobAnalysis/gate';
 import { resolveAnalysesAtSubmit, type SheetSource } from '../services/jobAnalysis/submit';
 import { resolveAddressableSheet } from '../services/sheets/accountSheet';
-import { adminAllowedSheetIds } from '../services/sheets/jobSheetTarget';
 
 /**
  * Submitting work to the generation queue.
@@ -124,8 +123,8 @@ type SubmitBody = {
   }>;
   /**
    * The app sheet the jobs were read from, for a sheet run: the account's own
-   * spreadsheet when `spreadsheetId` is left out (an administrator may also
-   * name a shared source), and the tab. Each job's `sourceRowNumber` is its
+   * spreadsheet (`spreadsheetId` may name it, and nothing else - any other id
+   * is 404), and the tab. Each job's `sourceRowNumber` is its
    * row. The server reads the rows' analysis cells itself - one batched read
    * at submission - and a row already analysed skips analysis (sheet first);
    * a row analysed now has its cells written back, once.
@@ -254,9 +253,9 @@ export function normalizeJobs(
 
 /**
  * The sheet a run's jobs came from, when the submission names one: checked
- * like every route that takes a sheet - the account's own, or for an
- * administrator a shared source they configured, and anything else is 404 -
- * because analysis cells are about to be read from it and written into it.
+ * like every route that takes a sheet - the account's own, and anything else
+ * is 404, an administrator's included - because analysis cells are about to
+ * be read from it and written into it.
  *
  * A sheet that is not set up on the server, or cannot be resolved for any
  * reason but "not yours", leaves the run without sheet-first: the jobs are
@@ -268,7 +267,7 @@ async function resolveRunSheet(account: UserAccount | undefined, sheet: SubmitBo
   const tabName = typeof sheet.tabName === 'string' ? sheet.tabName.trim() : '';
   if (!tabName) throw new SubmitError('sheet.tabName is required for a sheet run.');
   try {
-    const spreadsheetId = await resolveAddressableSheet(account, sheet.spreadsheetId, await adminAllowedSheetIds(account));
+    const spreadsheetId = await resolveAddressableSheet(account, sheet.spreadsheetId);
     return { spreadsheetId, tabName };
   } catch (error) {
     if (isPublicError(error) && (error as PublicError).status === 404) throw error;

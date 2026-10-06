@@ -154,7 +154,7 @@ export function lakeIdentity(company: unknown, jobFieldId: unknown): LakeIdentit
   return { hash, hashVersion: JOB_LAKE_HASH_VERSION, companyKey, jobFieldId };
 }
 
-/** Just the hash, or null - what a sheet's Job Hash cell shows. */
+/** Just the hash, or null - what the admin lake sheet's Job Hash column shows. */
 export function jobHash(company: unknown, jobFieldId: unknown): string | null {
   return lakeIdentity(company, jobFieldId)?.hash ?? null;
 }

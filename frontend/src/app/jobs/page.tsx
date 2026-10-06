@@ -3,16 +3,10 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { EmptyState, Field, Notice, Page, PageHeader, Pill, Section, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
+import { sheetApi, type AccountSheet } from '@/lib/sheet';
+import { safeJobLink } from '@/lib/sheetRows';
+import { chosenTab, DEFAULT_TAB, hasUnreadTabs, sheetTabOptions, unreadTabsNoteFor, type SheetTabListing } from '@/lib/sheetTabs';
 import {
-  parsePositiveWholeNumber,
-  parseSpreadsheetColumnInput,
-  sheetApi,
-  type AccountSheet,
-} from '@/lib/sheet';
-import {
-  adminApi,
-  GoogleSheetSource,
-  GoogleSheetTab,
   importApi,
   jobsApi,
   ScraperExportResponse,
@@ -78,26 +72,6 @@ const JOB_TYPE_OPTIONS: Array<{ value: ScraperJobType; label: string }> = [
   { value: 'internship', label: 'Internship' },
   { value: 'temporary', label: 'Temporary' },
 ];
-
-type SheetExportFormState = {
-  sheetId: string;
-  tabName: string;
-  startRow: string;
-  companyNameCol: string;
-  jobTitleCol: string;
-  jobLinkCol: string;
-  jobDescriptionCol: string;
-};
-
-const DEFAULT_SHEET_EXPORT_FORM: SheetExportFormState = {
-  sheetId: '',
-  tabName: '',
-  startRow: '2',
-  companyNameCol: 'D',
-  jobTitleCol: 'E',
-  jobLinkCol: 'F',
-  jobDescriptionCol: 'G',
-};
 
 function formatFetchedAt(value: string): string {
   const date = new Date(value);
@@ -189,25 +163,19 @@ export default function JobsPage() {
   const isAdmin = account?.role === 'admin';
   const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
   /**
-   * Where the scraped rows go.
-   *
-   * `mine` sends no spreadsheet id, no tab and no columns at all - the backend
-   * fills in the account's own sheet, today's tab and the fixed layout. It is
-   * the only option an ordinary user has, because the shared sources belong to
-   * the administrator who configured them and are not theirs to write into.
+   * The tabs of the account's own sheet - the only sheet an export writes to
+   * (owner decision S1). The rows go after the last one used, A to F, so the
+   * tab is all there is to choose; null until listed, or when it could not be.
    */
-  const [exportTarget, setExportTarget] = useState<'mine' | 'shared'>('mine');
-  const [sheetExportForm, setSheetExportForm] = useState<SheetExportFormState>(DEFAULT_SHEET_EXPORT_FORM);
-  const [sheetSources, setSheetSources] = useState<GoogleSheetSource[]>([]);
-  const [sheetTabs, setSheetTabs] = useState<GoogleSheetTab[]>([]);
-  const [sheetTitle, setSheetTitle] = useState('');
+  const [sheetTabs, setSheetTabs] = useState<SheetTabListing | null>(null);
+  /** The tab picked by hand; empty means the sheet's default, All. */
+  const [pickedTab, setPickedTab] = useState('');
   const [writeToGoogleSheet, setWriteToGoogleSheet] = useState(false);
   const [results, setResults] = useState<ScraperJob[]>([]);
   const [searchMeta, setSearchMeta] = useState<ScraperRunResponse | null>(null);
   const [exportMeta, setExportMeta] = useState<ScraperExportResponse['export'] | null>(null);
   const [searched, setSearched] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingTabs, setIsLoadingTabs] = useState(false);
   const [error, setError] = useState('');
 
   const selectedSource = SCRAPER_OPTIONS.find((option) => option.value === source) ?? SCRAPER_OPTIONS[0];
@@ -220,10 +188,6 @@ export default function JobsPage() {
   const isStartUrlOnlyScraper = isIndeedStartUrlOnlySource || isMemo23StartUrlOnlyProvider;
   const resultCap = resultCapFor(selectedProvider, isStartUrlOnlyScraper);
   const availableLimitOptions = limitOptionsFor(resultCap);
-
-  const setSheetField = <K extends keyof SheetExportFormState>(field: K, value: SheetExportFormState[K]) => {
-    setSheetExportForm((current) => ({ ...current, [field]: value }));
-  };
 
   useEffect(() => {
     let isMounted = true;
@@ -272,35 +236,6 @@ export default function JobsPage() {
     };
   }, []);
 
-  /*
-   * The shared sheets belong to the administrator who saved them, and only the
-   * administrator's export panel offers them - so only an administrator's page
-   * asks for them, from the admin settings that hold them.
-   */
-  useEffect(() => {
-    if (!isAdmin) return;
-    let isMounted = true;
-
-    void (async () => {
-      try {
-        const settings = await adminApi.getSettings();
-        if (!isMounted) return;
-        setSheetSources(settings.googleSheetsSources);
-        setSheetExportForm((current) =>
-          current.sheetId.trim()
-            ? current
-            : { ...current, sheetId: settings.googleSheetsSources[0]?.sheetId ?? '' }
-        );
-      } catch {
-        if (isMounted) setSheetSources([]);
-      }
-    })();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isAdmin]);
-
   useEffect(() => {
     if (resultCap !== null && limit > resultCap) {
       setLimit(resultCap);
@@ -317,36 +252,20 @@ export default function JobsPage() {
         setAccountSheet(null);
       }
     })();
+    void (async () => {
+      try {
+        const answer = await importApi.listTabs();
+        setSheetTabs({ tabs: answer.tabs ?? [], defaultTab: answer.defaultTab ?? null });
+      } catch {
+        // Not fatal either: with no tab named, the export writes to All, and
+        // a sheet that cannot be reached is refused in the server's words.
+        setSheetTabs(null);
+      }
+    })();
   }, []);
 
-  const handleLoadSheetTabs = async () => {
-    const sheetId = sheetExportForm.sheetId.trim();
-    if (!sheetId) {
-      setError('Enter a Google Sheet ID before loading tabs.');
-      return;
-    }
-
-    setIsLoadingTabs(true);
-    setError('');
-
-    try {
-      const response = await importApi.fetchGoogleSheetRange({ sheetId });
-      setSheetTitle(response.spreadsheetTitle);
-      setSheetTabs(response.tabs);
-      setSheetField(
-        'tabName',
-        response.tabs.some((tab) => tab.title === sheetExportForm.tabName)
-          ? sheetExportForm.tabName
-          : (response.tabs[0]?.title ?? '')
-      );
-    } catch (err) {
-      setSheetTabs([]);
-      setSheetTitle('');
-      setError(messageWithDetail(err, 'Failed to load Google Sheet tabs'));
-    } finally {
-      setIsLoadingTabs(false);
-    }
-  };
+  const tabOptions = sheetTabOptions(sheetTabs?.tabs ?? []);
+  const exportTab = chosenTab(sheetTabs, pickedTab);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -397,38 +316,14 @@ export default function JobsPage() {
       let response: ScraperRunResponse;
 
       if (writeToGoogleSheet) {
-        // Sending nothing is what selects the account's own sheet: the server
-        // knows the spreadsheet, the day's tab and the column layout, and a
-        // number typed here could only disagree with them.
+        // The account's own sheet, always: the server knows the spreadsheet,
+        // the columns (A to F) and the first free row, and the only choice is
+        // the tab - All when none is named.
         const exportResponse = await jobsApi.exportScraperToGoogleSheet({
           ...commonPayload,
           source,
           provider: selectedProviderId || undefined,
-          ...(exportTarget === 'shared'
-            ? (() => {
-                // An empty picker must not fall through to the account's own
-                // sheet: "a shared sheet" and "my sheet" are different
-                // destinations, and sending '' silently means the second.
-                if (!sheetExportForm.sheetId.trim()) {
-                  throw new Error('Choose a shared Google Sheet, or switch back to your own job sheet.');
-                }
-                if (!sheetExportForm.tabName.trim()) {
-                  throw new Error('Choose a tab in the shared Google Sheet.');
-                }
-                return {
-                sheetId: sheetExportForm.sheetId.trim(),
-                tabName: sheetExportForm.tabName.trim(),
-                startRow: parsePositiveWholeNumber('Start row', sheetExportForm.startRow),
-                companyNameCol: parseSpreadsheetColumnInput('Company column', sheetExportForm.companyNameCol),
-                jobTitleCol: parseSpreadsheetColumnInput('Job title column', sheetExportForm.jobTitleCol),
-                jobLinkCol: parseSpreadsheetColumnInput('Job link column', sheetExportForm.jobLinkCol),
-                jobDescriptionCol: parseSpreadsheetColumnInput(
-                  'Job description column',
-                  sheetExportForm.jobDescriptionCol
-                ),
-                };
-              })()
-            : {}),
+          ...(exportTab ? { tabName: exportTab } : {}),
         });
         response = exportResponse;
         setExportMeta(exportResponse.export);
@@ -672,174 +567,52 @@ export default function JobsPage() {
 
         <Section
           title="Google Sheets export"
-          description="Choose the spreadsheet, tab, columns, and start row. Duplicate jobs already present in the sheet are skipped before writing."
+          description="With Write to Google Sheet ticked, the jobs found go into your own job sheet, after the rows already there. Jobs whose company is already in the tab are skipped."
         >
-          {/* Ordinary accounts have exactly one destination, so there is
-              nothing to choose. An administrator can still write into a
-              shared source they configured. */}
-          {isAdmin && (
-            <div className="tl-card inline-flex flex-wrap gap-1 p-1">
-              {(['mine', 'shared'] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setExportTarget(option)}
-                  disabled={isLoading}
-                  className="tl-subtab"
-                  data-active={exportTarget === option}
-                  aria-pressed={exportTarget === option}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div>
+              <Field label="Tab" htmlFor="jobs-export-tab">
+                <select
+                  id="jobs-export-tab"
+                  value={exportTab}
+                  onChange={(event) => setPickedTab(event.target.value)}
+                  className="tl-input"
+                  disabled={isLoading || !exportTab}
                 >
-                  {option === 'mine' ? 'My job sheet' : 'A shared sheet'}
-                </button>
-              ))}
+                  {!exportTab && (
+                    <option value="">{sheetTabs ? 'No job tab to write to' : `${DEFAULT_TAB} (the default)`}</option>
+                  )}
+                  {/* A tab that is not a job tab - an older build's daily tab, a tab of your own - is listed, not chosen. */}
+                  {tabOptions.map((option) => (
+                    <option key={option.title} value={option.title} disabled={!option.usable}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {sheetTabs && hasUnreadTabs(sheetTabs.tabs) && <p className="mt-2 text-sm text-subtle">{unreadTabsNoteFor(sheetTabs.tabs)}</p>}
             </div>
-          )}
-
-          {exportTarget === 'mine' ? (
             <Notice tone="neutral">
               {accountSheet?.configured && accountSheet.spreadsheetUrl ? (
                 <>
-                  Rows go to{' '}
+                  Each job is a row of{' '}
                   <a
                     className="tl-link"
-                    href={accountSheet.todayTabUrl ?? accountSheet.spreadsheetUrl}
+                    href={accountSheet.defaultTabUrl ?? accountSheet.spreadsheetUrl}
                     target="_blank"
                     rel="noreferrer"
                   >
                     your job sheet
                   </a>
-                  , on the <span className="font-semibold">{accountSheet.todayTab}</span> tab, under
-                  Company, Job Title, Job Link and Job Description. New rows are added after the ones
-                  already there, and jobs already in the tab are skipped.
+                  : today&apos;s Date and the day&apos;s next NO(DATE), then Company, Job Title, Job Link and Job
+                  Description - columns A to F. Columns G to L are the app&apos;s, filled once a posting is
+                  analysed.
                 </>
               ) : (
-                'Rows go to your own job sheet, on today\'s tab. Settings > Job Sheet has the link if you want to see it.'
+                'Each job is a row of your own job sheet: Date, NO(DATE), Company, Job Title, Job Link and Job Description. Settings > Job Sheet has the link.'
               )}
             </Notice>
-          ) : (
-          <>
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_220px_auto] lg:items-end">
-            <Field label="Google Sheet" htmlFor="jobs-export-sheet">
-              <select
-                id="jobs-export-sheet"
-                value={sheetExportForm.sheetId}
-                onChange={(event) => {
-                  setSheetField('sheetId', event.target.value);
-                  setSheetField('tabName', '');
-                  setSheetTabs([]);
-                  setSheetTitle('');
-                }}
-                className="tl-input"
-                disabled={isLoading}
-              >
-                <option value="">
-                  {sheetSources.length ? 'Choose a saved Google Sheet' : 'No saved Google Sheets available'}
-                </option>
-                {sheetSources.map((sheetSource) => (
-                  <option key={sheetSource.id} value={sheetSource.sheetId}>
-                    {sheetSource.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Sheet tab" htmlFor="jobs-export-tab">
-              <select
-                id="jobs-export-tab"
-                value={sheetExportForm.tabName}
-                onChange={(event) => setSheetField('tabName', event.target.value)}
-                className="tl-input"
-                disabled={isLoading || isLoadingTabs || sheetTabs.length === 0}
-              >
-                <option value="">{sheetTabs.length ? 'Choose a tab' : 'Load tabs first'}</option>
-                {sheetTabs.map((tab) => (
-                  <option key={tab.sheetId} value={tab.title}>
-                    {tab.title}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <button
-              type="button"
-              onClick={handleLoadSheetTabs}
-              disabled={isLoading || isLoadingTabs || !sheetExportForm.sheetId.trim()}
-              className="tl-button-quiet w-full lg:w-auto"
-            >
-              {isLoadingTabs ? 'Loading tabs...' : 'Load tabs'}
-            </button>
           </div>
-
-          {sheetTitle && (
-            <Notice tone="success">
-              Connected to <span className="font-semibold">{sheetTitle}</span>.
-            </Notice>
-          )}
-
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <Field label="Company column" htmlFor="jobs-export-company-col">
-              <input
-                id="jobs-export-company-col"
-                type="text"
-                value={sheetExportForm.companyNameCol}
-                onChange={(event) => setSheetField('companyNameCol', event.target.value.toUpperCase())}
-                placeholder="D"
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Job title column" htmlFor="jobs-export-title-col">
-              <input
-                id="jobs-export-title-col"
-                type="text"
-                value={sheetExportForm.jobTitleCol}
-                onChange={(event) => setSheetField('jobTitleCol', event.target.value.toUpperCase())}
-                placeholder="E"
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Job link column" htmlFor="jobs-export-link-col">
-              <input
-                id="jobs-export-link-col"
-                type="text"
-                value={sheetExportForm.jobLinkCol}
-                onChange={(event) => setSheetField('jobLinkCol', event.target.value.toUpperCase())}
-                placeholder="F"
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Description column" htmlFor="jobs-export-description-col">
-              <input
-                id="jobs-export-description-col"
-                type="text"
-                value={sheetExportForm.jobDescriptionCol}
-                onChange={(event) => setSheetField('jobDescriptionCol', event.target.value.toUpperCase())}
-                placeholder="G"
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-
-            <Field label="Start row" htmlFor="jobs-export-start-row">
-              <input
-                id="jobs-export-start-row"
-                type="number"
-                min={1}
-                step={1}
-                value={sheetExportForm.startRow}
-                onChange={(event) => setSheetField('startRow', event.target.value)}
-                className="tl-input"
-                disabled={isLoading}
-              />
-            </Field>
-          </div>
-          </>
-          )}
         </Section>
 
         <div className="flex flex-wrap gap-3 pt-6">
@@ -889,11 +662,27 @@ export default function JobsPage() {
         {exportMeta && !error && (
           <Notice tone="success">
             <p className="font-semibold">
-              Wrote {exportMeta.rowsWritten} jobs to {exportMeta.spreadsheetTitle} / {exportMeta.selectedTab}
+              Wrote {exportMeta.rowsWritten} job{exportMeta.rowsWritten === 1 ? '' : 's'} to {exportMeta.spreadsheetTitle} /{' '}
+              {safeJobLink(exportMeta.tabUrl ?? '') ? (
+                <a className="tl-link" href={safeJobLink(exportMeta.tabUrl ?? '')} target="_blank" rel="noreferrer">
+                  {exportMeta.selectedTab}
+                </a>
+              ) : (
+                exportMeta.selectedTab
+              )}
             </p>
-            <p className="mt-1">
-              Rows {exportMeta.startRow} to {exportMeta.endRow}.
-            </p>
+            {exportMeta.rowsWritten > 0 && (
+              <p className="mt-1">
+                Rows {exportMeta.startRow} to {exportMeta.endRow}
+                {exportMeta.date ? `, dated ${exportMeta.date}` : ''}
+                {typeof exportMeta.firstNo === 'number' && typeof exportMeta.lastNo === 'number'
+                  ? exportMeta.firstNo === exportMeta.lastNo
+                    ? `, NO(DATE) ${exportMeta.firstNo}`
+                    : `, NO(DATE) ${exportMeta.firstNo} to ${exportMeta.lastNo}`
+                  : ''}
+                .
+              </p>
+            )}
             <p className="mt-1">
               {exportMeta.unresolvedJobLinks === 0
                 ? 'Every exported row had a usable apply link.'

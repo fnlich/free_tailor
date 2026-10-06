@@ -4,25 +4,40 @@ const test = require('node:test');
 const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
- * One spreadsheet per account, one tab per day.
+ * One spreadsheet per account, with its All and Temp For AI tabs.
  *
- * Every claim here is about NOT doing something twice. A second spreadsheet for
- * an account is invisible - the first one keeps working, and the rows somebody
- * typed are simply in a file nothing links to any more - so the duplicate cases
- * are the ones worth pinning down rather than the happy path.
+ * Every claim here is about NOT doing something twice - or at all. A second
+ * spreadsheet for an account is invisible - the first one keeps working, and
+ * the rows somebody typed are simply in a file nothing links to any more - and
+ * a tab of the person's own, or an older build's daily tab, must never be
+ * touched. So the duplicate and the hands-off cases are the ones worth pinning
+ * down rather than the happy path.
  *
  * The Google calls are a fake, injected through `setSheetsClientForTests`. What
  * is being tested is the decision to call, not the HTTP.
  */
 
-/** A spreadsheet service that remembers everything, so the tests can count calls. */
+const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
+const OLD_DAILY_HEADER = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder'];
+
+/**
+ * A spreadsheet service that remembers everything, so the tests can count
+ * calls. Each tab has a row 1 (`header`): a tab added by the app gets the job
+ * header; one added by `addTab` whatever the test says. A tab whose row 1 is
+ * not the job header and is not wholly empty is not a job tab, which is what
+ * the real `addSheetTabWithHeaders` reports (`jobTab: false`) for it.
+ */
 function makeClient(overrides = {}) {
   const calls = [];
+  /** spreadsheetId -> [{ title, gid, header, empty }] in tab order. */
   const tabs = new Map();
   const visibility = new Map();
   const shares = new Map();
   let minted = 0;
   let nextGid = 100;
+  const isJob = (tab) =>
+    JOB_SHEET_HEADERS.slice(0, 6).every((header, index) => tab.header[index] === header) ||
+    (tab.header.length === 0 && tab.empty !== false);
 
   const client = {
     async isConfigured() {
@@ -39,7 +54,8 @@ function makeClient(overrides = {}) {
       const firstTabGid = (nextGid += 1);
       // Created WITH its first tab, which is what keeps Google's default
       // `Sheet1` out of the file - the fake models that, not an empty file.
-      tabs.set(spreadsheetId, new Map([[firstTabTitle, firstTabGid]]));
+      // Unformatted until formatJobSheetTab lays it out.
+      tabs.set(spreadsheetId, [{ title: firstTabTitle, gid: firstTabGid, header: [] }]);
       visibility.set(spreadsheetId, 'private');
       return {
         spreadsheetId,
@@ -49,16 +65,25 @@ function makeClient(overrides = {}) {
     },
     async formatJobSheetTab(spreadsheetId, gid) {
       calls.push(['formatJobSheetTab', spreadsheetId, gid]);
+      const tab = (tabs.get(spreadsheetId) ?? []).find((entry) => entry.gid === gid);
+      if (tab) tab.header = [...JOB_SHEET_HEADERS];
     },
-    async addSheetTabWithHeaders(spreadsheetId, title) {
-      calls.push(['addSheetTabWithHeaders', spreadsheetId, title]);
-      const existing = tabs.get(spreadsheetId) ?? new Map();
-      tabs.set(spreadsheetId, existing);
-      // `created: false` means "already there", not "failed".
-      if (existing.has(title)) return { gid: existing.get(title), created: false };
+    async addSheetTabWithHeaders(spreadsheetId, title, options = {}) {
+      calls.push(['addSheetTabWithHeaders', spreadsheetId, title, options.index]);
+      const list = tabs.get(spreadsheetId) ?? [];
+      tabs.set(spreadsheetId, list);
+      const existing = list.find((tab) => tab.title === title);
+      // `created: false` means "already there", not "failed" - and a tab that
+      // is not a job tab is reported, never touched.
+      if (existing) {
+        if (!isJob(existing)) return { gid: existing.gid, created: false, protection: 'unconfirmed', jobTab: false };
+        existing.header = [...JOB_SHEET_HEADERS];
+        return { gid: existing.gid, created: false, protection: 'intact', jobTab: true };
+      }
       const gid = (nextGid += 1);
-      existing.set(title, gid);
-      return { gid, created: true };
+      const at = typeof options.index === 'number' ? Math.min(options.index, list.length) : list.length;
+      list.splice(at, 0, { title, gid, header: [...JOB_SHEET_HEADERS] });
+      return { gid, created: true, protection: 'added', jobTab: true };
     },
     async shareSpreadsheetWithEmail(spreadsheetId, email) {
       calls.push(['shareSpreadsheetWithEmail', spreadsheetId, email]);
@@ -77,12 +102,49 @@ function makeClient(overrides = {}) {
       visibility.set(spreadsheetId, next);
       return next;
     },
+    async listSheetTabs(spreadsheetId) {
+      calls.push(['listSheetTabs', spreadsheetId]);
+      return (tabs.get(spreadsheetId) ?? []).map(({ title, gid }) => ({ title, gid }));
+    },
+    async readRanges(spreadsheetId, ranges) {
+      calls.push(['readRanges', spreadsheetId, ranges]);
+      return ranges.map((range) => {
+        const title = /^'(.*)'!1:1$/.exec(range)[1].replace(/''/g, "'");
+        const tab = (tabs.get(spreadsheetId) ?? []).find((entry) => entry.title === title);
+        return tab && tab.header.length ? [tab.header] : [];
+      });
+    },
     ...overrides,
   };
 
   const named = (name) => calls.filter((call) => call[0] === name);
-  const titles = (spreadsheetId) => [...(tabs.get(spreadsheetId) ?? new Map()).keys()];
-  return { client, calls, named, tabs, titles, visibility, shares };
+  const titles = (spreadsheetId) => (tabs.get(spreadsheetId) ?? []).map((tab) => tab.title);
+  /** A tab put into a spreadsheet the way a person, or an older build, would have. */
+  const addTab = (spreadsheetId, title, header, { at, empty } = {}) => {
+    const list = tabs.get(spreadsheetId) ?? [];
+    tabs.set(spreadsheetId, list);
+    const tab = { title, gid: (nextGid += 1), header, ...(empty === undefined ? {} : { empty }) };
+    list.splice(at ?? list.length, 0, tab);
+    return tab;
+  };
+  return { client, calls, named, tabs, titles, addTab, visibility, shares };
+}
+
+/**
+ * An account whose sheet an older build allocated: daily tabs in the old
+ * layout, and the row as that build left it (sheet_tab_date set, no layout).
+ */
+function olderBuildSheet(users, fake, account, extraTabs = []) {
+  const spreadsheetId = 'old-sheet';
+  users.recordAccountSheet(account.id, spreadsheetId, `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`);
+  users.recordOwnerGrant(account.id, '2026-09-01T00:00:00.000Z');
+  fake.shares.set(spreadsheetId, account.email);
+  const { getDb } = require('../dist/database/sqlite');
+  getDb().prepare("UPDATE users SET sheet_tab_date = '10/05/2026', sheet_tab_gid = '55' WHERE id = ?").run(account.id);
+  fake.addTab(spreadsheetId, '10/04/2026', OLD_DAILY_HEADER);
+  fake.addTab(spreadsheetId, '10/05/2026', OLD_DAILY_HEADER);
+  for (const [title, header, options] of extraTabs) fake.addTab(spreadsheetId, title, header, options);
+  return spreadsheetId;
 }
 
 function setup(name, overrides) {
@@ -167,59 +229,205 @@ test('a value nobody meant resolves to private, which is the safe direction', as
   }
 });
 
-test("today's tab is created once and then never asked about again", async () => {
-  const { users, sheets, named, titles } = setup('tab-once');
+test('a new sheet is made with All first and Temp For AI second, both laid out, and never asked about again', async () => {
+  const { users, sheets, named, titles } = setup('tabs-once');
   const account = users.createUser({ email: 'alice@example.com' });
 
   const state = await sheets.ensureAccountSheet(account);
-  // The spreadsheet arrives WITH today's tab, so allocation adds none and
-  // formats the one it was given - which is why there is no stray `Sheet1`.
-  assert.equal(named('addSheetTabWithHeaders').length, 0);
+  // The spreadsheet arrives WITH All, so there is no stray `Sheet1`: it is
+  // formatted, and Temp For AI is added second.
+  assert.deepEqual(named('createSpreadsheet').map((call) => call[2]), ['All']);
   assert.equal(named('formatJobSheetTab').length, 1);
-  assert.deepEqual(titles(state.spreadsheetId), [state.todayTab]);
-  assert.match(state.todayTab, /^\d{2}\/\d{2}\/\d{4}$/);
-  assert.match(state.todayTabUrl, /#gid=\d+$/);
+  assert.deepEqual(named('addSheetTabWithHeaders').map((call) => [call[2], call[3]]), [['Temp For AI', 1]]);
+  assert.deepEqual(titles(state.spreadsheetId), ['All', 'Temp For AI']);
+  assert.equal(state.defaultTab, 'All');
+  assert.equal(state.tempTab, 'Temp For AI');
+  assert.match(state.defaultTabUrl, /#gid=\d+$/);
+  assert.match(state.tempTabUrl, /#gid=\d+$/);
+  assert.notEqual(state.defaultTabUrl, state.tempTabUrl);
+  assert.equal(state.conflict, undefined);
+  assert.equal(users.getUserById(account.id).sheetLayout, 2);
+  // The older build's daily-tab cache is never written, so a rollback finds it as it was.
+  const { getDb } = require('../dist/database/sqlite');
+  assert.deepEqual(getDb().prepare('SELECT sheet_tab_date, sheet_tab_gid FROM users WHERE id = ?').get(account.id), {
+    sheet_tab_date: null,
+    sheet_tab_gid: null,
+  });
 
-  // The second sign-in of the same day. The stored date is what makes this
-  // free: without it every sign-in would cost a round trip to list the tabs.
+  // The second sign-in. The stored layout is what makes this free: without
+  // it every sign-in would cost a round trip to list the tabs.
   await sheets.ensureAccountSheet(account);
-  assert.equal(named('addSheetTabWithHeaders').length, 0);
-  assert.equal(named('formatJobSheetTab').length, 1);
-});
-
-test('a new date gets a new tab, and BESIDE the old one', async () => {
-  const { users, sheets, named, titles, tabs } = setup('new-date');
-  const account = users.createUser({ email: 'alice@example.com' });
-
-  const state = await sheets.ensureAccountSheet(account);
-
-  // A real previous day, present in the spreadsheet - not just a stale date on
-  // the row. Without this the test could not tell "added a tab" from "replaced
-  // the only tab", and a rewrite that deleted yesterday would still pass.
-  const yesterday = '01/02/2020';
-  tabs.get(state.spreadsheetId).set(yesterday, 999);
-  users.recordSheetTabDate(account.id, yesterday);
-
-  await sheets.ensureAccountSheet(account);
-
   assert.equal(named('addSheetTabWithHeaders').length, 1);
-  assert.deepEqual(titles(state.spreadsheetId).sort(), [yesterday, state.todayTab].sort());
-  assert.equal(users.getUserById(account.id).sheetTabDate, state.todayTab);
+  assert.equal(named('formatJobSheetTab').length, 1);
+  assert.equal(named('listSheetTabs').length, 0);
 });
 
-test('a tab that already exists in the spreadsheet is skipped, not treated as a failure', async () => {
-  const { users, sheets, titles } = setup('tab-exists');
+test("a sheet an older build laid out by day gets All and Temp For AI in front, and its daily tabs are never touched", async () => {
+  const fake = setup('upgrade');
+  const { users, sheets, named, titles, tabs, calls } = fake;
   const account = users.createUser({ email: 'alice@example.com' });
+  const id = olderBuildSheet(users, fake, account, [['Notes', ['My', 'own', 'header']]]);
 
+  const state = await sheets.ensureAccountSheet(users.getUserById(account.id));
+  assert.equal(named('createSpreadsheet').length, 0, 'the sheet is kept');
+  assert.deepEqual(titles(id), ['All', 'Temp For AI', '10/04/2026', '10/05/2026', 'Notes']);
+  // Only the two tabs are asked for; the daily tabs and Notes are not named
+  // in any call, and their row 1 is what it was.
+  assert.deepEqual(named('addSheetTabWithHeaders').map((call) => [call[2], call[3]]), [['All', 0], ['Temp For AI', 1]]);
+  assert.equal(named('listSheetTabs').length, 1, 'one listing for both');
+  for (const title of ['10/04/2026', '10/05/2026']) {
+    assert.deepEqual(tabs.get(id).find((tab) => tab.title === title).header, OLD_DAILY_HEADER, title);
+  }
+  assert.ok(!calls.some((call) => JSON.stringify(call).includes('10/05/2026')), 'no call names a daily tab');
+  assert.equal(state.defaultTab, 'All');
+  assert.match(state.defaultTabUrl, /#gid=\d+$/);
+  assert.equal(state.conflict, undefined);
+
+  const row = users.getUserById(account.id);
+  assert.equal(row.sheetLayout, 2);
+  const { getDb } = require('../dist/database/sqlite');
+  assert.deepEqual(getDb().prepare('SELECT sheet_tab_date, sheet_tab_gid FROM users WHERE id = ?').get(account.id), {
+    sheet_tab_date: '10/05/2026',
+    sheet_tab_gid: '55',
+  }, "the older build's cache, untouched");
+
+  // Laid out once: the next sign-in asks Google nothing.
+  calls.length = 0;
+  await sheets.ensureAccountSheet(users.getUserById(account.id));
+  assert.deepEqual(calls.map((call) => call[0]), ['isConfigured']);
+});
+
+test('an All already there is used when it is a job tab (or empty), and reported, untouched, when it is not', async () => {
+  const fake = setup('clash');
+  const { users, sheets, named, titles, tabs, calls } = fake;
+  const alice = users.createUser({ email: 'alice@example.com' });
+  const bob = users.createUser({ email: 'bob@example.com' });
+  const carol = users.createUser({ email: 'carol@example.com' });
+
+  // Alice's "All" is a tab of her own: a name clash.
+  const hers = olderBuildSheet(users, fake, alice, [['All', ['Company', 'Notes'], { at: 0 }]]);
+  const herAll = tabs.get(hers)[0];
+  const state = await sheets.ensureAccountSheet(users.getUserById(alice.id));
+  // Temp For AI goes first while All cannot be placed, so the All added later lands it second.
+  assert.deepEqual(titles(hers), ['Temp For AI', 'All', '10/04/2026', '10/05/2026']);
+  assert.deepEqual(herAll.header, ['Company', 'Notes'], 'left exactly as it was');
+  assert.deepEqual(state.conflict.tabs, ['All']);
+  assert.match(state.conflict.message, /already has a tab named "All" that is not laid out as a job tab/);
+  assert.equal(state.defaultTabUrl, undefined, 'no link to a tab that is not the job tab');
+  assert.match(state.tempTabUrl, /#gid=\d+$/);
+  assert.equal(users.getUserById(alice.id).sheetLayout, 2);
+
+  // A sign-in reports it from the row, asking Google nothing...
+  calls.length = 0;
+  assert.deepEqual((await sheets.ensureAccountSheet(users.getUserById(alice.id))).conflict.tabs, ['All']);
+  assert.deepEqual(calls.map((call) => call[0]), ['isConfigured']);
+  // ...and so does every page that reads the sheet without asking for a look - the shell, on every page load.
+  calls.length = 0;
+  assert.deepEqual((await sheets.describeAccountSheet(users.getUserById(alice.id))).conflict.tabs, ['All']);
+  assert.deepEqual(calls.map((call) => call[0]), ['isConfigured', 'getSpreadsheetVisibility'], 'no listing, no read of her tab');
+  // The Job Sheet page asks for a look: still hers, still left alone.
+  assert.deepEqual((await sheets.describeAccountSheet(users.getUserById(alice.id), { recheck: true })).conflict.tabs, ['All']);
+  assert.equal(named('listSheetTabs').length, 1);
+  // Renamed in Google Sheets: the next look adds the job tab, first, with Temp For AI second.
+  herAll.title = 'My All';
+  assert.ok((await sheets.describeAccountSheet(users.getUserById(alice.id))).conflict, 'not without a look');
+  const fixed = await sheets.describeAccountSheet(users.getUserById(alice.id), { recheck: true });
+  assert.equal(fixed.conflict, undefined);
+  assert.match(fixed.defaultTabUrl, /#gid=\d+$/);
+  assert.deepEqual(titles(hers).slice(0, 3), ['All', 'Temp For AI', 'My All']);
+
+  // Bob's "All" is wholly empty: it becomes the job tab, under that name.
+  const his = 'bob-sheet';
+  users.recordAccountSheet(bob.id, his, 'https://docs.google.com/spreadsheets/d/bob-sheet/edit');
+  users.recordOwnerGrant(bob.id, '2026-09-01T00:00:00.000Z');
+  fake.addTab(his, 'All', [], { empty: true });
+  const bobs = await sheets.ensureAccountSheet(users.getUserById(bob.id));
+  assert.equal(bobs.conflict, undefined);
+  assert.deepEqual(titles(his), ['All', 'Temp For AI']);
+  assert.deepEqual(tabs.get(his)[0].header, [...JOB_SHEET_HEADERS]);
+
+  // Carol's has data under a blank row 1: not converted - a clash.
+  const theirs = 'carol-sheet';
+  users.recordAccountSheet(carol.id, theirs, 'https://docs.google.com/spreadsheets/d/carol-sheet/edit');
+  users.recordOwnerGrant(carol.id, '2026-09-01T00:00:00.000Z');
+  fake.addTab(theirs, 'Temp For AI', [], { empty: false });
+  const carols = await sheets.ensureAccountSheet(users.getUserById(carol.id));
+  assert.deepEqual(carols.conflict.tabs, ['Temp For AI']);
+  assert.deepEqual(tabs.get(theirs).find((tab) => tab.title === 'Temp For AI').header, []);
+  assert.equal(named('createSpreadsheet').length, 0);
+});
+
+test('a clash behind an older build\'s daily tab ends All first and Temp For AI second, however it is resolved', async (t) => {
+  for (const resolve of ['rename', 'delete']) {
+    await t.test(resolve, async () => {
+      const fake = setup(`clash-order-${resolve}`);
+      const { users, sheets, titles, tabs } = fake;
+      const alice = users.createUser({ email: 'alice@example.com' });
+      // The daily tabs first, then Notes, then her own All, then Scratch.
+      const hers = olderBuildSheet(users, fake, alice, [
+        ['Notes', ['My', 'own', 'header']],
+        ['All', ['Company', 'Notes']],
+        ['Scratch', ['x']],
+      ]);
+      const upgraded = await sheets.ensureAccountSheet(users.getUserById(alice.id));
+      assert.deepEqual(upgraded.conflict.tabs, ['All']);
+      assert.deepEqual(titles(hers), ['Temp For AI', '10/04/2026', '10/05/2026', 'Notes', 'All', 'Scratch']);
+
+      const list = tabs.get(hers);
+      const herAll = list.find((tab) => tab.title === 'All');
+      if (resolve === 'rename') herAll.title = 'My All';
+      else list.splice(list.indexOf(herAll), 1);
+      const fixed = await sheets.describeAccountSheet(users.getUserById(alice.id), { recheck: true });
+      assert.equal(fixed.conflict, undefined);
+      assert.deepEqual(titles(hers).slice(0, 4), ['All', 'Temp For AI', '10/04/2026', '10/05/2026']);
+      assert.deepEqual(list.find((tab) => tab.title === '10/05/2026').header, OLD_DAILY_HEADER, 'the daily tab untouched');
+    });
+  }
+});
+
+test('a look at a clash that Google refuses still answers, from the row - and the clash is logged once, not at every look', async () => {
+  const fake = setup('clash-recheck-fails');
+  const { users, sheets, client } = fake;
+  const alice = users.createUser({ email: 'alice@example.com' });
+  const hers = olderBuildSheet(users, fake, alice, [['All', ['Company', 'Notes'], { at: 0 }]]);
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    await sheets.ensureAccountSheet(users.getUserById(alice.id));
+    const clashLines = () => warnings.filter((line) => line.includes('already has a tab named "All"'));
+    assert.equal(clashLines().length, 1, 'said when found');
+    await sheets.describeAccountSheet(users.getUserById(alice.id), { recheck: true });
+    await sheets.describeAccountSheet(users.getUserById(alice.id), { recheck: true });
+    assert.equal(clashLines().length, 1, 'not again at every look while it stays');
+
+    client.listSheetTabs = async () => {
+      throw Object.assign(new Error('The caller does not have permission'), { status: 403 });
+    };
+    const state = await sheets.describeAccountSheet(users.getUserById(alice.id), { recheck: true });
+    assert.deepEqual(state.conflict.tabs, ['All'], 'the clash still reported');
+    assert.equal(state.spreadsheetId, hers, 'and the sheet still linked');
+    assert.equal(state.visibility, 'private');
+    assert.ok(warnings.some((line) => line.includes("Could not look at alice@example.com's tab name clash again")));
+  } finally {
+    console.warn = realWarn;
+  }
+});
+
+test('a verifying call puts back an All somebody deleted, and trusts one still under its recorded gid', async () => {
+  const { users, sheets, named, tabs, titles } = setup('verify-tab');
+  const account = users.createUser({ email: 'alice@example.com' });
   const state = await sheets.ensureAccountSheet(account);
-  // The spreadsheet keeps the tab while the row forgets it - which is what a
-  // half-finished run, or a hand-made tab, leaves behind.
-  users.recordSheetTabDate(account.id, '');
 
-  await sheets.ensureAccountSheet(account);
+  const listed = named('listSheetTabs').length;
+  await sheets.ensureAccountSheet(users.getUserById(account.id), { verifyTab: true });
+  assert.equal(named('listSheetTabs').length, listed + 1, 'one listing');
+  assert.equal(named('addSheetTabWithHeaders').length, 1, 'and nothing added or verified: both are where they were');
 
-  assert.deepEqual(titles(state.spreadsheetId), [state.todayTab]);
-  assert.equal(users.getUserById(account.id).sheetTabDate, state.todayTab);
+  tabs.set(state.spreadsheetId, tabs.get(state.spreadsheetId).filter((tab) => tab.title !== 'All'));
+  const again = await sheets.ensureAccountSheet(users.getUserById(account.id), { verifyTab: true });
+  assert.deepEqual(titles(state.spreadsheetId), ['All', 'Temp For AI']);
+  assert.notEqual(again.defaultTabUrl, state.defaultTabUrl, 'the new tab\'s gid');
 });
 
 test('two calls racing join rather than each creating a spreadsheet', async () => {
@@ -304,8 +512,9 @@ test('an install with no service account key says so instead of failing', async 
 
   assert.equal(state.configured, false);
   assert.equal(state.spreadsheetId, undefined);
-  // Still a date, so the UI has something true to say about what it would name.
-  assert.match(state.todayTab, /^\d{2}\/\d{2}\/\d{4}$/);
+  // Still the tab names, so the UI has something true to say about what it would use.
+  assert.equal(state.defaultTab, 'All');
+  assert.equal(state.tempTab, 'Temp For AI');
   assert.equal(calls.length, 0);
 });
 
@@ -384,6 +593,25 @@ test('accounts from before the feature are given a spreadsheet by the backfill',
   assert.equal(named('createSpreadsheet').length, 2);
 });
 
+test("the backfill also lays out the sheets an older build made, and leaves their daily tabs alone", async () => {
+  const fake = setup('backfill-layout');
+  const { users, sheets, named, titles, tabs } = fake;
+  const old = users.createUser({ email: 'old@example.com' });
+  const id = olderBuildSheet(users, fake, old);
+  const fresh = users.createUser({ email: 'new@example.com' });
+
+  const result = await sheets.backfillAccountSheets(0);
+  assert.equal(result.done, 2, 'one allocated, one laid out');
+  assert.equal(named('createSpreadsheet').length, 1, 'only for the account with no sheet');
+  assert.deepEqual(titles(id), ['All', 'Temp For AI', '10/04/2026', '10/05/2026']);
+  assert.deepEqual(tabs.get(id).find((tab) => tab.title === '10/04/2026').header, OLD_DAILY_HEADER);
+  assert.equal(users.getUserById(old.id).sheetLayout, 2);
+  assert.ok(users.getUserById(fresh.id).sheetId);
+
+  const again = await sheets.backfillAccountSheets(0);
+  assert.equal(again.done, 0, 'nothing left to do on the next boot');
+});
+
 test('a credential Google refused ends the backfill instead of failing per account', async () => {
   /*
    * One dead token, one warning - not one per account, each after a pause.
@@ -416,53 +644,57 @@ test('a credential Google refused ends the backfill instead of failing per accou
   assert.equal(probes, 1, 'asked once, not once per account');
 });
 
-test('the header row is the one from the tracking sheet, spelling included', () => {
+test('the header row: the six a person fills, then the six the program writes - spelling included', () => {
   const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
-  // Reproduced exactly, lower-case `note` and all: anybody matching a column by
-  // its heading is matching the string a person reads on screen. The first
-  // eight are the tracking sheet's own; the next two belong to the job filter,
-  // which needed somewhere to write that was not a field somebody fills in;
-  // the last six are the job analysis's, protected so only the program writes
-  // them (owner decision J5), in this order.
+  // Reproduced exactly: anybody matching a column by its heading is matching
+  // the string a person reads on screen. A to F are the person's; G to L the
+  // job analysis's, protected so only the program writes them (owner
+  // decision S3), in this order. Rate, note, Job Finder, the filter's two and
+  // the lake's two are gone.
   assert.deepEqual(
     [...JOB_SHEET_HEADERS],
     [
+      'Date',
       'NO(DATE)',
       'Company',
       'Job Title',
       'Job Link',
       'Job Description',
-      'Rate',
-      'note',
-      'Job Finder',
-      'Filter Result',
-      'Filter Reason',
       'Job Field',
       'Salary',
-      'Job Hash',
-      'Analyzed At',
-      'Lake Status',
+      'Job Type',
+      'Clearance',
+      'Industry',
       'Analysis',
     ]
   );
 });
 
-test('SHEET_TIMEZONE decides which day a tab belongs to', () => {
+test('SHEET_TIMEZONE decides which day a row is dated, and a date cell is read back however it reads', () => {
   const { sheets } = setup('timezone');
   // Ten at night in New York is already tomorrow in UTC. A server in UTC would
-  // otherwise file an evening's work under the next day's tab.
+  // otherwise date, and number, an evening's rows as the next day's.
   const evening = new Date('2026-09-18T02:30:00Z');
   process.env.SHEET_TIMEZONE = 'America/New_York';
   try {
-    assert.equal(sheets.todaySheetTitle(evening), '09/17/2026');
+    assert.equal(sheets.sheetDateText(evening), '09/17/2026');
     process.env.SHEET_TIMEZONE = 'UTC';
-    assert.equal(sheets.todaySheetTitle(evening), '09/18/2026');
+    assert.equal(sheets.sheetDateText(evening), '09/18/2026');
     // A zone name nothing recognises must not be able to stop a sign-in.
     process.env.SHEET_TIMEZONE = 'Mars/Olympus_Mons';
-    assert.match(sheets.todaySheetTitle(evening), /^\d{2}\/\d{2}\/\d{4}$/);
+    assert.match(sheets.sheetDateText(evening), /^\d{2}\/\d{2}\/\d{4}$/);
   } finally {
     delete process.env.SHEET_TIMEZONE;
   }
+  // Google's own serial numbers: 12/30/1899 is day 0, 01/01/1970 day 25569.
+  assert.equal(sheets.sheetDateSerial('01/01/1970'), 25569);
+  assert.equal(sheets.sheetDateSerial('10/06/2026'), 46301);
+  assert.equal(sheets.sheetDateSerial('02/30/2026'), null);
+  assert.equal(sheets.sheetDateSerial('2026-10-06'), null);
+  for (const cell of ['10/06/2026', '10/6/2026', '2026-10-06', '46301', ' 10/06/2026 ']) {
+    assert.equal(sheets.sheetDateOfCell(cell), '10/06/2026', cell);
+  }
+  for (const cell of ['', 'today', '13/45/2026', '7', 'Oct 6']) assert.equal(sheets.sheetDateOfCell(cell), null, cell);
 });
 
 test('a sheet whose owner grant went missing is repaired on the next ensure', async () => {
@@ -500,7 +732,7 @@ test('a sheet whose owner grant went missing is repaired on the next ensure', as
   assert.equal(named('hasPersonalGrant').length, asked, 'Drive was asked again for a settled grant');
 });
 
-test('a repeat sign-in on a day already prepared costs no Google calls at all', async () => {
+test('a repeat sign-in on a sheet already laid out costs no Google calls at all', async () => {
   const { users, sheets, calls } = setup('warm-path-free');
   const account = users.createUser({ email: 'alice@example.com' });
 
@@ -599,90 +831,58 @@ test('a user can address their own spreadsheet and no other', async () => {
   });
 });
 
-test('an admin may address the configured shared sources, a user may not', async () => {
-  const { users, sheets } = setup('admin-sources');
-  // First account in is the admin.
+test('an administrator may address their own sheet and no other: the saved shared sheets are gone', async () => {
+  const { users, sheets } = setup('admin-own-only');
   const admin = users.createUser({ email: 'admin@example.com' });
-  const alice = users.createUser({ email: 'alice@example.com' });
   assert.equal(admin.role, 'admin');
+  const own = (await sheets.ensureAccountSheet(admin)).spreadsheetId;
 
-  const shared = ['shared-sheet-1', 'shared-sheet-2'];
-  assert.equal(
-    await sheets.resolveAddressableSheet(users.getUserById(admin.id), 'shared-sheet-1', shared),
-    'shared-sheet-1'
-  );
-  // Same id, same allow-list, ordinary account: still not found.
-  await assert.rejects(
-    () => sheets.resolveAddressableSheet(users.getUserById(alice.id), 'shared-sheet-1', shared),
-    { status: 404 }
-  );
-  // An id NOT on the list is refused even for the admin.
-  await assert.rejects(
-    () => sheets.resolveAddressableSheet(users.getUserById(admin.id), 'some-other-sheet', shared),
-    { status: 404 }
-  );
+  assert.equal(await sheets.resolveAddressableSheet(users.getUserById(admin.id), own), own);
+  // What an administrator could once name - a sheet saved under Admin ->
+  // Google Sheets - is refused like any other id now, and resolution takes
+  // no allow-list at all.
+  await assert.rejects(() => sheets.resolveAddressableSheet(users.getUserById(admin.id), 'shared-sheet-1'), { status: 404 });
+  assert.equal(sheets.resolveAddressableSheet.length, 3, '(account, requested, known): no allow-list parameter');
 });
 
-test("naming no tab means today's, and only for the account's own sheet", async () => {
-  const { users, sheets } = setup('addressable-tab');
-  const admin = users.createUser({ email: 'admin@example.com' });
-  const state = await sheets.ensureAccountSheet(admin);
-  const account = users.getUserById(admin.id);
-
-  assert.equal(await sheets.resolveAddressableTab(account, state.spreadsheetId, ''), state.todayTab);
-  assert.equal(await sheets.resolveAddressableTab(account, state.spreadsheetId, 'Archive'), 'Archive');
-
-  // We do not manage a shared source's layout, so its tab has to be named.
-  await assert.rejects(() => sheets.resolveAddressableTab(account, 'shared-sheet-1', ''), {
-    status: 400,
-  });
+test('naming no tab means All', () => {
+  const { sheets } = setup('addressable-tab');
+  assert.equal(sheets.resolveAddressableTab(''), 'All');
+  assert.equal(sheets.resolveAddressableTab(undefined), 'All');
+  assert.equal(sheets.resolveAddressableTab('  Temp For AI '), 'Temp For AI');
 });
 
 test('the column map follows the header row rather than repeating it', () => {
-  const { JOB_SHEET_HEADERS, JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW } = require('../dist/integrations/googleSheets');
+  const { JOB_SHEET_HEADERS, JOB_SHEET_COLUMNS, JOB_SHEET_FIRST_DATA_ROW, ANALYSIS_FIRST_COLUMN, ANALYSIS_LAST_COLUMN } = require('../dist/integrations/googleSheets');
 
-  // The four the job routes write, at the positions the header row puts them.
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.company - 1], 'Company');
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.jobTitle - 1], 'Job Title');
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.jobLink - 1], 'Job Link');
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.jobDescription - 1], 'Job Description');
-  // And the two the filter writes its verdict into - which must NOT be Rate,
-  // note or Job Finder, because those are fields somebody types into and a
-  // verdict written there would destroy what was in them.
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.filterResult - 1], 'Filter Result');
-  assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS.filterReason - 1], 'Filter Reason');
-  for (const owned of [JOB_SHEET_COLUMNS.rate, JOB_SHEET_COLUMNS.note, JOB_SHEET_COLUMNS.jobFinder]) {
-    assert.notEqual(owned, JOB_SHEET_COLUMNS.filterResult);
-    assert.notEqual(owned, JOB_SHEET_COLUMNS.filterReason);
+  for (const [key, header] of [
+    ['date', 'Date'],
+    ['no', 'NO(DATE)'],
+    ['company', 'Company'],
+    ['jobTitle', 'Job Title'],
+    ['jobLink', 'Job Link'],
+    ['jobDescription', 'Job Description'],
+    ['jobField', 'Job Field'],
+    ['salary', 'Salary'],
+    ['jobType', 'Job Type'],
+    ['clearance', 'Clearance'],
+    ['industry', 'Industry'],
+    ['analysis', 'Analysis'],
+  ]) {
+    assert.equal(JOB_SHEET_HEADERS[JOB_SHEET_COLUMNS[key] - 1], header, key);
   }
+  assert.deepEqual(Object.keys(JOB_SHEET_COLUMNS).length, 12, 'no column left over from the old layout');
+  // The protected block is exactly G to L.
+  assert.equal(ANALYSIS_FIRST_COLUMN, 7);
+  assert.equal(ANALYSIS_LAST_COLUMN, 12);
   assert.equal(JOB_SHEET_FIRST_DATA_ROW, 2);
 });
 
-test('an export with no start row appends instead of overwriting the morning', () => {
-  const { resolveAppendRow, resolveColumn } = require('../dist/services/sheets/jobSheetTarget');
-  const { JOB_SHEET_COLUMNS } = require('../dist/integrations/googleSheets');
-
-  // Empty tab: the first data row.
-  assert.equal(resolveAppendRow(undefined, [{ values: [] }]), 2);
-  // A header plus three rows already written: the fourth.
-  assert.equal(resolveAppendRow(undefined, [{ values: ['h', 'a', 'b', 'c'] }, { values: ['h', 'a'] }]), 5);
-  // An explicit choice still wins.
-  assert.equal(resolveAppendRow(40, [{ values: ['h', 'a'] }]), 40);
-
-  assert.equal(resolveColumn('Company column', undefined, JOB_SHEET_COLUMNS.company), JOB_SHEET_COLUMNS.company);
-  assert.equal(resolveColumn('Company column', 7, JOB_SHEET_COLUMNS.company), 7);
-
-  // Supplied but wrong is a 400, NOT a quiet fall back to the default. The
-  // difference matters: a caller sending a 0-based index used to be refused,
-  // and substituting a column they did not ask for would write into it instead.
-  for (const bad of ['not a column', 0, -3, 1.5]) {
-    assert.throws(
-      () => resolveColumn('Job link column', bad, JOB_SHEET_COLUMNS.jobLink),
-      (error) => error.status === 400 && /Job link column/.test(error.message),
-      `expected a 400 for ${JSON.stringify(bad)}`
-    );
-  }
-  assert.throws(() => resolveAppendRow(0, [{ values: [] }]), { status: 400 });
+test('the job routes take no columns and no other spreadsheet: the old helpers are gone', () => {
+  const target = require('../dist/services/sheets/jobSheetTarget');
+  assert.equal(target.resolveColumn, undefined);
+  assert.equal(target.resolveAppendRow, undefined);
+  assert.equal(target.adminAllowedSheetIds, undefined);
 });
 
 test('a Google 403 names its own remedy instead of "caller does not have permission"', () => {
@@ -1033,5 +1233,5 @@ test('the header is written to the tab Google actually minted, not to gid 0', as
   assert.notEqual(formattedGid, 0);
 
   // And it is the id that came back from creating it, not any other number.
-  assert.match(state.todayTabUrl, new RegExp(`#gid=${formattedGid}$`));
+  assert.match(state.defaultTabUrl, new RegExp(`#gid=${formattedGid}$`));
 });

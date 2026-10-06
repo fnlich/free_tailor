@@ -9,7 +9,6 @@ import {
   Notice,
   Section,
   SettingsPage,
-  StaticValue,
 } from '@/components/settings/SettingsParts';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet, type SheetVisibility } from '@/lib/sheet';
@@ -53,7 +52,9 @@ export default function JobSheetSettingsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        setSheet(await sheetApi.get());
+        // The one reader that asks for a name clash to be looked at again:
+        // the conflict note below tells the person to rename and reload here.
+        setSheet(await sheetApi.get({ recheck: true }));
       } catch (caught) {
         setSheetError(caught ?? new Error('Could not load your sheet.'));
       }
@@ -89,10 +90,12 @@ export default function JobSheetSettingsPage() {
         title="Your job sheet"
         description={
           <>
-            One Google spreadsheet belongs to this account, with a tab for each day you sign in,
-            named like <code className="rounded bg-surface-muted px-1 text-ink">09/17/2026</code>.
-            Each tab starts with the job columns - company, job title, link, description, rate and
-            your notes.
+            One Google spreadsheet belongs to this account, with two tabs of the app&apos;s:{' '}
+            <span className="font-medium text-ink">All</span>, which every job page reads and writes unless you
+            pick another tab, and <span className="font-medium text-ink">Temp For AI</span>. Each starts with the
+            columns that are yours - Date, NO(DATE), Company, Job Title, Job Link and Job Description - then six
+            only the app can edit, filled from each posting&apos;s analysis: Job Field, Salary, Job Type,
+            Clearance, Industry and Analysis.
           </>
         }
       >
@@ -110,17 +113,27 @@ export default function JobSheetSettingsPage() {
           <Notice tone="warn">{sheet.message ?? 'Google Sheets is not set up on this server.'}</Notice>
         )}
 
+        {/*
+          A tab of the person's own already holds the name All or Temp For
+          AI, so the app left it alone and has no tab of its own there - in
+          the server's words, which say how to fix it. Reloading this page is
+          what makes the server look again.
+        */}
+        {sheet?.configured && sheet.conflict && <Notice tone="warn">{sheet.conflict.message}</Notice>}
+
         {sheet?.configured && sheet.spreadsheetUrl && (
           <>
-            <Field label="Today's tab">
-              <StaticValue>{sheet.todayTab}</StaticValue>
+            <Field label="Tabs">
+              <div className="flex flex-wrap gap-x-6 gap-y-2">
+                <TabLink name={sheet.defaultTab} url={sheet.defaultTabUrl} />
+                <TabLink name={sheet.tempTab} url={sheet.tempTabUrl} />
+              </div>
             </Field>
             <a
-              // Today's tab when we know its id, so the link opens the day being
-              // worked on rather than whichever tab Google decides to show first
-              // - which, once there are thirty of them, is not the one anybody
-              // wants.
-              href={sheet.todayTabUrl ?? sheet.spreadsheetUrl}
+              // All when we know its id, so the link opens the tab the job
+              // pages write to rather than whichever tab Google shows first -
+              // after an upgrade, an older build's daily tabs are still there.
+              href={sheet.defaultTabUrl ?? sheet.spreadsheetUrl}
               target="_blank"
               rel="noreferrer"
               className="tl-button"
@@ -180,5 +193,26 @@ export default function JobSheetSettingsPage() {
         </Section>
       )}
     </SettingsPage>
+  );
+}
+
+/**
+ * One of the app's two tabs: a link that opens it, or - while its name is a
+ * tab of the person's own (the conflict above) - the name alone, since the
+ * app has no tab of its own there to open.
+ */
+function TabLink({ name, url }: { name: string; url?: string }) {
+  if (!url) {
+    return (
+      <span className="text-sm text-muted">
+        {name} <span className="text-subtle">(not added yet)</span>
+      </span>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="tl-link inline-flex items-center gap-1 text-sm">
+      {name}
+      <IconExternal className="h-3.5 w-3.5" />
+    </a>
   );
 }

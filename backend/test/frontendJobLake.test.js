@@ -468,7 +468,7 @@ async function serve(name) {
   const header = (tab) => (tab === 'My notes' ? ['Ideas', 'Links'] : [...JOB_SHEET_HEADERS]);
   const google = {
     async inspectTab(_id, tab) {
-      return { gid: 7, title: tab, columnCount: 16, rowCount: 1000, headerRow: header(tab), protectedRanges: [] };
+      return { gid: 7, title: tab, columnCount: 12, rowCount: 1000, headerRow: header(tab), protectedRanges: [] };
     },
     async verifyTab(_id, tab) {
       return { gid: 7, protection: 'intact', grewColumns: false, wroteHeader: false, jobTab: tab !== 'My notes' };
@@ -531,6 +531,9 @@ async function serve(name) {
     },
     async listSheetTabs() {
       return [{ title: 'Today', gid: 7 }, { title: 'My notes', gid: 8 }];
+    },
+    async readRanges(_id, ranges) {
+      return ranges.map((range) => [header(/^'(.*)'!1:1$/.exec(range)[1])]);
     },
   });
   adminSheet.setAdminLakeSheetClientForTests({
@@ -746,11 +749,11 @@ test("a run draws the owner's line from the server's own summary, its red rows a
   assert.equal(reportedBefore(3).status, 'added');
   assert.equal(reportedBefore(4).status, 'duplicate');
   Object.assign(h.tabRows('Today'), {
-    2: { B: 'Acme Corp', C: 'Engineer', D: 'https://jobs.example.com/1', E: posting(1) },
-    3: { B: 'ACME, Inc.', C: 'Engineer II', D: 'https://jobs.example.com/2', E: posting(2) },
-    4: { B: 'Old Co', C: 'Engineer', D: 'https://jobs.example.com/3', E: posting(3) },
-    5: { B: 'Old Co', C: 'Engineer III', D: 'https://jobs.example.com/4', E: posting(4) },
-    6: { B: 'Acme Corp', C: 'Engineer', D: 'https://jobs.example.com/1', E: posting(1) },
+    2: { C: 'Acme Corp', D: 'Engineer', E: 'https://jobs.example.com/1', F: posting(1) },
+    3: { C: 'ACME, Inc.', D: 'Engineer II', E: 'https://jobs.example.com/2', F: posting(2) },
+    4: { C: 'Old Co', D: 'Engineer', E: 'https://jobs.example.com/3', F: posting(3) },
+    5: { C: 'Old Co', D: 'Engineer III', E: 'https://jobs.example.com/4', F: posting(4) },
+    6: { C: 'Acme Corp', D: 'Engineer', E: 'https://jobs.example.com/1', F: posting(1) },
   });
 
   const preview = await h.call('reporter', 'GET', `/report/rows?tab=Today&from=2&to=10`);

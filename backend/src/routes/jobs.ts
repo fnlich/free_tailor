@@ -2,22 +2,28 @@ import { Router, Request, Response } from 'express';
 import { isAdmin, requireUser } from '../middleware/auth';
 import { isPublicError, PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
 import {
-  batchUpdateGoogleSheetsColumns,
-  fetchGoogleSheetsColumnValues,
-  fetchGoogleSheetsRange,
+  a1Columns,
+  a1Range,
+  batchGetValues,
+  batchUpdateSpreadsheet,
+  batchUpdateValuesRaw,
   GoogleSheetsRequestError,
-  updateGoogleSheetsRow,
-} from '../integrations/googleSheets';
-import {
+  inspectJobSheetTab,
+  isJobSheetTab,
   JOB_SHEET_COLUMNS,
   JOB_SHEET_FIRST_DATA_ROW,
-  toColumnLetters,
+  jobRowLayoutRequests,
+  verifyJobSheetTab,
+  type JobSheetTabInspection,
+  type SheetCellValue,
 } from '../integrations/googleSheets';
+import { resolveJobSheetTarget } from '../services/sheets/jobSheetTarget';
 import {
-  resolveAppendRow,
-  resolveColumn,
-  resolveJobSheetTarget,
-} from '../services/sheets/jobSheetTarget';
+  notJobTabError,
+  sheetDateOfCell,
+  sheetDateSerial,
+  sheetDateText,
+} from '../services/sheets/accountSheet';
 import {
   describeJobFilterModel,
   evaluateJobFilterAnalysis,
@@ -26,7 +32,6 @@ import {
 } from '../services/jobFilter';
 import { findStoredAnalysis, getOrCreateAnalysis } from '../services/jobAnalysis/gate';
 import { attachCompanyName } from '../database/jobAnalysisRepository';
-import { isAppOwnedSheet, queueAnalysisWriteBack } from '../services/sheets/analysisColumns';
 import { extractJobPageContent } from '../services/jobPageContent';
 import { scraperDefaultLocation, scraperMaxResults } from '../config/operational';
 import {
@@ -79,7 +84,6 @@ function publicScraperFailure(error: unknown): unknown {
  */
 router.use(requireUser);
 
-const SCRAPER_EXPORT_BATCH_SIZE = 50;
 const BROAD_SOFTWARE_TITLE_PATTERNS = [
   /\bsoftware (engineer|developer)\b/i,
   /\b(frontend|front-end|backend|back-end|full[- ]stack|web|mobile|ios|android|embedded|firmware|systems|cloud|platform|infrastructure|devops|site reliability|sre|security|application security|data|machine learning|mlops|ai|computer vision|robotics|distributed systems|database|storage)\s+(engineer|developer)\b/i,
@@ -468,35 +472,6 @@ function getUnifiedJobSheetLink(job: UnifiedScraperJob): string {
   return typeof job.apply_url === 'string' ? job.apply_url.trim() : '';
 }
 
-function buildColumnRange(tabName: string, startRow: number, endRow: number, columnNumber: number): string {
-  const columnLetters = toColumnLetters(columnNumber);
-  const escapedTabName = `'${tabName.replace(/'/g, "''")}'`;
-  return `${escapedTabName}!${columnLetters}${startRow}:${columnLetters}${endRow}`;
-}
-
-function shouldSkipExistingFilterRow(input: {
-  jobLink: string;
-  existingAnalysisValues: string[];
-}): boolean {
-  const { jobLink, existingAnalysisValues } = input;
-  if (!jobLink.trim()) {
-    return true;
-  }
-
-  const [result = '', reason = ''] = existingAnalysisValues.map((value) => value.trim());
-  const normalizedResult = result.toLowerCase();
-
-  if (normalizedResult === 'pass') {
-    return true;
-  }
-
-  if (normalizedResult === 'fail' && reason.length > 0) {
-    return true;
-  }
-
-  return false;
-}
-
 function toPositiveInteger(fieldName: string, value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value);
 
@@ -557,94 +532,83 @@ router.get('/scrapers/settings', (_req: Request, res: Response) => {
   res.json(describeScraperSettings());
 });
 
+/** How many rows one export write sends. */
+const SCRAPER_EXPORT_BATCH_SIZE = 50;
+/** Google's limit on one cell's text. */
+const SHEET_CELL_LIMIT = 50_000;
+/** How often an export looks for free rows again before giving up on a sheet that keeps changing under it. */
+const EXPORT_PLACE_ATTEMPTS = 5;
+
+/** Exports in flight, one per tab at a time in this process: two would number and place their rows over each other. */
+const exportLocks = new Map<string, Promise<unknown>>();
+
+function serializeExport<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const previous = exportLocks.get(key) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(work);
+  const settled = run.catch(() => undefined);
+  exportLocks.set(key, settled);
+  void settled.then(() => {
+    if (exportLocks.get(key) === settled) exportLocks.delete(key);
+  });
+  return run;
+}
+
+/** A sheet's used rows as an export reads them: where the next row goes, and how far today's numbering got. */
+type ExportPlace = { nextRow: number; lastNo: number };
+
+/**
+ * Where an export's rows go and how they are numbered, from ONE read of the
+ * tab's columns: the first row after the last one holding anything, and the
+ * highest NO(DATE) among the rows dated `today` (a Date cell read back in
+ * any of the forms `sheetDateOfCell` knows; a NO that is not a whole number
+ * counts for nothing).
+ */
+function exportPlaceOf(grid: string[][], today: string): ExportPlace {
+  let lastNo = 0;
+  for (let index = JOB_SHEET_FIRST_DATA_ROW - 1; index < grid.length; index += 1) {
+    const row = grid[index] ?? [];
+    if (sheetDateOfCell(row[JOB_SHEET_COLUMNS.date - 1]) !== today) continue;
+    const no = String(row[JOB_SHEET_COLUMNS.no - 1] ?? '').trim();
+    if (/^\d{1,9}$/.test(no)) lastNo = Math.max(lastNo, Number(no));
+  }
+  return { nextRow: Math.max(JOB_SHEET_FIRST_DATA_ROW, grid.length + 1), lastNo };
+}
+
+/**
+ * Scraped jobs into the caller's OWN job sheet - the tab named, else All -
+ * as new rows after the last one used: Date (today, in SHEET_TIMEZONE, as a
+ * real date), NO(DATE) (1 + the highest number already on today's rows, then
+ * on), Company, Job Title, Job Link and Job Description - A to F, RAW, never
+ * a column of the caller's choosing, never G to L. A tab that is not a job
+ * tab is refused before the search runs (an empty one is laid out as one).
+ *
+ * One read of A:E gives the duplicate check (a company already in the tab is
+ * skipped), the first free row and the day's numbering. Before every write
+ * its rows are read again (A:F): a row that is no longer empty - somebody
+ * typed there, or another export landed - moves the rest below it rather
+ * than being written over. Each write grows the grid when it has to and lays
+ * the written rows out at 21 px, clipped (`jobRowLayoutRequests`).
+ */
 router.post('/scrapers/export', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    // FIRST, before any other validation. Defaults to the caller's own sheet
-    // and today's tab, and checks the id when one is supplied - the service
-    // account can open every account's spreadsheet, so an id taken on trust
-    // here would read and overwrite anybody's. Running it ahead of everything
-    // else means a request for somebody else's sheet is refused on its own
-    // terms rather than incidentally failing some other check first.
-    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
+    // FIRST, before any other validation: the caller's own sheet, or 404 -
+    // the service account can open every account's spreadsheet, so an id
+    // taken on trust here would read and overwrite anybody's. Running it
+    // ahead of everything else means a request for somebody else's sheet is
+    // refused on its own terms rather than incidentally failing some other
+    // check first. Verifying: the export writes, and All may have been
+    // deleted since the sheet was laid out.
+    const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body, { verifyTab: true });
     const source = requireSupportedScraperSource(body.source);
     const providerId = requestedProvider(req, body);
     const filters = applySourceSpecificScraperDefaults(source, normalizeScraperFilters(body, source, providerId));
-    const companyNameCol = resolveColumn('Company column', body.companyNameCol, JOB_SHEET_COLUMNS.company);
-    const jobTitleCol = resolveColumn('Job title column', body.jobTitleCol, JOB_SHEET_COLUMNS.jobTitle);
-    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
-    const jobDescriptionCol = resolveColumn('Job description column', body.jobDescriptionCol, JOB_SHEET_COLUMNS.jobDescription);
-    const sheetMetadata = await fetchGoogleSheetsRange({ sheetId });
-    const [existingCompanyColumn, existingJobTitleColumn, existingJobLinkColumn] = await Promise.all([
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: companyNameCol,
-      }),
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: jobTitleCol,
-      }),
-      fetchGoogleSheetsColumnValues({
-        sheetId,
-        tabName,
-        col: jobLinkCol,
-      }),
-    ]);
 
-    if (!sheetMetadata.tabs.some((tab) => tab.title === String(tabName ?? '').trim())) {
-      throw new GoogleSheetsRequestError(400, `Tab "${String(tabName ?? '')}" was not found in the spreadsheet.`);
-    }
-
-    // Appends. Starting at row 2 by default would overwrite the morning's rows
-    // on the afternoon's run; the columns are already in hand for the
-    // duplicate check, so their length is the honest first free row.
-    const startRow = resolveAppendRow(body.startRow, [
-      existingCompanyColumn,
-      existingJobTitleColumn,
-      existingJobLinkColumn,
-    ]);
-
-    const seenJobs = buildSeenExportRowKeys(
-      existingCompanyColumn.values,
-      existingJobTitleColumn.values,
-      existingJobLinkColumn.values
-    );
-    let rowsWritten = 0;
-    let unresolvedJobLinks = 0;
-    let skippedCompanyDuplicates = 0;
-    let pendingRows: Array<{
-      companyName: string;
-      jobTitle: string;
-      jobLink: string;
-      jobDescription: string;
-    }> = [];
-
-    const flushPendingRows = async () => {
-      if (pendingRows.length === 0) {
-        return;
-      }
-
-      const batchStartRow = startRow + rowsWritten;
-      const batchRows = pendingRows;
-
-      await batchUpdateGoogleSheetsColumns({
-        sheetId,
-        tabName,
-        startRow: batchStartRow,
-        updates: [
-          { col: companyNameCol, values: batchRows.map((row) => row.companyName) },
-          { col: jobTitleCol, values: batchRows.map((row) => row.jobTitle) },
-          { col: jobLinkCol, values: batchRows.map((row) => row.jobLink) },
-          { col: jobDescriptionCol, values: batchRows.map((row) => row.jobDescription) },
-        ],
-      });
-
-      rowsWritten += batchRows.length;
-      unresolvedJobLinks += batchRows.filter((row) => !row.jobLink).length;
-      pendingRows = [];
-    };
+    // A job tab, or nothing is scraped: an older build's daily tab or the
+    // person's own tab has other columns where these would land.
+    const inspected = await inspectJobSheetTab(sheetId, tabName);
+    if (!isJobSheetTab(inspected)) throw notJobTabError(tabName, 'exported into');
+    const verified = await verifyJobSheetTab(sheetId, tabName, inspected);
 
     const {
       provider,
@@ -653,49 +617,10 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
       remoteFilteredCount,
       finalResults: results,
     } = await runScraper(source, providerId, filters);
-    const beforeExportResultCount = results.length;
 
-    for (const job of results) {
-      const jobLink = getUnifiedJobSheetLink(job);
-      const duplicateKeys = buildExportRowDuplicateKeys({
-        companyName: job.company,
-        jobTitle: job.title,
-        jobLink,
-      });
-
-      if (duplicateKeys.some((key) => seenJobs.has(key))) {
-        skippedCompanyDuplicates += 1;
-        continue;
-      }
-
-      for (const key of duplicateKeys) {
-        seenJobs.add(key);
-      }
-
-      pendingRows.push({
-        companyName: job.company,
-        jobTitle: job.title,
-        jobLink,
-        jobDescription: job.description,
-      });
-
-      if (pendingRows.length >= SCRAPER_EXPORT_BATCH_SIZE) {
-        await flushPendingRows();
-      }
-    }
-
-    await flushPendingRows();
-
-    const endRow = rowsWritten > 0 ? startRow + rowsWritten - 1 : startRow;
-    const updatedRanges =
-      rowsWritten > 0
-        ? [
-            buildColumnRange(String(tabName), startRow, endRow, Number(companyNameCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobTitleCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobLinkCol)),
-            buildColumnRange(String(tabName), startRow, endRow, Number(jobDescriptionCol)),
-          ]
-        : [];
+    const written = await serializeExport(`${sheetId}\u0000${tabName}`, () =>
+      writeExportRows(sheetId, tabName, verified.gid, inspected, results)
+    );
 
     res.json({
       fetchedAt: new Date().toISOString(),
@@ -710,22 +635,155 @@ router.post('/scrapers/export', async (req: Request, res: Response) => {
       },
       results,
       export: {
-        spreadsheetId: sheetMetadata.spreadsheetId,
-        spreadsheetTitle: sheetMetadata.spreadsheetTitle,
-        selectedTab: String(tabName),
-        updatedRanges,
-        rowsWritten,
-        startRow,
-        endRow,
-        unresolvedJobLinks,
-        skippedCompanyDuplicates,
-        beforeExportResultCount,
+        spreadsheetId: sheetId,
+        spreadsheetTitle: inspected.spreadsheetTitle ?? '',
+        selectedTab: tabName,
+        tabUrl: `https://docs.google.com/spreadsheets/d/${sheetId}/edit#gid=${verified.gid}`,
+        ...written,
+        beforeExportResultCount: results.length,
       },
     });
   } catch (error) {
     sendPublicError(req, res, publicScraperFailure(error), 'Failed to export the jobs');
   }
 });
+
+type ExportWriteReport = {
+  date: string;
+  updatedRanges: string[];
+  rowsWritten: number;
+  startRow: number;
+  endRow: number;
+  firstNo: number | null;
+  lastNo: number | null;
+  unresolvedJobLinks: number;
+  skippedCompanyDuplicates: number;
+};
+
+async function writeExportRows(
+  sheetId: string,
+  tabName: string,
+  gid: number,
+  inspected: JobSheetTabInspection,
+  results: UnifiedScraperJob[]
+): Promise<ExportWriteReport> {
+  const today = sheetDateText();
+  const serial = sheetDateSerial(today);
+  // ONE read of A:E, after the search (which takes minutes) so it is fresh.
+  const [grid = []] = await batchGetValues(sheetId, [a1Columns(tabName, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobLink)]);
+  let place = exportPlaceOf(grid, today);
+  const seenJobs = buildSeenExportRowKeys(
+    grid.slice(JOB_SHEET_FIRST_DATA_ROW - 1).map((row) => row[JOB_SHEET_COLUMNS.company - 1] ?? ''),
+    grid.slice(JOB_SHEET_FIRST_DATA_ROW - 1).map((row) => row[JOB_SHEET_COLUMNS.jobTitle - 1] ?? ''),
+    grid.slice(JOB_SHEET_FIRST_DATA_ROW - 1).map((row) => row[JOB_SHEET_COLUMNS.jobLink - 1] ?? '')
+  );
+
+  const report: ExportWriteReport = {
+    date: today,
+    updatedRanges: [],
+    rowsWritten: 0,
+    startRow: place.nextRow,
+    endRow: place.nextRow,
+    firstNo: null,
+    lastNo: null,
+    unresolvedJobLinks: 0,
+    skippedCompanyDuplicates: 0,
+  };
+  const rows: Array<{ company: string; title: string; link: string; description: string }> = [];
+  for (const job of results) {
+    const jobLink = getUnifiedJobSheetLink(job);
+    const duplicateKeys = buildExportRowDuplicateKeys({ companyName: job.company, jobTitle: job.title, jobLink });
+    if (duplicateKeys.some((key) => seenJobs.has(key))) {
+      report.skippedCompanyDuplicates += 1;
+      continue;
+    }
+    for (const key of duplicateKeys) seenJobs.add(key);
+    rows.push({
+      company: job.company ?? '',
+      title: job.title ?? '',
+      link: jobLink,
+      // Google refuses a whole write for one cell past its limit.
+      description: (job.description ?? '').slice(0, SHEET_CELL_LIMIT),
+    });
+  }
+
+  let gridRows = inspected.rowCount ?? null;
+  for (let start = 0; start < rows.length; start += SCRAPER_EXPORT_BATCH_SIZE) {
+    const chunk = rows.slice(start, start + SCRAPER_EXPORT_BATCH_SIZE);
+    place = await claimFreeRows(sheetId, tabName, place, chunk.length, today, gridRows);
+    const fromRow = place.nextRow;
+    const toRow = fromRow + chunk.length - 1;
+
+    // The grid first (a write past its last row is refused), then the
+    // rows' layout, in one call; then the values, RAW.
+    const layout: Array<Record<string, unknown>> = [];
+    if (gridRows !== null && toRow > gridRows) {
+      layout.push({ appendDimension: { sheetId: gid, dimension: 'ROWS', length: toRow - gridRows } });
+      gridRows = toRow;
+    }
+    layout.push(...jobRowLayoutRequests(gid, fromRow, toRow));
+    await batchUpdateSpreadsheet(sheetId, layout);
+
+    const values: SheetCellValue[][] = chunk.map((row, index) => [
+      serial ?? today,
+      place.lastNo + index + 1,
+      row.company,
+      row.title,
+      row.link,
+      row.description,
+    ]);
+    const range = a1Range(tabName, fromRow, toRow, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobDescription);
+    await batchUpdateValuesRaw(sheetId, [{ range, values }]);
+
+    if (report.rowsWritten === 0) {
+      report.startRow = fromRow;
+      report.firstNo = place.lastNo + 1;
+    }
+    report.updatedRanges.push(range);
+    report.rowsWritten += chunk.length;
+    report.endRow = toRow;
+    report.lastNo = place.lastNo + chunk.length;
+    report.unresolvedJobLinks += chunk.filter((row) => !row.link).length;
+    place = { nextRow: toRow + 1, lastNo: place.lastNo + chunk.length };
+  }
+  return report;
+}
+
+/**
+ * The rows a write is about to fill, read again (A:F) right before it: when
+ * any holds something now - typed since the first read, or another export's -
+ * the tab is read again (A:F, every row) and the rows move below its last
+ * used one, the day's numbering going on from whatever is there now.
+ */
+async function claimFreeRows(
+  sheetId: string,
+  tabName: string,
+  place: ExportPlace,
+  count: number,
+  today: string,
+  gridRows: number | null
+): Promise<ExportPlace> {
+  let current = place;
+  for (let attempt = 0; attempt < EXPORT_PLACE_ATTEMPTS; attempt += 1) {
+    const lastRow = current.nextRow + count - 1;
+    // Rows past the grid hold nothing, and Google refuses a read of them.
+    const readTo = gridRows === null ? lastRow : Math.min(lastRow, gridRows);
+    if (readTo < current.nextRow) return current;
+    const [target = []] = await batchGetValues(sheetId, [
+      a1Range(tabName, current.nextRow, readTo, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobDescription),
+    ]);
+    if (target.every((row) => (row ?? []).every((cell) => String(cell ?? '').trim() === ''))) return current;
+    const [grid = []] = await batchGetValues(sheetId, [
+      a1Columns(tabName, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobDescription),
+    ]);
+    const now = exportPlaceOf(grid, today);
+    current = { nextRow: Math.max(now.nextRow, current.nextRow + 1), lastNo: Math.max(now.lastNo, current.lastNo) };
+  }
+  throw new PublicError(
+    'Your job sheet kept changing while the jobs were being written, so the rest were not exported. Try again.',
+    { status: 409, code: 'sheet-changed' }
+  );
+}
 
 /**
  * Which scraper a run uses. An administrator may name one; everybody else runs
@@ -753,81 +811,88 @@ function catalogForReader(entry: ReturnType<typeof listScraperProviderCatalog>[n
 const ROW_STEP_FAILED = {
   open: 'Could not open the job page',
   judge: 'The AI could not analyse this job',
-  write: 'Could not write to the sheet',
 } as const;
 
+/** One row of a Job Filter run, as the page shows it. */
+type FilterRowResult = {
+  row: number;
+  company: string;
+  title: string;
+  link: string;
+  /** The verdict; null for a row that was not judged - no job link, or it failed (`error`). */
+  result: 'Pass' | 'Fail' | null;
+  /** Why it failed the filter ('' for a pass), or why it was not judged. */
+  reason: string;
+  /** True when the posting was already analysed: no page fetched, no model asked. */
+  reused: boolean;
+  /** The row's failure, in words for the reader (with a ref), when it failed. */
+  error?: string;
+};
+
+/**
+ * The Job Filter over rows of the caller's OWN job sheet - the tab named,
+ * else All; a job tab only. It READS the rows' Company, Job Title and Job
+ * Link (C:E) in one call, judges every row with a link on its posting's one
+ * job analysis (owner decision J8 - a posting already analysed costs no page
+ * fetch and no model call; any other is fetched and analysed through the
+ * gate, once), and answers each row's verdict to the page (`rows`).
+ *
+ * It writes NOTHING into the sheet - no verdict, no analysis cell (owner's
+ * default). An analysis it made is in the store, and the next build from the
+ * row finds it there and fills the row's analysis columns then.
+ */
 router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   try {
     const body = req.body ?? {};
+    // Reading only, so the stored layout is trusted: a tab Google no longer
+    // has is refused by the read below, in Google's words.
     const { spreadsheetId: sheetId, tabName } = await resolveJobSheetTarget(req.user!, body);
-    const jobLinkCol = resolveColumn('Job link column', body.jobLinkCol, JOB_SHEET_COLUMNS.jobLink);
-    // Two columns of the filter's own. Rate, note and Job Finder are fields
-    // somebody types into, so a verdict written into one of them would destroy
-    // what was there.
-    const resultCol = resolveColumn('Result column', body.resultCol, JOB_SHEET_COLUMNS.filterResult);
-    const reasonCol = resolveColumn('Reason column', body.reasonCol, JOB_SHEET_COLUMNS.filterReason);
     const startRow =
       body.startRow === undefined ? JOB_SHEET_FIRST_DATA_ROW : toPositiveInteger('startRow', body.startRow);
-
-    // Without an explicit end, run to the last row that actually has a job
-    // link. Asking the caller for it made sense when they had picked the sheet;
-    // now that it is their own, "all of today's jobs" is the only sane default.
-    const endRow =
-      body.endRow === undefined
-        ? (await fetchGoogleSheetsColumnValues({ sheetId, tabName, col: jobLinkCol })).values.length
-        : toPositiveInteger('endRow', body.endRow);
-
-    // Only meaningful against an explicit range - an empty tab reports zero
-    // rows below rather than an error.
-    if (body.endRow !== undefined && body.startRow !== undefined && endRow < startRow) {
+    const askedEnd = body.endRow === undefined ? null : toPositiveInteger('endRow', body.endRow);
+    if (askedEnd !== null && askedEnd < startRow) {
       throw new GoogleSheetsRequestError(400, 'startRow must be less than or equal to endRow.');
     }
 
-    const distinctColumns = [
-      jobLinkCol,
-      resultCol,
-      reasonCol,
-    ];
-
-    if (new Set(distinctColumns).size !== distinctColumns.length) {
-      throw new GoogleSheetsRequestError(
-        400,
-        'Job link and output columns must all be different.'
-      );
-    }
+    // A job tab, read without writing anything: an older build's daily tab
+    // or the person's own has other columns where these are read from.
+    const inspected = await inspectJobSheetTab(sheetId, tabName);
+    if (!isJobSheetTab(inspected)) throw notJobTabError(tabName, 'filtered');
 
     // The filter makes no model call of its own (owner decision J8): each
     // row is judged on its posting's ONE job analysis, which the analysis
     // model makes when the posting has none yet. The summary names that model.
     const { modelLabel } = await describeJobFilterModel();
-    // The app's own sheets also get each row's analysis written into their
-    // protected analysis columns, once; a shared source keeps it in the
-    // database only.
-    const writesAnalysis = isAppOwnedSheet(sheetId);
 
+    // ONE read of C:E, whole columns (never past the grid): without an
+    // explicit end, the rows run to the last one holding anything there.
+    const [grid = []] = await batchGetValues(sheetId, [
+      a1Columns(tabName, JOB_SHEET_COLUMNS.company, JOB_SHEET_COLUMNS.jobLink),
+    ]);
+    const endRow = askedEnd ?? grid.length;
+
+    const summary = {
+      spreadsheetId: sheetId,
+      spreadsheetTitle: inspected.spreadsheetTitle ?? '',
+      selectedTab: tabName,
+      modelLabel,
+      startRow,
+      endRow,
+    };
     if (endRow < startRow) {
-      // An empty tab is not an error - a sheet created this morning that nobody
-      // has exported into yet is the ordinary first run. It must answer in the
-      // SAME shape as a real run, though: the page renders every field, and one
-      // missing array is a crash rather than an empty state.
+      // An empty tab is not an error - a sheet nobody has exported into yet
+      // is the ordinary first run - but it answers in the SAME shape as a
+      // real run: the page renders every field.
       res.json({
-        spreadsheetId: sheetId,
-        spreadsheetTitle: '',
-        selectedTab: tabName,
-        modelLabel,
-        startRow,
-        endRow,
-        jobLinkCol,
-        resultCol,
-        reasonCol,
+        ...summary,
         scannedRows: 0,
         processedRows: 0,
         skippedRows: 0,
         scrapedRows: 0,
         reusedAnalyses: 0,
         errorRows: 0,
-        updatedRanges: [],
         rowErrors: [],
+        rows: [],
         message: 'There are no job rows in that tab yet.',
       });
       return;
@@ -844,63 +909,43 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
       }
     });
 
-    // The Company column too on an app sheet: a row's analysis is written back
-    // only when the row still names the company it was read with.
-    const fromCol = Math.min(...distinctColumns, ...(writesAnalysis ? [JOB_SHEET_COLUMNS.company] : []));
-    const toCol = Math.max(...distinctColumns);
-    const sheetRange = await fetchGoogleSheetsRange({
-      sheetId,
-      tabName,
-      fromRow: startRow,
-      toRow: endRow,
-      fromCol,
-      toCol,
-    });
-    const values = sheetRange.values ?? [];
-    const jobLinkIndex = jobLinkCol - fromCol;
-    const resultIndex = resultCol - fromCol;
-    const reasonIndex = reasonCol - fromCol;
-
-    const companyIndex = JOB_SHEET_COLUMNS.company - fromCol;
-
+    const cell = (cells: string[], column: number) => String(cells[column - JOB_SHEET_COLUMNS.company] ?? '').trim();
     let processedRows = 0;
     let skippedRows = 0;
     let scrapedRows = 0;
     let reusedAnalyses = 0;
     let errorRows = 0;
     const rowErrors: Array<{ row: number; message: string }> = [];
+    const rows: FilterRowResult[] = [];
 
-    for (let rowIndex = 0; rowIndex < values.length; rowIndex += 1) {
-      const rowNumber = startRow + rowIndex;
-      const row = values[rowIndex] ?? [];
-      const jobLink = typeof row[jobLinkIndex] === 'string' ? row[jobLinkIndex].trim() : '';
-      const existingAnalysisValues = [
-        typeof row[resultIndex] === 'string' ? row[resultIndex].trim() : '',
-        typeof row[reasonIndex] === 'string' ? row[reasonIndex].trim() : '',
-      ];
-
-      if (
-        shouldSkipExistingFilterRow({
-          jobLink,
-          existingAnalysisValues,
-        })
-      ) {
+    for (let rowNumber = startRow; rowNumber <= endRow; rowNumber += 1) {
+      const cells = grid[rowNumber - 1] ?? [];
+      const company = cell(cells, JOB_SHEET_COLUMNS.company);
+      const title = cell(cells, JOB_SHEET_COLUMNS.jobTitle);
+      const jobLink = cell(cells, JOB_SHEET_COLUMNS.jobLink);
+      if (!jobLink) {
         skippedRows += 1;
+        // A row holding a job without a link is listed, unjudged; an empty row is not.
+        if (company || title) {
+          rows.push({ row: rowNumber, company, title, link: '', result: null, reason: 'The row has no job link to read.', reused: false });
+        }
         continue;
       }
 
       // Which step a row failed at is what its one-line error says; the cause -
-      // the job site's status, the seat's failure, Google's refusal - is logged
-      // under the ref the line carries.
+      // the job site's status, the seat's failure - is logged under the ref
+      // the line carries.
       let step: keyof typeof ROW_STEP_FAILED = 'open';
+      let reused = false;
       try {
         // A posting already analysed - by a build, a sheet run, an earlier
         // filter - is judged on that analysis, with no page fetch and no model.
         let stored = findStoredAnalysis({ link: jobLink });
         if (stored) {
+          reused = true;
           reusedAnalyses += 1;
           // Found by its link: the company the lake's merge hashes it on, if nobody named one yet.
-          if (!stored.companyName && typeof row[companyIndex] === 'string') attachCompanyName(stored.id, row[companyIndex]);
+          if (!stored.companyName && company) attachCompanyName(stored.id, company);
         } else {
           const jobContent = await extractJobPageContent(jobLink);
           scrapedRows += 1;
@@ -910,7 +955,7 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
             jd: jobContent,
             link: jobLink,
             requestedBy: req.user?.id ?? null,
-            company: typeof row[companyIndex] === 'string' ? row[companyIndex].trim() : '',
+            company,
             signal: filterSignal,
           });
         }
@@ -919,27 +964,20 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
         const decision = evaluateJobFilterAnalysis(
           stored ? jobFilterAnalysisOf(stored.analysis) : getEmptyJobFilterAnalysis()
         );
-
-        step = 'write';
-        await updateGoogleSheetsRow({
-          sheetId,
-          tabName,
+        rows.push({
           row: rowNumber,
-          updates: [
-            { col: resultCol, value: decision.result },
-            { col: reasonCol, value: decision.reason ?? '' },
-          ],
+          company,
+          title,
+          link: jobLink,
+          result: decision.result,
+          reason: decision.reason ?? '',
+          reused,
         });
-
-        const company = typeof row[companyIndex] === 'string' ? row[companyIndex].trim() : '';
-        if (stored && writesAnalysis && company) {
-          queueAnalysisWriteBack({ spreadsheetId: sheetId, tabName, row: rowNumber, companyName: company, jobLink, stored });
-        }
-
         processedRows += 1;
       } catch (error) {
         errorRows += 1;
         const message = publicItemError(error, ROW_STEP_FAILED[step], `job filter row ${rowNumber} (${step})`);
+        rows.push({ row: rowNumber, company, title, link: jobLink, result: null, reason: '', reused, error: message });
         if (rowErrors.length < 20) {
           rowErrors.push({ row: rowNumber, message });
         }
@@ -947,26 +985,15 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
     }
 
     res.json({
-      spreadsheetId: sheetRange.spreadsheetId,
-      spreadsheetTitle: sheetRange.spreadsheetTitle,
-      selectedTab: tabName,
-      modelLabel,
-      startRow,
-      endRow,
-      jobLinkCol,
-      resultCol,
-      reasonCol,
+      ...summary,
       scannedRows: endRow - startRow + 1,
       processedRows,
       skippedRows,
       scrapedRows,
       reusedAnalyses,
       errorRows,
-      updatedRanges: [
-        buildColumnRange(tabName, startRow, endRow, resultCol),
-        buildColumnRange(tabName, startRow, endRow, reasonCol),
-      ],
       rowErrors,
+      rows,
     });
   } catch (error) {
     // The sheet guard's own statuses, Google's refusals and "no model can run"
@@ -975,5 +1002,5 @@ router.post('/filter-google-sheet', async (req: Request, res: Response) => {
   }
 });
 
-export { buildExportRowDuplicateKeys, shouldSkipExistingFilterRow };
+export { buildExportRowDuplicateKeys, exportPlaceOf };
 export default router;

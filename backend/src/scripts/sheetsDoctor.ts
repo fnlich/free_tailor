@@ -364,7 +364,7 @@ export async function main(envPath: string = ENV_PATH): Promise<number> {
     {
       title: 'Create a throwaway spreadsheet',
       run: async () => {
-        const created = await createSpreadsheet('Free Tailor - doctor check', '01/01/2000');
+        const created = await createSpreadsheet('Free Tailor - doctor check', 'All');
         spreadsheetId = created.spreadsheetId;
         // Carried to the next step. It used to be assumed to be 0, which held
         // only while Google made the first tab itself and called it `Sheet1`;

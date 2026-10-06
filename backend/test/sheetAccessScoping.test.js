@@ -51,6 +51,12 @@ function makeClient({ configured = true } = {}) {
     async setSpreadsheetVisibility(id, next) {
       return next;
     },
+    async listSheetTabs() {
+      return [];
+    },
+    async readRanges(id, ranges) {
+      return ranges.map(() => []);
+    },
   };
 }
 
@@ -227,23 +233,18 @@ test('the guard runs before any work, so nothing is scraped or written first', a
   }
 });
 
-test('an admin may address a configured shared source, an ordinary user may not', async () => {
-  // How the admin page stores them.
-  const server = await serve([{ id: 'src-1', name: 'Team board', sheetId: 'shared-sheet-1' }]);
+test('an administrator no longer reaches a shared sheet an older build saved: every route is their own sheet only', async () => {
+  // How the admin page of an older build stored them - still in the settings
+  // row (kept for a rollback), and addressable by nobody.
+  const server = await serve([{ id: 'src-1', name: 'Bid History', sheetId: 'shared-sheet-1', createdAt: 'x', updatedAt: 'x' }]);
   try {
-    const asAlice = await server.post(server.aliceToken, '/api/import', {
-      sheetId: 'shared-sheet-1',
-      tabName: 'Sheet1',
-    });
-    assert.equal(asAlice.status, 404, 'a shared source is not a user-addressable sheet');
-
-    // The admin gets past the guard and on to Google, which in this test has
-    // no such spreadsheet - anything other than 404 proves the guard allowed it.
-    const asAdmin = await server.post(server.adminToken, '/api/import', {
-      sheetId: 'shared-sheet-1',
-      tabName: 'Sheet1',
-    });
-    assert.notEqual(asAdmin.status, 404);
+    for (const route of ID_TAKING_ROUTES) {
+      for (const token of [server.aliceToken, server.adminToken]) {
+        const response = await server.post(token, route.path, { ...route.body(), sheetId: 'shared-sheet-1' });
+        assert.equal(response.status, 404, `${route.path}: a saved shared sheet is nobody's to address`);
+        assert.match((await response.json()).error, /not found/i);
+      }
+    }
   } finally {
     server.close();
   }

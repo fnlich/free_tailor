@@ -320,7 +320,7 @@ test("the Generate Immediately confirm shows until Don't show again, per browser
 
 test("the sheet panel builds a job per row with a company and a description, and skips the rest", () => {
   const { buildSheetJobs, safeJobLink } = loadFrontendModule('lib/sheetRows.ts');
-  // The own sheet's B:E, loaded from row 2: Company, Job Title, Job Link, Job Description.
+  // The own sheet's C:F, loaded from row 2: Company, Job Title, Job Link, Job Description.
   const values = [
     ['Acme', 'Engineer', 'https://acme.example/jobs/1', 'Build things. '.repeat(5)],
     ['', 'No company', '', 'A description'],

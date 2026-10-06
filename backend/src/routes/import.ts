@@ -3,7 +3,6 @@ import { requireUser } from '../middleware/auth';
 import { fetchGoogleSheetsRange } from '../integrations/googleSheets';
 import { sendPublicError } from '../middleware/publicError';
 import { listAddressableSheetTabs, resolveAddressableSheet } from '../services/sheets/accountSheet';
-import { adminAllowedSheetIds } from '../services/sheets/jobSheetTarget';
 
 const router = Router();
 /**
@@ -17,19 +16,19 @@ router.use(requireUser);
 
 
 /**
- * The tabs of a spreadsheet the caller may address, for the builder's sheet
- * panel: `GET /api/import/tabs` (their own sheet) or `?sheetId=` (theirs, or
- * a shared source for an administrator). Answers `{ spreadsheetId, tabs:
- * [{ title, gid }], defaultTab }` - `defaultTab` is today's tab on the
- * account's own sheet. Somebody else's spreadsheet is 404, like everywhere
- * else a sheet id is taken.
+ * The tabs of the caller's own sheet, for the builder's sheet panel: `GET
+ * /api/import/tabs` (`?sheetId=` may name it, and nothing else - any other
+ * spreadsheet is 404, like everywhere else a sheet id is taken). Answers `{
+ * spreadsheetId, tabs: [{ title, gid, layout }], defaultTab }` - `layout` is
+ * `job`, `blank` or `other` from the tab's row 1, and `defaultTab` is All
+ * when it is a job tab (see `listAddressableSheetTabs`).
  *
  * The rows of the chosen tab are then read with `POST /` below, naming
  * `tabName` and the row and column range.
  */
 router.get('/tabs', async (req: Request, res: Response) => {
   try {
-    res.json(await listAddressableSheetTabs(req.user!, req.query.sheetId, await adminAllowedSheetIds(req.user!)));
+    res.json(await listAddressableSheetTabs(req.user!, req.query.sheetId));
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to list the Google Sheet tabs');
   }
@@ -51,11 +50,7 @@ router.post('/', async (req: Request, res: Response) => {
     // Only the spreadsheet is resolved, deliberately: this endpoint is also how
     // the UI asks which tabs a spreadsheet HAS, so requiring a tab name would
     // defeat its main use.
-    const spreadsheetId = await resolveAddressableSheet(
-      req.user!,
-      body.sheetId,
-      await adminAllowedSheetIds(req.user!)
-    );
+    const spreadsheetId = await resolveAddressableSheet(req.user!, body.sheetId);
 
     const result = await fetchGoogleSheetsRange({ ...body, sheetId: spreadsheetId });
     res.json(result);

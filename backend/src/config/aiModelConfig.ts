@@ -178,6 +178,14 @@ type AppSettings = {
    * untouched install stores none and reads `.env` as it always did.
    */
   aiProviders: StoredAIProvider[];
+  /**
+   * The saved "shared" Google Sheets an older build let an administrator
+   * point the builder, the Job Filter, the export and the range importer at.
+   * Removed (owner decision S1): every sheet route is the account's own
+   * sheet now, and nothing reads this. It is KEPT in the stored row - read,
+   * normalised and written back unchanged by every save, never served - so
+   * an older build rolled back to finds its list as it left it.
+   */
   googleSheetsSources: GoogleSheetSource[];
 };
 
@@ -226,16 +234,17 @@ type BuilderDefaults = Pick<
 
 /**
  * What the administrator's payload is built on: the switches, the builder
- * defaults, the runnable models and the shared sheet sources.
+ * defaults and the runnable models.
  *
  * It used to be sent to every signed-in account as it stands, and it says far
  * more than an ordinary account may know - which seats exist and are switched
- * on, every model's provider and CLI model name, the sheets the administrator
- * shares. An ordinary account gets `UserAppSettings` now; this is only ever
- * read on the way to `AdminAppSettings`.
+ * on, every model's provider and CLI model name. An ordinary account gets
+ * `UserAppSettings` now; this is only ever read on the way to
+ * `AdminAppSettings`. The saved shared sheets are in no payload any more
+ * (see `AppSettings.googleSheetsSources`).
  */
 type BaseAppSettings = AIModelSettings & LegacyProviderFlags & BuilderDefaults &
-  Pick<AppSettings, 'aiModels' | 'googleSheetsSources' | 'analysisModelId'>;
+  Pick<AppSettings, 'aiModels' | 'analysisModelId'>;
 
 /** One model as an ordinary account sees it: the id a request names it by, and the name an administrator gave it. */
 export type UserModelOption = { id: string; name: string };
@@ -1678,7 +1687,6 @@ function toBaseSettings(settings: AppSettings): BaseAppSettings {
     ...toLegacyProviderFlags(settings),
     ...toBuilderDefaults(settings),
     aiModels: runnable.map((model) => ({ ...model })),
-    googleSheetsSources: settings.googleSheetsSources,
     analysisModelId: settings.analysisModelId,
   };
 }
@@ -2066,15 +2074,19 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
    * amount or an inverted band is reported by name.
    */
   // And the providers, which have routes of their own for the same reason:
-  // every folder and binary they name is checked there, by name.
+  // every folder and binary they name is checked there, by name. And the
+  // saved shared sheets, which are gone (owner decision S1): a stale page
+  // still sending its list must not change the one kept for a rollback.
   const {
     aiModels: _models,
     aiProviders: _providers,
+    googleSheetsSources: _sheets,
     paymentLimits: limitsInput,
     ...changes
   } = input as AppSettingsUpdate & {
     aiModels?: unknown;
     aiProviders?: unknown;
+    googleSheetsSources?: unknown;
   };
   const paymentLimits = limitsInput === undefined ? current.paymentLimits : parsePaymentLimitsInput(limitsInput);
   const next = normalizeSettings(

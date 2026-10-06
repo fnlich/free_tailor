@@ -1,5 +1,7 @@
 import { apiFetch } from './api';
 import type { JobSalary } from './jobAnalysis';
+import type { SheetTabConflict } from './sheet';
+import type { SheetTabListing } from './sheetTabs';
 
 /**
  * The Job Data Lake's API: Report Jobs (`/api/report`, a reporter's own sheet
@@ -20,16 +22,21 @@ import type { JobSalary } from './jobAnalysis';
 
 /**
  * The reporter's own sheet, as GET /api/report reads it: configured with its
- * address and today's tab; not configured (no Google credential on the
- * server), with a sentence for the reader; or configured but unreachable,
- * with the server's public sentence (which may end in a `Ref:`).
+ * address and its two tabs, All and Temp For AI (with a name clash when one
+ * of those names is a tab of the reporter's own); not configured (no Google
+ * credential on the server), with a sentence for the reader; or configured but
+ * unreachable, with the server's public sentence (which may end in a `Ref:`).
  */
 export type ReportSheet = {
   configured: boolean;
   spreadsheetId?: string | null;
   spreadsheetUrl?: string | null;
-  todayTab?: string;
-  todayTabUrl?: string | null;
+  /** `All`, the tab the page starts on. */
+  defaultTab?: string;
+  defaultTabUrl?: string | null;
+  tempTab?: string;
+  tempTabUrl?: string | null;
+  conflict?: SheetTabConflict | null;
   message?: string;
   error?: string;
 };
@@ -45,9 +52,6 @@ export type ReportRowStatus =
   | 'failed'
   | 'already-reported';
 
-/** What the run wrote into the row's Lake Status cell. */
-export type LakeStatusText = 'Added' | 'Replaced' | 'Duplicate' | 'Unclassified' | 'Skipped';
-
 /**
  * What became of a posting the first time this account reported it, as the
  * server's record of who reported what (`job_reports`) keeps it: the outcome
@@ -62,8 +66,6 @@ export type ReportRowOutcome = {
   status: ReportRowStatus;
   /** For a row reported before (`already-reported`): its posting's first outcome. Null otherwise. */
   priorOutcome: JobReportOutcome | null;
-  /** What the run wrote into the row's Lake Status cell: for a row reported before, its first outcome again. */
-  lakeStatus: LakeStatusText | null;
   jobHash: string | null;
   lakeId: number | null;
   /** What this row paid, in thousandths of a dollar. */
@@ -86,7 +88,11 @@ export type ReportRunSummary = {
   earnedMilli: number;
   /** The reporter's balance when the run ended. */
   balanceMilli: number;
-  /** False when the Lake Status cells could not be written; the lake has the jobs regardless. */
+  /**
+   * False when the sheet could not be brought up to date this time - the
+   * analyses written back into the rows' G to L, or the duplicates painted
+   * red; the lake has the jobs regardless.
+   */
   sheetUpdated: boolean;
 };
 
@@ -122,11 +128,9 @@ export type ReportOverview = {
   run: ReportRun | null;
 };
 
-export type ReportTabs = {
+/** The reporter's tabs, each with its layout (lib/sheetTabs.ts), All the one to start on. */
+export type ReportTabs = SheetTabListing & {
   spreadsheetId: string;
-  tabs: Array<{ title: string; gid?: number }>;
-  /** Today's tab when the sheet has it, else the first; null for none. */
-  defaultTab: string | null;
 };
 
 /** One row of the preview: what a run over it would read, and whether it would skip it. */
@@ -142,8 +146,8 @@ export type ReportPreviewRow = {
    * This account reported the row's posting before - from this row or any
    * other, this tab or another - as the server's record says, and this is the
    * first row of it in the range: a run skips it. Nothing in the sheet decides
-   * it (its Lake Status is never read); the server decides, the page only
-   * shows it. A later row of the same posting is not reported: the run makes
+   * it - the sheet holds no lake status at all; the server decides, the page
+   * only shows it. A later row of the same posting is not reported: the run makes
    * it a duplicate of the one above.
    */
   reported: boolean;

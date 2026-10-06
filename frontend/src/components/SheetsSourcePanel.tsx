@@ -2,61 +2,42 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { importApi } from '@/lib/api';
-import {
-  parsePositiveWholeNumber,
-  parseSpreadsheetColumnInput,
-  toSpreadsheetColumnLabel,
-} from '@/lib/sheet';
+import { parsePositiveWholeNumber, parseSpreadsheetColumnInput } from '@/lib/sheet';
 import {
   appendColumns,
   buildSheetJobs,
   countSkippingAnalysis,
   describeRowAnalysis,
   OWN_SHEET_LAYOUT,
-  SAVED_SOURCE_LAYOUT,
   type SheetColumnOffsets,
   type SheetJob,
 } from '@/lib/sheetRows';
+import { chosenTab, hasUnreadTabs, sheetTabOptions, unreadTabsNoteFor, type SheetTabListing } from '@/lib/sheetTabs';
 import { Card, ErrorNotice, Notice, Pill } from '@/components/ui/kit';
-import { IconChevronRight } from '@/components/icons';
 import styles from '@/components/builder.module.css';
-
-/**
- * A spreadsheet the builder may read jobs from.
- *
- * The account's own job sheet first - every account has one, and it is the
- * only one an ordinary account may address - then, for an administrator, the
- * saved sources they configured. Offering only the saved ones sent an ordinary
- * user at a spreadsheet the backend rightly answered was not found.
- */
-export type ImportSheetSource = {
-  id: string;
-  name: string;
-  sheetId: string;
-  /** The account's own job sheet, whose layout this app decides. */
-  isOwnSheet?: boolean;
-  /** Today's tab of the account's own sheet, marked in the tab list. */
-  todayTab?: string;
-};
 
 /** What a run is asked for: built now while this tab follows it, or placed as an order. */
 export type SheetRunKind = 'immediate' | 'order';
 
 /**
- * The sheet a run's rows came from, as the batch names it: the tab, and the
- * spreadsheet only when it is not the account's own (the server's default).
- * With it the server reads the rows' Analysis cells itself - never from this
- * page - and a row that holds its analysis skips analysis.
+ * The sheet a run's rows came from, as the batch names it: the tab. The
+ * spreadsheet is always the account's own (owner decision S1), which is the
+ * server's default, so it is not named. With it the server reads the rows'
+ * Analysis cells itself - never from this page - and a row that holds its
+ * analysis skips analysis.
  */
-export type SheetRunSource = { spreadsheetId?: string; tabName: string };
+export type SheetRunSource = { tabName: string };
 
 /** How many loaded rows the preview table draws; the rest are counted, not drawn. */
 const PREVIEW_ROWS = 50;
 
 type Props = {
-  sources: ImportSheetSource[];
-  selectedSourceId: string;
-  onSelectSource: (sourceId: string) => void;
+  /**
+   * The account's own spreadsheet - the only one a build may read from - or
+   * null while it is not there (no Google on the server, or not allocated
+   * yet), when `unavailableNotice` says why.
+   */
+  spreadsheetId: string | null;
   /** A run is being placed or followed: nothing here may change under it. */
   busy: boolean;
   /**
@@ -67,77 +48,49 @@ type Props = {
   onRun: (kind: SheetRunKind, jobs: SheetJob[], meta: { skippedRows: number; sheet: SheetRunSource }) => void;
   /** The cost line, beside the two actions. */
   costLine?: ReactNode;
-  /** Shown instead of the sheet select when there is nothing to read from. */
+  /** Shown instead of the tabs when there is no sheet to read from. */
   unavailableNotice?: ReactNode;
 };
 
 /**
  * The sheet half of "Building Automatically from Google Sheet", inline on the
- * page: which sheet, which TAB (every tab, today's first on the account's own
- * sheet - it used to hide behind "Advanced columns" in a dialog), which rows,
- * a preview of the jobs they hold, and then the two ways to build them -
- * Generate Immediately or Order.
+ * page: which TAB of the account's own sheet (All first; a tab that is not
+ * laid out as a job tab is listed but not offered), which rows, a preview of
+ * the jobs they hold, and then the two ways to build them - Generate
+ * Immediately or Order.
  */
 export default function SheetsSourcePanel({
-  sources,
-  selectedSourceId,
-  onSelectSource,
+  spreadsheetId,
   busy,
   onRowsChange,
   onRun,
   costLine,
   unavailableNotice,
 }: Props) {
-  const source = sources.find((candidate) => candidate.id === selectedSourceId) ?? null;
-
   return (
-    <Card title="Jobs from your sheet" description="Pick a tab and the rows to build, then load them to check what will be built.">
-      <div className="space-y-6">
-        <div>
-          <label htmlFor="sheet-source" className="tl-label">
-            Google Sheet
-          </label>
-          <select
-            id="sheet-source"
-            value={selectedSourceId}
-            onChange={(event) => {
-              onRowsChange(null);
-              onSelectSource(event.target.value);
-            }}
-            disabled={busy || sources.length === 0}
-            className="tl-input mt-2"
-          >
-            {sources.length === 0 && <option value="">No Google Sheet available</option>}
-            {sources.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
-          </select>
-          {sources.length === 0 && unavailableNotice}
-        </div>
-
-        {/*
-          Keyed by the sheet: another sheet is another set of tabs and another
-          layout, so everything below starts again from that sheet's defaults
-          rather than carrying one sheet's range onto the other.
-        */}
-        {source && (
-          <SheetRows
-            key={`${source.id}:${source.sheetId}`}
-            source={source}
-            busy={busy}
-            onRowsChange={onRowsChange}
-            onRun={onRun}
-            costLine={costLine}
-          />
-        )}
-      </div>
+    <Card title="Jobs from your sheet" description="Pick a tab of your job sheet and the rows to build, then load them to check what will be built.">
+      {/*
+        Keyed by the spreadsheet: allocated while the page was open, it is
+        another set of tabs, so everything below starts again from its
+        defaults.
+      */}
+      {spreadsheetId ? (
+        <SheetRows
+          key={spreadsheetId}
+          spreadsheetId={spreadsheetId}
+          busy={busy}
+          onRowsChange={onRowsChange}
+          onRun={onRun}
+          costLine={costLine}
+        />
+      ) : (
+        unavailableNotice ?? null
+      )}
     </Card>
   );
 }
 
-type TabsState = { tabs: string[]; defaultTab: string | null; error: unknown };
+type TabsState = { listing: SheetTabListing | null; error: unknown };
 
 type Loaded = {
   /** The inputs the rows were loaded with; rows loaded for other inputs are not shown or built. */
@@ -147,45 +100,36 @@ type Loaded = {
   total: number;
   /** The tab they were read from - what the run names, so it is the one the server reads. */
   tabName: string;
-  /** Whether the rows' Analysis cells were read: false on another sheet, or a tab too narrow to have them. */
+  /** Whether the rows' Analysis cells were read: false when the second read failed (a grid too narrow for G:L). */
   analysisRead: boolean;
 };
 
 function SheetRows({
-  source,
+  spreadsheetId,
   busy,
   onRowsChange,
   onRun,
   costLine,
 }: {
-  source: ImportSheetSource;
+  spreadsheetId: string;
   busy: boolean;
   onRowsChange: (jobCount: number | null) => void;
   onRun: Props['onRun'];
   costLine?: ReactNode;
 }) {
-  const layout = source.isOwnSheet ? OWN_SHEET_LAYOUT : SAVED_SOURCE_LAYOUT;
+  const layout = OWN_SHEET_LAYOUT;
   const [tabsState, setTabsState] = useState<TabsState | null>(null);
   /** The tab picked by hand; empty means the sheet's default. */
   const [pickedTab, setPickedTab] = useState('');
   const [fromRow, setFromRow] = useState(layout.fromRow);
   const [toRow, setToRow] = useState(layout.toRow);
-  const [fromCol, setFromCol] = useState(layout.fromCol);
-  const [toCol, setToCol] = useState(layout.toCol);
-  const [columns, setColumns] = useState({
-    company: layout.company,
-    jobTitle: layout.jobTitle,
-    jobLink: layout.jobLink,
-    jobDescription: layout.jobDescription,
-  });
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   /** A sentence of the panel's own, or a caught failure for <ErrorNotice> to word. */
   const [error, setError] = useState<unknown>('');
   /**
-   * False once this sheet's panel is gone - another sheet was picked while its
-   * rows were loading. That answer must not tell the page how many jobs there
+   * False once this sheet's panel is gone - the page moved on while its rows
+   * were loading. That answer must not tell the page how many jobs there
    * are: they are not the rows on screen any more.
    */
   const mounted = useRef(true);
@@ -197,31 +141,30 @@ function SheetRows({
   }, []);
 
   // The tabs, once per sheet (this component is keyed by it). Only the answer
-  // sets state, so a slow answer for a sheet since deselected is dropped.
+  // sets state, so a slow answer for a sheet since replaced is dropped.
   useEffect(() => {
     let alive = true;
-    importApi.listTabs(source.isOwnSheet ? undefined : source.sheetId).then(
+    importApi.listTabs().then(
       (answer) => {
         if (!alive) return;
-        const tabs = (answer.tabs ?? []).map((tab) => tab.title).filter(Boolean);
-        setTabsState({ tabs, defaultTab: answer.defaultTab ?? null, error: null });
+        setTabsState({ listing: { tabs: answer.tabs ?? [], defaultTab: answer.defaultTab ?? null }, error: null });
       },
       (err) => {
-        if (alive) setTabsState({ tabs: [], defaultTab: null, error: err ?? 'Could not list the tabs of that sheet.' });
+        if (alive) setTabsState({ listing: null, error: err ?? 'Could not list the tabs of your job sheet.' });
       }
     );
     return () => {
       alive = false;
     };
-  }, [source.isOwnSheet, source.sheetId]);
+  }, [spreadsheetId]);
 
-  const tabs = tabsState?.tabs ?? [];
-  // Today's tab on the account's own sheet (the server's `defaultTab`), the
-  // first otherwise - until somebody picks another.
-  const tabName =
-    pickedTab && tabs.includes(pickedTab) ? pickedTab : tabsState?.defaultTab && tabs.includes(tabsState.defaultTab) ? tabsState.defaultTab : tabs[0] ?? '';
+  const listing = tabsState?.listing ?? null;
+  const options = sheetTabOptions(listing?.tabs ?? []);
+  // All (the server's `defaultTab`), else the first job tab - until somebody
+  // picks another. Never a tab that is not a job tab: its columns are not these.
+  const tabName = chosenTab(listing, pickedTab);
 
-  const inputsKey = JSON.stringify([source.sheetId, tabName, fromRow, toRow, fromCol, toCol, columns]);
+  const inputsKey = JSON.stringify([spreadsheetId, tabName, fromRow, toRow]);
   const current = loaded && loaded.key === inputsKey ? loaded : null;
 
   /**
@@ -247,12 +190,12 @@ function SheetRows({
       const firstRow = parsePositiveWholeNumber('From row', fromRow);
       const lastRow = parsePositiveWholeNumber('To row', toRow);
       if (lastRow < firstRow) throw new Error('To row must be From row or a row after it.');
-      const firstCol = parseSpreadsheetColumnInput('From column', fromCol);
-      const lastCol = parseSpreadsheetColumnInput('To column', toCol);
-      if (lastCol < firstCol) throw new Error('To column must be From column or a column after it.');
+      // Company to Job Description, C:F - the columns are the app's, not the page's.
+      const firstCol = parseSpreadsheetColumnInput('From column', layout.fromCol);
+      const lastCol = parseSpreadsheetColumnInput('To column', layout.toCol);
 
       const response = await importApi.fetchGoogleSheetRange({
-        sheetId: source.sheetId,
+        sheetId: spreadsheetId,
         tabName,
         fromRow: firstRow,
         toRow: lastRow,
@@ -261,65 +204,42 @@ function SheetRows({
       });
       const values = response.values ?? [];
       const startRow = response.range?.fromRow ?? firstRow;
-      const startCol = response.range?.fromCol ?? firstCol;
-      const width = (response.range?.toCol ?? lastCol) - startCol + 1;
-      const range = `${toSpreadsheetColumnLabel(startCol)}:${toSpreadsheetColumnLabel(startCol + width - 1)}`;
-
-      /** A mapped column as an offset into what was loaded; a required one outside it is refused by name. */
-      const offset = (label: string, letters: string, required: boolean): number | null => {
-        if (!letters.trim()) {
-          if (required) throw new Error(`Choose the ${label} column under Advanced.`);
-          return null;
-        }
-        const index = parseSpreadsheetColumnInput(`${label} column`, letters) - startCol;
-        if (index >= 0 && index < width) return index;
-        if (required) {
-          throw new Error(`The ${label} column (${letters.trim().toUpperCase()}) is outside the columns loaded (${range}).`);
-        }
-        return null;
-      };
+      const width = lastCol - firstCol + 1;
+      const offset = (letters: string) => parseSpreadsheetColumnInput('Column', letters) - firstCol;
       const offsets: SheetColumnOffsets = {
-        companyName: offset('Company', columns.company, true),
-        jobTitle: offset('Job Title', columns.jobTitle, false),
-        jobLink: offset('Job Link', columns.jobLink, false),
-        jobDescription: offset('Job Description', columns.jobDescription, true),
+        companyName: offset(layout.company),
+        jobTitle: offset(layout.jobTitle),
+        jobLink: offset(layout.jobLink),
+        jobDescription: offset(layout.jobDescription),
         jobField: null,
         salary: null,
         analysis: null,
       };
 
-      // The account sheet's analysis columns, K:P: from the rows already
-      // loaded when the range takes them in, else in a read of their own.
-      // That second read is best-effort - a tab made before these columns
-      // existed has a grid that ends at L, and Google refuses a range past
-      // it - and without it every row simply says "When built", which is
-      // what the server will do with a row that has no Analysis cell.
+      // The analysis columns, G:L, in a read of their own. Best-effort: a
+      // grid narrower than L (the server widens a job tab it verifies, but a
+      // tab laid out by hand may not be yet) makes Google refuse the range,
+      // and without it every row simply says "When built" - which is what
+      // the server will do with a row whose Analysis cell it cannot read.
       let rows: string[][] = values;
-      if (layout.analysis) {
-        const fieldCol = parseSpreadsheetColumnInput('Job Field column', layout.jobField);
-        const analysisCol = parseSpreadsheetColumnInput('Analysis column', layout.analysis);
-        const within = (column: number) => column >= startCol && column < startCol + width;
-        if (within(fieldCol) && within(analysisCol)) {
-          offsets.jobField = fieldCol - startCol;
-          offsets.salary = parseSpreadsheetColumnInput('Salary column', layout.salary) - startCol;
-          offsets.analysis = analysisCol - startCol;
-        } else {
-          try {
-            const extra = await importApi.fetchGoogleSheetRange({
-              sheetId: source.sheetId,
-              tabName,
-              fromRow: startRow,
-              toRow: startRow + values.length - 1,
-              fromCol: fieldCol,
-              toCol: analysisCol,
-            });
-            rows = appendColumns(values, width, extra.values ?? []);
-            offsets.jobField = width;
-            offsets.salary = width + parseSpreadsheetColumnInput('Salary column', layout.salary) - fieldCol;
-            offsets.analysis = width + analysisCol - fieldCol;
-          } catch {
-            // Read as "not analysed in the sheet" - see above.
-          }
+      const fieldCol = parseSpreadsheetColumnInput('Job Field column', layout.jobField);
+      const analysisCol = parseSpreadsheetColumnInput('Analysis column', layout.analysis);
+      if (values.length > 0) {
+        try {
+          const extra = await importApi.fetchGoogleSheetRange({
+            sheetId: spreadsheetId,
+            tabName,
+            fromRow: startRow,
+            toRow: startRow + values.length - 1,
+            fromCol: fieldCol,
+            toCol: analysisCol,
+          });
+          rows = appendColumns(values, width, extra.values ?? []);
+          offsets.jobField = width;
+          offsets.salary = width + parseSpreadsheetColumnInput('Salary column', layout.salary) - fieldCol;
+          offsets.analysis = width + analysisCol - fieldCol;
+        } catch {
+          // Read as "not analysed in the sheet" - see above.
         }
       }
 
@@ -340,9 +260,8 @@ function SheetRows({
   const locked = busy || loading;
   const tabsLoading = tabsState === null;
 
-  /** The sheet the run names: the tab the rows came from, and the spreadsheet unless it is the account's own. */
-  const runSource = (rowsLoaded: Loaded): SheetRunSource =>
-    source.isOwnSheet ? { tabName: rowsLoaded.tabName } : { spreadsheetId: source.sheetId, tabName: rowsLoaded.tabName };
+  /** The sheet the run names: the tab the rows came from (the spreadsheet is the account's own). */
+  const runSource = (rowsLoaded: Loaded): SheetRunSource => ({ tabName: rowsLoaded.tabName });
 
   return (
     <div className="space-y-6">
@@ -357,19 +276,20 @@ function SheetRows({
             id="sheet-tab"
             value={tabName}
             onChange={(event) => edited(() => setPickedTab(event.target.value))}
-            disabled={locked || tabsLoading || tabs.length === 0}
+            disabled={locked || tabsLoading || !tabName}
             className="tl-input mt-2"
           >
-            {tabs.length === 0 && (
-              <option value="">{tabsLoading ? 'Loading tabs...' : 'No tabs found'}</option>
+            {/* Nothing chosen: a placeholder, so a sheet with no job tab says so rather than showing one it will not read. */}
+            {!tabName && (
+              <option value="">{tabsLoading ? 'Loading tabs...' : options.length === 0 ? 'No tabs found' : 'No job tab to read'}</option>
             )}
-            {tabs.map((title) => (
-              <option key={title} value={title}>
-                {title}
-                {title === source.todayTab ? ' (today)' : ''}
+            {options.map((option) => (
+              <option key={option.title} value={option.title} disabled={!option.usable}>
+                {option.label}
               </option>
             ))}
           </select>
+          {hasUnreadTabs(listing?.tabs ?? []) && <p className="mt-2 text-sm text-subtle">{unreadTabsNoteFor(listing?.tabs ?? [])}</p>}
         </div>
         <div>
           <label htmlFor="sheet-from-row" className="tl-label">
@@ -413,66 +333,12 @@ function SheetRows({
         </div>
       </div>
 
-      <div className="tl-card divide-y divide-[var(--line-subtle)] overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen((open) => !open)}
-          disabled={locked}
-          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm font-medium text-ink hover:bg-surface-muted disabled:opacity-60"
-          aria-expanded={advancedOpen}
-        >
-          <span className="flex items-center gap-2">
-            <IconChevronRight className={`h-4 w-4 ${styles.chevron} ${advancedOpen ? styles.chevronOpen : ''}`} />
-            Advanced columns
-          </span>
-          <span className="text-xs text-subtle">
-            Range {fromCol.trim().toUpperCase() || layout.fromCol}:{toCol.trim().toUpperCase() || layout.toCol}
-          </span>
-        </button>
-        {advancedOpen && (
-          <div className="grid gap-4 bg-surface-muted p-4 sm:grid-cols-2 lg:grid-cols-4">
-            <ColumnField id="sheet-from-col" label="From column" value={fromCol} disabled={locked} onChange={(value) => edited(() => setFromCol(value))} />
-            <ColumnField id="sheet-to-col" label="To column" value={toCol} disabled={locked} onChange={(value) => edited(() => setToCol(value))} />
-            <ColumnField
-              id="sheet-col-company"
-              label="Company"
-              required
-              value={columns.company}
-              disabled={locked}
-              onChange={(value) => edited(() => setColumns((current) => ({ ...current, company: value })))}
-            />
-            <ColumnField
-              id="sheet-col-description"
-              label="Job Description"
-              required
-              value={columns.jobDescription}
-              disabled={locked}
-              onChange={(value) => edited(() => setColumns((current) => ({ ...current, jobDescription: value })))}
-            />
-            <ColumnField
-              id="sheet-col-title"
-              label="Job Title"
-              value={columns.jobTitle}
-              disabled={locked}
-              onChange={(value) => edited(() => setColumns((current) => ({ ...current, jobTitle: value })))}
-            />
-            <ColumnField
-              id="sheet-col-link"
-              label="Job Link"
-              value={columns.jobLink}
-              disabled={locked}
-              onChange={(value) => edited(() => setColumns((current) => ({ ...current, jobLink: value })))}
-            />
-            {layout.analysis && (
-              <p className="text-sm text-muted sm:col-span-2 lg:col-span-4">
-                Job Field, Salary and Analysis are read from columns {layout.jobField}, {layout.salary} and{' '}
-                {layout.analysis}, which only this program can write. A row whose Analysis cell is filled is
-                built on it without being analysed again.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
+      <p className="text-sm text-muted">
+        Each row&apos;s Company, Job Title, Job Link and Job Description are read from columns {layout.company} to{' '}
+        {layout.jobDescription}. Job Field, Salary and Analysis ({layout.jobField}, {layout.salary} and {layout.analysis})
+        are written only by this program; a row whose Analysis cell is filled is built on it without being analysed
+        again.
+      </p>
 
       <ErrorNotice error={error} onDismiss={() => setError('')} />
 
@@ -594,38 +460,5 @@ function RowAnalysis({ job }: { job: SheetJob }) {
       {facts.length > 0 && <span className="break-words text-xs text-subtle">{facts.join(' · ')}</span>}
       <span className="sr-only">{note.detail}</span>
     </span>
-  );
-}
-
-function ColumnField({
-  id,
-  label,
-  value,
-  required = false,
-  disabled,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  required?: boolean;
-  disabled: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div>
-      <label htmlFor={id} className="tl-label">
-        {label} {required && <span className={styles.required}>*</span>}
-      </label>
-      <input
-        id={id}
-        type="text"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={disabled}
-        placeholder={required ? 'Letter' : 'Not used'}
-        className="tl-input mt-2 uppercase"
-      />
-    </div>
   );
 }

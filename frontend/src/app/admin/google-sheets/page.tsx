@@ -11,7 +11,7 @@ function AdminGoogleSheetsPageBody() {
       <header>
         <h2 className="text-2xl font-bold tracking-tight text-ink">Google Sheets</h2>
         <p className="mt-1 text-sm text-muted">
-          Import a specific range from a Google Sheet by spreadsheet ID, tab name, numeric row bounds, and letter-based column bounds.
+          Import a range of your own job sheet by tab name, numeric row bounds and letter-based column bounds, and save your edits back.
         </p>
       </header>
 

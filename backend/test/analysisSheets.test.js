@@ -12,20 +12,21 @@ const { loadFresh, storeJobAnalysis } = require('./helpers');
 const identity = require('../dist/services/jobAnalysis/identity');
 
 /**
- * The app sheet's six analysis columns (owner decision J5) and sheet-first
- * builds (P7): what is read, what is trusted, what is written, and how.
+ * The app sheet's six analysis columns, G to L (owner decisions J5, S3), and
+ * sheet-first builds (P7): what is read, what is trusted, what is written,
+ * and how.
  *
  * Two halves. Through the routes, against a fake spreadsheet held in memory: a
  * row already analysed skips analysis and is tailored on exactly the analysis
  * READ FROM THE SHEET, a row not analysed is analysed once and written back,
  * once, and the rows are read in one batched call per run - never taken from
  * the request. Then the integration itself against a stubbed `fetch`: the
- * protection's request shape and its repair, the grid grown past twelve
- * columns, RAW writes, and the backoff on Google's 429.
+ * protection's request shape and its repair, the grid grown to twelve
+ * columns, which tabs are job tabs (and every other is never touched), RAW
+ * writes, and the backoff on Google's 429.
  */
 
-const TAB = '10/05/2026';
-const COLUMNS = ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+const TAB = 'All';
 
 /** A column letter as a 1-based number (A = 1). Single letters are all this sheet has. */
 const columnNumber = (letter) => letter.charCodeAt(0) - 64;
@@ -109,6 +110,9 @@ function accountSheetClient() {
     async listSheetTabs() {
       return [{ title: TAB, gid: 7 }];
     },
+    async readRanges(spreadsheetId, ranges) {
+      return ranges.map(() => [[...require('../dist/integrations/googleSheets').JOB_SHEET_HEADERS]]);
+    },
   };
 }
 
@@ -127,9 +131,9 @@ async function serveWithSheet(name, rows, options = {}) {
   return { ...h, sheet, columns };
 }
 
-/** A row as the account sheet lays it out: B company, C title, D link, E description. */
+/** A row as the account sheet lays it out: C company, D title, E link, F description. */
 function sheetRow(n, extra = {}) {
-  return { B: `Company ${n}`, C: 'Engineer', D: `https://jobs.example.com/${n}`, E: posting(n), ...extra };
+  return { C: `Company ${n}`, D: 'Engineer', E: `https://jobs.example.com/${n}`, F: posting(n), ...extra };
 }
 
 /** What the builder submits for a row it read from the sheet: never its analysis cells. */
@@ -179,8 +183,8 @@ async function order(h, jobs, extra = {}) {
 
 test('rows whose Analysis cell is filled make no analysis call, and tailoring gets exactly the sheet\'s analysis', async (t) => {
   const rows = {
-    2: sheetRow(2, { P: analysisCell('Sheet Title Two', undefined, 2) }),
-    3: sheetRow(3, { P: analysisCell('Sheet Title Three', '5b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d', 3) }),
+    2: sheetRow(2, { L: analysisCell('Sheet Title Two', undefined, 2) }),
+    3: sheetRow(3, { L: analysisCell('Sheet Title Three', '5b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d', 3) }),
   };
   const h = await serveWithSheet('sheet-filled', rows);
   t.after(h.close);
@@ -221,16 +225,16 @@ test('rows without it are analysed once and written back, RAW, once - and the ne
 
   const report = await h.columns.flushAnalysisWriteBacks();
   assert.equal(h.sheet.calls.reads.length, 2, 'and the write-back reads its rows again before it writes');
-  assert.deepEqual(report, { written: 2, skipped: 0, failed: 0 });
+  assert.deepEqual(report, { written: 2, skipped: 0, failed: 0, failedSpreadsheets: [] });
   assert.equal(h.sheet.calls.writes.length, 1, 'both rows in one write');
   const [write] = h.sheet.calls.writes;
-  assert.deepEqual(write.map((entry) => entry.range), [`'${TAB}'!K4:P4`, `'${TAB}'!K5:P5`]);
-  const [field, salary, hash, analyzedAt, lakeStatus, cell] = write[0].values[0];
+  assert.deepEqual(write.map((entry) => entry.range), [`'${TAB}'!G4:L4`, `'${TAB}'!G5:L5`]);
+  const [field, salary, jobType, clearance, industry, cell] = write[0].values[0];
   assert.equal(field, 'Backend');
   assert.equal(salary, '$180k - $220k');
-  assert.equal(hash, null, 'Job Hash is the lake\'s to fill');
-  assert.match(analyzedAt, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(lakeStatus, null);
+  assert.equal(jobType, 'Remote');
+  assert.equal(clearance, false, 'a real FALSE, not the word');
+  assert.equal(industry, 'Technology', 'from the analysis\'s company category: it predates Industry');
   const parsed = JSON.parse(cell);
   assert.equal(parsed.v, 1);
   assert.equal(parsed.jobField, 'backend');
@@ -256,7 +260,7 @@ test('rows without it are analysed once and written back, RAW, once - and the ne
 
 test('a cut or unreadable cell falls back to the store, then to one analysis - logged, with its row', async (t) => {
   const cut = analysisCell('Cut Title').slice(0, 120) + ' ...[cut at 50,000 characters]';
-  const rows = { 6: sheetRow(6, { P: cut }), 7: sheetRow(7, { P: 'not json at all' }), 8: sheetRow(8, { P: '{"v":1' }) };
+  const rows = { 6: sheetRow(6, { L: cut }), 7: sheetRow(7, { L: 'not json at all' }), 8: sheetRow(8, { L: '{"v":1' }) };
   const h = await serveWithSheet('sheet-unusable', rows);
   t.after(h.close);
   // The store has postings 6 and 7 already; 8 it has not.
@@ -280,8 +284,8 @@ test('a cut or unreadable cell falls back to the store, then to one analysis - l
 
 test('a tab whose protection was not found intact has its cells ignored; a row that moved is neither read nor written', async (t) => {
   const rows = {
-    9: sheetRow(9, { P: analysisCell('Untrusted Title', undefined, 9) }),
-    10: sheetRow(10, { B: 'Somebody Else Entirely' }),
+    9: sheetRow(9, { L: analysisCell('Untrusted Title', undefined, 9) }),
+    10: sheetRow(10, { C: 'Somebody Else Entirely' }),
   };
   const h = await serveWithSheet('sheet-untrusted', rows, { protection: 'altered' });
   t.after(h.close);
@@ -294,7 +298,7 @@ test('a tab whose protection was not found intact has its cells ignored; a row t
   await h.columns.flushAnalysisWriteBacks();
   // Row 9 has content (not overwritten); row 10 is another company's now.
   assert.equal(h.sheet.calls.writes.length, 0);
-  assert.equal(rows[9].P, analysisCell('Untrusted Title', undefined, 9));
+  assert.equal(rows[9].L, analysisCell('Untrusted Title', undefined, 9));
 });
 
 test('a write-back re-reads the row first: moved, already written or occupied, it is skipped; a failed write is retried later', async () => {
@@ -308,11 +312,11 @@ test('a write-back re-reads the row first: moved, already written or occupied, i
   columns.resetAnalysisWriteBacksForTests();
   const rows = {
     2: sheetRow(2),
-    3: sheetRow(3, { B: 'Moved Co' }),
-    4: sheetRow(4, { P: '{"v":1,"id":"x"}' }),
-    // A tab an older build made had K and L as spare columns: what somebody
-    // typed there is not written over.
-    5: sheetRow(5, { K: 'my own note' }),
+    3: sheetRow(3, { C: 'Moved Co' }),
+    4: sheetRow(4, { L: '{"v":1,"id":"x"}' }),
+    // Something in G to K with L empty is not the program's (it writes all
+    // six at once): typed while the protection was off, and not written over.
+    5: sheetRow(5, { G: 'my own note' }),
   };
   const sheet = fakeSheet(rows);
   columns.setAnalysisSheetsClientForTests(sheet.client);
@@ -336,7 +340,7 @@ test('a write-back re-reads the row first: moved, already written or occupied, i
     } finally {
       console.warn = realWarn;
     }
-    assert.deepEqual(report, { written: 0, skipped: 0, failed: 4 });
+    assert.deepEqual(report, { written: 0, skipped: 0, failed: 4, failedSpreadsheets: ['wb-sheet'] });
     sheet.client.writeRaw = failing;
 
     // Not settled by the failure: queued again, and this time written.
@@ -350,10 +354,40 @@ test('a write-back re-reads the row first: moved, already written or occupied, i
     } finally {
       console.warn = realWarn;
     }
-    assert.deepEqual(report, { written: 1, skipped: 3, failed: 0 });
-    assert.equal(rows[5].K, 'my own note');
-    assert.deepEqual(sheet.calls.writes.at(-1).map((entry) => entry.range), [`'${TAB}'!K2:P2`]);
+    assert.deepEqual(report, { written: 1, skipped: 3, failed: 0, failedSpreadsheets: [] });
+    assert.equal(rows[5].G, 'my own note');
+    assert.equal(rows[5].L, undefined);
+    assert.deepEqual(sheet.calls.writes.at(-1).map((entry) => entry.range), [`'${TAB}'!G2:L2`]);
     assert.equal(sheet.calls.verify, 2, 'the protection is checked before every write');
+  } finally {
+    columns.setAnalysisSheetsClientForTests();
+    columns.resetAnalysisWriteBacksForTests();
+  }
+});
+
+test("a row whose G to K are this posting's own facts, its Analysis cell cleared by a protection repair, is written again", async () => {
+  const columns = require('../dist/services/sheets/analysisColumns');
+  const users = require('../dist/database/userRepository');
+  const { useTempStorage } = require('./helpers');
+  useTempStorage('sheet-writeback-own-facts');
+  const owner = users.createUser({ email: 'f@example.com' });
+  users.recordAccountSheet(owner.id, 'facts-sheet', 'https://x');
+  columns.resetAnalysisWriteBacksForTests();
+  const stored = { id: 'f1', jobFieldId: 'backend', createdAt: '2026-10-05T00:00:00.000Z', analysis: JSON.parse(analysisAnswer()) };
+  // What a FORMATTED read gives back for the program's own five: the
+  // boolean as FALSE. L was emptied when the protection went back on.
+  const own = { G: 'Backend', H: '$180k - $220k', I: 'Remote', J: 'FALSE', K: 'Technology' };
+  const rows = { 2: sheetRow(2, own), 3: sheetRow(3, { ...own, K: 'Healthcare' }) };
+  const sheet = fakeSheet(rows);
+  columns.setAnalysisSheetsClientForTests(sheet.client);
+  try {
+    for (const row of [2, 3]) {
+      columns.queueAnalysisWriteBack({ spreadsheetId: 'facts-sheet', tabName: TAB, row, companyName: `Company ${row}`, stored });
+    }
+    assert.deepEqual(await columns.flushAnalysisWriteBacks(), { written: 1, skipped: 1, failed: 0, failedSpreadsheets: [] });
+    assert.equal(JSON.parse(rows[2].L).id, 'f1', 'its own facts: the Analysis cell goes back');
+    assert.equal(rows[3].L, undefined, 'a fact that is not this analysis\'s: somebody\'s, left alone');
+    assert.equal(rows[3].K, 'Healthcare');
   } finally {
     columns.setAnalysisSheetsClientForTests();
     columns.resetAnalysisWriteBacksForTests();
@@ -385,20 +419,20 @@ test("a row whose posting was replaced is not built on the old posting's analysi
 
   await order(h, [submittedJob(2)]);
   assert.equal(h.seats.analyses().length, 1);
-  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0 });
-  const before = JSON.parse(rows[2].P);
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0, failedSpreadsheets: [] });
+  const before = JSON.parse(rows[2].L);
 
   // Another posting from the same company pasted over row 2's own columns.
-  // K:P are protected, so the person cannot clear them: they stay.
-  Object.assign(rows[2], { D: 'https://jobs.example.com/99', E: posting(99) });
+  // G:L are protected, so the person cannot clear them: they stay.
+  Object.assign(rows[2], { E: 'https://jobs.example.com/99', F: posting(99) });
   const replaced = submittedJob(99, { companyName: 'Company 2', sourceRowNumber: 2 });
   await order(h, [replaced]);
   assert.equal(h.seats.analyses().length, 2, "the new posting is analysed once - not answered with the old one's analysis");
   assert.deepEqual(tailoredTitles(h).slice(-2), ['Title of posting 99', 'Title of posting 99']);
 
   // The program is the only writer of those cells, so it puts them right.
-  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0 });
-  const after = JSON.parse(rows[2].P);
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0, failedSpreadsheets: [] });
+  const after = JSON.parse(rows[2].L);
   assert.notEqual(after.id, before.id);
   assert.deepEqual(after.posting, postingOf(99));
   assert.equal(after.analysis.jobMeta.title, 'Title of posting 99');
@@ -407,7 +441,7 @@ test("a row whose posting was replaced is not built on the old posting's analysi
   await order(h, [replaced]);
   assert.equal(h.seats.analyses().length, 2);
   assert.deepEqual(tailoredTitles(h).slice(-2), ['Title of posting 99', 'Title of posting 99']);
-  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 0, skipped: 0, failed: 0 });
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 0, skipped: 0, failed: 0, failedSpreadsheets: [] });
 });
 
 test('rows sorted under the protected columns: each task gets its own posting\'s analysis, and the cells are put right', async (t) => {
@@ -417,8 +451,8 @@ test('rows sorted under the protected columns: each task gets its own posting\'s
   await order(h, [submittedJob(2), submittedJob(3)]);
   assert.equal((await h.columns.flushAnalysisWriteBacks()).written, 2);
 
-  // A sort of A:J only - the protected K:P cannot move with it.
-  const own = (row) => ({ B: row.B, C: row.C, D: row.D, E: row.E });
+  // A sort of A:F only - the protected G:L cannot move with it.
+  const own = (row) => ({ C: row.C, D: row.D, E: row.E, F: row.F });
   const [two, three] = [own(rows[2]), own(rows[3])];
   Object.assign(rows[2], three);
   Object.assign(rows[3], two);
@@ -443,13 +477,13 @@ test('rows sorted under the protected columns: each task gets its own posting\'s
     assert.equal(task.payload.analysisId, findStoredAnalysis({ jd: posting(n) }).id, `Company ${n} is built on its own analysis`);
   }
 
-  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 2, skipped: 0, failed: 0 });
-  assert.deepEqual(JSON.parse(rows[2].P).posting, postingOf(3));
-  assert.deepEqual(JSON.parse(rows[3].P).posting, postingOf(2));
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 2, skipped: 0, failed: 0, failedSpreadsheets: [] });
+  assert.deepEqual(JSON.parse(rows[2].L).posting, postingOf(3));
+  assert.deepEqual(JSON.parse(rows[3].L).posting, postingOf(2));
 });
 
 test('a cell that names no posting is not registered for the row\'s, even in an intact tab', async (t) => {
-  const rows = { 4: sheetRow(4, { P: analysisCell('Unattached Title') }) };
+  const rows = { 4: sheetRow(4, { L: analysisCell('Unattached Title') }) };
   const h = await serveWithSheet('sheet-unattached', rows);
   t.after(h.close);
   await order(h, [submittedJob(4)]);
@@ -460,7 +494,7 @@ test('a cell that names no posting is not registered for the row\'s, even in an 
 });
 
 test("a tab the person laid out for themselves is not read for analyses or written into", async (t) => {
-  const rows = { 2: sheetRow(2), 3: sheetRow(3, { P: analysisCell('Their Own Text', undefined, 3) }) };
+  const rows = { 2: sheetRow(2), 3: sheetRow(3, { L: analysisCell('Their Own Text', undefined, 3) }) };
   const h = await serveWithSheet('sheet-user-tab', rows, { jobTab: false });
   t.after(h.close);
   await order(h, [submittedJob(2), submittedJob(3)]);
@@ -471,9 +505,10 @@ test("a tab the person laid out for themselves is not read for analyses or writt
   // Even a write-back queued for it some other way is refused at the verify.
   const stored = { id: 'u1', jobFieldId: 'backend', createdAt: 'x', analysis: JSON.parse(analysisAnswer()) };
   assert.equal(h.columns.queueAnalysisWriteBack({ spreadsheetId: 'own-sheet', tabName: TAB, row: 2, companyName: 'Company 2', stored }), true);
-  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 0, skipped: 1, failed: 0 });
+  assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 0, skipped: 1, failed: 0, failedSpreadsheets: [] });
   assert.equal(h.sheet.calls.writes.length, 0);
-  assert.equal(rows[2].K, undefined);
+  assert.equal(rows[2].G, undefined);
+  assert.equal(rows[2].L, undefined);
 });
 
 test('a write-back skipped because its row became another posting leaves the row free for that posting', async () => {
@@ -510,12 +545,12 @@ test('a write-back skipped because its row became another posting leaves the row
     assert.equal(columns.queueAnalysisWriteBack(entry(7)), true);
     // Sorted before the write went: row 7 holds Company 8's posting now.
     rows[7] = sheetRow(8);
-    assert.deepEqual(await columns.flushAnalysisWriteBacks(), { written: 0, skipped: 1, failed: 0 });
+    assert.deepEqual(await columns.flushAnalysisWriteBacks(), { written: 0, skipped: 1, failed: 0, failedSpreadsheets: [] });
 
     assert.equal(columns.queueAnalysisWriteBack(entry(8)), true, 'the posting now in the row may be written there');
-    assert.deepEqual(await columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0 });
-    assert.deepEqual(sheet.calls.writes.at(-1).map((write) => write.range), [`'${TAB}'!K7:P7`]);
-    assert.equal(JSON.parse(rows[7].P).id, 'id-8');
+    assert.deepEqual(await columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0, failedSpreadsheets: [] });
+    assert.deepEqual(sheet.calls.writes.at(-1).map((write) => write.range), [`'${TAB}'!G7:L7`]);
+    assert.equal(JSON.parse(rows[7].L).id, 'id-8');
     assert.equal(columns.queueAnalysisWriteBack(entry(8)), false, 'and once it is, it is settled');
   } finally {
     console.warn = realWarn;
@@ -573,13 +608,13 @@ async function withGoogle(handler, action) {
 
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers });
 
-test('the protection: the six whole columns, header included, editable by the server alone - and put back when altered', () => {
+test('the protection: the six whole columns G to L, header included, editable by the server alone - and put back when altered', () => {
   const sheets = require('../dist/integrations/googleSheets');
   const email = 'server@example.com';
   const wanted = {
     description: sheets.ANALYSIS_PROTECTION_DESCRIPTION,
     warningOnly: false,
-    range: { sheetId: 7, startColumnIndex: 10, endColumnIndex: 16 },
+    range: { sheetId: 7, startColumnIndex: 6, endColumnIndex: 12 },
     editors: { users: [email], domainUsersCanEdit: false },
   };
 
@@ -596,7 +631,9 @@ test('the protection: the six whole columns, header included, editable by the se
     ['a group', { ...intact, editors: { users: [email], groups: ['team@example.com'] } }],
     ['the whole domain', { ...intact, editors: { users: [email], domainUsersCanEdit: true } }],
     ['rows only', { ...intact, range: { ...wanted.range, startRowIndex: 1 } }],
-    ['other columns', { ...intact, range: { ...wanted.range, endColumnIndex: 15 } }],
+    ['other columns', { ...intact, range: { ...wanted.range, endColumnIndex: 11 } }],
+    // An older build's K:P protection, found by its description on a tab that is now a job tab.
+    ['the old K:P', { ...intact, range: { sheetId: 7, startColumnIndex: 10, endColumnIndex: 16 } }],
   ]) {
     const check = sheets.analysisProtectionRequests(7, [altered], email);
     assert.equal(check.state, 'altered', what);
@@ -612,11 +649,54 @@ test('the protection: the six whole columns, header included, editable by the se
   // Somebody else's protection on another tab or other columns is theirs.
   const unrelated = { protectedRangeId: 13, description: 'mine', range: { sheetId: 7, startColumnIndex: 0, endColumnIndex: 2 } };
   assert.equal(sheets.analysisProtectionRequests(7, [intact, unrelated], email).state, 'intact');
+
+  // Google leaves a field at its default out of what it sends back, and a
+  // gid of 0 is the default: All, the first tab of every new sheet. Its
+  // protection, read back without a sheetId, is intact - not "altered" on
+  // every verify, which would clear its Analysis column each time.
+  const { sheetId: _omitted, ...withoutSheetId } = intact.range;
+  const onFirstTab = { ...intact, range: withoutSheetId };
+  assert.deepEqual(sheets.analysisProtectionRequests(0, [onFirstTab], email), { state: 'intact', requests: [] });
+  assert.deepEqual(
+    sheets.analysisProtectionRequests(0, [{ ...onFirstTab, description: undefined }], email),
+    { state: 'intact', requests: [] },
+    'found by its columns alone, too'
+  );
+  assert.deepEqual(sheets.analysisProtectionRequests(0, [{ ...intact, range: { ...intact.range, sheetId: 0 } }], email), {
+    state: 'intact',
+    requests: [],
+  });
 });
 
-test('verifying an old twelve-column tab grows the grid, rewrites the header and protects it - in one read and one write', async () => {
-  const oldHeader = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder', 'Filter Result', 'Filter Reason'];
-  let current = { columnCount: 12, header: oldHeader, protectedRanges: [] };
+test('a write is checked against the protection, whatever row 1 says: this build\'s G:L, an older build\'s K:P, never somebody else\'s', () => {
+  const sheets = require('../dist/integrations/googleSheets');
+  const ours = (range, extra = {}) => ({ protectedRangeId: 11, description: sheets.ANALYSIS_PROTECTION_DESCRIPTION, range, ...extra });
+  const tab = (gid, ...protectedRanges) => ({ gid, protectedRanges });
+  const all = tab(0, ours({ startColumnIndex: 6, endColumnIndex: 12 }));
+  assert.equal(sheets.analysisProtectionHit(all, 1, 6), null, 'A to F');
+  assert.equal(sheets.analysisProtectionHit(all, 13, 20), null, 'past L');
+  assert.deepEqual(sheets.analysisProtectionHit(all, 12, 12), { fromCol: 7, toCol: 12 }, 'L, on a tab whose 0 gid Google left out');
+  assert.deepEqual(sheets.analysisProtectionHit(all, 1, 7), { fromCol: 7, toCol: 12 }, 'a span that only reaches into G');
+  // Found by its columns alone, as a verify adopts it.
+  const bare = tab(4, { protectedRangeId: 3, range: { sheetId: 4, startColumnIndex: 6, endColumnIndex: 12 } });
+  assert.deepEqual(sheets.analysisProtectionHit(bare, 9, 9), { fromCol: 7, toCol: 12 });
+  // An older build's daily tab: K:P, by its description.
+  const daily = tab(5, ours({ sheetId: 5, startColumnIndex: 10, endColumnIndex: 16 }));
+  assert.deepEqual(sheets.analysisProtectionHit(daily, 16, 16), { fromCol: 11, toCol: 16 });
+  assert.equal(sheets.analysisProtectionHit(daily, 7, 10), null);
+  // Somebody's own protection, or one listed for another tab, is not ours to enforce.
+  const mine = tab(
+    5,
+    { protectedRangeId: 9, description: 'mine', range: { sheetId: 5, startColumnIndex: 6, endColumnIndex: 8 } },
+    ours({ sheetId: 6, startColumnIndex: 6, endColumnIndex: 12 })
+  );
+  assert.equal(sheets.analysisProtectionHit(mine, 7, 12), null);
+});
+
+test('verifying a narrow job tab grows the grid, rewrites the header, protects G:L and lays the rows out - in one read and one write', async () => {
+  // A tab somebody headed with the six user columns themselves: a job tab, six columns wide.
+  const userHeader = ['Date', 'NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description'];
+  let current = { columnCount: 6, header: userHeader, protectedRanges: [] };
   await withGoogle(
     (request) => {
       if (request.method === 'GET') {
@@ -633,26 +713,35 @@ test('verifying an old twelve-column tab grows the grid, rewrites the header and
       return json({});
     },
     async (sheets, requests) => {
-      const first = await sheets.verifyJobSheetTab('own-sheet', TAB, undefined, undefined, { onlyJobTabs: true });
-      assert.deepEqual(first, { gid: 7, protection: 'missing', grewColumns: true, wroteHeader: true, jobTab: true }, 'an old app tab is a job tab');
+      const first = await sheets.verifyJobSheetTab('own-sheet', TAB);
+      assert.deepEqual(first, { gid: 7, protection: 'missing', grewColumns: true, wroteHeader: true, jobTab: true });
       assert.equal(requests.length, 2, 'one read, one write');
-      assert.match(decodeURIComponent(requests[0].url), /includeGridData=true&ranges='10\/05\/2026'!1:1/);
+      assert.match(decodeURIComponent(requests[0].url), /includeGridData=true&ranges='All'!1:1/);
       const sent = requests[1].body.requests;
-      assert.deepEqual(sent[0], { appendDimension: { sheetId: 7, dimension: 'COLUMNS', length: 4 } }, 'grown first, never set outright');
-      assert.deepEqual(sent[1].updateCells.rows[0].values.map((value) => value.userEnteredValue.stringValue), [...sheets.JOB_SHEET_HEADERS]);
+      assert.deepEqual(sent[0], { appendDimension: { sheetId: 7, dimension: 'COLUMNS', length: 6 } }, 'grown first, never set outright');
+      const header = sent[1].updateCells.rows[0].values;
+      assert.deepEqual(header.map((value) => value.userEnteredValue.stringValue), [...sheets.JOB_SHEET_HEADERS]);
+      assert.ok(header.every((value) => value.userEnteredFormat.wrapStrategy === 'CLIP'), 'the header clips too');
       // The protection goes back with the Analysis column below the header
-      // cleared, in the same call: P only, from row 2 down.
-      const clear = { updateCells: { range: { sheetId: 7, startRowIndex: 1, startColumnIndex: 15, endColumnIndex: 16 }, fields: 'userEnteredValue' } };
+      // cleared, in the same call: L only, from row 2 down.
+      const clear = { updateCells: { range: { sheetId: 7, startRowIndex: 1, startColumnIndex: 11, endColumnIndex: 12 }, fields: 'userEnteredValue' } };
       const clearAt = sent.findIndex((entry) => JSON.stringify(entry) === JSON.stringify(clear));
       assert.ok(clearAt > 0, 'the Analysis column is cleared, after the grid is grown');
       assert.ok(clearAt < sent.findIndex((entry) => entry.addProtectedRange), 'in the call that protects it');
       const protection = sent.find((entry) => entry.addProtectedRange).addProtectedRange.protectedRange;
+      assert.deepEqual(protection.range, { sheetId: 7, startColumnIndex: 6, endColumnIndex: 12 });
       assert.deepEqual(protection.editors, { users: ['server@example.com'], domainUsersCanEdit: false });
       assert.equal(protection.warningOnly, false);
+      // And every row 21 px, the data cells clipped, in that same call.
+      assert.ok(
+        sent.some((entry) => entry.updateDimensionProperties?.range.dimension === 'ROWS' && entry.updateDimensionProperties.properties.pixelSize === 21),
+        '21 px rows'
+      );
+      assert.ok(sent.some((entry) => entry.repeatCell?.cell.userEnteredFormat.wrapStrategy === 'CLIP'), 'clipped');
 
-      // Everything current: the read, and nothing to write.
+      // Everything current: the read, and nothing to write - not even the layout.
       current = {
-        columnCount: 16,
+        columnCount: 12,
         header: [...sheets.JOB_SHEET_HEADERS],
         protectedRanges: [{ protectedRangeId: 3, ...protection }],
       };
@@ -663,21 +752,110 @@ test('verifying an old twelve-column tab grows the grid, rewrites the header and
   );
 });
 
-test('analysis values and filter verdicts are written RAW, and a row write reads nothing first', async () => {
+test('the row layout: 21 px from row 1 down, CLIP on the data rows of A:L, the Date column shown as a date', () => {
+  const sheets = require('../dist/integrations/googleSheets');
+  const whole = sheets.jobRowLayoutRequests(7);
+  assert.deepEqual(whole[0], {
+    updateDimensionProperties: { range: { sheetId: 7, dimension: 'ROWS', startIndex: 0 }, properties: { pixelSize: 21 }, fields: 'pixelSize' },
+  });
+  assert.deepEqual(whole[1], {
+    repeatCell: {
+      range: { sheetId: 7, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 12 },
+      cell: { userEnteredFormat: { wrapStrategy: 'CLIP' } },
+      fields: 'userEnteredFormat.wrapStrategy',
+    },
+  });
+  assert.deepEqual(whole[2].repeatCell.cell.userEnteredFormat.numberFormat, { type: 'DATE', pattern: 'mm/dd/yyyy' });
+  assert.deepEqual(whole[2].repeatCell.range, { sheetId: 7, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 });
+  // Bounded: only the rows an export wrote.
+  const block = sheets.jobRowLayoutRequests(7, 5, 9);
+  assert.deepEqual(block[0].updateDimensionProperties.range, { sheetId: 7, dimension: 'ROWS', startIndex: 4, endIndex: 9 });
+  assert.deepEqual(block[1].repeatCell.range, { sheetId: 7, startRowIndex: 4, endRowIndex: 9, startColumnIndex: 0, endColumnIndex: 12 });
+});
+
+test('a new tab is added where asked and laid out in one call: the header clipped, every row 21 px, the data clipped, G:L protected', async () => {
+  // formatJobSheetTab is the path every new job tab takes - a new sheet's
+  // All, and every tab this adds, Temp For AI included - so the row layout is
+  // pinned on it, not only on the verify and the export.
+  await withGoogle(
+    (request) => {
+      if (request.method === 'GET') return json({ sheets: [{ properties: { title: 'All', sheetId: 0 } }] });
+      if (request.body?.requests?.[0]?.addSheet) return json({ replies: [{ addSheet: { properties: { sheetId: 9 } } }] });
+      return json({});
+    },
+    async (sheets, requests) => {
+      const added = await sheets.addSheetTabWithHeaders('own-sheet', 'Temp For AI', { index: 1 });
+      assert.deepEqual(added, { gid: 9, created: true, protection: 'added', jobTab: true });
+      assert.equal(requests.length, 3, 'the listing, the addSheet, then one format call');
+      assert.equal(requests[1].body.requests[0].addSheet.properties.index, 1, 'second, behind All');
+      assert.equal(requests[1].body.requests[0].addSheet.properties.title, 'Temp For AI');
+
+      const sent = requests[2].body.requests;
+      const header = sent.find((entry) => entry.updateCells?.start?.rowIndex === 0).updateCells.rows[0].values;
+      assert.deepEqual(header.map((value) => value.userEnteredValue.stringValue), [...sheets.JOB_SHEET_HEADERS]);
+      assert.ok(header.every((value) => value.userEnteredFormat.wrapStrategy === 'CLIP'), 'the header clips too');
+      assert.ok(
+        sent.some(
+          (entry) =>
+            JSON.stringify(entry) ===
+            JSON.stringify({
+              updateDimensionProperties: {
+                range: { sheetId: 9, dimension: 'ROWS', startIndex: 0 },
+                properties: { pixelSize: 21 },
+                fields: 'pixelSize',
+              },
+            })
+        ),
+        'every row 21 px, from row 1 down'
+      );
+      assert.ok(
+        sent.some(
+          (entry) =>
+            entry.repeatCell?.cell.userEnteredFormat.wrapStrategy === 'CLIP' &&
+            JSON.stringify(entry.repeatCell.range) ===
+              JSON.stringify({ sheetId: 9, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 12 })
+        ),
+        'the data cells of A:L clipped, from row 2 down'
+      );
+      const protection = sent.find((entry) => entry.addProtectedRange).addProtectedRange.protectedRange;
+      assert.deepEqual(protection.range, { sheetId: 9, startColumnIndex: 6, endColumnIndex: 12 });
+      assert.deepEqual(protection.editors, { users: ['server@example.com'], domainUsersCanEdit: false });
+    }
+  );
+});
+
+test('the tab listing is grid tabs only: a chart on a sheet of its own is left out', async () => {
+  await withGoogle(
+    () =>
+      json({
+        sheets: [
+          { properties: { title: 'All', sheetId: 0, sheetType: 'GRID' } },
+          { properties: { title: 'Chart1', sheetId: 5, sheetType: 'OBJECT' } },
+          // Google leaves a field at its default out: no sheetType is a grid.
+          { properties: { title: 'Notes', sheetId: 6 } },
+        ],
+      }),
+    async (sheets, requests) => {
+      assert.deepEqual(await sheets.listSheetTabs('own-sheet'), [
+        { title: 'All', gid: 0 },
+        { title: 'Notes', gid: 6 },
+      ]);
+      assert.match(decodeURIComponent(requests[0].url), /fields=sheets\(properties\(title,sheetId,sheetType\)\)/);
+    }
+  );
+});
+
+test('analysis values are written RAW, a boolean as a real TRUE/FALSE, and read back in one batched call', async () => {
   await withGoogle(
     () => json({ responses: [] }),
     async (sheets, requests) => {
-      await sheets.batchUpdateValuesRaw('own-sheet', [{ range: `'${TAB}'!K2:P2`, values: [['=1+1', 'x', null, 'y', null, '{}']] }]);
+      await sheets.batchUpdateValuesRaw('own-sheet', [{ range: `'${TAB}'!G2:L2`, values: [['=1+1', 'x', null, false, 'y', '{}']] }]);
       assert.equal(requests[0].body.valueInputOption, 'RAW');
-      assert.deepEqual(requests[0].body.data[0].values[0], ['=1+1', 'x', null, 'y', null, '{}'], 'a null leaves its cell alone');
+      assert.deepEqual(requests[0].body.data[0].values[0], ['=1+1', 'x', null, false, 'y', '{}'], 'a null leaves its cell alone');
 
-      await sheets.updateGoogleSheetsRow({ sheetId: 'own-sheet', tabName: TAB, row: 5, updates: [{ col: 9, value: 'Pass' }] });
-      assert.equal(requests.length, 2, 'no metadata read before the write');
-      assert.equal(requests[1].body.valueInputOption, 'RAW');
-
-      const read = await sheets.batchGetValues('own-sheet', [`'${TAB}'!B2:D3`, `'${TAB}'!P2:P3`]);
-      assert.match(requests[2].url, /values:batchGetByDataFilter$/);
-      assert.deepEqual(requests[2].body.dataFilters, [{ a1Range: `'${TAB}'!B2:D3` }, { a1Range: `'${TAB}'!P2:P3` }]);
+      const read = await sheets.batchGetValues('own-sheet', [`'${TAB}'!C2:E3`, `'${TAB}'!G2:L3`]);
+      assert.match(requests[1].url, /values:batchGetByDataFilter$/);
+      assert.deepEqual(requests[1].body.dataFilters, [{ a1Range: `'${TAB}'!C2:E3` }, { a1Range: `'${TAB}'!G2:L3` }]);
       assert.deepEqual(read, [[], []]);
     }
   );
@@ -729,7 +907,7 @@ function googleTab(rows, header) {
       return json({
         sheets: [
           {
-            properties: { sheetId: 7, title: TAB, gridProperties: { columnCount: 16, rowCount: 1000 } },
+            properties: { sheetId: 7, title: TAB, gridProperties: { columnCount: 12, rowCount: 1000 } },
             protectedRanges: state.protectedRanges,
             data: [{ rowData: [{ values: header.map((formattedValue) => ({ formattedValue })) }] }],
           },
@@ -752,8 +930,9 @@ function googleTab(rows, header) {
 
 test('a cell typed while the tab was unprotected is cleared when the protection goes back - never trusted after', async () => {
   // Program-shaped, for row 5's own posting, with an id nobody stored: what
-  // somebody with the link could type into P on a tab an older build made,
-  // or one they added, before anything protected it.
+  // somebody with the link could type into L of a job tab whose protection
+  // was never added (the server's identity could not be learned when it was
+  // laid out), before anything protected it.
   const forged = JSON.stringify({
     v: 1,
     id: '11111111-2222-4333-8444-555555555555',
@@ -767,7 +946,7 @@ test('a cell typed while the tab was unprotected is cleared when the protection 
       })
     ),
   });
-  const rows = { 3: sheetRow(3), 5: sheetRow(5, { P: forged }) };
+  const rows = { 3: sheetRow(3), 5: sheetRow(5, { L: forged }) };
   const google = googleTab(rows, [...require('../dist/integrations/googleSheets').JOB_SHEET_HEADERS]);
   await withGoogle(google.handler, async (sheets) => {
     const h = await serveWithSheet('sheet-forged', rows);
@@ -776,7 +955,7 @@ test('a cell typed while the tab was unprotected is cleared when the protection 
       h.columns.setAnalysisSheetsClientForTests({
         ...h.sheet.client,
         async verifyTab(spreadsheetId, tabName) {
-          const verified = await sheets.verifyJobSheetTab(spreadsheetId, tabName, undefined, undefined, { onlyJobTabs: true });
+          const verified = await sheets.verifyJobSheetTab(spreadsheetId, tabName);
           verifies.push(verified.protection);
           return verified;
         },
@@ -784,7 +963,7 @@ test('a cell typed while the tab was unprotected is cleared when the protection 
       const realWarn = console.warn;
       console.warn = () => {};
       try {
-        // Run 1, on another row: the protection is missing, and goes back with P cleared.
+        // Run 1, on another row: the protection is missing, and goes back with L cleared.
         await order(h, [submittedJob(3)]);
         await h.columns.flushAnalysisWriteBacks();
         // Run 2, on the row: the protection is intact now, and the cell is gone.
@@ -798,7 +977,7 @@ test('a cell typed while the tab was unprotected is cleared when the protection 
       const { getDb } = require('../dist/database/sqlite');
       assert.equal(getDb().prepare("SELECT COUNT(*) AS n FROM job_analyses WHERE source = 'sheet'").get().n, 0, 'nor is it stored');
       assert.equal(h.seats.analyses().length, 2, 'each posting analysed once');
-      assert.notEqual(JSON.parse(rows[5].P).analysis.jobMeta.title, 'FORGED BY A SHEET WRITER', 'and the row now holds the real one');
+      assert.notEqual(JSON.parse(rows[5].L).analysis.jobMeta.title, 'FORGED BY A SHEET WRITER', 'and the row now holds the real one');
 
       const asked = await h.post('/resume/analyze', { jobDescription: posting(5) });
       assert.equal(asked.status, 200);
@@ -810,19 +989,41 @@ test('a cell typed while the tab was unprotected is cleared when the protection 
   });
 });
 
-test("only job tabs are verified: a person's own tab is left as it is, an app tab of any age or an unformatted day's tab is not", async () => {
+test("only job tabs are ever verified: an older build's daily tab, a person's own tab and a tab with data under a blank row 1 are left exactly as they are", async () => {
   const own = ['Company', 'Job Link', 'Description', 'Applied?', 'Notes', 'F', 'G', 'H', 'I', 'J', 'My K column', 'My L column'];
-  const eightColumn = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder'];
-  const headers = { 'My shortlist': own, 'Copied layout': eightColumn, '10/06/2026': [] };
+  // Every daily tab an older build laid out: sixteen columns, NO(DATE) first, K:P protected by that build.
+  const oldDaily = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder',
+    'Filter Result', 'Filter Reason', 'Job Field', 'Salary', 'Job Hash', 'Analyzed At', 'Lake Status', 'Analysis'];
+  const eightColumn = oldDaily.slice(0, 8);
+  const headers = {
+    'My shortlist': own,
+    '10/05/2026': oldDaily,
+    'Copied layout': eightColumn,
+    'Blank header, data below': [],
+    'Empty tab': [],
+    // An old daily tab whose row 1 is empty, but which holds rows: not converted either.
+    '10/06/2026': [],
+  };
+  const values = {
+    'Blank header, data below': [[], ['', 'Acme', 'Engineer']],
+    'Empty tab': [],
+    '10/06/2026': [[], ['1', 'Acme']],
+  };
   await withGoogle(
     (request) => {
+      const url = decodeURIComponent(request.url);
       if (request.method !== 'GET') return json({});
-      const title = /ranges='([^']+)'!1:1/.exec(decodeURIComponent(request.url))[1];
+      const whole = /\/values\/'([^']+)'\?/.exec(url);
+      if (whole) return json({ range: whole[1], majorDimension: 'ROWS', ...(values[whole[1]].length ? { values: values[whole[1]] } : {}) });
+      const title = /ranges='([^']+)'!1:1/.exec(url)[1];
       return json({
+        properties: { title: 'Free Tailor - a@example.com' },
         sheets: [
           {
             properties: { sheetId: 9, title, gridProperties: { columnCount: 26, rowCount: 1000 } },
-            protectedRanges: [],
+            protectedRanges: title === '10/05/2026'
+              ? [{ protectedRangeId: 4, description: 'Tailor analysis columns - written by the program only', range: { sheetId: 9, startColumnIndex: 10, endColumnIndex: 16 } }]
+              : [],
             data: [{ rowData: [{ values: headers[title].map((formattedValue) => ({ formattedValue })) }] }],
           },
         ],
@@ -832,18 +1033,33 @@ test("only job tabs are verified: a person's own tab is left as it is, an app ta
       const realWarn = console.warn;
       console.warn = () => {};
       try {
-        const theirs = await sheets.verifyJobSheetTab('own-sheet', 'My shortlist', undefined, undefined, { onlyJobTabs: true });
-        assert.deepEqual(theirs, { gid: 9, protection: 'unconfirmed', grewColumns: false, wroteHeader: false, jobTab: false });
-        assert.equal(requests.length, 1, 'read, and nothing written: no header, no protection');
-
-        for (const title of ['Copied layout', '10/06/2026']) {
-          const ours = await sheets.verifyJobSheetTab('own-sheet', title, undefined, undefined, { onlyJobTabs: true });
-          assert.equal(ours.jobTab, true, title);
-          assert.equal(ours.wroteHeader, true, title);
-          const sent = requests.at(-1).body.requests;
-          assert.ok(sent.some((entry) => entry.addProtectedRange), `${title} is protected`);
+        for (const title of ['My shortlist', '10/05/2026', 'Copied layout', 'Blank header, data below', '10/06/2026']) {
+          const before = requests.length;
+          const theirs = await sheets.verifyJobSheetTab('own-sheet', title);
+          assert.deepEqual(theirs, { gid: 9, protection: 'unconfirmed', grewColumns: false, wroteHeader: false, jobTab: false }, title);
+          assert.ok(
+            requests.slice(before).every((request) => request.method === 'GET'),
+            `${title}: read, and nothing written - no header, no protection, no clear, no layout`
+          );
         }
-        assert.equal(sheets.isJobSheetTab({ title: '10/06/2026', headerRow: ['My own header'] }), false, "a day's tab somebody headed is theirs");
+
+        // An EMPTY tab, under any name, becomes a job tab the first time it is used.
+        const empty = await sheets.verifyJobSheetTab('own-sheet', 'Empty tab');
+        assert.equal(empty.jobTab, true);
+        assert.equal(empty.wroteHeader, true);
+        const sent = requests.at(-1).body.requests;
+        assert.ok(sent.some((entry) => entry.addProtectedRange), 'protected');
+        assert.ok(sent.some((entry) => entry.updateSheetProperties?.properties.gridProperties.frozenRowCount === 1), 'header row frozen');
+        assert.ok(sent.some((entry) => entry.updateDimensionProperties?.properties.pixelSize === 21), 'rows laid out');
+
+        assert.equal(sheets.isJobSheetTab({ headerRow: ['Date', 'NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description'] }), true);
+        assert.equal(sheets.isJobSheetTab({ headerRow: oldDaily }), false, "an older build's daily tab");
+        assert.equal(sheets.isJobSheetTab({ headerRow: [], empty: false }), false, 'blank row 1 above data');
+        assert.equal(sheets.isJobSheetTab({ headerRow: [] }), false, 'blank row 1, emptiness not known');
+        assert.equal(sheets.isJobSheetTab({ headerRow: ['', ''], empty: true }), true, 'a wholly empty tab');
+        assert.equal(sheets.jobTabLayoutOf(oldDaily), 'other');
+        assert.equal(sheets.jobTabLayoutOf([' ', '']), 'blank');
+        assert.equal(sheets.jobTabLayoutOf([...sheets.JOB_SHEET_HEADERS]), 'job');
       } finally {
         console.warn = realWarn;
       }

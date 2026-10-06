@@ -145,7 +145,7 @@ test('the sheet is only ever readable by the account that owns it', async () => 
   }
 });
 
-test('reading the sheet reports the sharing state and the day it would file under', async () => {
+test('reading the sheet reports the sharing state and links to its All and Temp For AI tabs', async () => {
   const server = await serve();
   try {
     const body = await (await server.request(server.aliceToken, '/')).json();
@@ -156,7 +156,55 @@ test('reading the sheet reports the sharing state and the day it would file unde
     // SHEET_DEFAULT_VISIBILITY=public.
     assert.equal(body.visibility, 'private');
     assert.match(body.spreadsheetUrl, /docs\.google\.com/);
-    assert.match(body.todayTab, /^\d{2}\/\d{2}\/\d{4}$/);
+    assert.equal(body.defaultTab, 'All');
+    assert.equal(body.tempTab, 'Temp For AI');
+    assert.match(body.defaultTabUrl, /\/edit#gid=\d+$/);
+    assert.match(body.tempTabUrl, /\/edit#gid=\d+$/);
+    assert.equal(body.conflict, undefined);
+    assert.equal(body.todayTab, undefined, 'the daily tab is gone');
+  } finally {
+    server.close();
+  }
+});
+
+test('a tab name clash is looked at again only when the Job Sheet page asks (?recheck=1): the shell\'s read on every page load answers from the row', async () => {
+  let listings = 0;
+  let clash = true;
+  const server = await serve({
+    async listSheetTabs() {
+      listings += 1;
+      return clash ? [{ title: 'All', gid: 5 }] : [];
+    },
+    async addSheetTabWithHeaders(_id, title) {
+      if (title === 'All' && clash) return { gid: 5, created: false, protection: 'unconfirmed', jobTab: false };
+      return { gid: title === 'All' ? 300 : 301, created: true, protection: 'added', jobTab: true };
+    },
+  });
+  try {
+    // An older build's sheet, whose "All" is a tab of Alice's own.
+    const alice = server.users.getUserByEmail('alice@example.com');
+    server.users.recordAccountSheet(alice.id, 'old-sheet', 'https://docs.google.com/spreadsheets/d/old-sheet/edit');
+    server.users.recordOwnerGrant(alice.id, '2026-09-01T00:00:00.000Z');
+    const read = async (path) => {
+      const response = await server.request(server.aliceToken, path);
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    assert.deepEqual((await read('/')).conflict.tabs, ['All'], 'found as the sheet is laid out');
+    assert.equal(listings, 1);
+
+    for (let page = 0; page < 3; page += 1) assert.deepEqual((await read('/')).conflict.tabs, ['All']);
+    assert.equal(listings, 1, 'no Google read for a clash already recorded');
+    assert.deepEqual((await read('/?recheck=1')).conflict.tabs, ['All']);
+    assert.equal(listings, 2, 'the Job Sheet page looks');
+
+    // Renamed in Google Sheets: the shell still says so from the row, the Job Sheet page puts All in.
+    clash = false;
+    assert.ok((await read('/?recheck=0')).conflict);
+    const fixed = await read('/?recheck=1');
+    assert.equal(fixed.conflict, undefined);
+    assert.match(fixed.defaultTabUrl, /#gid=300$/);
+    assert.equal(listings, 3);
   } finally {
     server.close();
   }
