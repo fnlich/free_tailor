@@ -146,6 +146,65 @@ export async function getGeneratedOutputPath(
   };
 }
 
+/** `file` relative to `base`, '/'-separated as stored paths are, or null outside it. */
+function storedSpellingOf(base: string, file: string): string | null {
+  const relative = path.relative(base, file);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative.split(path.sep).join('/');
+}
+
+/**
+ * A path a download route was asked for, resolved - with every spelling the
+ * ownership check must ask the order rows about.
+ *
+ * The file system answers to many spellings of one file. `a//b`, `./a/b`,
+ * `a/./b` and `x/../a/b` (and `%2E/a/b`, which Express decodes before a route
+ * sees it) all open `a/b`, because `resolveStoredFilePath` drops empty segments
+ * and resolves dot ones; the order rows record it once, as `a/b`. Asking them
+ * about the RAW parameter therefore let every other spelling through as "a path
+ * no order claims" - another account's resume, served. So the question is
+ * asked of what the server will actually open:
+ *
+ *  - the path relative to the output directory, '/'-separated, with empty and
+ *    dot segments resolved: the shape every stored path already has;
+ *  - the same through the operating system's own realpath (fs/promises'
+ *    `realpath` is the NATIVE one), which on Windows and macOS gives back the
+ *    names as they are on disk - so a change of case, an 8.3 short name, a
+ *    trailing dot or another Unicode normalisation of one name is not a new
+ *    path - and everywhere follows symlinks. Left out when the real file lies
+ *    outside the output directory, where no order writes.
+ *
+ * Null when the path is empty, leaves the output directory, or names no file.
+ */
+export async function resolveGeneratedFile(
+  requested: string
+): Promise<{ absolute: string; spellings: string[] } | null> {
+  const normalizedValue = requested.replace(/\\/g, '/').trim();
+  if (!normalizedValue) return null;
+
+  const { outputBaseDir } = await getOutputStorageSettings();
+  const absolute = resolveStoredFilePath(outputBaseDir, normalizedValue);
+  if (!absolute) return null;
+  const base = path.resolve(outputBaseDir);
+
+  let realBase: string;
+  let realFile: string;
+  try {
+    if (!(await fs.stat(absolute)).isFile()) return null;
+    [realBase, realFile] = await Promise.all([fs.realpath(base), fs.realpath(absolute)]);
+  } catch {
+    return null;
+  }
+
+  const spellings = [storedSpellingOf(base, absolute), storedSpellingOf(realBase, realFile)].filter(
+    (spelling): spelling is string => spelling !== null
+  );
+  if (spellings.length === 0) return null;
+  return { absolute, spellings: [...new Set(spellings)] };
+}
+
 export async function getGeneratedFilePath(relativePathValue: string): Promise<string | null> {
   const normalizedValue = relativePathValue.replace(/\\/g, '/').trim();
   if (!normalizedValue) {

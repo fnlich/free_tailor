@@ -21,11 +21,11 @@ import {
 } from '../services/jobAnalysis/gate';
 import { jobFieldLabel, listJobFieldsForClient } from '../config/jobFields';
 import { resolveAnalysisModel } from '../config/aiModelConfig';
-import { generateResumePDF, generatePreviewHTML, getGeneratedPDFPath } from '../generators/pdfGenerator';
+import { generateResumePDF, generatePreviewHTML } from '../generators/pdfGenerator';
 import { generateResumeDOCX } from '../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
 import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
-import { ownerOfGeneratedFile } from '../database/orderRepository';
+import { generatedFileFor } from './generatedFiles';
 import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
 // One rule for a role left empty, shared with the queue so a resume built on
 // the spot and a queued one name the same role for the same row.
@@ -948,29 +948,25 @@ router.post('/preview', async (req: Request, res: Response) => {
 // Download generated resume (PDF or DOCX)
 router.get('/download/:filename(*)', async (req: Request<{ filename: string }>, res: Response) => {
   try {
-    // The same ownership check as `/api/generated`, and for the same reason:
-    // an ordered resume's path is derivable from a fixed template, so a
-    // signed-in-only check on a path parameter hands out everybody's files.
-    // See `ownerOfGeneratedFile`. A path no order claims is unaffected.
-    const owner = ownerOfGeneratedFile(req.params.filename);
-    if (owner && owner !== req.user!.id) {
-      res.status(404).json({ error: 'File not found' });
-      return;
-    }
-
-    const filepath = await getGeneratedPDFPath(req.params.filename);
+    // The same question as `/api/generated`, asked by the same function: an
+    // ordered resume's path is derivable from a fixed template, so a
+    // signed-in-only check on a path parameter hands out everybody's files, and
+    // whose file it is has to be decided on the path as it will be OPENED, not
+    // as typed. See routes/generatedFiles.ts. A path no order claims is
+    // unaffected.
+    const filepath = await generatedFileFor(req.user!.id, req.params.filename);
     if (!filepath) {
       res.status(404).json({ error: 'File not found' });
       return;
     }
 
-    const ext = path.extname(req.params.filename).toLowerCase();
+    const ext = path.extname(filepath).toLowerCase();
     const contentType =
       ext === '.docx'
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         : 'application/pdf';
 
-    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(req.params.filename)}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filepath)}"`);
     res.setHeader('Content-Type', contentType);
     res.download(filepath);
   } catch (error) {

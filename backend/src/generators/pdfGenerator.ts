@@ -17,7 +17,7 @@ import {
 import { SAMPLE_PROFILE } from '../services/sampleProfile';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
-import { getGeneratedFilePath, getResumeOutputFilename } from '../utils/generatedPath';
+import { getResumeOutputFilename } from '../utils/generatedPath';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory,
@@ -2073,8 +2073,4 @@ export function generateProfilePreviewHTML(profile: Profile, template: Template)
       contentHeightPx: Math.round(box.contentHeightPx * box.mediaScale),
     },
   };
-}
-
-export async function getGeneratedPDFPath(filename: string): Promise<string | null> {
-  return getGeneratedFilePath(filename);
 }

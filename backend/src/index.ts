@@ -3,8 +3,6 @@ import './config/env';
 import express from 'express';
 import cors from 'cors';
 import os from 'os';
-import path from 'path';
-import { getGeneratedFilePath } from './utils/generatedPath';
 import { getDatabasePath, getDb } from './database/sqlite';
 import { describeTemplatesDirectory } from './database/templateFiles';
 
@@ -15,7 +13,7 @@ import generationRoutes from './routes/generation';
 import orderRoutes from './routes/orders';
 import paymentRoutes, { adminPaymentsRouter } from './routes/payments';
 import paymentWebhookRoutes from './routes/paymentWebhooks';
-import { ownerOfGeneratedFile } from './database/orderRepository';
+import { downloadGeneratedFile } from './routes/generatedFiles';
 import { orderRetentionDays, startOrderRetention } from './services/orders/retention';
 import { restoreGenerationQueue } from './services/queue';
 import adminRoutes from './routes/admin';
@@ -202,49 +200,14 @@ app.use(attachUser);
 
 /**
  * Downloading a generated file needs an account that builds resumes
- * (`requireUser`: a user or an administrator, never a reporter).
+ * (`requireUser`: a user or an administrator, never a reporter), and a file no
+ * other account owns - routes/generatedFiles.ts, shared with
+ * `/api/resume/download`.
  *
  * The filename is derived from the profile, the company and the date, so it is
  * guessable enough that "you would have to know the URL" is not a control.
  */
-app.get('/api/generated/:filename(*)', requireUser, async (req, res) => {
-  try {
-    // Express 4 exposes `:filename(*)` as `params.filename`; the bracketed key
-    // is Express 5's shape. Reading the wrong one made this route answer 404
-    // for every path. `/api/resume/download/:filename(*)` in routes/resume.ts
-    // reads the correct key, which is why downloads themselves still worked.
-    const params = req.params as Record<string, string | undefined>;
-    const filename = params.filename ?? '';
-
-    /*
-     * Whose file this is, before it is handed over.
-     *
-     * Signed-in used to be the whole check, which was defensible while a path
-     * was something you had to be told. Ordered resumes are filed under a
-     * FIXED template - account email, date, order number, profile, company - so
-     * their paths are derivable, not guessable, and this route would otherwise
-     * serve every account's documents to anybody with a login.
-     *
-     * A path no order claims is a manually built resume and is left exactly as
-     * it was; narrowing those as well is a separate change with a separate
-     * blast radius. 404, not 403, for the same reason the order routes use it.
-     */
-    const owner = ownerOfGeneratedFile(filename);
-    if (owner && owner !== req.user!.id) {
-      res.status(404).json({ error: 'File not found' });
-      return;
-    }
-
-    const filepath = await getGeneratedFilePath(filename);
-    if (!filepath) {
-      res.status(404).json({ error: 'File not found' });
-      return;
-    }
-    res.download(filepath, path.basename(filepath));
-  } catch {
-    res.status(500).json({ error: 'Failed to download file' });
-  }
-});
+app.get('/api/generated/:filename(*)', requireUser, downloadGeneratedFile);
 
 // Routes. Auth first: it is the only one reachable while signed out.
 // Every mount below has a row in test/routeAccess.test.js deciding who it is

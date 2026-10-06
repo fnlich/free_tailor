@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDb } from './sqlite';
 import { formatSequenceDate, nextDailyReference } from './dailySequence';
+import { ORDER_OUTPUT_PATH_TEMPLATE } from '../utils/outputStorage';
 
 /**
  * Orders and the resumes they delivered.
@@ -686,44 +687,91 @@ export function listFinishedImmediateRuns(endedBeforeIso: string, limit = 200): 
 }
 
 /**
- * Who, if anyone, owns a generated file by path.
+ * Where the order number sits in an ordered path: the segment of
+ * ORDER_OUTPUT_PATH_TEMPLATE that names it, read off the template so the two
+ * cannot drift.
+ */
+const ORDER_NUMBER_SEGMENT = ORDER_OUTPUT_PATH_TEMPLATE.split('/')
+  .filter(Boolean)
+  .findIndex((segment) => /\{\{\s*order number\s*\}\}/i.test(segment));
+
+/**
+ * The order a path is filed under, by the number in its order segment.
  *
- * The question the older download routes have to ask now. `/api/generated` and
- * `/api/resume/download` take a path and check only that the caller is signed
- * in - defensible while a path was an opaque thing you had to be told, and not
- * once ordered files are filed under a FIXED, published template whose segments
- * are an email, a date, an order number and a company. That makes them
- * derivable rather than guessable, and a derivable path behind a
+ * `sanitizePathSegment` writes `FT-20260920-0001` as `ft_20260920_0001` (and
+ * `FT-RUN-...` as `ft_run_...`). A number is only ever capitals, digits and
+ * dashes, so upper-casing and turning `_` back into `-` is the exact inverse,
+ * and the lookup is one seek on the UNIQUE number. Only for a path INSIDE that
+ * folder - the folder itself is not a file anybody downloads.
+ */
+function ownerOfOrderFolder(spelling: string): string | null {
+  if (ORDER_NUMBER_SEGMENT < 0) return null;
+  const segments = spelling.split('/');
+  if (segments.length <= ORDER_NUMBER_SEGMENT + 1) return null;
+  const segment = segments[ORDER_NUMBER_SEGMENT];
+  if (!/^[a-z0-9_]+$/i.test(segment)) return null;
+  const row = getDb()
+    .prepare(`SELECT user_id AS userId FROM orders WHERE number = ?`)
+    .get(segment.toUpperCase().replace(/_/g, '-')) as { userId: string } | undefined;
+  return row ? row.userId : null;
+}
+
+/**
+ * Every account that owns a generated file, by path - empty when nothing does.
+ *
+ * The question the older download routes have to ask. `/api/generated` and
+ * `/api/resume/download` take a path, and were written when a path was an
+ * opaque thing you had to be told. An ordered resume - and every queued run is
+ * an order row now, Generate Immediately included - is filed under a FIXED,
+ * published template whose segments are an email, a date, an order number and
+ * a company: derivable rather than guessable, and a derivable path behind a
  * signed-in-only check is a directory of everybody's resumes.
  *
- * Matched with LIKE against the stored JSON rather than by parsing it: the
- * column holds an array, the path appears in it verbatim as `"path":"<value>"`,
- * and SQLite has no JSON index here worth building for a lookup that happens
- * once per download. The candidate rows are then confirmed properly, so a
- * substring that merely looks similar cannot pass.
+ * `spellings` are the path as the server will OPEN it (`resolveGeneratedFile`),
+ * never the raw parameter: matched exactly against the raw string, `a//b` or
+ * `./a/b` was "a path no order claims" and served to anybody. Two claims, either
+ * of which makes an account an owner:
  *
- * Returns null when no order claims the path, which is the right answer for
- * every manually built resume - those are left exactly as they were.
+ *  - an item row that recorded the file. Found with LIKE against the stored
+ *    JSON rather than by parsing it - the column holds an array, the path sits
+ *    in it verbatim as `"path":"<value>"`, and SQLite has no JSON index here
+ *    worth building for a lookup made once per download - then confirmed
+ *    properly, so a substring that merely looks similar cannot pass. Compared
+ *    without regard to case: on a case-insensitive disk (Windows, macOS) a
+ *    change of case is the same file, and folding can only ever narrow what a
+ *    stranger gets. LIKE already folds ASCII.
+ *  - the run's FOLDER. A file is on disk before its item records it (the rest
+ *    of the resume is still being built), and one a failed task wrote is never
+ *    recorded at all; both sit in the run's own folder, which is the account's.
+ *
+ * Every owner is returned rather than the first, so the caller refuses a path
+ * any OTHER account has a claim on.
  */
-export function ownerOfGeneratedFile(relativePath: string): string | null {
-  const wanted = relativePath.replace(/\\/g, '/').trim();
-  if (!wanted) return null;
+export function ownersOfGeneratedFile(spellings: readonly string[]): string[] {
+  const owners = new Set<string>();
+  const select = getDb().prepare(
+    `SELECT o.user_id AS userId, i.files AS files
+     FROM order_items i JOIN orders o ON o.id = i.order_id
+     WHERE i.files LIKE @needle`
+  );
 
-  const rows = getDb()
-    .prepare(
-      `SELECT o.user_id AS userId, i.files AS files
-       FROM order_items i JOIN orders o ON o.id = i.order_id
-       WHERE i.files LIKE @needle`
-    )
-    .all({ needle: `%${JSON.stringify(wanted).slice(1, -1)}%` }) as Array<{
-    userId: string;
-    files: string;
-  }>;
+  for (const spelling of spellings) {
+    const wanted = spelling.replace(/\\/g, '/').trim();
+    if (!wanted) continue;
+    const folded = wanted.toLowerCase();
 
-  for (const row of rows) {
-    if (parseFiles(row.files).some((file) => file.path === wanted)) return row.userId;
+    const rows = select.all({ needle: `%${JSON.stringify(wanted).slice(1, -1)}%` }) as Array<{
+      userId: string;
+      files: string;
+    }>;
+    for (const row of rows) {
+      if (parseFiles(row.files).some((file) => file.path.toLowerCase() === folded)) owners.add(row.userId);
+    }
+
+    const folderOwner = ownerOfOrderFolder(wanted);
+    if (folderOwner) owners.add(folderOwner);
   }
-  return null;
+  return [...owners];
 }
 
 export function recordItemFiles(itemId: string, files: OrderFile[]): void {
