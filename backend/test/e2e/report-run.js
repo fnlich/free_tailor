@@ -8,18 +8,24 @@
  * the server's rules. This proves the pages and the server are joined up:
  *
  *   - a reporter picks today's tab (chosen for them) and the rows, previews
- *     them - the row whose Lake Status says Added is marked as skipped, and a
- *     `javascript:` link typed into the sheet is never an anchor - and a tab
- *     of their own is refused before a run is started
+ *     them - the two rows whose postings the database records as reported by
+ *     them before are marked skipped, with what became of them then
+ *     ("Reported before (Added)", "(Duplicate)"), and a `javascript:` link
+ *     typed into the sheet is never an anchor - and a tab of their own is
+ *     refused before a run is started
  *   - "Add to job lake" runs in the background with a progress bar, and ends
- *     with the owner's line, "2 out of 5 was added, your current credit is
- *     $0.1", and every row's outcome - the duplicate red
- *   - the sheet was written: the same rows previewed again say they were
- *     reported - all but the two Skipped, which a run tries again
+ *     with the owner's line, "2 out of 6 was added, your current credit is
+ *     $0.1", and every row's outcome - red exactly where the run paints the
+ *     sheet: the duplicate, a row whose posting was a duplicate when it was
+ *     reported before, and a posting twice in the run, the second time
+ *   - the same rows previewed again say they were reported - all but the
+ *     two Skipped, which a run tries again, and the second row of a posting
+ *     (a run makes it a duplicate again)
  *   - the top bar's balance moved with the run
- *   - an administrator finds the jobs in the lake, by a company spelled
- *     another way, opens one, deletes it revoking its reward - and the
- *     reporter's balance drops by exactly that reward
+ *   - an administrator finds the jobs in the lake, each with its job type,
+ *     clearance and industry, by a company spelled another way, opens one,
+ *     deletes it revoking its reward - and the reporter's balance drops by
+ *     exactly that reward
  *   - the Settings tab says where the duplicate window comes from, and the
  *     admin sheet got every added job (Retry now has nothing to send)
  *   - Admin -> Accounts' rate box names the global rate
@@ -41,6 +47,7 @@ require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
 const settings = require(path.join(DIST, 'services', 'jobLake', 'settings'));
 const { todaySheetTitle } = require(path.join(DIST, 'services', 'sheets', 'accountSheet'));
+const { seedEarlierReports } = require('./report-sheet-rows');
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -48,7 +55,7 @@ const SHOTS = process.env.E2E_SHOTS || __dirname;
 
 const WIDE = { width: 1440, height: 900 };
 const PHONE = { width: 390, height: 844 };
-const OWNER_LINE = '2 out of 5 was added, your current credit is $0.1';
+const OWNER_LINE = '2 out of 6 was added, your current credit is $0.1';
 
 let failures = 0;
 /** The detail is the reason it FAILED, so printing it on a pass reads as one. */
@@ -115,6 +122,15 @@ async function main() {
   // The global rate: what a reporter with no rate of their own is paid.
   const set = settings.updateLakeSettings({ reportRateUsd: '0.05' }, admin.id);
   check('the global rate is set to $0.05', set.ok, JSON.stringify(set));
+  // What an earlier run of the reporter's left in the database: Initech
+  // added, and Hooli's second posting a duplicate of the Hooli job an
+  // administrator merged in. The sheet says nothing about either.
+  const earlier = seedEarlierReports(DIST, { reporterId: reporter.id, adminId: admin.id });
+  check(
+    "the reporter's earlier reports are on record: Initech added, Hooli a duplicate",
+    earlier.initech.status === 'added' && earlier.hooliMerged.status === 'added' && earlier.hooli.status === 'duplicate',
+    JSON.stringify({ initech: earlier.initech.status, hooliMerged: earlier.hooliMerged.status, hooli: earlier.hooli.status })
+  );
 
   const reporterToken = users.createSession(reporter.id);
   const adminToken = users.createSession(admin.id);
@@ -180,13 +196,23 @@ async function main() {
 
     await page.select('#report-tab', today);
     check('Preview rows is pressed on today\'s tab', await pressButton(page, 'Preview rows'));
-    await until(page, () => /6 rows hold a job/.test(document.body.innerText), 15_000);
+    await until(page, () => /8 rows hold a job/.test(document.body.innerText), 15_000);
     const preview = await readTable(page, 'rows in that range that hold a job');
-    const initech = preview?.find((row) => row.cells[1] === 'Initech');
     const umbrella = preview?.find((row) => row.cells[1] === 'Umbrella');
     check(
-      'the preview lists the six rows, the one reported before marked skipped',
-      preview?.length === 6 && /Reported before \(Added\) - skipped/.test(initech?.cells[4] ?? ''),
+      'the preview lists the eight rows, the two reported before skipped with what became of them then',
+      preview?.length === 8 &&
+        preview.map((row) => row.cells[4]).join(' | ') ===
+          [
+            'To add',
+            'To add',
+            'To add',
+            'Reported before (Added) - skipped',
+            'No company - it will be Skipped',
+            'No job description - Skipped unless its link was analysed before',
+            'Reported before (Duplicate) - skipped',
+            'To add',
+          ].join(' | '),
       JSON.stringify(preview?.map((row) => row.cells))
     );
     check(
@@ -197,7 +223,7 @@ async function main() {
     check(
       'the preview says what a run will do',
       await page.evaluate(() =>
-        /6 rows hold a job: 5 will be taken to the job lake, and 1 was reported before and will be skipped\./.test(
+        /8 rows hold a job: 6 will be taken to the job lake, and 2 were reported before and will be skipped\./.test(
           document.body.innerText
         )
       )
@@ -214,39 +240,49 @@ async function main() {
     check("the run ends with the owner's line", ended && summary === OWNER_LINE, String(summary));
 
     const outcomes = await readTable(page, 'What each row of the run came to');
-    const byCompany = Object.fromEntries((outcomes ?? []).map((row) => [row.cells[1], row]));
+    const byRow = Object.fromEntries((outcomes ?? []).map((row) => [row.cells[0], row]));
     check(
-      'every row has its outcome: Added, Duplicate, Added, Reported before, Skipped, Skipped',
-      (outcomes ?? []).map((row) => row.cells[3]).join(', ') === 'Added, Duplicate, Added, Reported before, Skipped, Skipped',
+      'every row has its outcome, a row reported before with what became of it then',
+      (outcomes ?? []).map((row) => row.cells[3]).join(', ') ===
+        'Added, Duplicate, Added, Reported before (Added), Skipped, Skipped, Reported before (Duplicate), Duplicate',
       JSON.stringify(outcomes?.map((row) => row.cells))
     );
-    const duplicate = byCompany['ACME, Inc.'];
+    const duplicate = byRow['3'];
     check(
-      'the duplicate row - and only it - is red',
+      'red exactly where the sheet is painted: the duplicate, Hooli (a duplicate the first time) and the posting a row above already had',
       duplicate?.red === true &&
         /rgb\(254, 242, 242\)/.test(duplicate.background) &&
-        (outcomes ?? []).filter((row) => row.red).length === 1,
-      JSON.stringify(outcomes?.map((row) => [row.cells[1], row.red, row.background]))
+        (outcomes ?? []).filter((row) => row.red).map((row) => row.cells[0]).join() === '3,8,9',
+      JSON.stringify(outcomes?.map((row) => [row.cells[0], row.red, row.background]))
     );
     check(
-      'each added row earned $0.05, the duplicate nothing',
-      byCompany['Acme Corp']?.cells[4] === '$0.05' && byCompany['Globex LLC']?.cells[4] === '$0.05' && duplicate?.cells[4] === '-',
+      'the notes say why: reported before is skipped and not paid again, a posting twice is a duplicate of the row above',
+      /^You reported this posting before: skipped, and not paid again\.$/.test(byRow['5']?.cells[5] ?? '') &&
+        /^The same posting is on a row above\.$/.test(byRow['9']?.cells[5] ?? ''),
+      JSON.stringify([byRow['5']?.cells, byRow['9']?.cells])
+    );
+    check(
+      'each added row earned $0.05, the duplicates and the rows reported before nothing',
+      byRow['2']?.cells[4] === '$0.05' &&
+        byRow['4']?.cells[4] === '$0.05' &&
+        ['3', '5', '8', '9'].every((row) => byRow[row]?.cells[4] === '-'),
       JSON.stringify(outcomes?.map((row) => row.cells))
     );
 
-    // The page previews the same rows again once the run ends: the sheet was
-    // written. Added and Duplicate rows are reported now; the two Skipped
-    // ones are tried again next time.
+    // The page previews the same rows again once the run ends. Every posting
+    // the run took is on record now; the two Skipped rows are tried again
+    // next time, and so is the second row of Acme's posting - a run makes it
+    // a duplicate of the row above again.
     const rewritten = await until(
       page,
-      () => /6 rows hold a job: 2 will be taken to the job lake, and 4 were reported before and will be skipped\./.test(document.body.innerText),
+      () => /8 rows hold a job: 3 will be taken to the job lake, and 5 were reported before and will be skipped\./.test(document.body.innerText),
       15_000
     );
     const again = await readTable(page, 'rows in that range that hold a job');
     check(
-      'the same rows previewed again: Added and Duplicate now say reported, the Skipped two are tried again',
+      'the same rows previewed again: what the run took now says reported, the Skipped two and the repeat are tried again',
       rewritten &&
-        (again ?? []).map((row) => /^Reported before/.test(row.cells[4])).join() === 'true,true,true,true,false,false' &&
+        (again ?? []).map((row) => /^Reported before/.test(row.cells[4])).join() === 'true,true,true,true,false,false,true,false' &&
         /Reported before \(Duplicate\)/.test(again?.[1]?.cells[4] ?? ''),
       JSON.stringify(again?.map((row) => row.cells[4]))
     );
@@ -256,8 +292,8 @@ async function main() {
 
     const overview = await api(reporterToken, '/report');
     check(
-      'GET /api/report: $0.1 earned today, 2 jobs in the lake',
-      overview.body?.earnedTodayMilli === 100 && overview.body?.lakeJobs === 2 && overview.body?.balanceMilli === 100,
+      'GET /api/report: $0.1 earned today, 3 jobs in the lake (Initech from before)',
+      overview.body?.earnedTodayMilli === 100 && overview.body?.lakeJobs === 3 && overview.body?.balanceMilli === 100,
       JSON.stringify(overview.body && { earned: overview.body.earnedTodayMilli, jobs: overview.body.lakeJobs })
     );
 
@@ -288,14 +324,25 @@ async function main() {
     await adminPage.setViewport(WIDE);
     await signIn(adminPage, adminToken);
     await adminPage.goto(`${APP}/admin/job-lake`, { waitUntil: 'networkidle2' });
-    await until(adminPage, () => /2 jobs in the lake/.test(document.body.innerText), 20_000);
+    await until(adminPage, () => /4 jobs in the lake/.test(document.body.innerText), 20_000);
     const lake = await readTable(adminPage, 'Jobs in the lake');
+    const lakeRow = Object.fromEntries((lake ?? []).map((row) => [row.cells[1], row.cells]));
     check(
-      'Admin -> Job Lake lists the two added jobs, each paid $0.05',
-      lake?.length === 2 &&
-        lake.every((row) => /\$0\.05 at \$0\.05 per job/.test(row.cells[6])) &&
-        lake.map((row) => row.cells[1]).sort().join(', ') === 'Acme Corp, Globex LLC',
+      'Admin -> Job Lake lists the four jobs, the two the run added each paid $0.05',
+      lake?.length === 4 &&
+        Object.keys(lakeRow).sort().join(', ') === 'Acme Corp, Globex LLC, Hooli, Initech' &&
+        ['Acme Corp', 'Globex LLC'].every((company) => /\$0\.05 at \$0\.05 per job/.test(lakeRow[company]?.[9] ?? '')) &&
+        ['Hooli', 'Initech'].every((company) => lakeRow[company]?.[9] === 'Not paid'),
       JSON.stringify(lake?.map((row) => row.cells))
+    );
+    // Job type, Clearance, Industry: from each posting's analysis, in the
+    // server's words - an industry the analysis never named worked out from
+    // its company category (SaaS: Technology), and a blank one a dash.
+    check(
+      "each job shows its job type, clearance and industry",
+      [lakeRow['Acme Corp'], lakeRow.Initech, lakeRow.Hooli].map((cells) => cells?.slice(5, 8).join(' / ')).join(' | ') ===
+        'Remote / Not required / Technology | Hybrid / Required / Finance | Onsite / Not required / -',
+      JSON.stringify(lake?.map((row) => row.cells.slice(0, 8)))
     );
     check(
       'Job Lake is a tab of the Settings row',
@@ -311,7 +358,7 @@ async function main() {
     const found = await readTable(adminPage, 'Jobs in the lake');
     check('"acme inc" finds Acme Corp', found?.length === 1 && found[0].cells[1] === 'Acme Corp', JSON.stringify(found?.map((row) => row.cells)));
     check('Clear is pressed', await pressButton(adminPage, 'Clear'));
-    await until(adminPage, () => /2 jobs in the lake/.test(document.body.innerText), 10_000);
+    await until(adminPage, () => /4 jobs in the lake/.test(document.body.innerText), 10_000);
 
     // Globex's detail, then delete it taking its reward back.
     await adminPage.evaluate(() => {
@@ -321,9 +368,14 @@ async function main() {
     await until(adminPage, () => Boolean(document.querySelector('[role="dialog"]')) && /Job description/.test(document.body.innerText), 10_000);
     const detail = await adminPage.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? '');
     check(
-      'the detail shows the reward, the requester and the history',
-      /\$0\.05 at \$0\.05 per job/.test(detail) && /e2e-lake-reporter-/.test(detail) && /Earlier versions/.test(detail),
-      detail.slice(0, 400)
+      'the detail shows the reward, the requester, the job type, clearance and industry, and the history',
+      /\$0\.05 at \$0\.05 per job/.test(detail) &&
+        /e2e-lake-reporter-/.test(detail) &&
+        /Job type\s+Remote/.test(detail) &&
+        /Clearance\s+Not required/.test(detail) &&
+        /Industry\s+Technology/.test(detail) &&
+        /Earlier versions/.test(detail),
+      detail.slice(0, 600)
     );
     await adminPage.screenshot({ path: `${SHOTS}/lake-1-detail.png`, fullPage: true });
     await adminPage.evaluate(() => {
@@ -341,7 +393,7 @@ async function main() {
     });
     const deleted = await until(adminPage, () => /Deleted Globex LLC - .* from the lake\. Took back the \$0\.05 reward/.test(document.body.innerText), 10_000);
     check('delete with "Also revoke the reward" takes the job and its reward back', deleted);
-    await until(adminPage, () => /1 job in the lake/.test(document.body.innerText), 10_000);
+    await until(adminPage, () => /3 jobs in the lake/.test(document.body.innerText), 10_000);
     const reporterAfter = await api(reporterToken, '/report');
     check(
       "the reporter's balance dropped by exactly that reward: $0.05",

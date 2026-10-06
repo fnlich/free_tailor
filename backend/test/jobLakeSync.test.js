@@ -155,7 +155,7 @@ test('with nothing to append, Google is asked nothing and no sheet is created', 
 test('an added job reaches the database AND the sheet; the sheet is created once and shared with the enabled admins', async (t) => {
   const { fake, reporter } = fresh('added');
   t.after(() => adminSheet.resetAdminLakeSheetForTests());
-  const added = merge({ company: 'OpenAI, Inc.' }, reporter.id, T0);
+  const added = merge({ company: 'OpenAI, Inc.', jobType: 'remote', clearance: true, industry: 'finance' }, reporter.id, T0);
   assert.equal(added.status, 'added');
   assert.equal(adminSheet.adminLakeSyncStatus().unsynced, 1);
 
@@ -166,12 +166,18 @@ test('an added job reaches the database AND the sheet; the sheet is created once
   assert.equal(fake.calls.headers.length, 1);
   assert.deepEqual(fake.calls.headers[0].data[0].values[0], [
     'Company', 'Job Field', 'Title', 'Salary', 'Link', 'Requested By', 'Updated At', 'Job Hash',
+    'Job Type', 'Clearance', 'Industry',
   ]);
+  assert.equal(fake.calls.headers[0].data[0].range, "'Job Lake'!A1:K1");
+  assert.equal(adminSheet.describeAdminLakeSheet().headerVersion, adminSheet.ADMIN_LAKE_HEADER_VERSION);
   assert.equal(fake.calls.appends.length, 1);
-  assert.equal(fake.calls.appends[0].range, "'Job Lake'!A:H");
+  assert.equal(fake.calls.appends[0].range, "'Job Lake'!A:K");
   const entry = lake.getLakeEntry(added.lakeId);
   assert.deepEqual(fake.calls.appends[0].rows, [
-    ['OpenAI, Inc.', 'Backend', 'Backend Engineer', '$150k', 'https://jobs.example.com/1', 'reporter@example.com', entry.updatedAt, added.jobHash],
+    [
+      'OpenAI, Inc.', 'Backend', 'Backend Engineer', '$150k', 'https://jobs.example.com/1', 'reporter@example.com', entry.updatedAt,
+      added.jobHash, 'Remote', true, 'Finance',
+    ],
   ]);
   assert.ok(lake.getLakeEntry(added.lakeId).sheetSyncedAt, 'marked synced once Google took it');
   assert.equal(adminSheet.adminLakeSyncStatus().unsynced, 0);
@@ -313,7 +319,16 @@ test('a header write that fails leaves the one spreadsheet to finish - never a s
   assert.deepEqual(fake.calls.order, ['header admin-sheet-1', 'append admin-sheet-1']);
   assert.equal(adminSheet.describeAdminLakeSheet().headerWritten, true);
 
-  // A sheet stored before the flag existed reads as headed: no header written again.
+  // A sheet stored at this build's header is not headed again.
+  merge({ company: 'Initech' }, reporter.id, T0);
+  await adminSheet.syncAdminLakeSheet();
+  assert.deepEqual(fake.calls.order.slice(2), ['append admin-sheet-1']);
+});
+
+test("an admin sheet from before Job Type, Clearance and Industry gets its header rewritten once, before its next line", async (t) => {
+  const { fake, reporter } = fresh('header-v2');
+  t.after(() => adminSheet.resetAdminLakeSheetForTests());
+  // As an earlier build stored it: headed (or from before the flag), no version.
   setSetting(adminSheet.ADMIN_LAKE_SHEET_KEY, {
     spreadsheetId: 'older-sheet',
     spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/older-sheet/edit',
@@ -321,10 +336,32 @@ test('a header write that fails leaves the one spreadsheet to finish - never a s
     createdAt: '',
     sharedWith: ['owner@example.com', 'second.admin@example.com'],
   });
-  assert.equal(adminSheet.describeAdminLakeSheet().headerWritten, true);
-  merge({ company: 'Globex' }, reporter.id, T0);
+  const stored = adminSheet.describeAdminLakeSheet();
+  assert.deepEqual([stored.headerWritten, stored.headerVersion], [true, 1]);
+
+  // Nothing to append: Google is asked nothing, the header waits.
   await adminSheet.syncAdminLakeSheet();
-  assert.deepEqual(fake.calls.order.slice(2), ['append older-sheet']);
+  assert.deepEqual(fake.calls.order, []);
+
+  const added = merge({ company: 'Globex', jobType: 'hybrid', clearance: false, industry: 'retail_ecommerce' }, reporter.id, T0);
+  await adminSheet.syncAdminLakeSheet();
+  assert.deepEqual(fake.calls.order, ['header older-sheet', 'append older-sheet'], 'the header first, then the line');
+  assert.equal(fake.calls.creates, 0, 'the same spreadsheet');
+  assert.deepEqual(fake.calls.headers[0].data, [
+    { range: "'Job Lake'!A1:K1", values: [[...adminSheet.ADMIN_LAKE_HEADERS]] },
+  ]);
+  assert.deepEqual(adminSheet.ADMIN_LAKE_HEADERS.slice(8), ['Job Type', 'Clearance', 'Industry'], 'columns I-K, after every earlier one');
+  const [line] = fake.appendedRows();
+  assert.equal(line.length, 11);
+  assert.deepEqual(line.slice(7), [added.jobHash, 'Hybrid', false, 'Retail & E-commerce']);
+  assert.equal(adminSheet.describeAdminLakeSheet().headerVersion, adminSheet.ADMIN_LAKE_HEADER_VERSION);
+
+  // Once: the next line is appended with no header before it.
+  merge({ company: 'Initech' }, reporter.id, T0);
+  await adminSheet.syncAdminLakeSheet();
+  assert.deepEqual(fake.calls.order, ['header older-sheet', 'append older-sheet', 'append older-sheet']);
+  // A job whose posting states none of the three: blank, and a real FALSE.
+  assert.deepEqual(fake.appendedRows()[1].slice(8), ['', false, '']);
 });
 
 test('"Create a new admin sheet" while a sync is appending: the new sheet gets the whole lake, and nothing is marked sent to the old', async (t) => {

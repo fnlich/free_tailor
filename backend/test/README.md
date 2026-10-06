@@ -70,10 +70,21 @@ Coverage currently focuses on:
   no window, cap or overwrite, the prompt edit, the analysis model and the
   closed job-field list (`analysisCacheEndToEnd.test.js`); the in-flight join,
   a caller's abort, a failed call storing nothing (`analysisInFlight.test.js`);
-  the gate as the only caller of the analysis prompt and its byte-identical
-  cached prefix (`analysisGate.test.js`); the table, its UNIQUE indexes, the
-  link and text identities, EXPLAIN QUERY PLAN on every lookup and the repair
-  of an unreadable row (`jobAnalysisStore.test.js`); and the app sheet's six
+  the gate as the only caller of the analysis prompt, its byte-identical
+  cached prefix holding the job field and industry lists ahead of the
+  posting, an administrator's prompt from before job fields asked for all of
+  them every turn and one from before industries (`predatesIndustry`) asked
+  for the industry alone (`analysisGate.test.js`); the table, its UNIQUE
+  indexes, the link and text identities, EXPLAIN QUERY PLAN on every lookup
+  (and on the lake's two reads) and the repair of an unreadable row, the
+  closed industry list with stable ids (an unknown word Other), an industry
+  only when the answer had the key - an older analysis, row or sheet cell
+  stays without - and derived for such an analysis from its company category,
+  else its free-text industry, else not specified, and job type (Remote,
+  Hybrid, Onsite or blank) and clearance (required unless the analysis says
+  none or does not say) (`jobAnalysisStore.test.js`); the industry, like the
+  job field, salary and filter, never reaching the tailoring prompt nor
+  changing a tailoring cache key (`tokenBudget.test.js`); and the app sheet's six
   analysis columns - sheet-first builds with one batched read, write-back once
   and RAW, the trust rule, row identity, a cell used only for the posting it
   was written for (a replaced posting, a sort under the protected columns), a
@@ -87,37 +98,65 @@ Coverage currently focuses on:
   analysis per posting (re-spaced text the same posting, edited text or
   another link not, a 400 letting it go), the salary line, the posting
   normalisation, the Analysis cell's states and the sheet panel's column
-  letters, each run against the server's own code
+  letters, and the prompt editor's notes on a prompt that predates job
+  fields, industries or the section switches, each run against the server's
+  own code
 - the Job Data Lake: the company normalisation and the versioned hash
-  (`jobLakeIdentity.test.js`); the tables and exactly the planned indexes with
-  EXPLAIN QUERY PLAN on the duplicate check and the admin page's default view,
-  the duplicate window on a fake clock (59 days a duplicate, 61 a replacement
-  with its history), the administrator's window over `.env` over 60, rewards at
-  the reporter's own rate else the global one, snapshotted, once per version,
-  under the daily cap (which a revoke does not free), never a $0 ledger row,
-  `already` only for the same sheet row, revoke and delete, the admin query,
-  and four threads adding the same job at once (`jobLakeStore.test.js`); the
-  admin sheet's outbox - created once (a failed header write finishes the same
-  spreadsheet), shared with enabled administrators at every sync, an idle one
-  included, a failed append kept and sent exactly once on retry with Google's
-  reason on the page, a replacement a new line, a duplicate none, a recreate
-  mid-sync sending the whole lake to the new sheet and marking nothing for the
-  old - and the duplicate decision made with every Google seam set to throw
-  (`jobLakeSync.test.js`); and over HTTP, a reporter's run against a sheet in
-  memory and counting seats (what is analysed, added, replaced, a duplicate,
-  unclassified or skipped, what is paid, written and painted red, a re-run
-  that analyses and pays nothing, the same posting pasted into another row or
-  tab a red duplicate, a Lake Status left by a replaced posting ignored, a
-  Skipped row's analysis cells written once it is reported, one row's seat or
-  merge failure failing only that row, Lake Status cells kept out of rows that
-  were sorted), the admin merge, the company a build or the Job Filter names
-  on an analysis, and the admin lake API (`jobLakeReport.test.js`). The pages' half (`frontendJobLake.test.js`):
-  the rows a run is asked for, the settings boxes and what a save sends, and
-  the lake's filters, each refused by the page exactly when and in the words
-  the server refuses them; every row and merge status given its words, only
-  a duplicate red; when Add to job lake may be pressed; a sheet's
-  `javascript:` link never an href; and the owner's line drawn from a real
-  run's summary, with a tab of the reporter's own refused in the run's words
+  (`jobLakeIdentity.test.js`); the tables and exactly the planned indexes -
+  the two partial "facts still to fill" ones and `job_reports`' two among
+  them - with EXPLAIN QUERY PLAN on the duplicate check, the admin page's
+  default view (filtered on the three facts too, never a sort), the
+  "reported before" reads and the boot step's own statements, the duplicate
+  window on a fake clock (59 days a duplicate, 61 a replacement with its
+  history), the administrator's window over `.env` over 60, rewards at the
+  reporter's own rate else the global one, snapshotted, once per version,
+  under the daily cap (which a revoke does not free), never a $0 ledger row;
+  job type, clearance and industry stored from the analysis, moved by a
+  replacement and kept in the history, and filtered on by the admin query;
+  the boot step filling them once, from the stored analyses with no model,
+  for rows an older build wrote (one it replaced included) and recording
+  the reports those rows hold - a report-sourced row only, never a merge,
+  the first version `added` and each later one `replaced` - then a no-op,
+  and a row an older build adds after a rollback filled at the next start;
+  `already` from `job_reports` for the same account and posting on any row
+  or tab, or none, even after the window, with nothing moved or paid, and
+  another account's report of it a duplicate recorded as theirs; an
+  unclassified report recorded, one with no company not; a delete forgetting
+  the reports that reached the row, so each can report it again; a record an
+  older build left pointing at a row it deleted counted by no reader, and
+  replaced at the next start when that build added the row again; revoke and
+  delete; the admin query; and four threads adding the same job at once
+  (`jobLakeStore.test.js`); the admin sheet's outbox - created once (a failed
+  header write finishes the same spreadsheet), shared with enabled
+  administrators at every sync, an idle one included, a failed append kept
+  and sent exactly once on retry with Google's reason on the page, a
+  replacement a new line, a duplicate none, a recreate mid-sync sending the
+  whole lake to the new sheet and marking nothing for the old, a sheet from
+  before Job Type, Clearance and Industry given its new header once (version
+  1 to 2) before its next line - and the duplicate decision made with every
+  Google seam set to throw (`jobLakeSync.test.js`); and over HTTP, a
+  reporter's run against a sheet in memory and counting seats (what is
+  analysed, added, replaced, a duplicate, unclassified or skipped, what is
+  paid, written and painted red, a re-run that analyses and pays nothing, the
+  same posting moved, on another row or on another tab *Reported before* and
+  unpaid, the same posting twice in one run a red duplicate the second time,
+  a row whose first outcome was a duplicate painted red again, a job an older
+  build deleted from the lake reported again, a Lake Status left by a
+  replaced posting ignored, a Skipped row's analysis cells written once it is
+  reported, one row's seat or merge failure failing only that row, Lake Status
+  cells kept out of rows that were sorted), the admin merge, the company a
+  build or the Job Filter names on an analysis, and the admin lake API
+  (`jobLakeReport.test.js`). The pages' half (`frontendJobLake.test.js`): the
+  rows a run is asked for, the settings boxes and what a save sends, and the
+  lake's filters, each refused by the page exactly when and in the words the
+  server refuses them; every row and merge status given its words, *Reported
+  before (Added)* and the rest in the server's, and red exactly for a
+  duplicate and a row reported before whose first outcome was one - the rows
+  a run paints; a lake job's type, clearance and industry in the server's
+  words, a row not filled in yet saying so; when Add to job lake may be
+  pressed; a sheet's `javascript:` link never an href; and the owner's line
+  drawn from a real run's summary, with a tab of the reporter's own refused
+  in the run's words
 - providers of one type and their queues (`providerQueues.test.js`): two
   Claude providers with limits 1 and 2 running six tasks at most three at once,
   each at its own limit, placed two and four; a held provider's waiting work,
@@ -313,8 +352,10 @@ Coverage currently focuses on:
 - prompt variables (`promptVariables.test.js`): every feature declaring
   exactly the variables its code supplies, a typo refused on save and named
   on validate (also through the routes), the shipped prompts validating
-  clean, the note on a tailoring prompt that predates the switches, and such a
-  prompt still obeying them through a stub seat
+  clean, the note on a tailoring prompt that predates the switches and on an
+  analysis prompt that names the job fields but not the industries
+  (`predatesIndustry`), and such a tailoring prompt still obeying the switches
+  through a stub seat
 - the three CLI seats, each with no binary, no subprocess and no network:
   the Claude provider - argv, child environment, event reduction, failure
   classification, rate limits, outages and concurrency, and a sign-in hold

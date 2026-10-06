@@ -3,8 +3,10 @@ import {
   type LakeJob,
   type LakePolicy,
   type MergeOutcome,
+  type SheetRowRef,
 } from '../../database/jobLakeRepository';
 import type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
+import { analysisFactsOf } from '../jobAnalysis/facts';
 import { readLakeSettings } from './settings';
 
 export type { LakeJob, MergeOutcome, MergeStatus } from '../../database/jobLakeRepository';
@@ -52,17 +54,19 @@ export function mergeIntoLake(
 }
 
 /**
- * A lake job from a stored analysis: its field and salary are the analysis's,
- * never the caller's (a reporter cannot hand the lake a field of their own),
- * the posting's text is the one analysed, and the company, title and link are
- * the row's when the caller has one, else what the store recorded. A report
- * run names the sheet row too (`reportRef`), which is what lets a re-run of
- * that row be told from the same posting reported again elsewhere.
+ * A lake job from a stored analysis: its field, salary, job type, clearance
+ * and industry are the analysis's, never the caller's (a reporter cannot hand
+ * the lake a field of their own), the posting's text is the one analysed, and
+ * the company, title and link are the row's when the caller has one, else
+ * what the store recorded. The facts of an analysis stored before they were
+ * asked for are derived from what it holds (`analysisFactsOf`) - never asked
+ * of a model. A report run names its sheet row too (`reportedFrom`), kept on
+ * the report's record.
  */
 export function lakeJobFromAnalysis(
   stored: StoredJobAnalysis,
   source: LakeJob['source'],
-  row: { company?: string; title?: string; url?: string; reportRef?: string } = {}
+  row: { company?: string; title?: string; url?: string; reportedFrom?: SheetRowRef } = {}
 ): LakeJob {
   const company = row.company?.trim() || stored.companyName;
   const title = row.title?.trim() || stored.analysis.jobMeta?.title || '';
@@ -75,6 +79,7 @@ export function lakeJobFromAnalysis(
     jobDescription: stored.analysis.sourceJobDescription ?? '',
     analysisId: stored.id,
     source,
-    ...(row.reportRef ? { reportRef: row.reportRef } : {}),
+    ...analysisFactsOf(stored.analysis),
+    ...(row.reportedFrom ? { reportedFrom: row.reportedFrom } : {}),
   };
 }

@@ -130,15 +130,35 @@ test('the range a run is asked for is refused by the page exactly when, and in t
 
 // -- statuses and the owner's line ---------------------------------------- //
 
-test("every status a row or a merge can come to has the page's words, and only a duplicate is red", () => {
+test("every status a row or a merge can come to has the page's words, and only a duplicate - now, or the first time - is red", () => {
   const lake = display();
   const rowStatuses = unionMembers('services/jobLake/reportRun.ts', 'ReportRowStatus');
   assert.deepEqual(Object.keys(lake.REPORT_STATUS_LABELS).sort(), [...rowStatuses].sort());
   assert.deepEqual(Object.keys(lake.REPORT_STATUS_TONES).sort(), [...rowStatuses].sort());
   for (const status of rowStatuses) {
-    assert.equal(lake.isRedOutcome({ status }), status === 'duplicate', status);
+    assert.equal(lake.isRedOutcome({ status, priorOutcome: null }), status === 'duplicate', status);
     assert.equal(lake.reportStatusTone(status) === 'red', status === 'duplicate', status);
+    assert.equal(lake.reportRowTone({ status, priorOutcome: null }) === 'red', status === 'duplicate', status);
   }
+
+  // What became of a posting the first time: the server's words, every one.
+  const { JOB_REPORT_OUTCOME_LABELS } = require('../dist/database/jobLakeRepository');
+  const outcomes = unionMembers('database/jobLakeRepository.ts', 'JobReportOutcome');
+  assert.deepEqual(Object.keys(lake.JOB_REPORT_OUTCOME_LABELS).sort(), [...outcomes].sort());
+  assert.deepEqual({ ...lake.JOB_REPORT_OUTCOME_LABELS }, { ...JOB_REPORT_OUTCOME_LABELS });
+  for (const outcome of outcomes) {
+    assert.equal(lake.describePriorOutcome(outcome), `Reported before (${JOB_REPORT_OUTCOME_LABELS[outcome]})`);
+    const row = { status: 'already-reported', priorOutcome: outcome, reason: 'x' };
+    assert.equal(lake.reportRowLabel(row), `Reported before (${JOB_REPORT_OUTCOME_LABELS[outcome]})`);
+    // A row whose posting was a duplicate the first time is painted red again - and only that one.
+    assert.equal(lake.isRedOutcome(row), outcome === 'duplicate', outcome);
+    assert.equal(lake.reportRowTone(row) === 'red', outcome === 'duplicate', outcome);
+    assert.match(lake.describeRowNote(row), /^You reported this posting before/);
+  }
+  assert.equal(lake.describePriorOutcome(null), 'Reported before');
+  assert.equal(lake.reportRowLabel({ status: 'duplicate', priorOutcome: null }), 'Duplicate');
+  assert.equal(lake.describeRowNote({ status: 'skipped', reason: 'No company.' }), 'No company.');
+  assert.equal(lake.describeRowNote({ status: 'added', reason: null }), '');
 
   const mergeStatuses = [
     ...unionMembers('database/jobLakeRepository.ts', 'MergeStatus'),
@@ -187,23 +207,27 @@ test("the summary line is the owner's sentence, to the thousandth", () => {
 test('the preview says which rows a run skips, and Add to job lake waits for a preview of the same rows', () => {
   const lake = display();
   const rows = [
-    { row: 2, company: 'Acme', title: 'A', link: '', descriptionLength: 400, jobHash: null, lakeStatus: null, reported: false },
-    { row: 3, company: 'Beta', title: 'B', link: '', descriptionLength: 400, jobHash: 'h', lakeStatus: 'Duplicate', reported: true },
-    { row: 4, company: 'Gamma', title: 'C', link: '', descriptionLength: 400, jobHash: null, lakeStatus: 'Skipped', reported: false },
-    { row: 5, company: '', title: 'D', link: '', descriptionLength: 400, jobHash: null, lakeStatus: null, reported: false },
-    { row: 6, company: 'Delta', title: 'E', link: 'https://x.example/1', descriptionLength: 0, jobHash: null, lakeStatus: null, reported: false },
+    { row: 2, company: 'Acme', title: 'A', link: '', descriptionLength: 400, jobHash: null, reported: false, priorOutcome: null },
+    { row: 3, company: 'Beta', title: 'B', link: '', descriptionLength: 400, jobHash: 'h', reported: true, priorOutcome: 'duplicate' },
+    { row: 4, company: 'Gamma', title: 'C', link: '', descriptionLength: 400, jobHash: 'g', reported: true, priorOutcome: 'added' },
+    { row: 5, company: '', title: 'D', link: '', descriptionLength: 400, jobHash: null, reported: false, priorOutcome: null },
+    { row: 6, company: 'Delta', title: 'E', link: 'https://x.example/1', descriptionLength: 0, jobHash: null, reported: false, priorOutcome: null },
   ];
-  assert.deepEqual(lake.countReportPreview(rows), { jobs: 5, toReport: 4, reported: 1 });
+  assert.deepEqual(lake.countReportPreview(rows), { jobs: 5, toReport: 3, reported: 2 });
   assert.equal(
     lake.describeReportPreview(rows),
-    '5 rows hold a job: 4 will be taken to the job lake, and 1 was reported before and will be skipped.'
+    '5 rows hold a job: 3 will be taken to the job lake, and 2 were reported before and will be skipped.'
   );
   assert.deepEqual(
     rows.map((row) => lake.describePreviewRow(row).skipped),
-    [false, true, false, false, false]
+    [false, true, true, false, false]
   );
+  // What became of the posting the first time - the server's record, never the row's Lake Status.
   assert.equal(lake.describePreviewRow(rows[1]).label, 'Reported before (Duplicate) - skipped');
-  assert.equal(lake.describePreviewRow(rows[2]).label, 'Skipped last time - tried again');
+  assert.equal(lake.describePreviewRow(rows[2]).label, 'Reported before (Added) - skipped');
+  assert.equal(lake.describePreviewRow(rows[0]).label, 'To add');
+  assert.equal(lake.describePreviewRow(rows[3]).label, 'No company - it will be Skipped');
+  assert.match(lake.describePreviewRow(rows[4]).label, /^No job description/);
   assert.equal(lake.describeReportPreview([]), 'No row in that range holds a job.');
   assert.match(lake.describeReportPreview([rows[1]]), /reported before, so a run would skip it/);
 
@@ -224,7 +248,7 @@ test('the preview says which rows a run skips, and Add to job lake waits for a p
   );
   assert.equal(blocker({ preview: { ...preview, jobTab: false, rows: [] } }), lake.notJobTabMessage('Today'));
   assert.equal(blocker({ preview: { ...preview, rows: [] } }), 'No row in that range holds a job.');
-  assert.match(blocker({ preview: { ...preview, rows: [rows[1]] } }), /^Every row in that range was reported before/);
+  assert.match(blocker({ preview: { ...preview, rows: [rows[1], rows[2]] } }), /^Every row in that range was reported before/);
 });
 
 test('a link typed into a sheet reaches an anchor only as a web address', () => {
@@ -472,8 +496,15 @@ async function serve(name) {
         });
       }
     },
-    async batchUpdate() {},
+    async batchUpdate(_id, requests) {
+      // The rows a run paints: one repeatCell per row, its background only.
+      for (const request of requests) {
+        const cell = request.repeatCell;
+        if (cell && cell.fields === 'userEnteredFormat.backgroundColor') paints.push(cell.range.startRowIndex + 1);
+      }
+    },
   };
+  const paints = [];
   columns.setAnalysisSheetsClientForTests(google);
   reportSheet.setReportSheetsClientForTests(google);
   accountSheet.setSheetsClientForTests({
@@ -541,8 +572,11 @@ async function serve(name) {
     ...storage,
     seats,
     tabRows,
+    paints,
     call,
     reportRun,
+    reporter,
+    owner,
     close() {
       server.close();
       columns.setAnalysisSheetsClientForTests();
@@ -577,10 +611,31 @@ test("the lake's filters are refused by the page exactly when, and in the words,
     { updatedTo: '2026-13-45' },
     { updatedTo: '2026-10-05T12:00:00Z' },
     { requestedBy: 'nobody' },
+    // The three facts: an id from the server's own lists, or true/false.
+    { jobType: 'remote' },
+    { jobType: 'on_site' },
+    { jobType: 'not_specified' },
+    { jobType: 'onsite' },
+    { jobType: 'Remote' },
+    { clearance: 'true' },
+    { clearance: ' false ' },
+    { clearance: 'TRUE' },
+    { clearance: 'yes' },
+    { industry: 'healthcare' },
+    { industry: 'retail_ecommerce' },
+    { industry: 'not_specified' },
+    { industry: 'Healthcare' },
+    { industry: 'unclassified' },
+    { jobType: 'hybrid', clearance: 'false', industry: 'other' },
   ];
+  // What the job type and industry boxes may choose from: the route's own lists.
+  const { options } = (await h.call('owner', 'GET', '/admin/job-lake')).body;
+  const { listIndustriesForClient } = require('../dist/config/industries');
+  const { listJobTypesForClient } = require('../dist/services/jobAnalysis/facts');
+  assert.deepEqual(options, { jobTypes: listJobTypesForClient(), industries: listIndustriesForClient() });
   for (const filters of cases) {
     const form = { ...lake.EMPTY_LAKE_FILTERS, ...filters };
-    const problem = lake.lakeFilterProblem(form);
+    const problem = lake.lakeFilterProblem(form, options);
     const answer = await h.call('owner', 'GET', `/admin/job-lake?${lake.lakeQueryString(form, 0, 25)}`);
     if (problem) {
       assert.equal(answer.status, 400, JSON.stringify(filters));
@@ -596,40 +651,125 @@ test("the lake's filters are refused by the page exactly when, and in the words,
   assert.equal(lake.lakeQueryString(lake.EMPTY_LAKE_FILTERS), '');
   assert.equal(lake.hasLakeFilters(lake.EMPTY_LAKE_FILTERS), false);
   assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, q: ' x ' }), true);
+  assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, clearance: 'false' }), true);
+  // Without the lists the page leaves a job type or an industry to the server's answer.
+  assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, jobType: 'onsite', industry: 'Healthcare' }), '');
+  assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, clearance: 'yes' }), 'Clearance must be true or false.');
 });
 
-test("a run draws the owner's line from the server's own summary, its duplicate red, and a notes tab is refused in the page's words", async (t) => {
+test("a lake job's type, clearance and industry read in the server's words, and a row not filled in yet says so", async (t) => {
+  const h = await serve('frontend-lake-facts');
+  t.after(() => h.close());
+  const lake = display();
+  const lakeService = require('../dist/services/jobLake/index');
+  const { getJobAnalysisById } = require('../dist/database/jobAnalysisRepository');
+  const { getDb } = require('../dist/database/sqlite');
+
+  const merge = (company, analysis) => {
+    const id = storeJobAnalysis({ jobField: 'backend', ...analysis });
+    return lakeService.mergeIntoLake(lakeService.lakeJobFromAnalysis(getJobAnalysisById(id), 'merge', { company }), null, {
+      reward: false,
+    });
+  };
+  const filter = (changes) => ({
+    jobType: 'not_specified',
+    onsiteInterview: 'not_specified',
+    companyCategory: 'other',
+    clearanceRequired: 'not_specified',
+    region: 'not_specified',
+    usState: '',
+    ...changes,
+  });
+  // Its own industry, a remote posting needing a clearance word nobody listed.
+  const stated = merge('Stated Co', { industry: 'retail_ecommerce', filter: filter({ jobType: 'remote', clearanceRequired: 'top_secret_plus' }) });
+  // An analysis from before industries: the company category stands in for it.
+  const older = merge('Older Co', { filter: filter({ jobType: 'on_site', companyCategory: 'healthcare', clearanceRequired: 'none' }) });
+  // A posting that says none of the three.
+  const silent = merge('Silent Co', { industry: 'not_specified', filter: filter({}) });
+  // A row an older build wrote, not filled in yet.
+  const unfilled = merge('Unfilled Co', { industry: 'finance', filter: filter({ jobType: 'hybrid' }) });
+  getDb().prepare('UPDATE job_lake SET job_type = NULL, clearance = NULL, industry = NULL WHERE id = ?').run(unfilled.lakeId);
+
+  const { rows } = (await h.call('owner', 'GET', '/admin/job-lake')).body;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  assert.deepEqual(lake.lakeFactCells(byId.get(stated.lakeId)), { jobType: 'Remote', clearance: 'Required', industry: 'Retail & E-commerce' });
+  assert.deepEqual(lake.lakeFactCells(byId.get(older.lakeId)), { jobType: 'Onsite', clearance: 'Not required', industry: 'Healthcare' });
+  assert.deepEqual(lake.lakeFactCells(byId.get(silent.lakeId)), { jobType: '', clearance: 'Not required', industry: '' });
+  assert.deepEqual(lake.lakeFactCells(byId.get(unfilled.lakeId)), { jobType: '', clearance: '', industry: '' });
+
+  // The details say a blank out loud: not stated, or not filled in yet.
+  assert.deepEqual(lake.describeLakeFacts(byId.get(silent.lakeId)), {
+    jobType: 'Not stated',
+    clearance: 'Not required',
+    industry: 'Not stated',
+  });
+  assert.deepEqual(lake.describeLakeFacts(byId.get(unfilled.lakeId)), {
+    jobType: lake.FACT_NOT_FILLED,
+    clearance: lake.FACT_NOT_FILLED,
+    industry: lake.FACT_NOT_FILLED,
+  });
+  const detail = (await h.call('owner', 'GET', `/admin/job-lake/${stated.lakeId}`)).body.entry;
+  assert.deepEqual(lake.describeLakeFacts(detail), { jobType: 'Remote', clearance: 'Required', industry: 'Retail & E-commerce' });
+  assert.equal(lake.describeFactsLine(detail), 'Remote · Clearance required · Retail & E-commerce');
+  assert.equal(lake.describeFactsLine(byId.get(silent.lakeId)), '');
+
+  // Each value the table shows filters to the rows that show it.
+  const only = async (filters) =>
+    (await h.call('owner', 'GET', `/admin/job-lake?${lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, ...filters })}`)).body.rows
+      .map((row) => row.company)
+      .sort();
+  assert.deepEqual(await only({ jobType: 'on_site' }), ['Older Co']);
+  assert.deepEqual(await only({ jobType: 'not_specified' }), ['Silent Co']);
+  assert.deepEqual(await only({ clearance: 'true' }), ['Stated Co']);
+  assert.deepEqual(await only({ industry: 'healthcare' }), ['Older Co']);
+  assert.deepEqual(await only({ industry: 'not_specified' }), ['Silent Co']);
+});
+
+test("a run draws the owner's line from the server's own summary, its red rows are the ones it paints, and a notes tab is refused in the page's words", async (t) => {
   const h = await serve('frontend-lake-run');
   t.after(() => h.close());
   const lake = display();
 
   // Two postings of one company in one field - the second a duplicate of the
-  // first, "ACME, Inc." being "Acme Corp" once normalised - and a row the
-  // sheet already says was reported: its status beside the Analysis cell an
-  // earlier run wrote for its posting.
-  const columns = require('../dist/services/sheets/analysisColumns');
+  // first, "ACME, Inc." being "Acme Corp" once normalised - two postings this
+  // reporter reported before, as the database records it (the first added,
+  // the second a duplicate of it then), and the first posting again lower
+  // down: a duplicate of the row above in this very run.
+  const lakeService = require('../dist/services/jobLake/index');
   const { getJobAnalysisById } = require('../dist/database/jobAnalysisRepository');
-  const old = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: posting(3), jobLink: 'https://jobs.example.com/3' });
+  const reportedBefore = (n) => {
+    const id = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: posting(n), jobLink: `https://jobs.example.com/${n}` });
+    return lakeService.mergeIntoLake(lakeService.lakeJobFromAnalysis(getJobAnalysisById(id), 'report', { company: 'Old Co' }), h.reporter.id, {
+      reward: false,
+    });
+  };
+  assert.equal(reportedBefore(3).status, 'added');
+  assert.equal(reportedBefore(4).status, 'duplicate');
   Object.assign(h.tabRows('Today'), {
     2: { B: 'Acme Corp', C: 'Engineer', D: 'https://jobs.example.com/1', E: posting(1) },
     3: { B: 'ACME, Inc.', C: 'Engineer II', D: 'https://jobs.example.com/2', E: posting(2) },
-    4: {
-      B: 'Old Co',
-      C: 'Engineer',
-      D: 'https://jobs.example.com/3',
-      E: posting(3),
-      O: 'Added',
-      P: columns.analysisCellText(getJobAnalysisById(old)),
-    },
+    4: { B: 'Old Co', C: 'Engineer', D: 'https://jobs.example.com/3', E: posting(3) },
+    5: { B: 'Old Co', C: 'Engineer III', D: 'https://jobs.example.com/4', E: posting(4) },
+    6: { B: 'Acme Corp', C: 'Engineer', D: 'https://jobs.example.com/1', E: posting(1) },
   });
 
   const preview = await h.call('reporter', 'GET', `/report/rows?tab=Today&from=2&to=10`);
   assert.equal(preview.status, 200);
+  assert.deepEqual(
+    preview.body.rows.map((row) => [row.row, lake.describePreviewRow(row).label]),
+    [
+      [2, 'To add'],
+      [3, 'To add'],
+      [4, 'Reported before (Added) - skipped'],
+      [5, 'Reported before (Duplicate) - skipped'],
+      [6, 'To add'],
+    ]
+  );
   const range = lake.readReportRange({ tabName: 'Today', fromRow: '2', toRow: '10' });
   assert.equal(lake.startBlocker({ sheetReady: true, run: null, range, preview: preview.body }), '');
   assert.equal(
     lake.describeReportPreview(preview.body.rows),
-    '3 rows hold a job: 2 will be taken to the job lake, and 1 was reported before and will be skipped.'
+    '5 rows hold a job: 3 will be taken to the job lake, and 2 were reported before and will be skipped.'
   );
 
   const started = await h.call('reporter', 'POST', '/report/runs', range.range);
@@ -639,22 +779,43 @@ test("a run draws the owner's line from the server's own summary, its duplicate 
   const { run } = (await h.call('reporter', 'GET', `/report/runs/${started.body.run.id}`)).body;
   assert.equal(lake.isRunLive(run), false);
 
-  assert.equal(lake.describeRunSummary(run.summary), '1 out of 2 was added, your current credit is $0.05');
+  assert.equal(lake.describeRunSummary(run.summary), '1 out of 3 was added, your current credit is $0.05');
   assert.deepEqual(
-    run.rows.map((row) => [row.row, lake.reportStatusLabel(row.status), lake.isRedOutcome(row)]),
+    run.rows.map((row) => [row.row, lake.reportRowLabel(row), lake.isRedOutcome(row)]),
     [
       [2, 'Added', false],
       [3, 'Duplicate', true],
-      [4, 'Reported before', false],
+      [4, 'Reported before (Added)', false],
+      [5, 'Reported before (Duplicate)', true],
+      [6, 'Duplicate', true],
     ]
   );
-  assert.equal(lake.describeRunProgress(run), 'Done: 2 rows taken to the job lake.');
+  // The pill says what the server's own reason says.
+  for (const row of run.rows.filter((entry) => entry.status === 'already-reported')) {
+    assert.equal(row.reason, `${lake.describePriorOutcome(row.priorOutcome)}.`);
+  }
+  // Red on the page is red in the sheet: exactly the rows the run painted.
+  assert.deepEqual([...h.paints].sort((a, b) => a - b), run.rows.filter(lake.isRedOutcome).map((row) => row.row));
+  assert.equal(lake.describeRunProgress(run), 'Done: 3 rows taken to the job lake.');
   assert.equal(lake.runFraction(run), 1);
 
-  // The same rows previewed again: every one reported, so the button says why it waits.
+  // The same rows previewed again: every posting reported - the second row of
+  // the first posting is not (a run makes it a duplicate of the one above) -
+  // and over the rows above it, the button says why it waits.
   const again = await h.call('reporter', 'GET', `/report/rows?tab=Today&from=2&to=10`);
-  assert.deepEqual(again.body.rows.map((row) => row.reported), [true, true, true]);
-  assert.match(lake.startBlocker({ sheetReady: true, run, range, preview: again.body }), /^Every row in that range was reported before/);
+  assert.deepEqual(
+    again.body.rows.map((row) => [row.row, row.reported, row.priorOutcome]),
+    [
+      [2, true, 'added'],
+      [3, true, 'duplicate'],
+      [4, true, 'added'],
+      [5, true, 'duplicate'],
+      [6, false, null],
+    ]
+  );
+  const upper = lake.readReportRange({ tabName: 'Today', fromRow: '2', toRow: '5' });
+  const upperPreview = await h.call('reporter', 'GET', `/report/rows?tab=Today&from=2&to=5`);
+  assert.match(lake.startBlocker({ sheetReady: true, run, range: upper, preview: upperPreview.body }), /^Every row in that range was reported before/);
 
   // A tab of the reporter's own: the preview and the run refuse it in one sentence.
   const notes = await h.call('reporter', 'GET', `/report/rows?tab=${encodeURIComponent('My notes')}&from=2&to=10`);

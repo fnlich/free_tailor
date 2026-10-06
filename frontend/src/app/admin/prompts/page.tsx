@@ -24,6 +24,7 @@ import {
   PromptVariableDefinition,
 } from '@/lib/api';
 import { formatDate } from '@/lib/format';
+import { ANALYSIS_PROMPT_FEATURE, lacksIndustryList, lacksJobFieldList, lacksSectionSwitches } from '@/lib/promptNotes';
 import { Field, Notice, Pill, Spinner, StaticValue } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 
@@ -79,21 +80,18 @@ function isProfileScopedFeature(featureKey?: PromptFeatureKey | null): boolean {
  * page offers neither; an older variant is still listed, and editable, since
  * its text is the administrator's own.
  */
-const SINGLE_PROMPT_FEATURE: PromptFeatureKey = 'analyze-job-description';
+const SINGLE_PROMPT_FEATURE: PromptFeatureKey = ANALYSIS_PROMPT_FEATURE;
 
 function isSinglePromptFeature(featureKey?: PromptFeatureKey | null): boolean {
   return featureKey === SINGLE_PROMPT_FEATURE;
 }
 
-/**
- * An analysis prompt that never names `[[jobFieldList]]` was written before a
- * posting had a job field. The server flags a saved one (`predatesJobField`);
- * the editor checks the text as it is typed, as it does for the section
- * switches below.
+/*
+ * A prompt written before a feature it now serves - the section switches, job
+ * fields, industries - is flagged by the server once saved (`predates*`); the
+ * editor reads the text as it is typed (lib/promptNotes.ts, which
+ * backend/test/frontendAnalysis.test.js holds to the server's flags).
  */
-function lacksJobFieldList(featureKey: PromptFeatureKey | undefined, content: string): boolean {
-  return isSinglePromptFeature(featureKey) && !/\[\[\s*jobFieldList\s*\]\]/.test(content);
-}
 
 function emptyValidation(): PromptValidation {
   return {
@@ -767,6 +765,7 @@ function PromptsPageBody() {
                           <Pill tone="green">Live</Pill>
                         )}
                         {prompt.predatesJobField && <Pill tone="amber">Predates job fields</Pill>}
+                        {prompt.predatesIndustry && <Pill tone="amber">Predates industries</Pill>}
                         {prompt.predatesSectionSwitches && <Pill tone="amber">Predates section switches</Pill>}
                       </div>
                       {prompt.description && (
@@ -874,7 +873,7 @@ function PromptsPageBody() {
                     administrator reading this one would otherwise wonder why a
                     switched-off section never appears.
                   */}
-                  {draft.featureKey === 'tailor-resume' && !/\[\[\s*includeStrengths\s*\]\]/.test(draft.content) && (
+                  {lacksSectionSwitches(draft.featureKey, draft.content) && (
                     <Notice tone="info">
                       This prompt predates the profile&apos;s Strengths and Soft Skills switches; the app
                       still enforces them.
@@ -884,17 +883,33 @@ function PromptsPageBody() {
                   {/*
                     The analysis prompt written before postings had a job field.
                     Nothing breaks - the server appends the seniority, job field,
-                    salary and filter instructions to every analysis it runs - but they
-                    then sit outside the cached part of the prompt, so every
-                    analysis pays for them again.
+                    industry, salary and filter instructions to every analysis it
+                    runs - but they then sit outside the cached part of the prompt,
+                    so every analysis pays for them again.
                   */}
                   {lacksJobFieldList(draft.featureKey, draft.content) && (
                     <Notice tone="warn">
                       This prompt predates job fields: it never names <code>[[jobFieldList]]</code>. Postings are
-                      still classified - the app adds the seniority, job field, salary and filter instructions to every
-                      analysis - but outside the part of the prompt the model can cache. Put{' '}
+                      still classified - the app adds the seniority, job field, industry, salary and filter instructions
+                      to every analysis - but outside the part of the prompt the model can cache. Put{' '}
                       <code>[[jobFieldList]]</code> before <code>[[jobDescription]]</code>, as the shipped prompt
                       does.
+                    </Notice>
+                  )}
+
+                  {/*
+                    The analysis prompt written after job fields but before
+                    industries. Postings still get an industry - the server
+                    appends the industry list and its instruction to every
+                    analysis - again outside the cached part of the prompt.
+                  */}
+                  {lacksIndustryList(draft.featureKey, draft.content) && (
+                    <Notice tone="warn">
+                      This prompt predates industries: it names <code>[[jobFieldList]]</code> but never{' '}
+                      <code>[[industryList]]</code>. Postings still get an industry - the app adds the industry list
+                      and its instruction to every analysis - but outside the part of the prompt the model can cache.
+                      Put <code>[[industryList]]</code> after <code>[[jobFieldList]]</code> and{' '}
+                      <code>&quot;industry&quot;: &quot;&quot;</code> in its output, as the shipped prompt does.
                     </Notice>
                   )}
 

@@ -104,6 +104,15 @@ export interface JobAnalysis {
    * this is never a value the model made up.
    */
   jobField: string;
+  /**
+   * The posting's industry: a config/industries.ts id, or `not_specified`.
+   * Present ONLY on an analysis made since the prompt asked for it - an older
+   * one has no key at all, and its industry is derived when it is read
+   * (services/jobAnalysis/facts.ts `industryOf`), never asked of a model again.
+   * So it is set only when the model's answer had the key, and never filled
+   * in with a default that would hide the older analysis's own evidence.
+   */
+  industry?: string;
   /** What the posting STATES it pays; null when it states nothing. Never inferred. */
   salary: JobSalary | null;
   /**
@@ -187,6 +196,7 @@ export type RawNestedJobAnalysis = Partial<JobAnalysis> & {
     mustInclude?: unknown
   };
   jobField?: unknown;
+  industry?: unknown;
   salary?: unknown;
   filter?: unknown;
 };

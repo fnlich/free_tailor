@@ -1,6 +1,5 @@
 import {
   a1Range,
-  ANALYSIS_LAST_COLUMN,
   batchGetValues,
   batchUpdateSpreadsheet,
   batchUpdateValuesRaw,
@@ -15,25 +14,27 @@ import {
   type JobSheetTabInspection,
   type VerifiedJobSheetTab,
 } from '../../integrations/googleSheets';
-import { cellIsForPosting, parseAnalysisCell, rowRuns, sameCompany, sameLink } from '../sheets/analysisColumns';
-import { postingKeysOf } from '../jobAnalysis/identity';
+import { rowRuns, sameCompany, sameLink } from '../sheets/analysisColumns';
 
 /**
  * The reporter's own job sheet, as the Job Data Lake reads and marks it.
  *
  * Read: a tab's rows - Company, Job Title, Job Link and Job Description (B:E)
- * and the six protected analysis cells (K:P), of which the lake reads Job Hash
- * (M), Lake Status (O) and Analysis (P) - in one batched call. A Lake Status
- * counts only beside the Analysis cell of the posting in the row now
- * (`lakeStatusIsRowsOwn`): the protected cells outlive the row's posting.
+ * - in one call. Nothing the lake wrote into a row is read back: whether a
+ * row's posting was reported before is the database's (`job_reports`, by the
+ * posting's analysis), which follows the posting to whichever row it is in.
+ * The row's protected analysis cells are read by the submission step
+ * (services/jobAnalysis/submit.ts), as for any build.
  *
  * Written, once per run and after the analysis write-backs: each reported
- * row's Job Hash and Lake Status, RAW, only into the row that still holds
- * the posting reported from it (company and link read again first: rows can
- * be sorted or deleted meanwhile), and a duplicate's whole row painted red
- * (`repeatCell`), all of the run's rows in one `:batchUpdate`. Both cells sit
- * in the protected block, which the run's verify of the tab has put right
- * before anything is written; the program is their only writer.
+ * row's Job Hash and Lake Status - a row reported before gets what became of
+ * its posting the first time - RAW, only into the row that still holds the
+ * posting reported from it (company and link read again first: rows can be
+ * sorted or deleted meanwhile), and a duplicate's whole row painted red
+ * (`repeatCell`), a posting that was a duplicate the first time included,
+ * all of the run's rows in one `:batchUpdate`. Both cells sit in the
+ * protected block, which the run's verify of the tab has put right before
+ * anything is written; the program is their only writer.
  */
 
 /** What a Lake Status cell says. */
@@ -46,38 +47,6 @@ export const LAKE_STATUS_TEXT = {
 } as const;
 
 export type LakeStatusText = (typeof LAKE_STATUS_TEXT)[keyof typeof LAKE_STATUS_TEXT];
-
-/**
- * The statuses that mean a row was reported, for good: a run skips such a
- * row. Not `Skipped` - that says why a row could not be reported THIS time
- * (no company, no description to read), and the next run tries it again once
- * the person has filled it in.
- */
-const REPORTED = new Set<string>(['added', 'replaced', 'duplicate', 'unclassified']);
-
-export function isReportedStatus(cell: unknown): boolean {
-  return typeof cell === 'string' && REPORTED.has(cell.trim().toLowerCase());
-}
-
-/**
- * Whether a row was reported, for good - so a run skips it: its Lake Status
- * says so (`isReportedStatus`) AND its Analysis cell is the program's cell for
- * the posting in the row NOW. Both sit in the protected block, which the
- * person cannot clear, so a row whose posting was replaced in place - or rows
- * sorted under the protected columns - keeps another posting's status beside
- * a job the lake never saw; skipping on the status alone would skip that job
- * for good. The run writes the Analysis cell before the status (or finds it
- * written), so a row it reported always has both. One whose status landed
- * and whose Analysis cell did not is simply run again: its analysis is
- * stored, its lake row is its own (`already`), and nothing is paid twice.
- *
- * Not the Job Hash: it names a company and a job field, and the field of
- * the posting in the row now is not known until it is analysed.
- */
-export function lakeStatusIsRowsOwn(row: Pick<SheetReportRow, 'lakeStatus' | 'analysisCell' | 'jobDescription' | 'link'>): boolean {
-  if (!isReportedStatus(row.lakeStatus)) return false;
-  return cellIsForPosting(parseAnalysisCell(row.analysisCell), postingKeysOf({ jd: row.jobDescription, link: row.link }));
-}
 
 /** The Google calls the reporter run makes, as a seam the tests drive with a fake. */
 export type ReportSheetsClient = {
@@ -116,12 +85,6 @@ export type SheetReportRow = {
   title: string;
   link: string;
   jobDescription: string;
-  /** The Job Hash cell (M), as the sheet holds it: display only, never trusted for anything. */
-  jobHash: string;
-  /** The Lake Status cell (O). */
-  lakeStatus: string;
-  /** The Analysis cell (P), as text: what ties M and O to the posting in B:E. */
-  analysisCell: string;
 };
 
 /** Whether a row holds anything at all - an empty row inside a range is not a job, and is not counted. */
@@ -130,36 +93,31 @@ export function rowHoldsAJob(row: Pick<SheetReportRow, 'company' | 'link' | 'job
 }
 
 /**
- * Rows `fromRow`..`toRow` of a tab: B:E and, when the grid has them, K:P, in
- * one call. A tab an older build made twelve columns wide has no K:P until a
- * verify grows it, and Google refuses a read past the grid, so such a tab's
- * analysis cells read as empty here.
+ * Rows `fromRow`..`toRow` of a tab: Company, Job Title, Job Link and Job
+ * Description (B:E), in one call. The lake's own cells (Job Hash, Lake
+ * Status) are written, never read: what a row's posting became is in
+ * `job_reports`, which a sorted, moved or pasted-over row cannot leave
+ * behind it.
  */
 export async function readReportRows(
   spreadsheetId: string,
   tabName: string,
   fromRow: number,
-  toRow: number,
-  options: { columnCount?: number } = {}
+  toRow: number
 ): Promise<SheetReportRow[]> {
-  const withAnalysis = options.columnCount === undefined || options.columnCount >= ANALYSIS_LAST_COLUMN;
-  const ranges = [a1Range(tabName, fromRow, toRow, JOB_SHEET_COLUMNS.company, JOB_SHEET_COLUMNS.jobDescription)];
-  if (withAnalysis) ranges.push(a1Range(tabName, fromRow, toRow, JOB_SHEET_COLUMNS.jobField, ANALYSIS_LAST_COLUMN));
-  const [identity = [], analysis = []] = await client.readRanges(spreadsheetId, ranges);
+  const [identity = []] = await client.readRanges(spreadsheetId, [
+    a1Range(tabName, fromRow, toRow, JOB_SHEET_COLUMNS.company, JOB_SHEET_COLUMNS.jobDescription),
+  ]);
   const rows: SheetReportRow[] = [];
-  const at = (cells: string[] | undefined, column: number, first: number) => String(cells?.[column - first] ?? '').trim();
+  const at = (cells: string[] | undefined, column: number) => String(cells?.[column - JOB_SHEET_COLUMNS.company] ?? '').trim();
   for (let row = fromRow; row <= toRow; row += 1) {
     const cells = identity[row - fromRow];
-    const lake = analysis[row - fromRow];
     rows.push({
       row,
-      company: at(cells, JOB_SHEET_COLUMNS.company, JOB_SHEET_COLUMNS.company),
-      title: at(cells, JOB_SHEET_COLUMNS.jobTitle, JOB_SHEET_COLUMNS.company),
-      link: at(cells, JOB_SHEET_COLUMNS.jobLink, JOB_SHEET_COLUMNS.company),
+      company: at(cells, JOB_SHEET_COLUMNS.company),
+      title: at(cells, JOB_SHEET_COLUMNS.jobTitle),
+      link: at(cells, JOB_SHEET_COLUMNS.jobLink),
       jobDescription: String(cells?.[JOB_SHEET_COLUMNS.jobDescription - JOB_SHEET_COLUMNS.company] ?? ''),
-      jobHash: at(lake, JOB_SHEET_COLUMNS.jobHash, JOB_SHEET_COLUMNS.jobField),
-      lakeStatus: at(lake, JOB_SHEET_COLUMNS.lakeStatus, JOB_SHEET_COLUMNS.jobField),
-      analysisCell: at(lake, JOB_SHEET_COLUMNS.analysis, JOB_SHEET_COLUMNS.jobField),
     });
   }
   return rows;

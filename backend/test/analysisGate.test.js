@@ -20,6 +20,7 @@ const gate = require('../dist/services/jobAnalysis/gate');
 const resumeService = require('../dist/services/resumeService');
 const { assemblePrompt } = require('../dist/services/ai/promptAssembly');
 const { JOB_FIELDS } = require('../dist/config/jobFields');
+const { INDUSTRIES } = require('../dist/config/industries');
 
 const SRC = path.join(__dirname, '..', 'src');
 
@@ -75,7 +76,7 @@ test('nothing but the gate names the analysis prompt or builds its completion', 
   assert.equal(fs.existsSync(path.join(SRC, 'services', 'ai', 'analysisCache.ts')), false, 'the in-memory cache is gone');
 });
 
-test('the analysis prompt keeps the field list and every unchanging line before the posting, byte for byte', async () => {
+test('the analysis prompt keeps the field and industry lists and every unchanging line before the posting, byte for byte', async () => {
   freshInstall('prefix');
   const ref = { id: 'analyze-job-description', mode: 'exact' };
   const one = await assemblePrompt(ref, resumeService.buildAnalyzeJobDescriptionPromptValues(posting(1), 'https://a.example.com/1'));
@@ -86,8 +87,15 @@ test('the analysis prompt keeps the field list and every unchanging line before 
 
   assert.equal(one.stableSystem, two.stableSystem, 'the cached part is identical whatever the posting');
   for (const field of JOB_FIELDS) assert.ok(one.stableSystem.includes(`- ${field.id}: ${field.label}`), field.id);
+  // The industries are code constants too, and sit beside the job fields - before the posting.
+  for (const industry of INDUSTRIES) assert.ok(one.stableSystem.includes(`- ${industry.id}: ${industry.label}`), industry.id);
+  assert.ok(one.stableSystem.includes('- not_specified: '), 'and the word for "the posting does not say"');
+  assert.ok(one.stableSystem.indexOf('INDUSTRIES (id: label):') > one.stableSystem.indexOf('JOB FIELDS (id: label):'));
+  assert.match(one.stableSystem, /\nindustry: exactly ONE id from the INDUSTRIES list/);
   assert.match(one.stableSystem, /JOB FIELD, SALARY AND SCREENING FACTS/);
   assert.match(one.stableSystem, /"jobField": ""/, 'the output schema is in the cached part too');
+  assert.match(one.stableSystem, /"jobField": "",\n  "industry": "",/, 'industry asked for beside the job field');
+  assert.doesNotMatch(one.stableSystem, /\[\[industryList\]\]|\[\[jobFieldList\]\]/, 'both lists rendered, not left as variables');
   assert.ok(one.stableSystem.endsWith('Job link: '), 'and it stops where the posting starts');
   assert.ok(!one.stableSystem.includes('Posting 1'), 'no posting in the cached part');
   assert.ok(one.userBody.startsWith('https://a.example.com/1\nJob Description:'));
@@ -118,8 +126,11 @@ test("an administrator's analysis prompt from before job fields still gets them 
   const row = await gate.getOrCreateAnalysis({ jd: posting(5) });
   const [turn] = seats.analyses();
   assert.match(turn.stableSystem, /^My own analysis\./);
-  assert.match(turn.userBody, /ALSO RETURN, in the same JSON object, these three keys/);
+  assert.match(turn.userBody, /ALSO RETURN, in the same JSON object, these four keys/);
   assert.match(turn.userBody, /- backend: Backend/);
+  // Such a record predates the industry too: asked for in the same addendum, with the list.
+  assert.match(turn.userBody, /"industry": exactly ONE id from the INDUSTRIES list/);
+  assert.match(turn.userBody, /INDUSTRIES \(id: label\):\n- healthcare: Healthcare/);
   // The seniority words the Job Filter judges, which an older record's own list lacks.
   const seniorityLine = /"jobMeta\.seniority": exactly one of ([^\n]+)/.exec(turn.userBody)?.[1] ?? '';
   for (const word of ['intern', 'director', 'vp', 'junior', 'senior', 'not_specified']) {
@@ -127,6 +138,7 @@ test("an administrator's analysis prompt from before job fields still gets them 
   }
   assert.match(turn.userBody, /"VP" or "Vice President" -> "vp"/);
   assert.equal(row.jobFieldId, 'backend', 'and the posting is classified');
+  assert.equal(row.analysis.industry, undefined, "the stub's answer has no industry key, so the analysis has none");
 
   // The shipped prompt carries all of it in its cached part, and is sent no addendum.
   const shipped = freshInstall('predates-shipped');
@@ -136,4 +148,34 @@ test("an administrator's analysis prompt from before job fields still gets them 
   const fresh = countingSeats(ai);
   await gate.getOrCreateAnalysis({ jd: posting(6) });
   assert.doesNotMatch(fresh.analyses()[0].userBody, /ALSO RETURN/);
+});
+
+test("an administrator's analysis prompt from after job fields but before industries gets the industry asked for, and only that", async () => {
+  const { staticDir } = freshInstall('predates-industry');
+  writeStaticJson(staticDir, 'prompts/analyze-job-description.json', {
+    id: 'analyze-job-description',
+    content: 'My own analysis.\nJOB FIELDS:\n[[jobFieldList]]\nJob link: [[jobLink]]\nJob Description:\n[[jobDescription]]',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  });
+  config.invalidateSettingsCache();
+  gate.resetAnalysisGateForTests();
+  const { analysisAnswer } = require('./analysisHarness');
+  const seats = countingSeats(ai, { answer: () => analysisAnswer({ industry: 'Healthcare' }) });
+  const row = await gate.getOrCreateAnalysis({ jd: posting(7) });
+  const [turn] = seats.analyses();
+  assert.match(turn.stableSystem, /^My own analysis\./);
+  assert.match(turn.stableSystem, /- backend: Backend/, 'its own job field list, in its cached part');
+  assert.equal(turn.userBody.split('ALSO RETURN').length, 2, 'one addendum');
+  assert.match(turn.userBody, /ALSO RETURN, in the same JSON object, this key/);
+  assert.match(turn.userBody, /"industry": exactly ONE id from the INDUSTRIES list/);
+  for (const industry of INDUSTRIES) assert.ok(turn.userBody.includes(`- ${industry.id}: ${industry.label}`), industry.id);
+  assert.doesNotMatch(turn.userBody, /"jobField": exactly ONE id|"salary":|JOB FIELDS \(id: label\)/, 'nothing it already asks for');
+  assert.equal(row.analysis.industry, 'healthcare', 'the label it answered is stored as the id');
+
+  // The two addenda, decided from the record's text alone.
+  assert.equal(gate.analysisOverrideFor('[[jobFieldList]] [[industryList]] [[jobDescription]]'), null);
+  assert.equal(gate.analysisOverrideFor('[[ jobFieldList ]] [[jobDescription]]'), gate.buildIndustryOverride());
+  assert.equal(gate.analysisOverrideFor('[[jobDescription]]'), gate.buildAnalysisFactsOverride());
+  assert.equal(gate.analysisOverrideFor(undefined), null);
 });

@@ -26,6 +26,7 @@ import {
   PromptVariableDefinition,
 } from '../types/prompt';
 import { normalizePromptModelOverride, normalizePromptModelSelection } from './aiModelCatalog';
+import { renderIndustryListForPrompt } from '../config/industries';
 import { renderJobFieldListForPrompt } from '../config/jobFields';
 import type { AIProvider } from '../types/template';
 
@@ -47,11 +48,11 @@ const ANALYSIS_PROMPT_FEATURE: PromptFeatureKey = 'analyze-job-description';
 /**
  * Variables whose value the CODE fixes and is the same on every call, so
  * promptAssembly keeps them in the cacheable stable part of the prompt rather
- * than starting the call's data at them. The analysis prompt's list of job
- * fields is the one: a variable so there is one copy of the list
- * (config/jobFields.ts), not because it varies.
+ * than starting the call's data at them. The analysis prompt's lists of job
+ * fields and of industries are the two: variables so there is one copy of
+ * each list (config/jobFields.ts, config/industries.ts), not because they vary.
  */
-export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set(['jobFieldList']);
+export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set(['jobFieldList', 'industryList']);
 
 /**
  * Built-in prompt ids whose feature was retired. An administrator's edited
@@ -131,6 +132,17 @@ const PROMPT_FEATURES: PromptFeatureDefinition[] = [
 - frontend: Frontend / web UI (HTML, CSS, JavaScript/TypeScript, frameworks like React, Vue, Angular and Svelte)
 - backend: Backend (APIs, business logic, databases, authentication, queues)
 - unclassified: none of the above fits`,
+      },
+      {
+        name: 'industryList',
+        description:
+          'The closed list of industries, one "id: Label" line each, ending with "not_specified". ' +
+          'The same text for every posting, so keep it BEFORE the posting, beside the job fields: that part is cached.',
+        sampleValue: `- healthcare: Healthcare
+- finance: Finance
+- technology: Technology
+- other: Other
+- not_specified: the posting gives nothing to tell its industry by`,
       },
       {
         name: 'jobLink',
@@ -499,11 +511,31 @@ function predatesJobField(featureKey: PromptFeatureKey | undefined, validation: 
   return featureKey === ANALYSIS_PROMPT_FEATURE && !validation.usedVariables.includes('jobFieldList');
 }
 
+/**
+ * True for an analysis record written after postings had a job field but
+ * before they had an industry: it names `[[jobFieldList]]` and never
+ * `[[industryList]]`, so its postings would never be filed under one.
+ *
+ * A note on Admin -> Prompts, like the job-field one, and never both: a record
+ * that predates the job field predates the industry too, and the job-field
+ * instructions the gate appends for it ask for the industry as well. For
+ * this one the gate appends the industry instructions alone
+ * (`buildIndustryOverride`).
+ */
+function predatesIndustry(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
+  return (
+    featureKey === ANALYSIS_PROMPT_FEATURE &&
+    validation.usedVariables.includes('jobFieldList') &&
+    !validation.usedVariables.includes('industryList')
+  );
+}
+
 /** The prompt flags Admin -> Prompts shows, spread onto a record. */
 function promptFlags(featureKey: PromptFeatureKey | undefined, validation: PromptValidation) {
   return {
     ...(predatesSectionSwitches(featureKey, validation) ? { predatesSectionSwitches: true } : {}),
     ...(predatesJobField(featureKey, validation) ? { predatesJobField: true } : {}),
+    ...(predatesIndustry(featureKey, validation) ? { predatesIndustry: true } : {}),
   };
 }
 
@@ -560,6 +592,8 @@ Looking for a backend-leaning engineer with Node.js, TypeScript, PostgreSQL, Doc
       return 'grouped';
     case 'jobFieldList':
       return renderJobFieldListForPrompt();
+    case 'industryList':
+      return renderIndustryListForPrompt();
     case 'jobLink':
       return 'https://jobs.example.com/openings/senior-software-engineer';
     default:
@@ -794,6 +828,7 @@ function toPromptSummary(record: PromptRecord): PromptSummary {
     validation: record.validation,
     ...(record.predatesSectionSwitches ? { predatesSectionSwitches: true } : {}),
     ...(record.predatesJobField ? { predatesJobField: true } : {}),
+    ...(record.predatesIndustry ? { predatesIndustry: true } : {}),
     isBuiltIn: record.isBuiltIn,
     isActiveForFeature: record.isActiveForFeature,
     usage: record.usage,

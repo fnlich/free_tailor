@@ -3,8 +3,9 @@ import { describeAiChoice } from '../config/aiPreferences';
 import { Profile } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, TailoredContent } from '../types/template';
 import { createPromptCompletion, createPromptCompletionResult, DEFAULT_PROVIDER } from './ai';
+import { renderIndustryListForPrompt } from '../config/industries';
 import { normalizeJobFieldId, renderJobFieldListForPrompt } from '../config/jobFields';
-import { normalizeFilterFacts, normalizeSalary, normalizeSeniority } from './jobAnalysis/facts';
+import { normalizeFilterFacts, normalizeIndustry, normalizeSalary, normalizeSeniority } from './jobAnalysis/facts';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory as LibraryHardSkillCategory,
@@ -789,6 +790,11 @@ export function normalizeJobAnalysisResponse(
     // Checked against the closed list in code: a field the model invents, or
     // one from the area that is not offered, is `unclassified`.
     jobField: normalizeJobFieldId(parsed.jobField),
+    // Only when the answer HAS the key: an analysis from before the prompt
+    // asked for one - a stored row, a sheet's Analysis cell - stays without
+    // it, so `industryOf` derives it from what that analysis does hold
+    // rather than reading a default "not specified" as the model's word.
+    ...(parsed.industry !== undefined ? { industry: normalizeIndustry(parsed.industry) } : {}),
     salary: normalizeSalary(parsed.salary),
     filter: normalizeFilterFacts(parsed.filter),
     sourceJobDescription: jobDescription.trim(),
@@ -2217,13 +2223,14 @@ function decideSectionSoftSkills(
 }
 
 /**
- * The analysis prompt's values: the posting and its link, and the closed list
- * of job fields it is classified into.
+ * The analysis prompt's values: the posting and its link, and the closed lists
+ * of job fields and industries it is classified into.
  *
- * `jobFieldList` is the same text for every posting (config/jobFields.ts), and
- * the shipped prompt carries it BEFORE the posting - promptAssembly keeps it
- * in the stable system part, so a CLI's prompt cache reuses it from one
- * posting to the next. Only services/jobAnalysis/gate.ts runs this prompt.
+ * `jobFieldList` and `industryList` are the same text for every posting
+ * (config/jobFields.ts, config/industries.ts), and the shipped prompt carries
+ * both BEFORE the posting - promptAssembly keeps them in the stable system
+ * part (`STABLE_PROMPT_VARIABLES`), so a CLI's prompt cache reuses them from
+ * one posting to the next. Only services/jobAnalysis/gate.ts runs this prompt.
  */
 export function buildAnalyzeJobDescriptionPromptValues(
   jobDescription: string,
@@ -2231,6 +2238,7 @@ export function buildAnalyzeJobDescriptionPromptValues(
 ): Record<string, string> {
   return {
     jobFieldList: renderJobFieldListForPrompt(),
+    industryList: renderIndustryListForPrompt(),
     jobLink: jobLink.trim(),
     jobDescription,
   };
@@ -2252,13 +2260,16 @@ export function buildTailorResumePromptValues(
   jobAnalysis: JobAnalysis
 ): Record<string, string> {
   // The posting's text is in the analysis prompt, not this one. Its job field,
-  // salary and filter facts are left out too: they are for the sheet, the Job
-  // Filter and the lake, and a resume has no business mentioning what a job
-  // pays or whether it is remote - so the tailoring input is what it was
-  // before the analysis carried them.
+  // industry, salary and filter facts are left out too: they are for the
+  // sheet, the Job Filter and the lake, and a resume has no business
+  // mentioning what a job pays or whether it is remote - so the tailoring
+  // input, and with it every tailoring cache key, is what it was before the
+  // analysis carried them. (`jobMeta.industry`, the posting's own free-text
+  // word, was always part of it and still is.)
   const {
     sourceJobDescription: _sourceJobDescription,
     jobField: _jobField,
+    industry: _industry,
     salary: _salary,
     filter: _filter,
     ...jobAnalysisForPrompt

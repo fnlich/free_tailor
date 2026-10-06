@@ -196,6 +196,46 @@ test("what a posting pays and how the filter judges it never reach the tailoring
   assert.doesNotMatch(values.jobAnalysisJson, /150000|150k|"remote"|clearance/);
 });
 
+test('the industry the analysis files a posting under never reaches the tailoring prompt, nor changes a tailoring cache key', () => {
+  // v6 added `industry` to the analysis, for the lake and the sheet. The
+  // tailoring input must be byte for byte what it was before: the same
+  // values, so the same prompt and the same cache key for every profile and
+  // posting the cache already holds.
+  const { parseJobAnalysisContent } = require('../dist/services/resumeService');
+  const { tailorCacheKey } = require('../dist/services/tailorCache');
+  const answer = {
+    ...ANALYSIS,
+    sourceJobDescription: undefined,
+    jobField: 'backend',
+    salary: null,
+    filter: { jobType: 'hybrid', onsiteInterview: 'no', companyCategory: 'fintech', clearanceRequired: 'secret', region: 'us', usState: 'NY' },
+  };
+  const without = parseJobAnalysisContent(JSON.stringify(answer), 'The original posting text.');
+  const withIndustry = parseJobAnalysisContent(JSON.stringify({ ...answer, industry: 'Insurance' }), 'The original posting text.');
+  assert.equal(without.industry, undefined);
+  assert.equal(withIndustry.industry, 'insurance', 'the parsed analysis does carry it');
+
+  const before = buildTailorResumePromptValues(profileFixture(), without);
+  const after = buildTailorResumePromptValues(profileFixture(), withIndustry);
+  assert.deepEqual(after, before, 'the same values, to the byte');
+  assert.equal(JSON.parse(after.jobAnalysisJson).industry, undefined);
+  assert.doesNotMatch(after.jobAnalysisJson, /insurance/i);
+  // The posting's own free-text industry word is part of it, as it always was.
+  assert.match(after.jobAnalysisJson, /"industry":"Fintech"/);
+
+  const key = (values) =>
+    tailorCacheKey({
+      kind: 'resume',
+      profile: profileFixture(),
+      context: { analysisId: 'analysis-1', templateId: 'default' },
+      choice: { provider: 'claude-cli', modelId: 'm', modelName: 'sonnet' },
+      promptId: 'tailor-resume',
+      promptText: 'Tailor.',
+      promptValues: values,
+    });
+  assert.equal(key(after), key(before));
+});
+
 test('the whole tailoring payload stays under budget', () => {
   // A ceiling rather than an exact figure, so ordinary edits do not fail this -
   // but a change that puts the whole profile record back would sail past it.

@@ -287,9 +287,13 @@ test("a reporter's run: added, replaced, duplicates, unclassified and skipped, p
     jobDescription: posting(12),
     jobLink: 'https://jobs.example.com/12',
   });
-  // Row 11 was reported by an earlier run: its status beside its own posting's Analysis cell.
+  // Row 11's posting was reported by this reporter before, as the database records it.
   const stored11 = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: posting(11), jobLink: 'https://jobs.example.com/11' });
-  const cell11 = columns.analysisCellText(analyses.getJobAnalysisById(stored11));
+  service.mergeIntoLake(
+    service.lakeJobFromAnalysis(analyses.getJobAnalysisById(stored11), 'report', { company: 'Company E' }),
+    h.reporter.id,
+    { reward: false, now: now - 2 * DAY }
+  );
 
   const rows = h.google.tab(h.sheets.reporter, TAB).rows;
   Object.assign(rows, {
@@ -302,20 +306,28 @@ test("a reporter's run: added, replaced, duplicates, unclassified and skipped, p
     // 8 is empty: not a job, not counted
     9: sheetRow('', 9), // no company
     10: sheetRow('Company D', 10, { E: 'Too short.' }),
-    11: sheetRow('Company E', 11, { O: 'Added', M: 'abc', P: cell11 }), // reported before
+    11: sheetRow('Company E', 11), // reported before
+    14: sheetRow('Company G', 14, { O: 'Added', M: 'abc' }), // a Lake Status nothing reported: not read
     12: sheetRow('Company F', 12),
     13: sheetRow('Company A', 2, { D: 'https://jobs.example.com/2?utm_source=x' }), // row 2's posting again
   });
 
   // What the page shows before the run.
-  const listed = await h.call('reporter', 'GET', `/report/rows?tab=${encodeURIComponent(TAB)}&from=2&to=13`);
+  const listed = await h.call('reporter', 'GET', `/report/rows?tab=${encodeURIComponent(TAB)}&from=2&to=14`);
   assert.equal(listed.status, 200);
   assert.equal(listed.body.jobTab, true);
-  assert.deepEqual(listed.body.rows.map((row) => row.row), [2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13]);
-  assert.deepEqual(listed.body.rows.filter((row) => row.reported).map((row) => row.row), [11]);
+  assert.deepEqual(listed.body.rows.map((row) => row.row), [2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(
+    listed.body.rows.filter((row) => row.reported).map((row) => [row.row, row.priorOutcome]),
+    [[11, 'added']]
+  );
   assert.equal(listed.body.rows[0].descriptionLength, posting(2).length);
+  assert.deepEqual(Object.keys(listed.body.rows[0]).sort(), [
+    'company', 'descriptionLength', 'jobHash', 'link', 'priorOutcome', 'reported', 'row', 'title',
+  ]);
+  assert.equal(listed.body.rows[0].jobHash, null);
 
-  const { run, started } = await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 13 });
+  const { run, started } = await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 14 });
   assert.equal(started.state, 'running');
   assert.equal(run.state, 'finished', run.error);
 
@@ -331,35 +343,39 @@ test("a reporter's run: added, replaced, duplicates, unclassified and skipped, p
       [7, 'unclassified', 'Unclassified'],
       [9, 'skipped', 'Skipped'],
       [10, 'skipped', 'Skipped'],
-      [11, 'already-reported', null],
+      [11, 'already-reported', 'Added'],
       [12, 'added', 'Added'],
       [13, 'duplicate', 'Duplicate'],
+      [14, 'added', 'Added'],
     ]
   );
   assert.match(byRow[9].reason, /no company/);
   assert.match(byRow[10].reason, /too short/);
-  assert.match(byRow[13].reason, /row above/, "row 2's posting again, lower down: a duplicate of the job row 2 added");
+  assert.match(byRow[13].reason, /same posting is on a row above/, "row 2's posting again, lower down: a duplicate of row 2");
   assert.match(byRow[6].reason, /already has this job/);
-  assert.equal(lake.getLakeEntry(byRow[2].lakeId).seenCount, 3, 'rows 4 and 13 saw it again');
+  assert.equal(byRow[11].reason, 'Reported before (Added).');
+  assert.equal(byRow[11].priorOutcome, 'added');
+  assert.equal(byRow[2].priorOutcome, null);
+  assert.equal(lake.getLakeEntry(byRow[2].lakeId).seenCount, 2, 'row 4 saw the job again; row 13, the same posting, is not counted twice');
 
-  // Exactly one model call per posting it had to read: 2 (13 shares it), 3, 4, 5, 6, 7, 9.
-  assert.equal(h.seats.analyses().length, 7);
+  // Exactly one model call per posting it had to read: 2 (13 shares it), 3, 4, 5, 6, 7, 9, 14.
+  assert.equal(h.seats.analyses().length, 8);
 
   // Paid at the reporter's own rate, for every job the lake accepted - added or replacing.
   assert.deepEqual(run.summary, {
-    added: 4,
-    total: 10,
+    added: 5,
+    total: 11,
     duplicates: 3,
     unclassified: 1,
     replaced: 1,
     skipped: 2,
     failed: 0,
     alreadyReported: 1,
-    earnedMilli: 280,
-    balanceMilli: 280,
+    earnedMilli: 350,
+    balanceMilli: 350,
     sheetUpdated: true,
   });
-  assert.equal(users.getUserById(h.reporter.id).balanceMilli, 280);
+  assert.equal(users.getUserById(h.reporter.id).balanceMilli, 350);
   assert.deepEqual(byRow[2].rewardMilli, 70);
   assert.deepEqual(byRow[4].rewardMilli, 0);
   assert.deepEqual(credits.findInconsistentBalances(), []);
@@ -381,7 +397,8 @@ test("a reporter's run: added, replaced, duplicates, unclassified and skipped, p
   assert.equal(rows[2].M, byRow[2].jobHash);
   assert.match(rows[2].M, /^[0-9a-f]{64}$/);
   assert.equal(rows[7].M, '', 'an unclassified job has no hash');
-  assert.equal(rows[11].O, 'Added', 'a row reported before is left alone');
+  assert.equal(rows[11].O, 'Added', 'a row reported before is given its first outcome');
+  assert.equal(rows[14].M, byRow[14].jobHash, 'a status it never wrote did not skip the row');
   assert.ok(rows[2].P && JSON.parse(rows[2].P).id, 'the analysis written back into its cell, once');
   const painted = h.google.calls.updates.flatMap((update) => update.requests);
   assert.deepEqual(
@@ -394,40 +411,80 @@ test("a reporter's run: added, replaced, duplicates, unclassified and skipped, p
   assert.equal(statusWrites.length, 1, 'one batched status write per run');
 
   // The admin sheet got every job the lake added and had not sent: this
-  // run's four, Oldco as its NEW version only (the old one was never sent),
-  // and the seeded Recentco - and none of the duplicates.
-  await until(() => h.adminFake.appended.length >= 5, 'the admin sheet sync');
+  // run's five, Oldco as its NEW version only (the old one was never sent),
+  // and the seeded Recentco and Company E - and none of the duplicates.
+  await until(() => h.adminFake.appended.length >= 7, 'the admin sheet sync');
   assert.deepEqual(h.adminFake.appended.map((line) => `${line[0]} ${line[5]}`).sort(), [
     'Company A reporter@example.com',
     'Company B reporter@example.com',
+    'Company E reporter@example.com',
     'Company F reporter@example.com',
+    'Company G reporter@example.com',
     'Oldco reporter@example.com',
     'Recentco other@example.com',
   ]);
+  // Each line carries the job's type, clearance and industry, from its analysis.
+  const companyA = h.adminFake.appended.find((line) => line[0] === 'Company A');
+  assert.deepEqual(companyA.slice(8), ['Remote', false, 'Technology']);
+
+  // What the page shows now: each row's first outcome, from the database.
+  const after = await h.call('reporter', 'GET', `/report/rows?tab=${encodeURIComponent(TAB)}&from=2&to=14`);
+  assert.deepEqual(
+    after.body.rows.map((row) => [row.row, row.reported, row.priorOutcome]),
+    [
+      [2, true, 'added'],
+      [3, true, 'added'],
+      [4, true, 'duplicate'],
+      [5, true, 'replaced'],
+      [6, true, 'duplicate'],
+      [7, true, 'unclassified'],
+      [9, false, null],
+      [10, false, null],
+      [11, true, 'added'],
+      [12, true, 'added'],
+      // Row 2's posting again: the run makes it a duplicate of row 2, so it is not skipped.
+      [13, false, null],
+      [14, true, 'added'],
+    ]
+  );
+  assert.equal(after.body.rows[0].jobHash, byRow[2].jobHash);
+  assert.equal(after.body.rows[5].jobHash, null, 'an unclassified posting reached no lake row');
 
   // The same rows again: nothing analysed, nothing paid, the Skipped ones tried again.
   const before = h.seats.analyses().length;
-  const again = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 13 })).run;
+  h.google.calls.updates.length = 0;
+  const again = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 14 })).run;
   assert.equal(h.seats.analyses().length, before, 'no posting analysed twice');
   assert.equal(again.summary.added, 0);
   assert.equal(again.summary.earnedMilli, 0);
   assert.equal(again.summary.alreadyReported, 9);
-  assert.equal(again.summary.total, 2);
-  assert.equal(users.getUserById(h.reporter.id).balanceMilli, 280);
+  assert.equal(again.summary.total, 3, 'rows 9 and 10, still not reportable, and 13');
+  assert.deepEqual(
+    again.rows.filter((row) => row.status === 'already-reported').map((row) => [row.row, row.priorOutcome]),
+    [[2, 'added'], [3, 'added'], [4, 'duplicate'], [5, 'replaced'], [6, 'duplicate'], [7, 'unclassified'], [11, 'added'], [12, 'added'], [14, 'added']]
+  );
+  assert.equal(again.rows.find((row) => row.row === 13).status, 'duplicate');
+  // The duplicates painted red again: the two from before, and row 13 below row 2.
+  assert.deepEqual(
+    h.google.calls.updates.flatMap((update) => update.requests.map((request) => request.repeatCell.range.startRowIndex + 1)).sort((a, b) => a - b),
+    [4, 6, 13]
+  );
+  assert.equal(users.getUserById(h.reporter.id).balanceMilli, 350);
+  assert.equal(lake.getLakeEntry(byRow[2].lakeId).seenCount, 2, 'seen no more for being reported again');
 
   // The overview: the rate in effect and where it comes from, today's earnings, the latest run.
   const overview = await h.call('reporter', 'GET', '/report');
   assert.equal(overview.status, 200);
   assert.deepEqual(overview.body.rate, { rateMilli: 70, source: 'own' });
   assert.equal(overview.body.paid, true);
-  assert.equal(overview.body.earnedTodayMilli, 280);
-  assert.equal(overview.body.balanceMilli, 280);
-  assert.equal(overview.body.lakeJobs, 4);
+  assert.equal(overview.body.earnedTodayMilli, 350);
+  assert.equal(overview.body.balanceMilli, 350);
+  assert.equal(overview.body.lakeJobs, 6);
   assert.equal(overview.body.run.id, again.id);
   assert.equal(overview.body.sheet.spreadsheetId, h.sheets.reporter);
 });
 
-test('a run whose statuses never reached the sheet: the next run marks them Added, analyses nothing and pays nothing', async (t) => {
+test('a run whose statuses never reached the sheet: the next run finds them reported before, marks them Added, analyses and pays nothing', async (t) => {
   const h = await serve('crash');
   t.after(() => h.close());
   settings.updateLakeSettings({ reportRateUsd: '0.050' }, 'admin');
@@ -442,19 +499,19 @@ test('a run whose statuses never reached the sheet: the next run marks them Adde
 
   const analysed = h.seats.analyses().length;
   const second = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 3 })).run;
-  assert.deepEqual(second.rows.map((row) => [row.status, row.lakeStatus]), [
-    ['already-reported', 'Added'],
-    ['already-reported', 'Added'],
+  assert.deepEqual(second.rows.map((row) => [row.status, row.priorOutcome, row.lakeStatus]), [
+    ['already-reported', 'added', 'Added'],
+    ['already-reported', 'added', 'Added'],
   ]);
-  assert.match(second.rows[0].reason, /earlier run/);
+  assert.equal(second.rows[0].reason, 'Reported before (Added).');
   assert.equal(second.summary.earnedMilli, 0);
-  assert.deepEqual([second.summary.added, second.summary.total, second.summary.alreadyReported], [0, 2, 2]);
+  assert.deepEqual([second.summary.added, second.summary.total, second.summary.alreadyReported], [0, 0, 2]);
   assert.equal(h.seats.analyses().length, analysed);
   assert.equal(rows[2].O, 'Added');
   assert.equal(users.getUserById(h.reporter.id).balanceMilli, 100);
 });
 
-test('the same posting pasted again - another row, another tab - in a later run is a red Duplicate, seen again, unpaid', async (t) => {
+test('the same posting reported again - moved, another row, another tab - is "Reported before", unpaid; twice in one run, the second is red', async (t) => {
   const h = await serve('pasted-again');
   t.after(() => h.close());
   settings.updateLakeSettings({ reportRateUsd: '0.050' }, 'admin');
@@ -465,35 +522,155 @@ test('the same posting pasted again - another row, another tab - in a later run 
   const lakeId = first.rows[0].lakeId;
   const addedAt = lake.getLakeEntry(lakeId).updatedAt;
 
-  // Later: the identical posting on row 20 of the same tab, and on a new
-  // tab's row 2 - with another posting for the same job under it.
+  // The row moved: sorted further down, and its cells with it.
+  today[30] = today[8];
+  delete today[8];
+  const moved = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 40 })).run;
+  assert.deepEqual(moved.rows.map((row) => [row.row, row.status, row.priorOutcome, row.lakeStatus]), [
+    [30, 'already-reported', 'added', 'Added'],
+  ]);
+  assert.equal(moved.summary.total, 0);
+
+  // Later: the identical posting on row 20 too, and on a new tab's row 2 -
+  // with another posting for the same job under it.
   today[20] = sheetRow('NewCo', 8);
   const later = h.google.tab(h.sheets.reporter, 'Run E').rows;
   Object.assign(later, { 2: sheetRow('NewCo', 8), 3: sheetRow('NewCo Inc.', 9) });
   h.google.calls.updates.length = 0;
 
-  const sameTab = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 8, toRow: 20 })).run;
+  // Rows 20 and 30 in one run: the first is reported before, the second a duplicate of it.
+  const sameTab = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 20, toRow: 30 })).run;
   assert.deepEqual(sameTab.rows.map((row) => [row.row, row.status, row.lakeStatus]), [
-    [8, 'already-reported', null],
-    [20, 'duplicate', 'Duplicate'],
+    [20, 'already-reported', 'Added'],
+    [30, 'duplicate', 'Duplicate'],
   ]);
-  assert.match(sameTab.rows[1].reason, /already has this job/);
+  assert.match(sameTab.rows[1].reason, /same posting is on a row above/);
+  // Another tab: reported before; the other posting of the job, a duplicate like any.
   const newTab = (await h.runToEnd('reporter', { tabName: 'Run E', fromRow: 2, toRow: 3 })).run;
   assert.deepEqual(newTab.rows.map((row) => [row.row, row.status, row.lakeStatus]), [
-    [2, 'duplicate', 'Duplicate'],
+    [2, 'already-reported', 'Added'],
     [3, 'duplicate', 'Duplicate'],
   ]);
-  assert.deepEqual([newTab.summary.added, newTab.summary.duplicates, newTab.summary.alreadyReported], [0, 2, 0]);
+  assert.deepEqual([newTab.summary.added, newTab.summary.duplicates, newTab.summary.alreadyReported], [0, 1, 1]);
 
-  assert.equal(today[20].O, 'Duplicate');
-  assert.equal(later[2].O, 'Duplicate');
+  assert.deepEqual([today[20].O, today[30].O, later[2].O, later[3].O], ['Added', 'Duplicate', 'Added', 'Duplicate']);
   const painted = h.google.calls.updates.flatMap((update) => update.requests.map((request) => request.repeatCell.range.startRowIndex + 1));
-  assert.deepEqual(painted, [20, 2, 3], 'every one painted red');
+  assert.deepEqual(painted, [30, 3], 'only the duplicates painted red');
   const entry = lake.getLakeEntry(lakeId);
-  assert.equal(entry.seenCount, 4, 'seen again from each of the three rows');
+  assert.equal(entry.seenCount, 2, 'seen again only for the other posting of the job');
   assert.equal(entry.updatedAt, addedAt, 'the window still runs from the add');
   assert.equal(users.getUserById(h.reporter.id).balanceMilli, 50, 'paid once, for row 8');
   assert.equal(h.seats.analyses().length, 2, 'postings 8 and 9, once each');
+
+  // A later run of the new tab: row 3's first outcome was a duplicate - red again.
+  h.google.calls.updates.length = 0;
+  const again = (await h.runToEnd('reporter', { tabName: 'Run E', fromRow: 2, toRow: 3 })).run;
+  assert.deepEqual(again.rows.map((row) => [row.row, row.status, row.priorOutcome]), [
+    [2, 'already-reported', 'added'],
+    [3, 'already-reported', 'duplicate'],
+  ]);
+  assert.deepEqual(
+    h.google.calls.updates.flatMap((update) => update.requests.map((request) => request.repeatCell.range.startRowIndex + 1)),
+    [3]
+  );
+  assert.equal(lake.getLakeEntry(lakeId).seenCount, 2);
+});
+
+test('the same new posting twice in one run: the first is added, the second a red duplicate, and the preview says neither was reported', async (t) => {
+  const h = await serve('twice-in-a-run');
+  t.after(() => h.close());
+  settings.updateLakeSettings({ reportRateUsd: '0.050' }, 'admin');
+  Object.assign(h.google.tab(h.sheets.reporter, TAB).rows, {
+    2: sheetRow('TwinCo', 2),
+    3: sheetRow('Unrelated', 3),
+    4: sheetRow('TwinCo', 2, { D: 'https://jobs.example.com/2#apply' }),
+    5: sheetRow('NoFieldCo', 7),
+    6: sheetRow('NoFieldCo', 7),
+  });
+  const preview = await h.call('reporter', 'GET', `/report/rows?tab=${encodeURIComponent(TAB)}&from=2&to=6`);
+  assert.deepEqual(preview.body.rows.map((row) => row.reported), [false, false, false, false, false]);
+
+  const { run } = await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 6 });
+  assert.deepEqual(run.rows.map((row) => [row.row, row.status, row.lakeStatus]), [
+    [2, 'added', 'Added'],
+    [3, 'added', 'Added'],
+    [4, 'duplicate', 'Duplicate'],
+    [5, 'unclassified', 'Unclassified'],
+    // An unclassified posting twice: unclassified both times, never a duplicate of nothing.
+    [6, 'unclassified', 'Unclassified'],
+  ]);
+  assert.equal(run.rows[2].lakeId, run.rows[0].lakeId);
+  assert.equal(h.google.calls.updates.flatMap((update) => update.requests).length, 1, 'one row painted');
+  assert.equal(h.google.calls.updates[0].requests[0].repeatCell.range.startRowIndex + 1, 4);
+  assert.equal(users.getUserById(h.reporter.id).balanceMilli, 100);
+  assert.equal(lake.getLakeEntry(run.rows[0].lakeId).seenCount, 1);
+  assert.equal(h.seats.analyses().length, 3);
+});
+
+test('a job an older build deleted from the lake is not "Reported before": the preview says so, the run adds it again, and so does a row it re-added once deleted here', async (t) => {
+  const h = await serve('older-build-delete');
+  t.after(() => h.close());
+  settings.updateLakeSettings({ reportRateUsd: '0.050' }, 'admin');
+  const db = require('../dist/database/sqlite').getDb();
+  const rows = h.google.tab(h.sheets.reporter, TAB).rows;
+  rows[2] = sheetRow('Hooli', 2);
+  const first = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 2 })).run;
+  assert.deepEqual(first.rows.map((row) => row.status), ['added']);
+  const firstId = first.rows[0].lakeId;
+  const preview = () => h.call('reporter', 'GET', `/report/rows?tab=${encodeURIComponent(TAB)}&from=2&to=2`);
+
+  // Rolled back to a build that knew nothing of job_reports, an administrator
+  // deletes the job: its history, then the row - and the record stays behind.
+  const olderBuildDelete = (id) => {
+    db.prepare('DELETE FROM job_lake_history WHERE lake_id = ?').run(id);
+    db.prepare('DELETE FROM job_lake WHERE id = ?').run(id);
+  };
+  olderBuildDelete(firstId);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM job_reports WHERE lake_id = ?').get(firstId).n, 1);
+
+  const listed = await preview();
+  assert.deepEqual(listed.body.rows.map((row) => [row.reported, row.priorOutcome, row.jobHash]), [[false, null, null]]);
+  // The posting twice in the run: the first row is added again, the second a
+  // duplicate of it - never "reported before" above a row that adds the job.
+  rows[3] = sheetRow('Hooli', 2);
+  const again = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 3 })).run;
+  assert.deepEqual(again.rows.map((row) => [row.row, row.status, row.lakeStatus]), [
+    [2, 'added', 'Added'],
+    [3, 'duplicate', 'Duplicate'],
+  ]);
+  assert.match(again.rows[1].reason, /same posting is on a row above/);
+  assert.equal(again.summary.alreadyReported, 0);
+  delete rows[3];
+  const secondId = again.rows[0].lakeId;
+  assert.notEqual(secondId, firstId);
+  const { analysisId, jobHash: hash } = lake.getLakeEntry(secondId);
+  assert.equal(lake.findJobReports(h.reporter.id, [analysisId]).get(analysisId).lakeId, secondId, 'the stale record replaced');
+  assert.equal(users.getUserById(h.reporter.id).balanceMilli, 100, 'a deleted job reported again is a new one, paid');
+
+  // The older build again: it deletes the job, the reporter reports it there
+  // (a new row, its facts NULL), and this build starts - which records the
+  // report against the row it re-added, so Delete here forgets it.
+  olderBuildDelete(secondId);
+  const at = new Date().toISOString();
+  const readded = Number(
+    db
+      .prepare(
+        `INSERT INTO job_lake (job_hash, hash_version, company, company_key, job_field_id, analysis_id, requested_by, source,
+           created_at, updated_at, reward_milli)
+         VALUES (?, 1, 'Hooli', 'hooli', 'backend', ?, ?, 'report', ?, ?, 0)`
+      )
+      .run(hash, analysisId, h.reporter.id, at, at).lastInsertRowid
+  );
+  assert.deepEqual(require('../dist/database/jobLakeFacts').fillLakeFacts(db), { lakeRows: 1, historyRows: 0, reportsRecorded: 1 });
+  assert.equal(lake.findJobReports(h.reporter.id, [analysisId]).get(analysisId).lakeId, readded);
+  assert.deepEqual((await preview()).body.rows.map((row) => [row.reported, row.priorOutcome]), [[true, 'added']]);
+
+  assert.equal((await h.call('owner', 'DELETE', `/admin/job-lake/${readded}`)).status, 200);
+  assert.deepEqual((await preview()).body.rows.map((row) => row.reported), [false]);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM job_reports').get().n, 0, 'every record of it forgotten');
+  const third = (await h.runToEnd('reporter', { tabName: TAB, fromRow: 2, toRow: 2 })).run;
+  assert.deepEqual(third.rows.map((row) => row.status), ['added']);
+  assert.deepEqual(credits.findInconsistentBalances(), []);
 });
 
 test('a Lake Status left behind by another posting does not skip the job now in the row', async (t) => {
@@ -801,7 +978,10 @@ test('the admin lake: query, a row and its history, revoke and delete, settings 
   const job = (company, extra = {}) => ({ company, jobFieldId: 'backend', title: 'Engineer', salary: null, url: '', jobDescription: `${company} builds distributed systems`, analysisId: null, source: 'report', ...extra });
   const first = service.mergeIntoLake(job('Lakeco', { title: 'First' }), h.otherReporter.id, { reward: true, now: now - 100 * DAY });
   service.mergeIntoLake(job('Lakeco', { title: 'Second' }), h.reporter.id, { reward: true, now });
-  service.mergeIntoLake(job('Pondco', { jobFieldId: 'frontend' }), h.reporter.id, { reward: true, now });
+  service.mergeIntoLake(job('Pondco', { jobFieldId: 'frontend', jobType: 'remote', clearance: true, industry: 'military' }), h.reporter.id, {
+    reward: true,
+    now,
+  });
 
   const all = await h.call('owner', 'GET', '/admin/job-lake?limit=10');
   assert.equal(all.status, 200);
@@ -813,6 +993,33 @@ test('the admin lake: query, a row and its history, revoke and delete, settings 
   assert.equal((await h.call('owner', 'GET', '/admin/job-lake?field=nonsense')).status, 400);
   assert.equal((await h.call('owner', 'GET', '/admin/job-lake?salaryMin=lots')).status, 400);
   assert.equal((await h.call('owner', 'GET', '/admin/job-lake?updatedFrom=yesterday')).status, 400);
+  // The three facts: on every row with their words, and filters of their own, refused by name when off the list.
+  const pondRow = all.body.rows.find((row) => row.company === 'Pondco');
+  assert.deepEqual(
+    [pondRow.jobType, pondRow.jobTypeLabel, pondRow.clearance, pondRow.industry, pondRow.industryLabel],
+    ['remote', 'Remote', true, 'military', 'Military']
+  );
+  const lakeco = all.body.rows.find((row) => row.company === 'Lakeco');
+  assert.deepEqual([lakeco.jobType, lakeco.jobTypeLabel, lakeco.clearance, lakeco.industry, lakeco.industryLabel], ['', '', false, 'not_specified', '']);
+  const companies = async (query) => (await h.call('owner', 'GET', `/admin/job-lake?${query}`)).body.rows.map((row) => row.company);
+  assert.deepEqual(await companies('jobType=remote'), ['Pondco']);
+  assert.deepEqual(await companies('jobType=not_specified'), ['Lakeco']);
+  assert.deepEqual(await companies('clearance=true'), ['Pondco']);
+  assert.deepEqual(await companies('clearance=false'), ['Lakeco']);
+  assert.deepEqual(await companies('industry=military&jobType=remote&clearance=true'), ['Pondco']);
+  assert.deepEqual(await companies('industry=not_specified'), ['Lakeco']);
+  for (const [query, error] of [
+    ['jobType=office', 'That job type is not one of the list.'],
+    ['clearance=maybe', 'Clearance must be true or false.'],
+    ['industry=fintech', 'That industry is not one of the list.'],
+  ]) {
+    const refused = await h.call('owner', 'GET', `/admin/job-lake?${query}`);
+    assert.deepEqual([refused.status, refused.body.error], [400, error], query);
+  }
+  // What the selects offer, in the server's words.
+  assert.deepEqual(all.body.options.jobTypes.map((option) => option.label), ['Remote', 'Hybrid', 'Onsite', 'Not specified']);
+  assert.equal(all.body.options.industries.length, 20);
+  assert.deepEqual(all.body.options.industries.at(-1), { id: 'not_specified', label: 'Not specified' });
 
   const detail = await h.call('owner', 'GET', `/admin/job-lake/${first.lakeId}`);
   assert.equal(detail.status, 200);

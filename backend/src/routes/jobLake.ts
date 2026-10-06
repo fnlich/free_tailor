@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
+import { isIndustryId, listIndustriesForClient } from '../config/industries';
 import { isJobFieldId } from '../config/jobFields';
 import {
   deleteLakeEntry,
@@ -22,6 +23,7 @@ import {
   requestAdminLakeSync,
   syncAdminLakeSheet,
 } from '../services/jobLake/adminSheet';
+import { listJobTypesForClient, type JobTypeId } from '../services/jobAnalysis/facts';
 import { listMergeCandidates, mergeAnalyses } from '../services/jobLake/merge';
 import { readLakeSettings, updateLakeSettings } from '../services/jobLake/settings';
 import { formatMoney } from '../utils/money';
@@ -34,7 +36,8 @@ import { readPage } from './paging';
  * rate per job, the duplicate window and where it comes from, the daily cap -
  * and the admin sheet with its sync.
  *
- *   GET    /                 ?q=&company=&field=&salaryMin=&salaryMax=&requestedBy=&updatedFrom=&updatedTo=&limit=&offset=
+ *   GET    /                 ?q=&company=&field=&salaryMin=&salaryMax=&requestedBy=&updatedFrom=&updatedTo=
+ *                             &jobType=&clearance=&industry=&limit=&offset=
  *   GET    /settings         PUT /settings { reportRateUsd?, duplicateWindowDays?, dailyCapUsd? }
  *   GET    /sync             POST /sync - "Retry now"
  *   POST   /sheet            { recreate? } - create (or replace) and share the admin sheet now
@@ -105,8 +108,29 @@ function readLakeQuery(req: Request): LakeQuery {
   const to = readTime(req.query.updatedTo, 'Updated to', true);
   if (from) query.updatedFrom = from;
   if (to) query.updatedTo = to;
+  // The three facts: a job type (`not_specified` for a posting that does not
+  // say), a clearance as true or false, an industry id (`not_specified` too).
+  const jobType = text('jobType');
+  if (jobType) {
+    if (!JOB_TYPE_FILTERS.has(jobType)) throw new PublicError('That job type is not one of the list.', { status: 400 });
+    query.jobType = (jobType === 'not_specified' ? '' : jobType) as JobTypeId;
+  }
+  const clearance = text('clearance');
+  if (clearance) {
+    if (clearance !== 'true' && clearance !== 'false') {
+      throw new PublicError('Clearance must be true or false.', { status: 400 });
+    }
+    query.clearance = clearance === 'true';
+  }
+  const industry = text('industry');
+  if (industry) {
+    if (!isIndustryId(industry)) throw new PublicError('That industry is not one of the list.', { status: 400 });
+    query.industry = industry;
+  }
   return query;
 }
+
+const JOB_TYPE_FILTERS = new Set(listJobTypesForClient().map((option) => option.id));
 
 function readId(req: Request<{ id: string }>): number {
   const id = /^\d{1,15}$/.test(req.params.id) ? Number(req.params.id) : Number.NaN;
@@ -140,7 +164,14 @@ router.get('/', (req: Request, res: Response) => {
     const query = readLakeQuery(req);
     const { rows, total } = queryLake(query);
     const lookup = requesterLookup();
-    res.json({ rows: rows.map((row) => withRequester(row, lookup)), total, limit: query.limit, offset: query.offset });
+    res.json({
+      rows: rows.map((row) => withRequester(row, lookup)),
+      total,
+      limit: query.limit,
+      offset: query.offset,
+      // What the job type and industry filters may be, in the server's words.
+      options: { jobTypes: listJobTypesForClient(), industries: listIndustriesForClient() },
+    });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to read the job lake');
   }

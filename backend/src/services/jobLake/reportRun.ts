@@ -2,17 +2,21 @@ import { randomUUID } from 'crypto';
 import { readBalanceMilli } from '../../database/creditRepository';
 import { PublicError, publicItemError } from '../../middleware/publicError';
 import type { UserAccount } from '../../types/account';
-import { getOrCreateAnalysis, loadAnalysis, type StoredJobAnalysis } from '../jobAnalysis/gate';
+import { findStoredAnalysis, getOrCreateAnalysis, loadAnalysis, type StoredJobAnalysis } from '../jobAnalysis/gate';
 import { resolveAnalysesAtSubmit, writeBackFor, type SubmittedJob } from '../jobAnalysis/submit';
 import { flushAnalysisWriteBacks } from '../sheets/analysisColumns';
 import { ensureAccountSheet, resolveAddressableSheet } from '../sheets/accountSheet';
 import { requestAdminLakeSync } from './adminSheet';
-import { reportRefOf } from '../../database/jobLakeRepository';
+import {
+  findJobReports,
+  JOB_REPORT_OUTCOME_LABELS,
+  type JobReport,
+  type JobReportOutcome,
+} from '../../database/jobLakeRepository';
 import { lakeJobFromAnalysis, mergeIntoLake, type MergeOutcome } from './index';
 import {
   inspectReportTab,
   LAKE_STATUS_TEXT,
-  lakeStatusIsRowsOwn,
   lastRowInGrid,
   readReportRows,
   reportSheetsClient,
@@ -29,11 +33,13 @@ import {
  *
  * For each row, in this order:
  *
- *  1. skipped outright when its Lake Status says it was reported already
- *     beside the Analysis cell of the posting in the row now
- *     (`lakeStatusIsRowsOwn`) - so a run over the same rows again pays
- *     nothing and analyses nothing, while a row whose posting was replaced
- *     under another posting's status is reported like any other;
+ *  1. skipped outright - "Reported before", with what became of it then -
+ *     when its posting is stored and this account reported it before, as
+ *     `job_reports` says (`findJobReports`): from this row or any other, this
+ *     tab or another, a row it has been moved to since. Nothing in the sheet
+ *     decides it, so a run over the same rows again pays nothing and
+ *     analyses nothing, and a row whose posting was replaced in place is
+ *     reported like any other;
  *  2. its analysis through the ONE gate, sheet first (Phase 6): the row's own
  *     protected Analysis cell, else the stored analysis of the posting, else
  *     ONE model call - an already analysed posting costs no AI call - and a
@@ -45,16 +51,18 @@ import {
  *
  * Analyses run a few at a time; merges run strictly in row order, so the
  * earlier of two rows with the same job is the one added and the later the
- * one painted red. Once every row is through, the analysis write-backs are
- * flushed, then each row's Job Hash and Lake Status written and its
- * duplicates painted - one batched call each - and the admin sheet's sync is
+ * one painted red - and the same POSTING twice in one run is a duplicate the
+ * second time, whether or not it was reported before (only the first row of
+ * it is "reported before"). Once every row is through, the analysis
+ * write-backs are flushed, then each row's Job Hash and Lake Status written
+ * and its duplicates painted - a row whose posting was a duplicate the first
+ * time painted again - one batched call each, and the admin sheet's sync is
  * started for whatever was added.
  *
  * Idempotent: a row whose status never reached the sheet (a crash, a failed
- * write) is read again next time, finds its analysis stored and its lake row
- * its own - reported from this very row (`already`, by the row's
- * `reportRefOf`): no AI call, no second reward, and it is marked Added. The
- * same posting on ANOTHER row, in this run or a later one, is a duplicate.
+ * write) is reported before next time - no AI call, no second reward - and
+ * its status is written then. Every row reported before still has its
+ * analysis cells filled in when they are empty, by the submission step.
  *
  * Runs live in memory: one per account at a time, the last one kept an hour
  * after it ends so a reloaded page finds its summary. A restart loses a run
@@ -84,7 +92,12 @@ export type ReportRowOutcome = {
   company: string;
   title: string;
   status: ReportRowStatus;
-  /** What the run wrote into the row's Lake Status cell (null: nothing - pending, failed, or reported before). */
+  /**
+   * For a row reported before (`already-reported`): what became of its
+   * posting the first time this account reported it. Null otherwise.
+   */
+  priorOutcome: JobReportOutcome | null;
+  /** What the run wrote into the row's Lake Status cell (null: nothing - pending or failed). */
   lakeStatus: LakeStatusText | null;
   jobHash: string | null;
   lakeId: number | null;
@@ -97,7 +110,7 @@ export type ReportRowOutcome = {
 export type ReportRunSummary = {
   /** Jobs the lake accepted from this run: added plus replaced (a replacement counts as added). */
   added: number;
-  /** Rows the run took to the lake: every row holding a job, less those whose Lake Status said reported. */
+  /** Rows the run took to the lake: every row holding a job, less those reported before. */
   total: number;
   duplicates: number;
   unclassified: number;
@@ -105,9 +118,9 @@ export type ReportRunSummary = {
   skipped: number;
   failed: number;
   /**
-   * Rows reported before: their Lake Status said so (not in `total`), or the
-   * lake found the job already added by this account from this same row and
-   * posting - a status that never reached the sheet, written now (in `total`).
+   * Rows whose posting this account reported before: skipped before the run
+   * (not in `total`), or found so by the merge itself (in `total`) - a
+   * posting stored under another spelling of its link, say.
    */
   alreadyReported: number;
   /** What the run paid, in thousandths of a dollar. */
@@ -248,6 +261,7 @@ function outcomeRow(row: SheetReportRow, status: ReportRowStatus, reason: string
     company: row.company,
     title: row.title,
     status,
+    priorOutcome: null,
     lakeStatus: null,
     jobHash: null,
     lakeId: null,
@@ -298,35 +312,68 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
     toRow < run.fromRow
       ? []
       : (await readReportRows(run.spreadsheetId, run.tabName, run.fromRow, toRow)).filter(rowHoldsAJob);
-  const candidates: SheetReportRow[] = [];
+
+  // Reported before: the posting is stored (store only, no model) and this
+  // account has a record of it. Only the first row of a posting in the run
+  // is; a second row of the same posting is merged, and is a duplicate.
+  const storedByRow = new Map<number, StoredJobAnalysis>();
   for (const row of sheetRows) {
-    if (lakeStatusIsRowsOwn(row)) {
-      run.rows.push({ ...outcomeRow(row, 'already-reported', `Reported before (${row.lakeStatus}).`), jobHash: row.jobHash || null });
+    const stored = findStoredAnalysis({ jd: row.jobDescription, link: row.link });
+    if (stored) storedByRow.set(row.row, stored);
+  }
+  const reports = findJobReports(account.id, [...storedByRow.values()].map((stored) => stored.id));
+  /** The postings (analysis ids) a row above already stands for in this run. */
+  const seenThisRun = new Set<string>();
+  const candidates: SheetReportRow[] = [];
+  const reportedRows: SheetReportRow[] = [];
+  for (const row of sheetRows) {
+    const stored = storedByRow.get(row.row);
+    const prior = stored ? reports.get(stored.id) : undefined;
+    if (stored && prior && !seenThisRun.has(stored.id)) {
+      seenThisRun.add(stored.id);
+      reportedRows.push(row);
+      run.rows.push(reportedBeforeRow(row, prior));
     } else {
       candidates.push(row);
       run.rows.push(outcomeRow(row, 'pending'));
     }
   }
-  run.rows.sort((a, b) => a.row - b.row);
   run.progress.total = candidates.length;
 
   // Sheet first, through Phase 6's submission step: one batched read of the
   // rows' protected analysis cells, a row whose cell (or whose posting in
   // the store) has an analysis is given it with no model call, and a row
-  // waiting for one is marked to be written back once it has one.
-  const jobs: SubmittedJob[] = candidates.map((row) => ({
+  // waiting for one is marked to be written back once it has one. The rows
+  // reported before go through it too - their postings are stored, so it
+  // asks nothing - so one whose analysis cells never landed gets them now.
+  const toJob = (row: SheetReportRow): SubmittedJob => ({
     companyName: row.company,
     jobDescription: row.jobDescription,
     ...(row.link ? { jobLink: row.link } : {}),
     sourceRowNumber: row.row,
-  }));
-  await resolveAnalysesAtSubmit(jobs, {
+  });
+  const jobs = candidates.map(toJob);
+  await resolveAnalysesAtSubmit([...reportedRows.map(toJob), ...jobs], {
     sheet: { spreadsheetId: run.spreadsheetId, tabName: run.tabName },
     requestedBy: account.id,
   });
 
   const analyses = analyseWithLimit(jobs, account.id);
   const statusWrites: LakeStatusWrite[] = [];
+  const statusOf = (row: SheetReportRow, outcome: ReportRowOutcome) => {
+    if (!outcome.lakeStatus) return;
+    statusWrites.push({
+      row: row.row,
+      company: row.company,
+      link: row.link,
+      jobHash: outcome.jobHash,
+      status: outcome.lakeStatus,
+      red: isRed(outcome),
+    });
+  };
+  // The rows reported before keep their first outcome in the sheet - a
+  // duplicate painted red again.
+  for (const row of reportedRows) statusOf(row, run.rows.find((entry) => entry.row === row.row)!);
   const addedThisRun = new Set<number>();
   let earnedMilli = 0;
 
@@ -348,12 +395,12 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
             company: row.company,
             title: row.title,
             url: row.link,
-            reportRef: reportRefOf(run.spreadsheetId, run.tabName, row.row),
+            reportedFrom: { spreadsheetId: run.spreadsheetId, tabName: run.tabName, row: row.row },
           }),
           account.id,
           { reward: true }
         );
-        applyMerge(outcome, merged, addedThisRun);
+        applyMerge(outcome, merged, result.stored.id, { addedThisRun, seenThisRun });
         earnedMilli += merged.rewardMilli;
       } catch (error) {
         // The merge and its reward are one transaction, so nothing of this
@@ -362,16 +409,7 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
         outcome.reason = publicItemError(error, 'The job could not be added to the lake', `report row ${row.row}`);
       }
     }
-    if (outcome.lakeStatus) {
-      statusWrites.push({
-        row: row.row,
-        company: row.company,
-        link: row.link,
-        jobHash: outcome.jobHash,
-        status: outcome.lakeStatus,
-        red: outcome.status === 'duplicate',
-      });
-    }
+    statusOf(row, outcome);
     run.progress.done += 1;
   }
 
@@ -408,31 +446,64 @@ async function runRows(run: ReportRun, account: UserAccount): Promise<void> {
   if (addedThisRun.size > 0) requestAdminLakeSync(`report run ${run.id}`);
 }
 
+/** Whether a row is painted red: a duplicate now, or a posting that was a duplicate the first time. */
+function isRed(outcome: ReportRowOutcome): boolean {
+  return outcome.status === 'duplicate' || (outcome.status === 'already-reported' && outcome.priorOutcome === 'duplicate');
+}
+
+/** A row whose posting this account reported before: skipped, with what became of it then. */
+function reportedBeforeRow(row: SheetReportRow, prior: JobReport): ReportRowOutcome {
+  return {
+    ...outcomeRow(row, 'already-reported', `Reported before (${JOB_REPORT_OUTCOME_LABELS[prior.outcome]}).`),
+    priorOutcome: prior.outcome,
+    lakeStatus: LAKE_STATUS_TEXT[prior.outcome],
+    jobHash: prior.jobHash,
+    lakeId: prior.lakeId,
+  };
+}
+
 /** A merge's outcome on the row's line, and the Lake Status it writes. */
-function applyMerge(outcome: ReportRowOutcome, merged: MergeOutcome, addedThisRun: Set<number>): void {
+function applyMerge(
+  outcome: ReportRowOutcome,
+  merged: MergeOutcome,
+  analysisId: string,
+  seen: { addedThisRun: Set<number>; seenThisRun: Set<string> }
+): void {
   outcome.jobHash = merged.jobHash;
   outcome.lakeId = merged.lakeId;
   outcome.rewardMilli = merged.rewardMilli;
+  const repeat = seen.seenThisRun.has(analysisId);
+  if (merged.status !== 'no-company') seen.seenThisRun.add(analysisId);
   switch (merged.status) {
     case 'added':
     case 'replaced':
       outcome.status = merged.status;
       outcome.lakeStatus = merged.status === 'added' ? LAKE_STATUS_TEXT.added : LAKE_STATUS_TEXT.replaced;
-      if (merged.lakeId !== null) addedThisRun.add(merged.lakeId);
+      if (merged.lakeId !== null) seen.addedThisRun.add(merged.lakeId);
       return;
-    case 'already':
-      // This very row, reported by an earlier run whose status never reached
-      // the sheet. Not counted as added again: this run added nothing and
-      // paid nothing.
+    case 'already': {
+      const prior = merged.priorOutcome ?? 'added';
+      if (repeat) {
+        // The same posting on a row above, in this run: a duplicate of that
+        // row - or, when it fits no job field, unclassified like that row.
+        outcome.status = prior === 'unclassified' ? 'unclassified' : 'duplicate';
+        outcome.lakeStatus = prior === 'unclassified' ? LAKE_STATUS_TEXT.unclassified : LAKE_STATUS_TEXT.duplicate;
+        outcome.reason =
+          prior === 'unclassified' ? 'The posting fits none of the job fields.' : 'The same posting is on a row above.';
+        return;
+      }
+      // Reported before, and not caught before the run: nothing moved, nothing paid.
       outcome.status = 'already-reported';
-      outcome.lakeStatus = LAKE_STATUS_TEXT.added;
-      outcome.reason = 'Added by an earlier run of yours.';
+      outcome.priorOutcome = prior;
+      outcome.lakeStatus = LAKE_STATUS_TEXT[prior];
+      outcome.reason = `Reported before (${JOB_REPORT_OUTCOME_LABELS[prior]}).`;
       return;
+    }
     case 'duplicate':
       outcome.status = 'duplicate';
       outcome.lakeStatus = LAKE_STATUS_TEXT.duplicate;
       outcome.reason =
-        merged.lakeId !== null && addedThisRun.has(merged.lakeId)
+        merged.lakeId !== null && seen.addedThisRun.has(merged.lakeId)
           ? 'The same job is on a row above.'
           : 'The job lake already has this job.';
       return;

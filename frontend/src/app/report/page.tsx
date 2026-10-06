@@ -16,6 +16,7 @@ import {
   describePreviewRow,
   describeReportPreview,
   describeReporterRate,
+  describeRowNote,
   describeRowReward,
   describeRunBreakdown,
   describeRunProgress,
@@ -27,8 +28,8 @@ import {
   readReportRange,
   REPORT_FIRST_ROW,
   REPORT_POLL_MS,
-  reportStatusLabel,
-  reportStatusTone,
+  reportRowLabel,
+  reportRowTone,
   runFraction,
   safeWebLink,
   sameRange,
@@ -41,12 +42,14 @@ import styles from './page.module.css';
  *
  * The reporter picks a tab of their OWN job sheet and a range of rows,
  * previews them - which rows hold a job, and which a run will skip because
- * their Lake Status says they were reported before - and presses "Add to job
- * lake". The run goes on in the server, in the background (POST
- * /api/report/runs answers 202 at once); this page follows it until the server
- * says it ended, then shows the owner's line - "N out of M was added, your
- * current credit is $X" - and every row's outcome, duplicates in red as the
- * run paints them in the sheet.
+ * they reported that posting before, from any row or tab, with what became of
+ * it then ("Reported before (Added)": the server's record, never the sheet's
+ * Lake Status) - and presses "Add to job lake". The run goes on in the
+ * server, in the background (POST /api/report/runs answers 202 at once); this
+ * page follows it until the server says it ended, then shows the owner's line
+ * - "N out of M was added, your current credit is $X" - and every row's
+ * outcome, red exactly where the run paints the sheet: the duplicates, and a
+ * row reported before whose posting was a duplicate then.
  *
  * Nothing here names a spreadsheet: every /api/report route acts on the
  * caller's own sheet, so the only choices are a tab and rows. An
@@ -103,7 +106,10 @@ function RunBar({ run }: { run: ReportRun }) {
   );
 }
 
-/** Every row of a run and what it came to; a duplicate is red, as it is in the sheet. */
+/**
+ * Every row of a run and what it came to; a duplicate is red, as it is in the
+ * sheet, and so is a row reported before whose posting was a duplicate then.
+ */
 function RunOutcomes({ run, paid }: { run: ReportRun; paid: boolean }) {
   if (run.rows.length === 0) return null;
   return (
@@ -123,29 +129,32 @@ function RunOutcomes({ run, paid }: { run: ReportRun; paid: boolean }) {
           </tr>
         </thead>
         <tbody>
-          {run.rows.map((row) => (
-            <tr key={row.row} data-duplicate={isRedOutcome(row) ? 'true' : undefined}>
-              <td className="whitespace-nowrap">
-                {/* A colour on a .tl-table cell goes on an inner span - the unlayered td rule beats a utility on the td. */}
-                <span className="font-medium text-ink">{row.row}</span>
-              </td>
-              <td className="min-w-32">
-                {row.company ? <span className="break-words">{row.company}</span> : <span className="text-subtle">-</span>}
-              </td>
-              <td className="min-w-32">
-                {row.title ? <span className="break-words">{row.title}</span> : <span className="text-subtle">-</span>}
-              </td>
-              <td className="whitespace-nowrap">
-                <Pill tone={reportStatusTone(row.status)}>{reportStatusLabel(row.status)}</Pill>
-              </td>
-              <td className="whitespace-nowrap tabular-nums" data-align="right">
-                {describeRowReward(row, paid)}
-              </td>
-              <td className="min-w-48">
-                {row.reason ? <span className="break-words text-sm text-muted">{row.reason}</span> : null}
-              </td>
-            </tr>
-          ))}
+          {run.rows.map((row) => {
+            const note = describeRowNote(row);
+            return (
+              <tr key={row.row} data-duplicate={isRedOutcome(row) ? 'true' : undefined}>
+                <td className="whitespace-nowrap">
+                  {/* A colour on a .tl-table cell goes on an inner span - the unlayered td rule beats a utility on the td. */}
+                  <span className="font-medium text-ink">{row.row}</span>
+                </td>
+                <td className="min-w-32">
+                  {row.company ? <span className="break-words">{row.company}</span> : <span className="text-subtle">-</span>}
+                </td>
+                <td className="min-w-32">
+                  {row.title ? <span className="break-words">{row.title}</span> : <span className="text-subtle">-</span>}
+                </td>
+                <td className="whitespace-nowrap">
+                  <Pill tone={reportRowTone(row)}>{reportRowLabel(row)}</Pill>
+                </td>
+                <td className="whitespace-nowrap tabular-nums" data-align="right">
+                  {describeRowReward(row, paid)}
+                </td>
+                <td className="min-w-48">
+                  {note ? <span className="break-words text-sm text-muted">{note}</span> : null}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -335,7 +344,7 @@ function ReportJobsBody() {
    * When a run this page watched ends: the figures at the top (balance,
    * earned today, jobs in the lake), the top bar's balance, and - when the
    * preview on screen is of the run's rows - the preview, so those rows now
-   * say they were reported.
+   * say they were reported, and what became of them.
    */
   const watched = useRef<string | null>(null);
   useEffect(() => {
@@ -439,6 +448,8 @@ function ReportJobsBody() {
                   <p className="text-sm text-muted">
                     Today&apos;s tab is <span className="font-medium text-ink">{sheet.todayTab}</span>. After a run,
                     each row&apos;s Lake Status column says what became of it, and duplicates are painted red there.
+                    A posting you reported before is skipped wherever it is pasted - another row, another tab - and
+                    is never paid for twice.
                   </p>
                 )}
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-3">

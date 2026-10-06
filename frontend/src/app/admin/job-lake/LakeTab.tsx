@@ -13,6 +13,8 @@ import { adminJobLakeApi, type JobFieldCatalog, type LakeEntry, type LakeHistory
 import {
   canRevoke,
   describeDeleteConfirm,
+  describeFactsLine,
+  describeLakeFacts,
   describeLakeTotal,
   describeRequester,
   describeReward,
@@ -21,6 +23,7 @@ import {
   describeSource,
   EMPTY_LAKE_FILTERS,
   hasLakeFilters,
+  lakeFactCells,
   lakeFilterProblem,
   lakeQueryString,
   linkHost,
@@ -33,8 +36,10 @@ import {
  * filters - full text over company, title and description (prefix words),
  * company (compared after the lake's own normalisation, so "OpenAI, Inc."
  * finds "Open AI LLC"), job field, salary range, who reported it and when it
- * was last updated - a page at a time; a row's detail with its history, and
- * Delete (optionally taking the reward back) and Revoke reward.
+ * was last updated - a page at a time, each job with its job type, clearance
+ * and industry (taken from its posting's analysis, in the server's words); a
+ * row's detail with its history, and Delete (optionally taking the reward
+ * back) and Revoke reward.
  *
  * The filters are applied by Search, not per keystroke: each one is a query
  * the server runs, and half a company name is a different question.
@@ -72,6 +77,7 @@ function HistoryList({ history }: { history: LakeHistoryEntry[] }) {
             {version.title || 'No title'} · {describeSource(version.source)} by {describeRequester(version)} ·{' '}
             {describeReward(version.reward)}
             {version.salary ? ` · ${formatSalary(version.salary)}` : ''}
+            {describeFactsLine(version) ? ` · ${describeFactsLine(version)}` : ''}
           </p>
           {version.url && (
             <p className="mt-1">
@@ -153,6 +159,7 @@ function EntryDialog({
 
   const title = entry ? `${entry.company} - ${entry.jobFieldLabel}` : `Job #${id}`;
   const revocable = entry ? canRevoke(entry) : false;
+  const facts = entry ? describeLakeFacts(entry) : null;
 
   return (
     <Dialog
@@ -243,6 +250,15 @@ function EntryDialog({
             </Field>
             <Field label="Salary">
               <StaticValue>{formatSalary(entry.salary) || 'Not stated'}</StaticValue>
+            </Field>
+            <Field label="Job type">
+              <StaticValue>{facts?.jobType}</StaticValue>
+            </Field>
+            <Field label="Clearance">
+              <StaticValue>{facts?.clearance}</StaticValue>
+            </Field>
+            <Field label="Industry">
+              <StaticValue>{facts?.industry}</StaticValue>
             </Field>
             <Field label="Requested by">
               <StaticValue>
@@ -550,6 +566,9 @@ export default function LakeTab() {
                     <th scope="col">Job field</th>
                     <th scope="col">Title</th>
                     <th scope="col">Salary</th>
+                    <th scope="col">Job type</th>
+                    <th scope="col">Clearance</th>
+                    <th scope="col">Industry</th>
                     <th scope="col">Requested by</th>
                     <th scope="col">Reward</th>
                     <th scope="col">Seen</th>
@@ -559,42 +578,48 @@ export default function LakeTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {list.rows.map((entry) => (
-                    <tr key={entry.id}>
-                      <td className="whitespace-nowrap">{formatDate(entry.updatedAt)}</td>
-                      <td className="min-w-32">
-                        <span className="break-words font-medium text-ink">{entry.company}</span>
-                      </td>
-                      <td className="min-w-28">{entry.jobFieldLabel}</td>
-                      <td className="min-w-32">
-                        {entry.title ? <span className="break-words">{entry.title}</span> : <Cell muted>-</Cell>}
-                      </td>
-                      <td className="min-w-44">{formatSalary(entry.salary) || <Cell muted>-</Cell>}</td>
-                      <td className="break-words">
-                        {describeRequester(entry)}
-                        {entry.source === 'merge' && (
-                          <span className="ml-2">
-                            <Pill tone="violet">Merged</Pill>
-                          </span>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap tabular-nums">{describeReward(entry.reward)}</td>
-                      <td className="whitespace-nowrap">{describeSeen(entry)}</td>
-                      <td className="text-right">
-                        <button
-                          type="button"
-                          className="tl-button-quiet"
-                          data-size="sm"
-                          onClick={() => {
-                            setNotice('');
-                            setOpenId(entry.id);
-                          }}
-                        >
-                          Details
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {list.rows.map((entry) => {
+                    const cells = lakeFactCells(entry);
+                    return (
+                      <tr key={entry.id}>
+                        <td className="whitespace-nowrap">{formatDate(entry.updatedAt)}</td>
+                        <td className="min-w-32">
+                          <span className="break-words font-medium text-ink">{entry.company}</span>
+                        </td>
+                        <td className="min-w-28">{entry.jobFieldLabel}</td>
+                        <td className="min-w-32">
+                          {entry.title ? <span className="break-words">{entry.title}</span> : <Cell muted>-</Cell>}
+                        </td>
+                        <td className="min-w-44">{formatSalary(entry.salary) || <Cell muted>-</Cell>}</td>
+                        <td className="whitespace-nowrap">{cells.jobType || <Cell muted>-</Cell>}</td>
+                        <td className="whitespace-nowrap">{cells.clearance || <Cell muted>-</Cell>}</td>
+                        <td className="min-w-28">{cells.industry || <Cell muted>-</Cell>}</td>
+                        <td className="break-words">
+                          {describeRequester(entry)}
+                          {entry.source === 'merge' && (
+                            <span className="ml-2">
+                              <Pill tone="violet">Merged</Pill>
+                            </span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap tabular-nums">{describeReward(entry.reward)}</td>
+                        <td className="whitespace-nowrap">{describeSeen(entry)}</td>
+                        <td className="text-right">
+                          <button
+                            type="button"
+                            className="tl-button-quiet"
+                            data-size="sm"
+                            onClick={() => {
+                              setNotice('');
+                              setOpenId(entry.id);
+                            }}
+                          >
+                            Details
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

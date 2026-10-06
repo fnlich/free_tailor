@@ -58,6 +58,13 @@ export interface PromptSummary {
    * instructions to every turn it runs for such a record.
    */
   predatesJobField?: boolean;
+  /**
+   * Present (true) only on an analysis record that names `[[jobFieldList]]`
+   * but never `[[industryList]]`: written after postings had a job field and
+   * before they had an industry. Admin -> Prompts says so; the analysis
+   * appends the industry instructions to every turn it runs for such a record.
+   */
+  predatesIndustry?: boolean;
   isBuiltIn: boolean;
   isActiveForFeature?: boolean;
   usage?: string;

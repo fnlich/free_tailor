@@ -2473,9 +2473,16 @@ export async function batchGetValues(spreadsheetId: string, ranges: string[]): P
  * `null` in a row leaves that cell as it was (Google skips nulls), so a write
  * can fill four cells of a six-cell block without touching the other two.
  */
+/**
+ * A cell as a RAW write sends it: text and numbers as themselves, a boolean
+ * as Google's own TRUE/FALSE (sortable and filterable as one), null to leave
+ * the cell as it is.
+ */
+export type SheetCellValue = string | number | boolean | null;
+
 export async function batchUpdateValuesRaw(
   spreadsheetId: string,
-  data: Array<{ range: string; values: Array<Array<string | number | null>> }>
+  data: Array<{ range: string; values: Array<Array<SheetCellValue>> }>
 ): Promise<void> {
   if (data.length === 0) return;
   await googleSheetsFetch(`/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchUpdate`, {
@@ -2508,7 +2515,7 @@ export function a1Columns(tabName: string, fromCol: number, toCol: number): stri
 export async function appendValuesRaw(
   spreadsheetId: string,
   range: string,
-  rows: Array<Array<string | number | null>>
+  rows: Array<Array<SheetCellValue>>
 ): Promise<void> {
   if (rows.length === 0) return;
   await googleSheetsFetch(

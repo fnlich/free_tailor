@@ -302,14 +302,18 @@ exists with an older day's tab, today's and a tab of the reporter's own (*My
 notes*, whose header is not the job sheet's), rows in memory, and the admin
 sheet a list in memory - through the four seams the unit tests use (the account
 sheet's client, the report run's, the analysis columns' and the admin sheet's).
-The first three share the rows, so the Lake Status a run writes is what the
-next preview reads. `stub-seat.js` answers every analysis as a Backend posting.
-Today's tab: *Acme Corp* (added), *ACME, Inc.* (the same company once
-normalised, so a duplicate), *Globex LLC* (added), *Initech* (its Lake Status
-already *Added*, beside the Analysis cell an earlier run wrote for its
-posting), a row with no company and one with no description and a
-`javascript:` link (both Skipped). The script sets the global rate to $0.05
-itself.
+The first three share the rows, so what a run writes is what the next preview
+reads. `stub-seat.js` answers every analysis as a Backend posting (a SaaS
+company: *Technology*). Today's tab is `report-sheet-rows.js`'s: *Acme Corp*
+(added), *ACME, Inc.* (the same company once normalised, so a duplicate),
+*Globex LLC* (added), *Initech* (reported by this reporter before, and added
+then), a row with no company and one with no description and a `javascript:`
+link (both Skipped), *Hooli* (reported before, a duplicate then of the Hooli
+job an administrator merged in) and *Acme Corp*'s posting again (a duplicate
+of the row above). "Reported before" is the database's record, not the
+sheet's: the script records those two reports itself, through the lake's own
+merge in the database the server shares (`seedEarlierReports`), and sets the
+global rate to $0.05.
 
 ```bash
 cd backend && npm run build
@@ -319,24 +323,30 @@ E2E_STUB_DELAY_MS=700 DB_DIR=/tmp/e2e-db PORT=3001 \
 DB_DIR=/tmp/e2e-db node test/e2e/report-run.js
 ```
 
-`report-run.js` — 35 claims, on a fresh database (the stub's rows live in the
+`report-run.js` — 38 claims, on a fresh database (the stub's rows live in the
 server's memory, so a second run against the same server finds them reported).
-Report Jobs opens on today's tab, rows 2-501, with the rate per job; Add to job
-lake waits for a preview; *My notes* is refused in the run's own words before
-anything starts; the preview lists the six rows, *Initech* marked as reported
-before and the `javascript:` link as text; the run shows its bar and ends with
-*2 out of 5 was added, your current credit is $0.1* over every row's outcome,
-the duplicate - only it - red, each added row $0.05; the same rows previewed
-again say they were reported (the two Skipped are tried again); the top bar's
-balance moved; no horizontal scrollbar at 390px; in the dark theme the last run
-comes back with its duplicate in the dark red. Then as an administrator: Job
-Lake is a Settings tab and lists the two jobs; *acme inc* finds *Acme Corp*;
-Details shows the reward, the reporter and the history; Delete with *Also
-revoke the reward* takes the job and exactly its $0.05 back off the reporter;
-Settings shows the stored rate, the window *60 (the default)* and the admin
-sheet with every job on it, *Retry now* has nothing to send, and $0.0505 is
-refused under the rate box; Merge has nothing to merge; Admin -> Accounts' rate
-boxes say *Global rate ($0.05)*.
+The two earlier reports are on record; Report Jobs opens on today's tab, rows
+2-501, with the rate per job; Add to job lake waits for a preview; *My notes*
+is refused in the run's own words before anything starts; the preview lists
+the eight rows, *Initech* as *Reported before (Added) - skipped* and *Hooli*
+as *Reported before (Duplicate) - skipped*, and the `javascript:` link as
+text; the run shows its bar and ends with *2 out of 6 was added, your current
+credit is $0.1* over every row's outcome - red exactly on the rows the run
+paints in the sheet (the duplicate, *Hooli* again, the repeated posting), the
+notes saying why, each added row $0.05; the same rows previewed again say
+they were reported (the two Skipped and the repeated posting are tried
+again); the top bar's balance moved; no horizontal scrollbar at 390px; in the
+dark theme the last run comes back with its duplicates in the dark red. Then
+as an administrator: Job Lake is a Settings tab and lists the four jobs, the
+run's two paid, each with its job type, clearance and industry (*Remote / Not
+required / Technology*, *Hybrid / Required / Finance*, *Onsite / Not required
+/ -*); *acme inc* finds *Acme Corp*; Details shows the reward, the reporter,
+the three facts and the history; Delete with *Also revoke the reward* takes
+the job and exactly its $0.05 back off the reporter; Settings shows the
+stored rate, the window *60 (the default)* and the admin sheet with every job
+on it, *Retry now* has nothing to send, and $0.0505 is refused under the rate
+box; Merge has nothing to merge; Admin -> Accounts' rate boxes say *Global
+rate ($0.05)*.
 
 ## Providers, with the seat stubbed
 

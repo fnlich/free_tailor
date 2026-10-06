@@ -4,7 +4,10 @@ import type {
   AdminLakeSheet,
   AdminLakeSyncStatus,
   DuplicateWindow,
+  JobReportOutcome,
   LakeEntry,
+  LakeFacts,
+  LakeFilterOption,
   LakeReward,
   LakeSettings,
   LakeSettingsUpdate,
@@ -23,10 +26,11 @@ import type {
 /**
  * What the Job Data Lake's two pages decide, with no React in it: Report Jobs
  * (/report) - the range a run is asked for, which previewed rows it will
- * skip, how a row's outcome reads and which are red, and the owner's summary
- * line - and Admin -> Job Lake (/admin/job-lake) - the query a filter form
- * sends, how a reward, a revoke, the duplicate window, the sync and a merge
- * read, and which settings a save sends.
+ * skip and what became of them the first time, how a row's outcome reads and
+ * which are red, and the owner's summary line - and Admin -> Job Lake
+ * (/admin/job-lake) - the query a filter form sends, how a job's facts, a
+ * reward, a revoke, the duplicate window, the sync and a merge read, and
+ * which settings a save sends.
  *
  * Imports only frontend leaves (lib/format.ts, lib/reporterPay.ts) at runtime
  * - the API shapes come in as types - so backend/test/frontendJobLake.test.js
@@ -107,24 +111,45 @@ export function describeReportPreview(rows: readonly Pick<ReportPreviewRow, 'rep
 export type NoteTone = 'grey' | 'amber' | 'sky' | 'green' | 'red';
 
 /**
+ * What became of a posting the first time a reporter reported it, in the
+ * server's words (database/jobLakeRepository.ts `JOB_REPORT_OUTCOME_LABELS`,
+ * which backend/test/frontendJobLake.test.js holds this copy to): the word in
+ * "Reported before (Added)".
+ */
+export const JOB_REPORT_OUTCOME_LABELS: Readonly<Record<JobReportOutcome, string>> = {
+  added: 'Added',
+  replaced: 'Replaced',
+  duplicate: 'Duplicate',
+  unclassified: 'Unclassified',
+};
+
+/**
+ * "Reported before (Added)" - or whichever outcome the posting had the first
+ * time - as the run's own reason says it. Without an outcome (an answer
+ * from before the server kept one) it is just "Reported before".
+ */
+export function describePriorOutcome(outcome: JobReportOutcome | null | undefined): string {
+  const label = outcome ? JOB_REPORT_OUTCOME_LABELS[outcome] : undefined;
+  return label ? `Reported before (${label})` : 'Reported before';
+}
+
+/**
  * What the preview says about one row before a run: skipped as reported
- * before (and what its Lake Status says), tried again after a Skipped, or the
- * gap a run will trip on - no company, no description. Only `reported` is a
- * promise; the gaps are what to fix in the sheet first.
+ * before, with what became of its posting then - the server's record of what
+ * this reporter reported, never the row's Lake Status - or the gap a run will
+ * trip on: no company, no description. Only `reported` is a promise; the gaps
+ * are what to fix in the sheet first.
  */
 export function describePreviewRow(
-  row: Pick<ReportPreviewRow, 'reported' | 'lakeStatus' | 'company' | 'descriptionLength'>
+  row: Pick<ReportPreviewRow, 'reported' | 'priorOutcome' | 'company' | 'descriptionLength'>
 ): { label: string; tone: NoteTone; skipped: boolean } {
-  if (row.reported) return { label: `Reported before (${row.lakeStatus}) - skipped`, tone: 'grey', skipped: true };
+  if (row.reported) return { label: `${describePriorOutcome(row.priorOutcome)} - skipped`, tone: 'grey', skipped: true };
   // The run still reads these two (a link analysed before needs no
   // description), so they are not promised as skipped - only flagged as the
   // gap that will most likely leave them Skipped, to fill in first.
   if (!row.company.trim()) return { label: 'No company - it will be Skipped', tone: 'amber', skipped: false };
   if (row.descriptionLength === 0) {
     return { label: 'No job description - Skipped unless its link was analysed before', tone: 'amber', skipped: false };
-  }
-  if ((row.lakeStatus ?? '').trim().toLowerCase() === 'skipped') {
-    return { label: 'Skipped last time - tried again', tone: 'sky', skipped: false };
   }
   return { label: 'To add', tone: 'sky', skipped: false };
 }
@@ -204,9 +229,33 @@ export function reportStatusTone(status: string): NoteTone {
   return REPORT_STATUS_TONES[status as ReportRowStatus] ?? 'grey';
 }
 
-/** The rows painted red: a duplicate, here as in the sheet. */
-export function isRedOutcome(row: Pick<ReportRowOutcome, 'status'>): boolean {
-  return row.status === 'duplicate';
+/**
+ * The rows painted red, here as in the sheet (services/jobLake/reportRun.ts
+ * `isRed`): a duplicate, and a row reported before whose posting was a
+ * duplicate the first time - the run paints that row red again.
+ */
+export function isRedOutcome(row: Pick<ReportRowOutcome, 'status'> & Partial<Pick<ReportRowOutcome, 'priorOutcome'>>): boolean {
+  return row.status === 'duplicate' || (row.status === 'already-reported' && row.priorOutcome === 'duplicate');
+}
+
+/** A run row's outcome as its pill reads: a row reported before says what became of it then. */
+export function reportRowLabel(row: Pick<ReportRowOutcome, 'status' | 'priorOutcome'>): string {
+  return row.status === 'already-reported' ? describePriorOutcome(row.priorOutcome) : reportStatusLabel(row.status);
+}
+
+/** Its pill's colour: red exactly when the row is red. */
+export function reportRowTone(row: Pick<ReportRowOutcome, 'status' | 'priorOutcome'>): NoteTone {
+  return isRedOutcome(row) ? 'red' : reportStatusTone(row.status);
+}
+
+/**
+ * The note beside a run row: the server's reason - except for a row reported
+ * before, whose reason only repeats its pill, so the note says what skipping
+ * it meant instead.
+ */
+export function describeRowNote(row: Pick<ReportRowOutcome, 'status' | 'reason'>): string {
+  if (row.status === 'already-reported') return 'You reported this posting before: skipped, and not paid again.';
+  return row.reason ?? '';
 }
 
 /**
@@ -294,7 +343,12 @@ export function describeEarnedToday(overview: Pick<ReportOverview, 'earnedTodayM
 
 /* ================================================================ the admin lake */
 
-/** The Lake tab's filter form, as typed. Every field a string; '' means "any". */
+/**
+ * The Lake tab's filter form, as typed. Every field a string; '' means "any".
+ * `jobType` and `industry` are an id from the server's own lists (GET
+ * /api/admin/job-lake's `options`, `not_specified` for a posting that does not
+ * say), `clearance` is 'true' or 'false'.
+ */
 export type LakeFilters = {
   q: string;
   company: string;
@@ -304,6 +358,9 @@ export type LakeFilters = {
   requestedBy: string;
   updatedFrom: string;
   updatedTo: string;
+  jobType: string;
+  clearance: string;
+  industry: string;
 };
 
 export const EMPTY_LAKE_FILTERS: LakeFilters = {
@@ -315,6 +372,9 @@ export const EMPTY_LAKE_FILTERS: LakeFilters = {
   requestedBy: '',
   updatedFrom: '',
   updatedTo: '',
+  jobType: '',
+  clearance: '',
+  industry: '',
 };
 
 const FILTER_ORDER: ReadonlyArray<keyof LakeFilters> = [
@@ -326,7 +386,13 @@ const FILTER_ORDER: ReadonlyArray<keyof LakeFilters> = [
   'requestedBy',
   'updatedFrom',
   'updatedTo',
+  'jobType',
+  'clearance',
+  'industry',
 ];
+
+/** The lists the job type and industry filters choose from, as the lake route serves them. */
+export type LakeFilterOptions = { jobTypes: readonly LakeFilterOption[]; industries: readonly LakeFilterOption[] };
 
 /** The route's number rule (routes/jobLake.ts `readNumber`): digits, an optional fraction. */
 const SALARY = /^\d+(\.\d+)?$/;
@@ -341,9 +407,11 @@ function readableDate(text: string, end: boolean): boolean {
 /**
  * Why the lake route would answer these filters 400, in its words - or ''
  * when it would not. Checked before asking, so the form says which box is
- * wrong rather than emptying the table.
+ * wrong rather than emptying the table. A job type or industry is checked
+ * against the server's lists when the page has them; without them the
+ * server's answer says it.
  */
-export function lakeFilterProblem(filters: LakeFilters): string {
+export function lakeFilterProblem(filters: LakeFilters, options?: LakeFilterOptions | null): string {
   const salaryMin = filters.salaryMin.trim();
   const salaryMax = filters.salaryMax.trim();
   if (salaryMin && !SALARY.test(salaryMin)) return 'The lowest salary must be a number.';
@@ -352,6 +420,13 @@ export function lakeFilterProblem(filters: LakeFilters): string {
   const to = filters.updatedTo.trim();
   if (from && !readableDate(from, false)) return 'Updated from must be a date, like 2026-10-05.';
   if (to && !readableDate(to, true)) return 'Updated to must be a date, like 2026-10-05.';
+  const listed = (list: readonly LakeFilterOption[], value: string) => list.some((option) => option.id === value);
+  const jobType = filters.jobType.trim();
+  if (jobType && options && !listed(options.jobTypes, jobType)) return 'That job type is not one of the list.';
+  const clearance = filters.clearance.trim();
+  if (clearance && clearance !== 'true' && clearance !== 'false') return 'Clearance must be true or false.';
+  const industry = filters.industry.trim();
+  if (industry && options && !listed(options.industries, industry)) return 'That industry is not one of the list.';
   return '';
 }
 
@@ -642,6 +717,43 @@ export function linkHost(href: string): string {
   } catch {
     return href;
   }
+}
+
+/**
+ * A lake row's job type, clearance and industry as table cells: the server's
+ * own words (`jobTypeLabel`, `industryLabel` - never a copied list), and ''
+ * for a blank cell - a posting that does not say, or a row an older build
+ * added that the server has not filled in yet.
+ */
+export function lakeFactCells(facts: LakeFacts): { jobType: string; clearance: string; industry: string } {
+  return {
+    jobType: facts.jobTypeLabel,
+    clearance: facts.clearance === null ? '' : facts.clearance ? 'Required' : 'Not required',
+    industry: facts.industryLabel,
+  };
+}
+
+/** Said for a fact of a row an older build added, until the server's next start fills it in. */
+export const FACT_NOT_FILLED = 'Not filled in yet';
+
+/**
+ * The same three in a row's details, where a blank is said: what the posting
+ * did not state, or a row not filled in yet (null), which the server fills in
+ * from the row's analysis at its next start.
+ */
+export function describeLakeFacts(facts: LakeFacts): { jobType: string; clearance: string; industry: string } {
+  const cells = lakeFactCells(facts);
+  return {
+    jobType: facts.jobType === null ? FACT_NOT_FILLED : cells.jobType || 'Not stated',
+    clearance: facts.clearance === null ? FACT_NOT_FILLED : cells.clearance,
+    industry: facts.industry === null ? FACT_NOT_FILLED : cells.industry || 'Not stated',
+  };
+}
+
+/** The three as one line of an earlier version: only what it states, '' for nothing. */
+export function describeFactsLine(facts: LakeFacts): string {
+  const parts = [facts.jobTypeLabel, facts.clearance ? 'Clearance required' : '', facts.industryLabel];
+  return parts.filter(Boolean).join(' · ');
 }
 
 /** How a lake row came in. */

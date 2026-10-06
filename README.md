@@ -1336,6 +1336,22 @@ everybody after gets the stored one.
   `GET /api/resume/job-fields` lists them.
 - **The salary** is only what the posting states - its numbers, currency,
   period and words - never an estimate.
+- **The industry** is one of a closed list - Healthcare, Finance, Insurance,
+  Military, Government, Education, Retail & E-commerce, Technology,
+  Consulting, Media & Entertainment, Logistics & Transportation, Energy &
+  Utilities, Manufacturing, Telecommunications, Legal, Real Estate,
+  Hospitality & Travel, Nonprofit, Other - by a fixed id. An answer that names
+  none of them is **Other**; a posting that gives nothing to tell it by has
+  none (a blank cell).
+- **Job type** (Remote, Hybrid, Onsite, or blank when the posting does not
+  say) and **clearance** (required or not) come from the facts the job filter
+  judges. A clearance counts as required unless the posting says none or says
+  nothing - an unfamiliar clearance word included, as the filter treats it.
+- **A posting analysed before industries existed is not analysed again** for
+  one. Its industry is worked out from what its analysis already holds every
+  time it is read - its company category, else its own industry word
+  ("SaaS", "fintech", "Healthcare IT"), else none - and nothing is written
+  back into it.
 - **A call that fails stores nothing**, so the next request is the first real
   analysis. That is the only way a posting is ever sent to a model twice.
 
@@ -1581,6 +1597,15 @@ a deliberate re-hash rather than a silent split. A posting with no field from
 the list (*Unclassified*), or no company, has no hash: it is never added and
 never paid for.
 
+**What a job records.** Its company, job field, title, salary and link as
+reported, who reported it and when - and its **job type**, **clearance** and
+**industry**, taken from the posting's [analysis](#job-analysis-once-per-posting)
+and never from what anybody typed. Jobs added before these existed are filled
+in at the first start of this release, from their stored analyses (no model is
+asked; the log says *[lake] Filled in job type, clearance and industry for N
+lake row(s)...*), and so is any job an older build adds after a rollback, at
+the next start.
+
 **Duplicates and the window.** When a job comes in whose hash the lake
 already holds:
 
@@ -1597,29 +1622,57 @@ which is in effect and where it came from. The decision is made on the
 database alone - two reporters adding the same job at the same moment get one
 *added* and one *duplicate* - and never by reading a sheet.
 
+**Reported before.** The lake also remembers every posting each reporter
+reported, and what became of it the first time (*Added*, *Replaced*,
+*Duplicate* or *Unclassified*). The same reporter reporting the same posting
+again - the same row, another row, another tab, a row it was sorted or moved
+to - is **Reported before**: skipped, with that first outcome, never paid or
+counted again, and never a duplicate of itself, inside the window or after
+it. Another reporter's report of it is a duplicate like any other. The same
+posting **twice in one run** is a duplicate the second time, painted red. A
+row whose company was missing is not remembered, so it is reported once the
+company is filled in. Deleting a job from the lake (Admin → Job Lake) forgets
+the reports that reached it, so it can be reported again; an *Unclassified*
+report reached no job, so no delete forgets it - its analysis is final, and it
+would come out unclassified again.
+
+Of the reports made **before this release**, only those that added or
+replaced a job are remembered - they are read back from the lake's rows at the
+first start. One an earlier build called *Duplicate* or *Unclassified* left
+nothing in the lake to read, so the first run over that posting after the
+upgrade merges it again: *Unclassified* again, unpaid; a *Duplicate* again
+while the job is inside the window (its *seen* count goes up once more), or,
+once the job is older than the window, a replacement - paid like any other.
+From then on it is *Reported before*.
+
 **Reporting (Report Jobs).** A reporter picks a tab of their own job sheet -
 today's is chosen for them - and a range of rows (up to 500 at a time),
 presses **Preview rows** to see the rows that hold a job and which of them a
-run will skip because they were reported before, and presses **Add to job
-lake**. The page opens with what a job pays them (their own rate, or the global
+run will skip because they were reported before (with what became of them
+then), and presses **Add to job lake**. The page opens with what a job pays them (their own rate, or the global
 one), what they have earned today against any daily cap, their balance and how
 many of the lake's jobs are theirs. The run goes on in the background, with a
 progress bar - the page may be left and come back to, and shows the last run
 for an hour after it ends; for each row:
 
-1. a row whose **Lake Status** already says *Added*, *Replaced*, *Duplicate*
-   or *Unclassified* - beside the **Analysis** cell of the posting in the row
-   now - is skipped: running the same rows again pays nothing and analyses
-   nothing. A status left by a posting the row held before (a new one pasted
-   over it) does not count, and the row is reported like any other;
+1. a row whose posting this reporter **reported before** is skipped - *Reported
+   before (Added)*, or whichever outcome it had - so running the same rows
+   again pays nothing and analyses nothing - bar a row an earlier build marked
+   *Duplicate* or *Unclassified*, which is merged once more after the upgrade
+   (above), still with no model call. The database decides it, by the
+   posting, not the row's **Lake Status** (which the run writes but never
+   reads): a row moved or copied elsewhere is still skipped, and a new posting
+   pasted over an old row's is reported like any other;
 2. its posting's analysis is found, sheet first: the row's own **Analysis**
    cell, else the stored analysis of the posting, else **one** model call
    (written back into the row) - a posting analysed before costs nothing;
 3. the job is merged: **added**, **replaced** or **duplicate**, as above.
 
 Then the run writes each row's **Job Hash** and **Lake Status** - *Added*,
-*Replaced*, *Duplicate*, *Unclassified* or *Skipped* - into the row (the
-protected columns, written as plain values), paints the duplicates' rows red,
+*Replaced*, *Duplicate*, *Unclassified* or *Skipped*; a row reported before
+gets its first outcome again - into the row (the protected columns, written as
+plain values), paints the duplicates' rows red (a row whose posting was a
+duplicate the first time too),
 and ends with *N out of M was added, your current credit is $X* - M being the
 rows it took to the lake, a row reported before not counted - over every row's
 outcome, the duplicates red there as well. *Skipped* means the
@@ -1660,8 +1713,12 @@ settings and shares it - as an editor - with every enabled administrator's
 email; an administrator added later is added at the next sync (**Retry now**
 does it at once, with nothing to send). Every job the
 lake **adds** is appended as a new line (Company, Job Field, Title, Salary,
-Link, Requested By, Updated At, Job Hash); a replacement is a new line too, so
-the sheet is a log of everything the lake ever accepted. The database is the
+Link, Requested By, Updated At, Job Hash, Job Type, Clearance, Industry -
+Clearance a real TRUE/FALSE); a replacement is a new line too, so the sheet is
+a log of everything the lake ever accepted. An admin sheet made before Job
+Type, Clearance and Industry gets its header row rewritten once, just before
+its next line is appended; the lines already there keep those three columns
+blank (**Create a new admin sheet** sends the whole lake again, with them). The database is the
 record and the sheet follows it: a job is committed first, then appended in
 batches - right after each report run and merge, and at every start - and an
 append that fails never undoes anything; the job waits, the page shows how
@@ -1671,9 +1728,11 @@ deleted in Google, **Create a new admin sheet** makes another and sends it the
 whole lake.
 
 **Admin → Job Lake** (a tab of Settings → Administration) has three tabs of
-its own. **Lake** lists the lake - newest first, by company (compared as above),
-job field, salary, who reported it, when, and free text over company, title and
-description - and **Details** opens a row with its description and history,
+its own. **Lake** lists the lake - newest first, with each job's type,
+clearance and industry; by company (compared as above), job field, salary, who
+reported it, when, and free text over company, title and description (the API,
+`GET /api/admin/job-lake`, also takes `jobType`, `clearance=true|false` and
+`industry`) - and **Details** opens a row with its description and history,
 where **Revoke reward** takes the reward back and **Delete** removes the job
 (it can then be reported again, as a new one), with **Also revoke the reward**
 to take its reward back in the same step. **Merge** is the merge above.
@@ -2377,7 +2436,14 @@ the first start:
   predating job fields. It keeps working; adding `[[jobFieldList]]` (before the
   posting) and the new keys - or pasting the shipped text from
   `backend/static/prompts/analyze-job-description.json` over it - puts the
-  field list back in the cached part of the prompt.
+  field list back in the cached part of the prompt. One edited after job fields
+  but before industries is flagged as predating the industry instead: the
+  industry list is sent beside it on every call, and adding `[[industryList]]`
+  after `[[jobFieldList]]` and `"industry": ""` to its output puts it in the
+  cached part too.
+- **Industries.** Postings analysed from now on are also filed under an
+  industry. Nothing analysed before is analysed again for one: its industry is
+  worked out from what its analysis holds.
 - **Job sheets** gain six columns. A tab made earlier is widened, given the new
   header and protected the next time the app checks it - on the next job run
   against it.
@@ -2401,6 +2467,17 @@ start:
   otherwise.
 - The admin sheet is created the first time the lake has a job to send, not
   at startup.
+- **Job type, clearance and industry** are filled in for every job already in
+  the lake at the first start, from their analyses - no model is asked - and
+  the reports those jobs hold are remembered, so their reporters' rows read
+  *Reported before*. Only a report that added or replaced a job left a lake
+  row to read it from: a row an earlier build marked *Duplicate* or
+  *Unclassified* is not remembered, and the first run over it merges it again
+  (no model call) - unclassified again, unpaid; a duplicate again while the
+  job is inside the window, its *seen* count going up once more; or, once the
+  job is older than the window, a replacement, paid. It is remembered from
+  then on. An admin sheet made earlier gets the three columns' header just
+  before its next line.
 
 **Rolling back**: an older build reads none of the lake's tables and leaves
 them alone - see [Rolling back this release](#-rolling-back-this-release).
@@ -2448,6 +2525,14 @@ this order.
    dollars stay on the balance - to reappear when you upgrade again.
 3. **Stop the backend and back up** `free_tailor.db` in `DB_DIR` and
    `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), together.
+
+**An analysis prompt edited under this release.** If Admin → Prompts shows an
+edited **Analyze Job Description** whose text names `[[jobFieldList]]` or
+`[[industryList]]`, the older build refuses it - *Prompt
+"analyze-job-description" contains unknown variables* - and every new
+posting's analysis fails. Before stopping this build, take those two variables
+(and the lists' headings around them) out of the text, or paste the older
+release's shipped text over it.
 
 **With the backend stopped, make the database one the older build can read**
 
@@ -2525,8 +2610,8 @@ release added:
   older checkout brings back. The six analysis columns of the job sheets stay
   protected, so nobody but the server can clear them, and it writes none of
   them.
-- **The lake** - `job_lake`, its history and index, the settings and the admin
-  sheet - is not read or touched. The ledger rows of rewards and payouts show
+- **The lake** - `job_lake`, its history and index, `job_reports`, the
+  settings and the admin sheet - is not read or touched. The ledger rows of rewards and payouts show
   in its credit history with a change of `0` and their raw reasons
   (`job-report-reward`, `reporter-payout`).
 - `tailor_cache`, `refund_requests`, `order_items.provider_id`,
@@ -3121,15 +3206,17 @@ file. Export them in the shell, for the install and the server alike:
 | The log says `[sheets] Google answered 429 (quota) to ...; retry n of 5 in ...ms`, or a page says *Google Sheets is busy right now* | Google's per-minute Sheets quota is per project and per user, and every account of this install is the same user - the server's one credential - so a big filter run, a few sheet orders and their write-backs share one budget. A 429 is waited out with growing, randomised delays (and Google's own `Retry-After`), up to five times and 32 s a wait; only then is it reported. If it keeps reaching people, raise the Sheets quota in the credential's Cloud project, or run fewer sheet jobs at once. |
 | **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 16` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a tab an older build made is twelve columns wide, and is widened to the sixteen the analysis columns need the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
 | The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
-| Every new posting comes back **Unclassified**, or Admin → Prompts flags the analysis prompt as predating job fields | The Analyze Job Description prompt was edited before postings had a job field, so its text never asks for one. The field list is sent beside it on every call anyway, so postings should still be classified - when they are not, the edited text is fighting it (an instruction to return exactly some other JSON shape, say). Paste the shipped text (`backend/static/prompts/analyze-job-description.json` - there is no reset button) over it, or add `[[jobFieldList]]` before the posting and the `jobField`, `salary` and `filter` keys to its output. Only postings analysed from then on are affected: a stored analysis is never redone. |
+| Every new posting comes back **Unclassified**, or Admin → Prompts flags the analysis prompt as predating job fields (or industries) | The Analyze Job Description prompt was edited before postings had a job field, so its text never asks for one. The field list is sent beside it on every call anyway, so postings should still be classified - when they are not, the edited text is fighting it (an instruction to return exactly some other JSON shape, say). Paste the shipped text (`backend/static/prompts/analyze-job-description.json` - there is no reset button) over it, or add `[[jobFieldList]]` before the posting and the `jobField`, `salary` and `filter` keys to its output. Only postings analysed from then on are affected: a stored analysis is never redone. A prompt flagged as predating **industries** names the field list but not the industry list: the list and the instruction are sent beside it on every call, so postings still get an industry; add `[[industryList]]` (after `[[jobFieldList]]`) and `"industry": ""` to its output to move them into the cached part, which clears the flag. |
 | The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A row moved or sorted since loading (`no longer matches`) is neither read nor written. On an administrator's shared sheet the column always says *When built*: only an account's own sheet has the protected columns. |
 | The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
 | The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab; its own columns are left as they are` | Sheet mode was pointed at a tab you made yourself (its first row is not the job sheet's header). That is allowed - its rows are read through the column mapping - but such a tab gets no analysis columns: nothing in it is re-headered, protected or written, and its postings are found in the database or analysed once. To have a tab's analyses written back, build from one of the app's dated tabs. |
-| A reporter's row stays without a **Lake Status** after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the status could not be written: the run's summary says the sheet was not updated, and the log has `[lake] Report run rep_...: the Lake Status cells of "<tab>" could not be written` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since)`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds its analysis and its lake row - no model call, no second reward - and writes *Added*. |
-| **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: rows already marked are skipped, and a row whose status never reached the sheet finds its analysis and its lake row - no model call, no second reward - and is written *Added*. |
+| A reporter's row stays without a **Lake Status** after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the status could not be written: the run's summary says the sheet was not updated, and the log has `[lake] Report run rep_...: the Lake Status cells of "<tab>" could not be written` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since)`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds the posting reported before - no model call, no second reward - and writes its first outcome (*Added*). |
+| **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: every row the lost run reported is *Reported before* - skipped, no model call, no second reward - and written its first outcome (*Added*) if its status never reached the sheet; the rest are reported. |
 | **Report Jobs** says *"My notes" is not laid out as a job sheet tab, so it cannot be reported from.* (with the tab's own name) | The tab chosen is one the reporter made for themselves (notes, a list of their own): its first row is not the job sheet's header, so the program will not read it, protect it or write into it. Choose one of the dated tabs the program made; a job listed elsewhere has to be copied into one first. |
-| A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting on another row is a duplicate too - lower down in the same run, or pasted into another row or tab in a later one, by the same reporter or not; only a re-run of the very row that added it (its status never reached the sheet) reads *Added*. After the window, the same job reported again **replaces** the old one and is paid. |
-| A row a new posting was pasted into still shows the old posting's **Lake Status**, **Job Hash** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. A row is skipped as reported only when its status sits beside its own posting's analysis. |
+| A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting twice in one run is a duplicate the second time, and another reporter's copy of a posting is a duplicate too. A row whose posting was a duplicate the first time is painted red again by every later run over it (*Reported before (Duplicate)*) - except a row an earlier build marked *Duplicate*, which this release does not remember: the first run over it after the upgrade merges it again, a duplicate again while the job is inside the window (seen once more) and a paid replacement once it is not, and remembers that. After the window, the same job reported again - another posting of it, or by somebody else - **replaces** the old one and is paid. |
+| A row a new posting was pasted into still shows the old posting's **Lake Status**, **Job Hash** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. Whether a row was reported is never read from its **Lake Status**: it is the database's record of the posting, so a status left beside a new posting changes nothing. |
+| A reporter's row says *Reported before (Added)* - or *(Duplicate)*, *(Replaced)*, *(Unclassified)* - and is skipped, though it was never reported from that row or tab | The same reporter reported the same posting before - same link (tracking and `#fragment` aside) or same text - from another row, another tab, or this row before it was sorted or moved; in brackets is what became of it then. A posting is reported, paid and counted once per reporter, wherever it is pasted. For *(Added)*, *(Replaced)* or *(Duplicate)*, to have it reported again an administrator deletes the job on **Admin → Job Lake** (Details, Delete), which forgets every report that reached it - a job deleted while an older build was rolled back to is forgotten too, and one that build then took again is remembered against its new line, which Delete forgets. An *(Unclassified)* posting reached no job in the lake, so there is nothing to delete and it stays *Reported before*: its analysis is final, and reported again it would be unclassified again. A row whose company was missing is not remembered, and is reported once the company is filled in. |
+| On **Admin → Job Lake** a job's **Job Type**, **Clearance** or **Industry** is blank (a dash in the table; **Details** says *Not stated* or *Not filled in yet*) | Blank Job Type or Industry - *Not stated* - is what the posting gave: no remote, hybrid or on-site arrangement stated, nothing to tell its industry by (a posting analysed before industries existed gets one from its company category or its own industry word when it has one; it is never sent to a model again for it). All three blank, Clearance included - *Not filled in yet* - means the job was added by an older build (before this release, or while rolled back) and is not filled in yet: every start fills such jobs from their analyses - the log says *[lake] Filled in job type, clearance and industry for N lake row(s)...* - and *[lake] Could not fill in the lake's job type, clearance and industry* with the cause when it could not, in which case the next start tries again. |
 | A reported row says *Skipped* | It could not be reported this time: the row has no company, or no job description long enough to read a job field from. Fill it in and run the rows again - *Skipped* rows are tried again, unlike *Added*, *Replaced*, *Duplicate* and *Unclassified* ones. |
 | A reporter added jobs but earned `$0` | The global rate is still `$0` (Admin → Job Lake shows *not set*) and the reporter has no rate of their own, or the **daily cap** was reached (the job is added, the reward stops at the cap until the next UTC day), or the account is not a Reporter - an administrator reporting is never paid. Each lake row records the rate in effect when it was added. |
 | **Admin → Job Lake** says jobs are waiting for the admin sheet, or the log says `[lake] Could not append to the admin sheet` | The jobs are in the database - the sheet is a copy appended after them, and a failed append never undoes one. Under *Why the last attempt failed* the page shows the sentence and, on the line under it, Google's own reason: *Google Sheets is not configured on this server* means the server has no Google credential (see [The job sheet](#the-job-sheet)); *Google Sheets is busy right now*, over a Google 429, means the shared Sheets quota ran out even after backing off - **Retry now** later; *That spreadsheet or tab could not be found*, over a Google 404, means the spreadsheet was deleted in Google - use **Create a new admin sheet**, which sends it the whole lake (pressed while a sync is sending, that sync stops and starts again on the new sheet). Each sync also runs after the next report run or merge, and at startup. An administrator who cannot open the sheet was disabled when it was shared, or was appointed after the last sync - **Retry now** shares it with them. |
@@ -3314,12 +3401,20 @@ backoff - in `analysisSheets.test.js`.
 The Job Data Lake is pinned in `jobLakeIdentity.test.js` (the company
 normalisation and the versioned hash), `jobLakeStore.test.js` (the tables, the
 indexes and their query plans, the duplicate window on a fake clock, rewards,
-revokes, four threads adding one job), `jobLakeSync.test.js` (the admin sheet's
-outbox) and `jobLakeReport.test.js` (a reporter's run, the merge and the admin
-API over HTTP). The two pages' own decisions - the rows a run is asked for, the
+revokes, four threads adding one job, the job type, clearance and industry, the
+record of who reported what, and the start-up fill of an older build's rows),
+`jobLakeSync.test.js` (the admin sheet's outbox and its header) and
+`jobLakeReport.test.js` (a reporter's run - reported before, moved rows, the
+same posting twice in one run, a job an older build deleted - the merge and
+the admin API over HTTP). The
+industries, and an older analysis's industry worked out from what it holds,
+are in `jobAnalysisStore.test.js`. The two pages' own decisions - the rows a run is asked for, the
 settings a save sends, the lake's filters, the owner's line drawn from a real
-run's summary - are run against the server's code by
-`frontendJobLake.test.js`, and both pages in a browser by
+run's summary, the rows it paints red, what a row reported before says, each
+job's type, clearance and industry - are run against the server's code by
+`frontendJobLake.test.js` (and Admin → Prompts' notes on a prompt that
+predates job fields or industries by `frontendAnalysis.test.js`), and both
+pages in a browser by
 `test/e2e/report-run.js`, against a Google Sheet and a seat stubbed by preloads.
 
 Providers of one type are pinned in `providerQueues.test.js` (two Claude

@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
 import { switchCreditsToDollars } from './dollarSwitch';
+import { fillLakeFacts } from './jobLakeFacts';
 import { moveTemplateRowsToFiles } from './templateFileMove';
 import { runDataMigrations } from './migrations';
 
@@ -778,10 +779,19 @@ const SCHEMA = `
    * same version never twice.
    *
    * report_ref names the sheet row a reporter's run reported the current
-   * version from (spreadsheet, row and tab; NULL for a merge): a later run that
-   * finds the job within the window from that SAME row is that report again -
-   * its Lake Status never reached the sheet - while the same posting on any
-   * other row, tab or day is a duplicate like any other.
+   * version from (spreadsheet, row and tab; NULL for a merge). It is written
+   * still, because an older build rolled back to decides its "already" on it,
+   * but it decides nothing here: whether an account reported a posting before
+   * is job_reports' (below), by the posting's analysis, wherever the row has
+   * moved to since.
+   *
+   * job_type, clearance and industry are the facts the lake shows and filters
+   * on beside the job field (v6), derived from the row's analysis
+   * (services/jobAnalysis/facts.ts): job_type 'remote' | 'hybrid' | 'on_site'
+   * or '' when the posting does not say, clearance 1 when the posting requires
+   * one, industry a config/industries.ts id or 'not_specified'. NULL is "not
+   * filled yet" - a row an older build wrote - which database/jobLakeFacts.ts
+   * fills at the next start, from the analysis, never from a model.
    *
    * INTEGER ids rather than the UUIDs elsewhere: the full-text index below
    * points at rows by rowid, which VACUUM may renumber on a table without an
@@ -815,7 +825,10 @@ const SCHEMA = `
     reward_rate_milli    INTEGER,
     reward_revoked_milli INTEGER NOT NULL DEFAULT 0,
     reward_revoked_at    TEXT,
-    report_ref           TEXT
+    report_ref           TEXT,
+    job_type             TEXT,
+    clearance            INTEGER,
+    industry             TEXT
   );
 
   /** A lake row's earlier versions, each copied here the moment a later report replaced it. */
@@ -843,7 +856,40 @@ const SCHEMA = `
     reward_rate_milli    INTEGER,
     reward_revoked_milli INTEGER NOT NULL DEFAULT 0,
     reward_revoked_at    TEXT,
-    replaced_at          TEXT NOT NULL
+    replaced_at          TEXT NOT NULL,
+    job_type             TEXT,
+    clearance            INTEGER,
+    industry             TEXT
+  );
+
+  /**
+   * Every posting a reporter reported to the lake, ONCE per account and
+   * analysis (UNIQUE, idx_job_reports_account_analysis in
+   * INDEXES_AFTER_COLUMNS): what happened to it the first time - outcome
+   * 'added', 'replaced', 'duplicate' or 'unclassified' - the lake row it
+   * reached (NULL for unclassified), that row's job_hash, what it paid, and
+   * the sheet row it came from. Written in the same IMMEDIATE transaction as
+   * the merge it records (database/jobLakeRepository.ts).
+   *
+   * It is what makes a posting reported again by the same account - on
+   * another row, another tab, a row it was moved to - "reported before"
+   * rather than a duplicate of itself: one seek on (account, analysis), no
+   * sheet cell trusted. A report with no company is not recorded: the
+   * reporter fills the company in and reports it again. Deleting a lake row
+   * deletes the reports that reached it, so the job can be reported again.
+   */
+  CREATE TABLE IF NOT EXISTS job_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      TEXT NOT NULL,
+    analysis_id     TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    lake_id         INTEGER,
+    job_hash        TEXT,
+    reward_milli    INTEGER NOT NULL DEFAULT 0,
+    spreadsheet_id  TEXT,
+    tab_name        TEXT,
+    row_number      INTEGER,
+    created_at      TEXT NOT NULL
   );
 
   /**
@@ -1076,6 +1122,16 @@ function addMissingColumns(db: Database.Database): void {
     // one type at several sign-ins). NULL on every upgraded row, which reads
     // as "not recorded" - they all ran on the one provider each type had.
     { table: 'order_items', column: 'provider_id', definition: 'TEXT' },
+    // A lake row's job type, clearance and industry (v6). In the CREATE TABLE
+    // too; here for lake tables made before them. NULL - every upgraded row -
+    // is "not filled yet", which database/jobLakeFacts.ts fills from the row's
+    // analysis at this same start.
+    { table: 'job_lake', column: 'job_type', definition: 'TEXT' },
+    { table: 'job_lake', column: 'clearance', definition: 'INTEGER' },
+    { table: 'job_lake', column: 'industry', definition: 'TEXT' },
+    { table: 'job_lake_history', column: 'job_type', definition: 'TEXT' },
+    { table: 'job_lake_history', column: 'clearance', definition: 'INTEGER' },
+    { table: 'job_lake_history', column: 'industry', definition: 'TEXT' },
   ];
 
   for (const addition of additions) {
@@ -1207,6 +1263,37 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     columns: ['lake_id'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_history_lake ON job_lake_history (lake_id)',
   },
+  // The rows whose facts are still to be filled - an older build's - for the
+  // boot step's batches: partial, so it holds none of them once they are.
+  {
+    name: 'idx_job_lake_facts_missing',
+    table: 'job_lake',
+    columns: ['id', 'job_type'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_facts_missing ON job_lake (id) WHERE job_type IS NULL',
+  },
+  // And the earlier versions still to fill: without it every start walked the
+  // whole history - the lake's widest table, which only grows - to find none.
+  {
+    name: 'idx_job_lake_history_facts_missing',
+    table: 'job_lake_history',
+    columns: ['id', 'job_type'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_history_facts_missing ON job_lake_history (id) WHERE job_type IS NULL',
+  },
+  // One record per account and posting: the "reported before" seek, and
+  // what makes a second record for the same report impossible.
+  {
+    name: 'idx_job_reports_account_analysis',
+    table: 'job_reports',
+    columns: ['account_id', 'analysis_id'],
+    sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_job_reports_account_analysis ON job_reports (account_id, analysis_id)',
+  },
+  // A lake row's delete takes the reports that reached it.
+  {
+    name: 'idx_job_reports_lake',
+    table: 'job_reports',
+    columns: ['lake_id'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_job_reports_lake ON job_reports (lake_id)',
+  },
   {
     name: 'idx_tailor_cache_key',
     table: 'tailor_cache',
@@ -1294,6 +1381,12 @@ export function getDb(): Database.Database {
   // administrator indefinitely, while this build already reads the dollar
   // columns. Never fatal, and safe to have not run - see the module.
   switchCreditsToDollars(db);
+  // The lake's job type, clearance and industry for rows an older build wrote,
+  // derived from their analyses (no model is asked), and the record of who
+  // reported what seeded from them. Every start, by condition rather than a
+  // marker - the rows whose facts are NULL - so a rollback and a second
+  // upgrade heal themselves. Never fatal.
+  fillLakeFacts(db);
   // The connection is registered BEFORE the migrations run. That ordering is
   // load-bearing: a migration (or anything it logs through) that reaches for
   // getDb() would otherwise recurse into opening a second connection to the

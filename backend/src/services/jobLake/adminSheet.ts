@@ -8,6 +8,7 @@ import {
   isGoogleSheetsConfigured,
   shareSpreadsheetWithEmail,
   type CreatedSpreadsheet,
+  type SheetCellValue,
 } from '../../integrations/googleSheets';
 import {
   countUnsyncedLakeEntries,
@@ -63,7 +64,20 @@ export const ADMIN_LAKE_HEADERS = [
   'Requested By',
   'Updated At',
   'Job Hash',
+  // v6, columns I-K: appended, so every line an earlier sync wrote keeps its
+  // columns; those lines leave the three blank ("Create a new admin sheet"
+  // writes the whole lake again, with them).
+  'Job Type',
+  'Clearance',
+  'Industry',
 ] as const;
+
+/**
+ * Which `ADMIN_LAKE_HEADERS` a sheet's header row holds: 1 the first eight,
+ * 2 with Job Type, Clearance and Industry. A sheet stored below this has its
+ * header rewritten once, before its next append.
+ */
+export const ADMIN_LAKE_HEADER_VERSION = 2;
 
 /** Rows per append: well inside Google's request size, few calls for a big merge. */
 const SYNC_BATCH = 200;
@@ -74,8 +88,8 @@ const SYNC_MAX_BATCHES = 50;
 export type AdminLakeSheetClient = {
   isConfigured(): Promise<boolean>;
   createSpreadsheet(title: string, firstTab: string): Promise<CreatedSpreadsheet>;
-  writeRaw(spreadsheetId: string, data: Array<{ range: string; values: Array<Array<string | number | null>> }>): Promise<void>;
-  appendRows(spreadsheetId: string, range: string, rows: Array<Array<string | number | null>>): Promise<void>;
+  writeRaw(spreadsheetId: string, data: Array<{ range: string; values: Array<Array<SheetCellValue>> }>): Promise<void>;
+  appendRows(spreadsheetId: string, range: string, rows: Array<Array<SheetCellValue>>): Promise<void>;
   shareWithEmail(spreadsheetId: string, email: string): Promise<void>;
 };
 
@@ -110,6 +124,12 @@ export type AdminLakeSheet = {
    * Absent (a sheet stored before the flag) reads as true.
    */
   headerWritten: boolean;
+  /**
+   * The `ADMIN_LAKE_HEADER_VERSION` its header row was written at. Absent (a
+   * sheet stored before v6) reads as 1: its header is rewritten, whole, the
+   * next time a row is appended.
+   */
+  headerVersion: number;
 };
 
 function readSheet(): AdminLakeSheet | null {
@@ -126,6 +146,8 @@ function readSheet(): AdminLakeSheet | null {
       createdAt: typeof stored.createdAt === 'string' ? stored.createdAt : '',
       sharedWith: Array.isArray(stored.sharedWith) ? stored.sharedWith.filter((email): email is string => typeof email === 'string') : [],
       headerWritten: stored.headerWritten !== false,
+      headerVersion:
+        typeof stored.headerVersion === 'number' && Number.isSafeInteger(stored.headerVersion) ? stored.headerVersion : 1,
     };
   } catch (error) {
     console.warn(`[lake] app_settings["${ADMIN_LAKE_SHEET_KEY}"] is not readable; a new admin sheet will be created.`, error);
@@ -207,6 +229,7 @@ async function makeOrShare(recreate: boolean): Promise<AdminLakeSheet> {
       createdAt: new Date().toISOString(),
       sharedWith: [],
       headerWritten: false,
+      headerVersion: ADMIN_LAKE_HEADER_VERSION,
     };
     // Stored the moment it exists - before its header is written and before
     // it is shared: either can fail, and the next attempt must finish THIS
@@ -219,7 +242,9 @@ async function makeOrShare(recreate: boolean): Promise<AdminLakeSheet> {
     console.log(`[lake] Created the admin sheet ${sheet.spreadsheetId}.`);
   }
   // Before any row is appended - and before the sheet is handed to anybody.
-  if (!sheet.headerWritten) sheet = await writeHeader(sheet);
+  // A sheet whose header is an older build's gets this one's, once, so the
+  // columns appended since (I-K) are named before a line fills them.
+  if (!sheet.headerWritten || sheet.headerVersion < ADMIN_LAKE_HEADER_VERSION) sheet = await writeHeader(sheet);
   return shareWithAdministrators(sheet);
 }
 
@@ -227,7 +252,10 @@ async function writeHeader(sheet: AdminLakeSheet): Promise<AdminLakeSheet> {
   await client.writeRaw(sheet.spreadsheetId, [
     { range: a1Range(sheet.tabName, 1, 1, 1, ADMIN_LAKE_HEADERS.length), values: [[...ADMIN_LAKE_HEADERS]] },
   ]);
-  const next = { ...sheet, headerWritten: true };
+  if (sheet.headerWritten) {
+    console.log(`[lake] Rewrote the admin sheet's header for its new columns (${sheet.spreadsheetId}).`);
+  }
+  const next = { ...sheet, headerWritten: true, headerVersion: ADMIN_LAKE_HEADER_VERSION };
   storeIfCurrent(next);
   return next;
 }
@@ -280,8 +308,12 @@ export function adminLakeSyncStatus(): AdminLakeSyncStatus {
   return { unsynced: countUnsyncedLakeEntries(), running: running !== null, ...status };
 }
 
-/** A lake row as one line of the admin sheet, in `ADMIN_LAKE_HEADERS` order. */
-export function adminSheetRow(entry: LakeEntry, requesterEmail: string): string[] {
+/**
+ * A lake row as one line of the admin sheet, in `ADMIN_LAKE_HEADERS` order.
+ * Clearance is a real TRUE/FALSE, blank only for a row whose facts are not
+ * filled in yet; a job type or industry the posting does not state is blank.
+ */
+export function adminSheetRow(entry: LakeEntry, requesterEmail: string): SheetCellValue[] {
   return [
     entry.company,
     jobFieldLabel(entry.jobFieldId),
@@ -291,6 +323,9 @@ export function adminSheetRow(entry: LakeEntry, requesterEmail: string): string[
     requesterEmail,
     entry.updatedAt,
     entry.jobHash,
+    entry.jobTypeLabel,
+    entry.clearance === null ? '' : entry.clearance,
+    entry.industryLabel,
   ];
 }
 

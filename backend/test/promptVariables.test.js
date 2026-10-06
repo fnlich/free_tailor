@@ -96,6 +96,19 @@ test('every feature declares exactly the variables its code supplies', () => {
       `${feature}: the declared variables and the values its code builds have drifted apart`
     );
   }
+
+  // The two lists are the code's own constants: the same text for any
+  // posting, kept in the cacheable stable part.
+  const { renderIndustryListForPrompt } = require('../dist/config/industries');
+  const analysis = supplied['analyze-job-description'];
+  assert.equal(analysis.industryList, renderIndustryListForPrompt());
+  assert.equal(resumeService.buildAnalyzeJobDescriptionPromptValues('Another.', '').industryList, analysis.industryList);
+  assert.deepEqual([...promptService.STABLE_PROMPT_VARIABLES].sort(), ['industryList', 'jobFieldList']);
+  // Every value the analysis prompt is given before [[jobLink]] is stable.
+  for (const name of Object.keys(analysis)) {
+    if (name === 'jobLink' || name === 'jobDescription') continue;
+    assert.ok(promptService.STABLE_PROMPT_VARIABLES.has(name), `${name} is the same for every posting`);
+  }
 });
 
 /* ----------------------------------------------------------- validation */
@@ -162,7 +175,8 @@ test('the shipped prompts validate clean against what their code supplies', asyn
   assert.equal(tailor.predatesSectionSwitches, undefined, 'the shipped text knows about the switches');
   const analysis = prompts.find((prompt) => prompt.id === 'analyze-job-description');
   assert.equal(analysis.predatesJobField, undefined, 'the shipped analysis asks for a job field from the list');
-  for (const name of ['jobFieldList', 'jobLink', 'jobDescription']) {
+  assert.equal(analysis.predatesIndustry, undefined, 'and for an industry from its list');
+  for (const name of ['jobFieldList', 'industryList', 'jobLink', 'jobDescription']) {
     assert.ok(analysis.validation.usedVariables.includes(name), `the shipped analysis prompt uses [[${name}]]`);
     assert.ok(analysis.allowedVariables.find((entry) => entry.name === name)?.description, `${name} is documented`);
   }
@@ -197,6 +211,29 @@ test('a tailor-resume record written before the switches is marked, and only tha
   // job field, it never asks for one from the list.
   assert.equal(listed.get('analyze-job-description').predatesJobField, true);
   assert.equal(listed.get('tailor-resume').predatesJobField, undefined);
+  // Never both: the job-field addendum asks for the industry too.
+  assert.equal(listed.get('analyze-job-description').predatesIndustry, undefined);
+  assert.equal(listed.get('tailor-resume').predatesIndustry, undefined);
+});
+
+test('an analysis record that names the job fields but not the industries is marked as predating the industry, and only that', async () => {
+  const { staticDir } = seeded('predates-industry');
+  writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]');
+  const promptService = loadFresh('../dist/services/promptService');
+  const listed = (await promptService.listPrompts()).find((prompt) => prompt.id === 'analyze-job-description');
+  assert.equal(listed.predatesIndustry, true);
+  assert.equal(listed.predatesJobField, undefined);
+  assert.deepEqual(listed.validation.unknownVariables, []);
+
+  // Saved with the list, the note goes; [[industryList]] is a variable it may use.
+  const saved = await promptService.updatePrompt('analyze-job-description', {
+    content: 'Analyze.\n[[jobFieldList]]\n[[industryList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
+  });
+  assert.deepEqual(saved.validation.unknownVariables, []);
+  assert.equal(saved.predatesIndustry, undefined);
+  const preview = await promptService.previewPrompt({ id: 'analyze-job-description' });
+  assert.match(preview.renderedContent, /- healthcare: Healthcare/, 'the preview shows the real list');
+  assert.doesNotMatch(preview.renderedContent, /\[\[/);
 });
 
 /* -------------------------------------------- the backstop, through a seat */

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~55s with the tsc step, 1624 tests)
+npm test                       # backend node:test suite (~85s with the tsc step, 1642 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack)
 ```
 
@@ -132,7 +132,11 @@ backend/src/
                       #   and of retired ids; aiProviders.ts the PROVIDERS -
                       #   every place a type runs, see "Providers of one type"
                       #   below; jobFields.ts the job fields a posting
-                      #   is classified into (stable ids, never reused); providerModels.ts each seat's model-name
+                      #   is classified into (stable ids, never reused);
+                      #   industries.ts the industries it is filed under
+                      #   (closed list, stable ids, `not_specified`; the
+                      #   keywords an older analysis's free text is read
+                      #   by); providerModels.ts each seat's model-name
                       #   list; pricePerResume.ts the price field's rules
                       #   (thousandths of a dollar, see "Money" below);
                       #   modelErrors.ts the two model refusals;
@@ -203,7 +207,10 @@ backend/src/
                       #   tried at the next start), then the one-time switch
                       #   of credits to dollars (dollarSwitch.ts, schema_meta
                       #   `credit_unit`, never fatal - see "Money" below),
-                      #   then the migrations.
+                      #   then the lake's facts for rows an older build wrote
+                      #   (jobLakeFacts.ts, every start, by condition - see
+                      #   "The Job Data Lake" below - never fatal), then the
+                      #   migrations.
                       #   An older build reads users.plan: rolling back means
                       #   renaming it back first (README, "Rolling back this
                       #   release", which gathers every step a rollback needs;
@@ -1080,9 +1087,9 @@ that list must equal the keys of the feature's value builder -
 their siblings in `resumeService.ts`; test/promptVariables.test.js fails when
 they drift, so a new variable goes in both. A variable whose value the CODE
 fixes and is the same on every call is listed in `STABLE_PROMPT_VARIABLES`
-(promptService.ts) - today only the analysis prompt's `[[jobFieldList]]` -
-and promptAssembly keeps it in the cacheable stable part instead of starting
-the call's data at it. Create, update,
+(promptService.ts) - today the analysis prompt's `[[jobFieldList]]` and
+`[[industryList]]` - and promptAssembly keeps it in the cacheable stable part
+instead of starting the call's data at it. Create, update,
 `/prompts/validate` and `/preview` refuse or report any other name (`Unknown
 prompt variables: x`; an unsaved draft names its `featureKey`), and a stored
 record holding one fails at render with `contains unknown variables`. The
@@ -1450,7 +1457,7 @@ lookups to single index seeks with EXPLAIN QUERY PLAN. No TTL, no cap, no
 overwrite of a readable row; a row found by its text that had no link is given the link it was
 found with (`attachLinkKey`, NULL only). `merged_at` is the Job Data Lake's (set
 by `mergeIntoLake`, for a report or a merge, on every outcome but `unclassified`
-and `no-company`, which write nothing). `company_name`
+and `no-company`, which write nothing to the lake). `company_name`
 (an added column, '' on older rows) is the company a caller knew the posting by -
 the gate takes an optional `company` and records it on insert or, when the row
 has none, afterwards (`attachCompanyName`, '' only; the builder routes, the
@@ -1483,13 +1490,36 @@ seniority is `jobMeta.seniority`). An off-list filter word becomes
 `not_specified` - except a clearance, which fails CLOSED (`normalizeClearance`:
 an unknown word is kept, and fails the filter; only an absent or empty one is
 `none`), and words are folded across spaces, `-` and `/` (`TS/SCI` is
-`ts_sci`). The tailoring prompt is given none of the three (pinned by
-test/tokenBudget.test.js). The analysis prompt's variables are `jobFieldList` (stable, before the
-posting, so the cached system part is byte-identical across postings - test
-pins it), `jobLink` and `jobDescription`; an administrator's record that never
-mentions `[[jobFieldList]]` is flagged `predatesJobField` and gets
+`ts_sci`). Since v6 it also has `industry` (one id from
+`config/industries.ts`, or `not_specified`; `normalizeIndustry`: an id, a
+label, a known short form or a keyword, else `other`) - OPTIONAL, and set by
+`normalizeJobAnalysisResponse` ONLY when the answer has the key, so an analysis
+stored (or a sheet cell written) before it stays without one. Its industry,
+job type and clearance are derived when READ, by facts.ts's pure
+`industryOf` (its own `industry` whenever the key is there; else its filter's
+company category, `COMPANY_CATEGORY_INDUSTRY`; else keywords in its free-text
+`jobMeta.industry`; else `not_specified`), `jobTypeOf` ('remote' | 'hybrid' |
+'on_site' | '') and `clearanceRequiredOf` (false only for `none` and
+`not_specified`, so an unknown clearance word is required, failing closed) -
+`analysisFactsOf` is all three, and every place that shows them uses it.
+NOTHING re-asks a model for an older analysis's industry, and nothing is
+written back into one. The tailoring prompt is given none of the four
+(`jobField`, `industry`, `salary`, `filter` are stripped by
+`buildTailorResumePromptValues`, so its values and every tailor-cache key are
+what they were - pinned by test/tokenBudget.test.js; `jobMeta.industry`, the
+posting's own word, is in it as it always was). The analysis prompt's variables
+are `jobFieldList` and `industryList` (both stable, before `[[jobLink]]`, so
+the cached system part is byte-identical across postings - test pins it),
+`jobLink` and `jobDescription`; an administrator's record that never mentions
+`[[jobFieldList]]` is flagged `predatesJobField` and gets
 `buildAnalysisFactsOverride()` appended to every turn - the seniority words
-(`SENIORITY_VALUES`, which the filter judges) as well as the three keys. The analysis model is
+(`SENIORITY_VALUES`, which the filter judges) as well as the four keys, the
+industry among them; one that names `[[jobFieldList]]` but not
+`[[industryList]]` is flagged `predatesIndustry` and gets
+`buildIndustryOverride()` alone (gate.ts `analysisOverrideFor` decides; never
+both flags). An older build (5177fc3 and before) refuses a stored analysis
+record naming `[[industryList]]` (*contains unknown variables*), so a rollback
+takes it out of an edited prompt first. The analysis model is
 `analysisModelId` in the admin settings ('' = the app default model; a stale
 one falls back with a warning; a save CHANGING it to a model that cannot run
 is refused by name) - never in an ordinary account's payload.
@@ -1564,7 +1594,12 @@ then say *When built*) to show which rows skip analysis. Admin -> Settings ->
 General has the Analysis model select (its own Save; a stored model that
 stopped running stays listed as "cannot run here"); Admin -> Prompts offers no
 New Variant, Duplicate, Save Active or model override for the analysis
-feature, and pills `predatesJobField` / `predatesSectionSwitches`. The profile
+feature, and pills `predatesJobField` / `predatesIndustry` /
+`predatesSectionSwitches` - with the editor's own note on the text as typed,
+lib/promptNotes.ts (`lacksJobFieldList` / `lacksIndustryList` /
+`lacksSectionSwitches`, the server's variable syntax), which
+test/frontendAnalysis.test.js holds to those flags and to the gate's
+`analysisOverrideFor`. The profile
 editor's Extracting prompt select is gone with `analyzeJobPromptId`.
 test/frontendAnalysis.test.js runs every copy here against the server's code.
 
@@ -1590,23 +1625,84 @@ external-content index `job_lake_fts` points at rows by rowid, which VACUUM
 renumbers on a table without one; three triggers keep it in step) and the plan's
 indexes exactly - `job_hash` UNIQUE, `updated_at`, `(job_field_id, updated_at)`,
 `(company_key, updated_at)`, `requested_by`, and `id WHERE sheet_synced_at IS
-NULL` (the outbox) - plus `job_lake_history(lake_id)`, all in
-`INDEXES_AFTER_COLUMNS`. test/jobLakeStore.test.js pins them and their plans
-(`FIND_BY_HASH_SQL`, `LIST_DEFAULT_SQL`, `UNSYNCED_SQL`, `HISTORY_SQL`).
+NULL` (the outbox), and `id WHERE job_type IS NULL` (the boot step's rows still
+to fill) - plus `job_lake_history(lake_id)`, `job_lake_history(id) WHERE
+job_type IS NULL` (its earlier versions still to fill) and `job_reports`' two
+(below), all in `INDEXES_AFTER_COLUMNS`. test/jobLakeStore.test.js pins them
+and their plans (`FIND_BY_HASH_SQL`, `LIST_DEFAULT_SQL`, `UNSYNCED_SQL`,
+`HISTORY_SQL`, `FIND_JOB_REPORT_SQL`, `findJobReportsSql`,
+`DELETE_LAKE_REPORTS_SQL`, and jobLakeFacts.ts's `LAKE_TO_FILL_SQL`,
+`HISTORY_TO_FILL_SQL` and `DROP_STALE_REPORT_SQL`).
+
+**Facts** (v6): `job_lake` and `job_lake_history` carry `job_type` ('remote' |
+'hybrid' | 'on_site' | ''), `clearance` (0/1) and `industry` (a
+config/industries.ts id or `not_specified`) - the analysis's, through
+`lakeJobFromAnalysis` -> facts.ts `analysisFactsOf`, never the caller's;
+written on insert, replace and the history copy. NULL means "not filled yet":
+a row an older build wrote. `database/jobLakeFacts.ts`'s `fillLakeFacts` runs
+in getDb() every start (after the dollar switch, before the connection is
+registered - so no repository and no getDb() inside it), by CONDITION, not a
+marker: rows whose `job_type` IS NULL (the two partial indexes, so a start
+with nothing to fill reads two empty indexes and neither table), history
+first, in IMMEDIATE batches of 500, from each row's stored `analysis_json` through the
+same pure functions - NO model, nothing written into an analysis; a row whose
+analysis is gone or unreadable gets '' / 0 / `not_specified`. A history row
+found NULL also marks its lake row for a refill, because only an older build's
+REPLACE leaves one (it overwrote the row without touching the facts). In the
+same batches it records the reports those rows hold in `job_reports` (below):
+a `source = 'report'` row's versions only - never a merge's, whose
+`requested_by` is the analysis's maker - the first `added`, each later one
+`replaced`. A duplicate or unclassified report an older build made left no
+row, so it is NOT remembered: the first run over it merges it again (a
+duplicate again inside the window, a paid replacement after it), and records
+that - the README says so where it promises a re-run pays nothing.
+Never fatal; a second start is a no-op. `toEntry` / `toHistory` serve `jobType`,
+`jobTypeLabel` (Remote, Hybrid, Onsite, ''), `clearance` (boolean), `industry`
+and `industryLabel` ('' for `not_specified`), all null/'' while unfilled.
+`LakeQuery` (and GET /api/admin/job-lake) filters on `jobType`
+(`not_specified` = ''), `clearance` (`true`/`false`) and `industry`, with no
+index of their own: the page still reads `idx_job_lake_updated` in order, no
+sort (pinned); the GET answers `options: { jobTypes, industries }` for the
+page's selects.
+
+**`job_reports`** (v6): every posting a reporter reported, ONE row per
+`(account_id, analysis_id)` (UNIQUE `idx_job_reports_account_analysis`), with
+the FIRST outcome (`added` | `replaced` | `duplicate` | `unclassified`,
+`JOB_REPORT_OUTCOME_LABELS`), the lake row and job hash it reached (NULL for
+unclassified), the reward, the sheet row it came from, `created_at`;
+`idx_job_reports_lake` for a delete. It is what "reported before" means:
+the database, by the posting's ANALYSIS, wherever the row has been moved,
+sorted or copied to - no sheet cell is read for it. `findJobReports(account,
+analysisIds)` reads it. `deleteLakeEntry` deletes the reports that reached
+the row (`DELETE_LAKE_REPORTS_SQL`), so the job can be reported again, by any
+of them; an `unclassified` record names no row, so nothing forgets it (its
+analysis is final - it would be unclassified again). A record whose lake row is gone anyway (an older build, which knows
+nothing of the records, deleted it) counts for nothing: `findJobReports` skips
+it (`findJobReportsSql`'s EXISTS), so the run and the preview never call the
+posting reported before, and the merge drops it when it meets it; when that
+build took the same report again as a new row, the boot step's seed replaces
+the record with one naming that row (`DROP_STALE_REPORT_SQL`, one seek), so
+Delete here forgets it. No sweep of the table at startup.
 
 **`mergeIntoLake(job, requestedBy, policy)`** is the only way in, for the
-reporter run and the admin merge alike: ONE `.immediate()` transaction - seek
-the hash; none -> INSERT (`added`); a row whose `updated_at` is within the window
--> `seen_count`/`last_seen_at` bumped (`duplicate`; `updated_at` does NOT move,
-so the window runs from the add) - or `already` when that row is this very
-analysis from this very account AND the same sheet row (`job_lake.report_ref`,
-`reportRefOf(spreadsheet, tab, row)`, NULL for a merge, which is never
-`already`): a re-run whose Lake Status never landed, nothing moves, the run
-writes Added. The same posting on another row, tab or day is a `duplicate`;
-an older row -> copied to
-`job_lake_history`, overwritten, `requested_by`/`updated_at`/the reward moved,
-`sheet_synced_at` NULL again (`replaced`, which counts as ADDED). The analysis
-is marked merged in the same transaction. The decision reads the database ONLY
+reporter run and the admin merge alike: ONE `.immediate()` transaction - for a
+REPORT (source `report`, an account and an analysis) first the `job_reports`
+seek: found -> `already` with `priorOutcome`, nothing moves (no seen_count, no
+reward, no record), from ANY row, tab or day, and even after the window (the
+same posting never replaces itself); then seek the hash; none -> INSERT
+(`added`); a row whose `updated_at` is within the window ->
+`seen_count`/`last_seen_at` bumped (`duplicate`; `updated_at` does NOT move,
+so the window runs from the add); an older row -> copied to
+`job_lake_history`, overwritten, `requested_by`/`updated_at`/the facts/the
+reward moved, `sheet_synced_at` NULL again (`replaced`, which counts as ADDED).
+A report decided added, replaced, duplicate or unclassified is then recorded
+(`INSERT OR IGNORE`); `no-company` is not - the reporter fills it in and
+reports again. Another account's report of the same posting is a `duplicate`
+(and recorded as theirs). A merge (source `merge`) is nobody's report: never
+`already`, never recorded. `job_lake.report_ref`
+(`reportRefOf(spreadsheet, tab, row)`, from `LakeJob.reportedFrom`) is still
+written, because an older build decides ITS `already` on it, but decides
+nothing here. The analysis is marked merged in the same transaction. The decision reads the database ONLY
 (J10) - test/jobLakeSync.test.js runs it with every Google seam set to throw -
 and worker threads in test/jobLakeStore.test.js race four writers for one job.
 `services/jobLake/index.ts`'s wrapper resolves the policy from the settings at
@@ -1636,17 +1732,26 @@ refuses `*Milli`. Admin -> Accounts' list carries `globalReportRateMilli`.
 **The reporter run** (`services/jobLake/reportRun.ts`, routes/report.ts under
 `requireReporter`, the caller's OWN sheet only - no spreadsheet id is read from
 any request): inspect the tab (a tab that is not a job tab is refused before it
-is touched), verify it on that same read, read B:E and K:P once, skip rows whose
-Lake Status is Added/Replaced/Duplicate/Unclassified (`Skipped` is retried)
-beside an Analysis cell for the posting in the row NOW (`lakeStatusIsRowsOwn`;
-the protected cells outlive a posting replaced in place, so a status left by
-the one before is ignored, and routes/report.ts's `reported` says the same),
-then the submission step's `resolveAnalysesAtSubmit` (sheet first, no model) and the gate
-for the rest (three at a time, written back like a queued task's first
-analysis), merges in ROW ORDER, `flushAnalysisWriteBacks()` FIRST (a stale
-program cell's replacement empties M and O), then `writeLakeStatuses` - one RAW
-write of M:O per row still holding its posting (re-read first) and one
-`repeatCell` batch painting duplicates `DUPLICATE_ROW_COLOR`. In memory, one run
+is touched), verify it on that same read, read B:E once (the lake's own cells
+are written, never READ), then skip as `already-reported` - "Reported before
+(Added)", `priorOutcome` on the row, not in `total` - each row whose posting is
+STORED (gate's `findStoredAnalysis`, no model) and has this account's
+`job_reports` row, the FIRST row of that posting in the range only; the
+submission step's `resolveAnalysesAtSubmit` (sheet first, no model) runs over
+every row, skipped ones included (so their empty analysis cells are written
+back), and the gate for the rest (three at a time, written back like a queued
+task's first analysis); merges in ROW ORDER - a merge answering `already` for a
+posting a row ABOVE already stands for in this run (`seenThisRun`) is shown as
+a red `duplicate`, "The same posting is on a row above." (unclassified when its
+posting is), otherwise as reported before; then `flushAnalysisWriteBacks()`
+FIRST (a stale program cell's replacement empties M and O), then
+`writeLakeStatuses` - one RAW write of M:O per row still holding its posting
+(re-read first; a row reported before gets its first outcome's word) and one
+`repeatCell` batch painting `DUPLICATE_ROW_COLOR` on duplicates and on rows
+whose first outcome was a duplicate. GET /rows answers each row's `reported`,
+`priorOutcome` and `jobHash` from the same database lookup, read-only
+(`findStoredAnalysis(..., { readOnly: true })`), first row of a posting only -
+exactly what a run would skip; it no longer serves `lakeStatus`. In memory, one run
 per account (409 `run-in-progress`), kept an hour; a restart loses a run in
 progress and re-running finishes it. Seam: `setReportSheetsClientForTests`.
 
@@ -1658,8 +1763,12 @@ and NO reward; never a model, never a sheet.
 **The admin sheet** (`services/jobLake/adminSheet.ts`, J9/J10): created on first
 use by the server (`app_settings['job-lake.admin-sheet']`) - stored the moment
 it exists with `headerWritten: false`, so a header write that fails leaves that
-sheet to finish, never a second one (absent = true) - header written RAW,
-shared as writer with every ENABLED admin's email (more at each sync, an idle
+sheet to finish, never a second one (absent = true) - header written RAW
+(`ADMIN_LAKE_HEADERS`: the eight, then Job Type, Clearance, Industry as I-K,
+`adminSheetRow` writing the labels and a real TRUE/FALSE; a sheet whose stored
+`headerVersion` is below `ADMIN_LAKE_HEADER_VERSION` - absent reads as 1 - has
+its whole header rewritten once, before its next append; older lines stay
+blank there), shared as writer with every ENABLED admin's email (more at each sync, an idle
 one included; nobody is unshared). An OUTBOX: rows with `sheet_synced_at IS NULL` are appended in
 batches of 200 (`appendValuesRaw`, `values:append` RAW + INSERT_ROWS, through
 the 429 backoff) and marked by id AND `updated_at`, and only while the sheet
@@ -1688,10 +1797,12 @@ lib/format.ts and lib/reporterPay.ts, so test/frontendJobLake.test.js runs it
 against the server: `readReportRange` is `readRunRange`'s refusal word for
 word, `lakeSettingsProblems` / `lakeSettingsChanges` are `updateLakeSettings`'s
 (only what changed is sent, AS TYPED, '' to clear), `lakeFilterProblem` the
-lake route's 400s, `notJobTabMessage` the run's own refusal, the statuses'
-labels are read against the source unions, and `describeRunSummary` - the
-owner's "N out of M was added, your current credit is $X" - is drawn from a
-real run's summary there. **/report** (app/report/page.tsx) asks GET
+lake route's 400s (the job type and industry against the route's own
+`options` lists, never a copied one), `notJobTabMessage` the run's own
+refusal, the statuses' labels and `JOB_REPORT_OUTCOME_LABELS` (the "(Added)"
+in *Reported before (Added)*) are read against the source, and
+`describeRunSummary` - the owner's "N out of M was added, your current
+credit is $X" - is drawn from a real run's summary there. **/report** (app/report/page.tsx) asks GET
 /api/report on arrival (rate, today's earnings, balance, the LATEST run - a
 running one is followed, one that ended is shown for the hour the server
 keeps it), lists the tabs (`defaultTab` chosen), previews rows 2-501 by
@@ -1700,19 +1811,28 @@ rows that has something to report (`startBlocker`); a 409 `run-in-progress`
 follows the run its `runId` names. It polls GET /runs/:id every
 `REPORT_POLL_MS` until the SERVER says it ended (a 404 is a restart: the run
 is gone, what it merged is not), then re-reads the overview, the account (the
-top bar's balance) and the preview of those rows. A duplicate's row is red
-(`isRedOutcome`, page.module.css - a rule more specific than the unlayered
-`.tl-table td`, stated for html.dark too). A link from a sheet or the lake
+top bar's balance) and the preview of those rows. A previewed row reported
+before says what became of it then from the row's `priorOutcome`
+(`describePreviewRow`; nothing about a row is read from its Lake Status), and
+so does a run row's pill (`reportRowLabel`). A row is red exactly where the run
+paints the sheet - a duplicate, and a row reported before whose posting was a
+duplicate then (`isRedOutcome`, the run's `isRed`; the unit test compares it
+with the rows the run painted) - via page.module.css, a rule more specific
+than the unlayered `.tl-table td`, stated for html.dark too. A link from a sheet or the lake
 reaches an href only through `safeWebLink` (http(s), a host, no credentials).
 **/admin/job-lake** (app/admin/job-lake/: page.tsx, LakeTab, MergeTab,
 SettingsTab) is a Settings -> Administration tab (navModel's
 SETTINGS_ADMIN_TABS), its own tabs in `?tab=` (lake, merge, settings) as
 Payments keeps them; the lake's filters apply on Search (a bumped epoch on
-usePagedList), Details is a kit Dialog with Revoke reward and Delete +
-"Also revoke the reward"; the money boxes are text, never `type="number"`,
+usePagedList); the table and Details show each job's Job type, Clearance and
+Industry in the server's words (`jobTypeLabel`, `industryLabel`;
+`lakeFactCells`, and `describeLakeFacts`, which says *Not stated*, or *Not
+filled in yet* for a NULL an older build left); Details is a kit Dialog with
+Revoke reward and Delete + "Also revoke the reward"; the money boxes are text, never `type="number"`,
 and the page is in frontendMoney.test.js's FRONTEND_MONEY_SOURCES.
 test/e2e/report-run.js drives both against stub-report-sheets.js and
-stub-seat.js.
+stub-seat.js, recording the reporter's earlier reports in the database first
+(report-sheet-rows.js, which both share) - a Lake Status cell decides nothing.
 
 ## Conventions from the history
 

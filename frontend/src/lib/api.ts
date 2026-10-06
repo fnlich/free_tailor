@@ -1906,6 +1906,14 @@ export interface PromptSummary {
    * outside the cached part of the prompt, so the shipped text is cheaper.
    */
   predatesJobField?: boolean;
+  /**
+   * The analysis record, when its text names `[[jobFieldList]]` but never
+   * `[[industryList]]`: written after job fields, before industries. Its
+   * postings still get an industry - the server appends the list and the
+   * instruction to every turn - outside the cached part of the prompt. Never
+   * set together with `predatesJobField`.
+   */
+  predatesIndustry?: boolean;
 }
 
 export interface PromptRecord extends PromptSummary {

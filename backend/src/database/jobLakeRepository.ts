@@ -1,5 +1,7 @@
+import { industryLabel, isIndustryId, NOT_SPECIFIED_INDUSTRY_ID } from '../config/industries';
 import { isJobFieldId, jobFieldLabel } from '../config/jobFields';
 import { readStoredReportRateMilli } from '../config/reportRate';
+import { jobTypeLabel, type JobTypeId } from '../services/jobAnalysis/facts';
 import { lakeIdentity, normaliseCompany } from '../services/jobLake/identity';
 import type { JobSalary, JobSalaryPeriod } from '../types/template';
 import { formatMoney } from '../utils/money';
@@ -17,6 +19,11 @@ import { getDb } from './sqlite';
  * index inside an IMMEDIATE transaction - never a sheet, which is only ever
  * told the outcome afterwards. So two reporters adding the same job at the
  * same moment, in one process or two, get one `added` and one `duplicate`.
+ *
+ * It also keeps `job_reports`, the record of every posting each account
+ * reported and what became of it the first time: written in that same
+ * transaction, and read there first, so the same account reporting the same
+ * posting again - from any row, any tab - is `already`, paid and counted once.
  *
  * Every amount is an integer count of thousandths of a dollar.
  */
@@ -37,20 +44,96 @@ export type LakeJob = {
   /** `report` from the reporter run, `merge` from an administrator's merge. */
   source: 'report' | 'merge';
   /**
-   * The sheet row a reporter's run read the job from (`reportRefOf`), or
-   * null - a merge has none. Only a report from this SAME row can be
-   * `already`; from anywhere else, the same posting is a duplicate.
+   * The analysis's job type, clearance and industry (services/jobAnalysis/
+   * facts.ts `analysisFactsOf`), stored on the row for the lake's columns and
+   * filters - never the caller's own.
    */
-  reportRef?: string | null;
+  jobType: JobTypeId;
+  clearance: boolean;
+  industry: string;
+  /**
+   * The sheet row a reporter's run read the job from, or null - a merge has
+   * none. Kept on the report's record and, as `report_ref`, on the lake row;
+   * it decides nothing: a posting this account reported before is `already`
+   * from whichever row it is reported again.
+   */
+  reportedFrom?: SheetRowRef | null;
 };
 
+export type SheetRowRef = { spreadsheetId: string; tabName: string; row: number };
+
 /**
- * The reference a report run stores for one of its rows: the spreadsheet, the
- * row and the tab. Compared whole, never parsed - the spreadsheet id has no
- * `:` and the row is digits, so the tab goes last, whatever it contains.
+ * The reference a lake row stores for the sheet row its current version was
+ * reported from: the spreadsheet, the row and the tab. The spreadsheet id has
+ * no `:` and the row is digits, so the tab goes last, whatever it contains.
+ * An older build rolled back to compares it whole, to tell a re-run of the
+ * same row from the same posting reported elsewhere; this build only writes it.
  */
 export function reportRefOf(spreadsheetId: string, tabName: string, row: number): string {
   return `${spreadsheetId}:${row}:${tabName}`;
+}
+
+/* ------------------------------------------------------- the report record -- */
+
+/** What became of a posting the first time an account reported it. */
+export type JobReportOutcome = 'added' | 'replaced' | 'duplicate' | 'unclassified';
+
+/** The words a page and a sheet show for each, as "Reported before (Added)". */
+export const JOB_REPORT_OUTCOME_LABELS: Readonly<Record<JobReportOutcome, string>> = Object.freeze({
+  added: 'Added',
+  replaced: 'Replaced',
+  duplicate: 'Duplicate',
+  unclassified: 'Unclassified',
+});
+
+const REPORT_OUTCOMES = new Set<string>(Object.keys(JOB_REPORT_OUTCOME_LABELS));
+
+export type JobReport = {
+  id: number;
+  accountId: string;
+  analysisId: string;
+  outcome: JobReportOutcome;
+  /** The lake row it reached; null when it reached none (unclassified). */
+  lakeId: number | null;
+  jobHash: string | null;
+  /** What it paid, in thousandths of a dollar. */
+  rewardMilli: number;
+  /** Where it was first reported from, when that is known. */
+  spreadsheetId: string | null;
+  tabName: string | null;
+  row: number | null;
+  createdAt: string;
+};
+
+type JobReportRow = {
+  id: number;
+  account_id: string;
+  analysis_id: string;
+  outcome: string;
+  lake_id: number | null;
+  job_hash: string | null;
+  reward_milli: number | null;
+  spreadsheet_id: string | null;
+  tab_name: string | null;
+  row_number: number | null;
+  created_at: string;
+};
+
+function toJobReport(row: JobReportRow): JobReport {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    analysisId: row.analysis_id,
+    // A word this build does not know (a later build's) reads as the plainest outcome.
+    outcome: REPORT_OUTCOMES.has(row.outcome) ? (row.outcome as JobReportOutcome) : 'added',
+    lakeId: row.lake_id,
+    jobHash: row.job_hash,
+    rewardMilli: row.reward_milli ?? 0,
+    spreadsheetId: row.spreadsheet_id,
+    tabName: row.tab_name,
+    row: row.row_number,
+    createdAt: row.created_at,
+  };
 }
 
 /**
@@ -78,12 +161,12 @@ export type MergeStatus =
   /** A row added or replaced within the window: seen_count bumped, nothing paid. Red in the sheet. */
   | 'duplicate'
   /**
-   * The SAME report again - the row within the window is this very posting
-   * (same analysis), reported by this same account from the same sheet row:
-   * a run re-reading a row whose Lake Status never reached the sheet.
-   * Nothing moves, and the row is what it was the first time, not a
-   * duplicate of itself. The same posting pasted into another row, tab or
-   * day's sheet is a `duplicate`, like any other report of the job.
+   * The SAME report again: this account reported this very posting (the same
+   * analysis) before - from this row or any other, this tab or another, a row
+   * it has been moved to since - and `job_reports` says so. Nothing moves:
+   * no seen_count, no reward, no record. `priorOutcome` is what became of it
+   * the first time. Another account's report of the posting is a duplicate,
+   * like any other report of the job.
    */
   | 'already'
   /** No job field from the list: never merged, never paid (J3). */
@@ -105,6 +188,8 @@ export type MergeOutcome = {
   rewardShort?: JobRewardOutcome['short'];
   /** The requester's balance after a reward, when one was attempted. */
   balanceMilli?: number;
+  /** For `already`: what became of the posting the first time this account reported it. */
+  priorOutcome?: JobReportOutcome;
 };
 
 /* --------------------------------------------------------------- rows -- */
@@ -137,12 +222,34 @@ type LakeRow = {
   reward_revoked_milli: number;
   reward_revoked_at: string | null;
   report_ref?: string | null;
+  /** NULL until filled: a row an older build wrote (database/jobLakeFacts.ts). */
+  job_type: string | null;
+  clearance: number | null;
+  industry: string | null;
 };
 
 type HistoryRow = Omit<LakeRow, 'company_key' | 'created_at' | 'updated_at' | 'last_seen_at' | 'sheet_synced_at' | 'report_ref'> & {
   lake_id: number;
   version_at: string;
   replaced_at: string;
+};
+
+/**
+ * A row's job type, clearance and industry, with the words a page shows for
+ * them. Null (and '' for a label) while a row an older build wrote is not
+ * filled yet - database/jobLakeFacts.ts fills it at the next start.
+ */
+export type LakeFacts = {
+  /** 'remote' | 'hybrid' | 'on_site', or '' when the posting does not say. */
+  jobType: JobTypeId | null;
+  /** Remote, Hybrid, Onsite, or ''. */
+  jobTypeLabel: string;
+  /** Whether the posting requires a clearance. */
+  clearance: boolean | null;
+  /** A config/industries.ts id, or `not_specified`. */
+  industry: string | null;
+  /** The industry's label; '' for `not_specified`. */
+  industryLabel: string;
 };
 
 export type LakeReward = {
@@ -174,7 +281,7 @@ export type LakeEntry = {
   lastSeenAt: string | null;
   sheetSyncedAt: string | null;
   reward: LakeReward;
-};
+} & LakeFacts;
 
 export type LakeHistoryEntry = {
   id: number;
@@ -195,7 +302,7 @@ export type LakeHistoryEntry = {
   seenCount: number;
   reward: LakeReward;
   replacedAt: string;
-};
+} & LakeFacts;
 
 const SALARY_PERIODS = new Set(['annual', 'monthly', 'weekly', 'daily', 'hourly']);
 
@@ -207,6 +314,20 @@ function salaryOf(row: Pick<LakeRow, 'salary_min' | 'salary_max' | 'salary_curre
     currency: row.salary_currency,
     period: row.salary_period && SALARY_PERIODS.has(row.salary_period) ? (row.salary_period as JobSalaryPeriod) : null,
     raw: row.salary_raw,
+  };
+}
+
+const JOB_TYPES = new Set(['remote', 'hybrid', 'on_site', '']);
+
+function factsOf(row: Pick<LakeRow, 'job_type' | 'clearance' | 'industry'>): LakeFacts {
+  const jobType = typeof row.job_type === 'string' && JOB_TYPES.has(row.job_type) ? (row.job_type as JobTypeId) : null;
+  const industry = isIndustryId(row.industry) ? row.industry : null;
+  return {
+    jobType,
+    jobTypeLabel: jobTypeLabel(jobType),
+    clearance: row.clearance === null || row.clearance === undefined ? null : row.clearance !== 0,
+    industry,
+    industryLabel: industryLabel(industry),
   };
 }
 
@@ -241,6 +362,7 @@ function toEntry(row: LakeRow): LakeEntry {
     lastSeenAt: row.last_seen_at,
     sheetSyncedAt: row.sheet_synced_at,
     reward: rewardOf(row),
+    ...factsOf(row),
   };
 }
 
@@ -263,6 +385,7 @@ function toHistory(row: HistoryRow): LakeHistoryEntry {
     seenCount: row.seen_count,
     reward: rewardOf(row),
     replacedAt: row.replaced_at,
+    ...factsOf(row),
   };
 }
 
@@ -271,7 +394,7 @@ const LIST_COLUMNS =
   'id, job_hash, hash_version, company, company_key, job_field_id, title, salary_min, salary_max, ' +
   'salary_currency, salary_period, salary_raw, job_url, analysis_id, requested_by, source, created_at, ' +
   'updated_at, seen_count, last_seen_at, sheet_synced_at, reward_milli, reward_rate_milli, ' +
-  'reward_revoked_milli, reward_revoked_at';
+  'reward_revoked_milli, reward_revoked_at, job_type, clearance, industry';
 
 /* ------------------------------------------------- the pinned statements -- */
 // Exported so test/jobLakeStore.test.js runs EXPLAIN QUERY PLAN on exactly
@@ -285,6 +408,10 @@ export const LIST_DEFAULT_SQL = `SELECT ${LIST_COLUMNS} FROM job_lake ORDER BY u
 export const UNSYNCED_SQL = `SELECT ${LIST_COLUMNS} FROM job_lake WHERE sheet_synced_at IS NULL ORDER BY id LIMIT ?`;
 /** A row's earlier versions, on idx_job_lake_history_lake. */
 export const HISTORY_SQL = 'SELECT * FROM job_lake_history WHERE lake_id = ? ORDER BY id DESC';
+/** Whether an account reported a posting before: one seek on idx_job_reports_account_analysis. */
+export const FIND_JOB_REPORT_SQL = 'SELECT * FROM job_reports WHERE account_id = ? AND analysis_id = ?';
+/** The reports that reached a lake row, for its delete: on idx_job_reports_lake. */
+export const DELETE_LAKE_REPORTS_SQL = 'DELETE FROM job_reports WHERE lake_id = ?';
 
 /* ----------------------------------------------------------- the merge -- */
 
@@ -311,22 +438,25 @@ function line(value: unknown, max: number): string {
 
 /**
  * Adds a job to the lake, or says why it did not - in ONE IMMEDIATE
- * transaction with the reward that pays for it:
+ * transaction with the reward that pays for it and the record of the report:
  *
- *  - no identity (unclassified, or no company): nothing is written;
+ *  - a REPORT (source `report`, an account and an analysis) of a posting this
+ *    account reported before, as `job_reports` has it: `already`, with what
+ *    became of it then (`priorOutcome`) - nothing moves, nothing is paid,
+ *    from whichever row, tab or sheet it comes again;
+ *  - no identity (unclassified, or no company): nothing is written to the
+ *    lake;
  *  - no row with the job's hash: INSERTED -> `added`, paid;
  *  - a row added or last replaced within the window: `seen_count` and
- *    `last_seen_at` move -> `duplicate`, not paid (or `already`, below);
+ *    `last_seen_at` move -> `duplicate`, not paid;
  *  - an older row: its content goes to `job_lake_history`, the row takes the
- *    new job - `requested_by`, `updated_at` and the reward move, the outbox
- *    is opened again so the admin sheet gets a NEW line - -> `replaced`,
- *    which counts as added, paid.
+ *    new job - `requested_by`, `updated_at`, the facts and the reward move,
+ *    the outbox is opened again so the admin sheet gets a NEW line - ->
+ *    `replaced`, which counts as added, paid.
  *
- * `already`: within the window, the row is this very posting (the same
- * analysis) from this same account AND the same sheet row (`reportRef`) - a
- * re-run of rows whose Lake Status was never written. Nothing moves; it is
- * not a duplicate of itself. Anything less - the same posting on another
- * row, or no row at all - is a duplicate.
+ * A report decided added, replaced, duplicate or unclassified is recorded in
+ * `job_reports`, once per account and analysis; one with no company is not -
+ * the reporter fills the company in and reports it again.
  *
  * The reward's ledger row is keyed `job-lake:<id>:<updated_at>`: a replaced
  * row pays again, the same version never twice. The analysis it came from is
@@ -334,40 +464,107 @@ function line(value: unknown, max: number): string {
  */
 export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: LakePolicy): MergeOutcome {
   const identity = lakeIdentity(job.company, job.jobFieldId);
-  if (!identity) {
-    return {
-      // Unclassified first: that is final, while a missing company is the
-      // reporter's to fill in and report again.
-      status: isJobFieldId(job.jobFieldId) ? 'no-company' : 'unclassified',
-      lakeId: null,
-      jobHash: null,
-      seenCount: 0,
-      rewardMilli: 0,
-      rewardRateMilli: null,
-    };
-  }
+  // Unclassified first: that is final, while a missing company is the
+  // reporter's to fill in and report again.
+  const unmerged: MergeStatus = isJobFieldId(job.jobFieldId) ? 'no-company' : 'unclassified';
+  const nothing = (status: MergeStatus): MergeOutcome => ({
+    status,
+    lakeId: null,
+    jobHash: null,
+    seenCount: 0,
+    rewardMilli: 0,
+    rewardRateMilli: null,
+  });
+  const report =
+    job.source === 'report' && requestedBy && job.analysisId ? { accountId: requestedBy, analysisId: job.analysisId } : null;
+  if (!identity && !report) return nothing(unmerged);
 
   const db = getDb();
   const nowIso = new Date(policy.now).toISOString();
   const windowStartIso = new Date(policy.now - policy.windowDays * DAY_MS).toISOString();
-  const values = {
-    job_hash: identity.hash,
-    hash_version: identity.hashVersion,
-    company: line(job.company, 300),
-    company_key: identity.companyKey,
-    job_field_id: identity.jobFieldId,
-    title: line(job.title, 300),
-    ...salaryColumns(job.salary),
-    job_url: line(job.url, 2000),
-    job_description: typeof job.jobDescription === 'string' ? job.jobDescription : '',
-    analysis_id: job.analysisId,
-    requested_by: requestedBy,
-    source: job.source,
-    report_ref: typeof job.reportRef === 'string' && job.reportRef ? job.reportRef : null,
-  };
+  const from = job.reportedFrom ?? null;
+  const values = identity
+    ? {
+        job_hash: identity.hash,
+        hash_version: identity.hashVersion,
+        company: line(job.company, 300),
+        company_key: identity.companyKey,
+        job_field_id: identity.jobFieldId,
+        title: line(job.title, 300),
+        ...salaryColumns(job.salary),
+        job_url: line(job.url, 2000),
+        job_description: typeof job.jobDescription === 'string' ? job.jobDescription : '',
+        analysis_id: job.analysisId,
+        requested_by: requestedBy,
+        source: job.source,
+        report_ref: from ? reportRefOf(from.spreadsheetId, from.tabName, from.row) : null,
+        // The analysis's facts, never the caller's; a caller that has none
+        // stores those of an analysis that says nothing.
+        job_type: typeof job.jobType === 'string' && JOB_TYPES.has(job.jobType) ? job.jobType : '',
+        clearance: job.clearance === true ? 1 : 0,
+        industry: isIndustryId(job.industry) ? job.industry : NOT_SPECIFIED_INDUSTRY_ID,
+      }
+    : null;
 
   return db.transaction((): MergeOutcome => {
-    const existing = db.prepare(FIND_BY_HASH_SQL).get(identity.hash) as LakeRow | undefined;
+    if (report) {
+      const prior = reportedBefore(report.accountId, report.analysisId);
+      if (prior) {
+        const seen =
+          prior.lakeId === null
+            ? undefined
+            : (db.prepare('SELECT seen_count FROM job_lake WHERE id = ?').get(prior.lakeId) as { seen_count: number } | undefined);
+        return {
+          status: 'already',
+          lakeId: prior.lakeId,
+          jobHash: prior.jobHash,
+          seenCount: seen?.seen_count ?? 0,
+          rewardMilli: 0,
+          rewardRateMilli: null,
+          priorOutcome: prior.outcome,
+        };
+      }
+    }
+    const outcome = values ? decide(values) : nothing(unmerged);
+    if (report && outcome.status !== 'no-company' && outcome.status !== 'already') {
+      db.prepare(
+        `INSERT OR IGNORE INTO job_reports
+           (account_id, analysis_id, outcome, lake_id, job_hash, reward_milli, spreadsheet_id, tab_name, row_number, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        report.accountId,
+        report.analysisId,
+        outcome.status,
+        outcome.lakeId,
+        outcome.jobHash,
+        outcome.rewardMilli,
+        from?.spreadsheetId ?? null,
+        from?.tabName ?? null,
+        from?.row ?? null,
+        nowIso
+      );
+    }
+    return outcome;
+  }).immediate();
+
+  /**
+   * This account's earlier report of the posting, when there is one still
+   * standing. A record whose lake row is gone - deleted by an older build
+   * rolled back to, which knew nothing of the records - is dropped here, so
+   * a deleted job can be reported again whichever build deleted it.
+   */
+  function reportedBefore(accountId: string, analysisId: string): JobReport | null {
+    const row = db.prepare(FIND_JOB_REPORT_SQL).get(accountId, analysisId) as JobReportRow | undefined;
+    if (!row) return null;
+    if (row.lake_id !== null && !db.prepare('SELECT 1 FROM job_lake WHERE id = ?').get(row.lake_id)) {
+      db.prepare('DELETE FROM job_reports WHERE id = ?').run(row.id);
+      return null;
+    }
+    return toJobReport(row);
+  }
+
+  function decide(row: NonNullable<typeof values>): MergeOutcome {
+    const existing = db.prepare(FIND_BY_HASH_SQL).get(row.job_hash) as LakeRow | undefined;
     const markMerged = () => {
       if (job.analysisId) markJobAnalysisMerged(job.analysisId, nowIso);
     };
@@ -379,45 +576,31 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
              job_hash, hash_version, company, company_key, job_field_id, title,
              salary_min, salary_max, salary_currency, salary_period, salary_raw,
              job_url, job_description, analysis_id, requested_by, source, report_ref,
+             job_type, clearance, industry,
              created_at, updated_at, seen_count, last_seen_at
            ) VALUES (
              @job_hash, @hash_version, @company, @company_key, @job_field_id, @title,
              @salary_min, @salary_max, @salary_currency, @salary_period, @salary_raw,
              @job_url, @job_description, @analysis_id, @requested_by, @source, @report_ref,
+             @job_type, @clearance, @industry,
              @now, @now, 1, @now
            ) ON CONFLICT (job_hash) DO NOTHING`
         )
-        .run({ ...values, now: nowIso });
+        .run({ ...row, now: nowIso });
       if (inserted.changes === 0) {
         // Unreachable under the IMMEDIATE lock, which no other writer can
         // hold between the read above and this insert; if it ever is
         // reached, the row that won is this job's and this report a duplicate.
-        const winner = db.prepare(FIND_BY_HASH_SQL).get(identity.hash) as LakeRow;
+        const winner = db.prepare(FIND_BY_HASH_SQL).get(row.job_hash) as LakeRow;
         return sawAgain(winner);
       }
       const lakeId = Number(inserted.lastInsertRowid);
       markMerged();
-      return { status: 'added', lakeId, jobHash: identity.hash, seenCount: 1, ...pay(lakeId, nowIso) };
+      return { status: 'added', lakeId, jobHash: row.job_hash, seenCount: 1, ...pay(lakeId, nowIso) };
     }
 
     if (existing.updated_at >= windowStartIso) {
       markMerged();
-      if (
-        job.analysisId &&
-        values.report_ref &&
-        existing.analysis_id === job.analysisId &&
-        existing.requested_by === requestedBy &&
-        existing.report_ref === values.report_ref
-      ) {
-        return {
-          status: 'already',
-          lakeId: existing.id,
-          jobHash: identity.hash,
-          seenCount: existing.seen_count,
-          rewardMilli: 0,
-          rewardRateMilli: null,
-        };
-      }
       return sawAgain(existing);
     }
 
@@ -427,12 +610,14 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
          lake_id, job_hash, hash_version, company, job_field_id, title,
          salary_min, salary_max, salary_currency, salary_period, salary_raw,
          job_url, job_description, analysis_id, requested_by, source, version_at, seen_count,
-         reward_milli, reward_rate_milli, reward_revoked_milli, reward_revoked_at, replaced_at
+         reward_milli, reward_rate_milli, reward_revoked_milli, reward_revoked_at,
+         job_type, clearance, industry, replaced_at
        )
        SELECT id, job_hash, hash_version, company, job_field_id, title,
               salary_min, salary_max, salary_currency, salary_period, salary_raw,
               job_url, job_description, analysis_id, requested_by, source, updated_at, seen_count,
-              reward_milli, reward_rate_milli, reward_revoked_milli, reward_revoked_at, @now
+              reward_milli, reward_rate_milli, reward_revoked_milli, reward_revoked_at,
+              job_type, clearance, industry, @now
          FROM job_lake WHERE id = @id`
     ).run({ id: existing.id, now: nowIso });
     db.prepare(
@@ -443,20 +628,21 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
          salary_period = @salary_period, salary_raw = @salary_raw,
          job_url = @job_url, job_description = @job_description, analysis_id = @analysis_id,
          requested_by = @requested_by, source = @source, report_ref = @report_ref,
+         job_type = @job_type, clearance = @clearance, industry = @industry,
          updated_at = @now, seen_count = 1, last_seen_at = @now, sheet_synced_at = NULL,
          reward_milli = 0, reward_rate_milli = NULL, reward_revoked_milli = 0, reward_revoked_at = NULL
        WHERE id = @id`
-    ).run({ ...values, id: existing.id, now: nowIso });
+    ).run({ ...row, id: existing.id, now: nowIso });
     markMerged();
-    return { status: 'replaced', lakeId: existing.id, jobHash: identity.hash, seenCount: 1, ...pay(existing.id, nowIso) };
+    return { status: 'replaced', lakeId: existing.id, jobHash: row.job_hash, seenCount: 1, ...pay(existing.id, nowIso) };
 
-    function sawAgain(row: LakeRow): MergeOutcome {
-      db.prepare('UPDATE job_lake SET seen_count = seen_count + 1, last_seen_at = ? WHERE id = ?').run(nowIso, row.id);
+    function sawAgain(seen: LakeRow): MergeOutcome {
+      db.prepare('UPDATE job_lake SET seen_count = seen_count + 1, last_seen_at = ? WHERE id = ?').run(nowIso, seen.id);
       return {
         status: 'duplicate',
-        lakeId: row.id,
-        jobHash: identity!.hash,
-        seenCount: row.seen_count + 1,
+        lakeId: seen.id,
+        jobHash: row.job_hash,
+        seenCount: seen.seen_count + 1,
         rewardMilli: 0,
         rewardRateMilli: null,
       };
@@ -477,7 +663,7 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
         at: versionAt,
         idempotencyKey: `job-lake:${lakeId}:${versionAt}`,
         refId: String(lakeId),
-        note: `${values.company} - ${jobFieldLabel(values.job_field_id)} (job #${lakeId}, ${formatMoney(rateMilli)} per job)`,
+        note: `${row.company} - ${jobFieldLabel(row.job_field_id)} (job #${lakeId}, ${formatMoney(rateMilli)} per job)`,
       });
       if (outcome.short === 'not-a-reporter') {
         return { rewardMilli: 0, rewardRateMilli: null, rewardShort: outcome.short };
@@ -494,7 +680,40 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
         balanceMilli: outcome.balance,
       };
     }
-  }).immediate();
+  }
+}
+
+/**
+ * `findJobReports`' read of `count` postings: seeks on
+ * idx_job_reports_account_analysis, and a record whose lake row is gone - an
+ * older build, rolled back to, deleted the row and knew nothing of the
+ * records - is not counted, as `mergeIntoLake` does not count it. Without
+ * that, the run would skip such a posting as reported before, never reaching
+ * the merge that drops the record, and the preview would say so - for good.
+ */
+export function findJobReportsSql(count: number): string {
+  return (
+    `SELECT r.* FROM job_reports r WHERE r.account_id = ? AND r.analysis_id IN (${Array.from({ length: count }, () => '?').join(', ')}) ` +
+    'AND (r.lake_id IS NULL OR EXISTS (SELECT 1 FROM job_lake l WHERE l.id = r.lake_id))'
+  );
+}
+
+/**
+ * The reports an account made of these postings (by analysis id), one each,
+ * still standing (see findJobReportsSql). Store only: what the reporter run
+ * skips as reported before, and what Report Jobs' preview says of a row.
+ */
+export function findJobReports(accountId: string, analysisIds: readonly string[]): Map<string, JobReport> {
+  const found = new Map<string, JobReport>();
+  const ids = [...new Set(analysisIds.filter((id) => typeof id === 'string' && id))];
+  if (!accountId || ids.length === 0) return found;
+  const db = getDb();
+  for (let start = 0; start < ids.length; start += 500) {
+    const chunk = ids.slice(start, start + 500);
+    const rows = db.prepare(findJobReportsSql(chunk.length)).all(accountId, ...chunk) as JobReportRow[];
+    for (const row of rows) found.set(row.analysis_id, toJobReport(row));
+  }
+  return found;
 }
 
 /* ------------------------------------------------------------- reading -- */
@@ -526,6 +745,12 @@ export type LakeQuery = {
   /** ISO times, inclusive. */
   updatedFrom?: string;
   updatedTo?: string;
+  /** A job type as stored: 'remote', 'hybrid', 'on_site', or '' for "the posting does not say". */
+  jobType?: JobTypeId;
+  /** Whether the posting requires a clearance. */
+  clearance?: boolean;
+  /** A config/industries.ts id, or `not_specified`. */
+  industry?: string;
   limit: number;
   offset: number;
 };
@@ -576,6 +801,21 @@ function whereOf(query: LakeQuery, companyKey: string | null): { sql: string; pa
   if (query.salaryMax !== undefined) {
     clauses.push('COALESCE(salary_min, salary_max) <= ?');
     params.push(query.salaryMax);
+  }
+  // The three facts have no index of their own: a handful of values each,
+  // read while the page walks idx_job_lake_updated (or a narrower index
+  // another filter picks) in its order - never a sort of the whole lake.
+  if (query.jobType !== undefined) {
+    clauses.push('job_type = ?');
+    params.push(query.jobType);
+  }
+  if (query.clearance !== undefined) {
+    clauses.push('clearance = ?');
+    params.push(query.clearance ? 1 : 0);
+  }
+  if (query.industry !== undefined) {
+    clauses.push('industry = ?');
+    params.push(query.industry);
   }
   const match = query.text ? ftsQuery(query.text) : null;
   if (match) {
@@ -692,9 +932,11 @@ export function revokeLakeReward(id: number, actorId: string, at = new Date().to
 }
 
 /**
- * Deletes a lake row and its history, optionally revoking its current
- * reward in the same transaction. The job can be reported again afterwards,
- * as a new one. The analysis it came from stays merged.
+ * Deletes a lake row, its history and the reports that reached it
+ * (`job_reports`), optionally revoking its current reward in the same
+ * transaction. The job can be reported again afterwards, as a new one - by
+ * the reporters who reported it too, whose records went with it. The
+ * analysis it came from stays merged.
  */
 export function deleteLakeEntry(
   id: number,
@@ -707,6 +949,7 @@ export function deleteLakeEntry(
     if (!row) return { deleted: null, revoke: null };
     const revoke = options.revokeReward ? revokeInTransaction(id, options.actorId, at) : null;
     db.prepare('DELETE FROM job_lake_history WHERE lake_id = ?').run(id);
+    db.prepare(DELETE_LAKE_REPORTS_SQL).run(id);
     db.prepare('DELETE FROM job_lake WHERE id = ?').run(id);
     return { deleted: toEntry(row), revoke };
   }).immediate();

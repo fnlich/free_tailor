@@ -231,3 +231,162 @@ test('a row whose analysis cannot be read is filled in once by the next analysis
     console.warn = realWarn;
   }
 });
+
+/* --------------------------------------------- industry, job type, clearance -- */
+
+const industries = require('../dist/config/industries');
+const facts = require('../dist/services/jobAnalysis/facts');
+
+test("the industries are the owner's closed list with stable ids; an unknown word is Other, nothing is not specified", () => {
+  assert.deepEqual(
+    industries.INDUSTRIES.map((entry) => entry.label),
+    [
+      'Healthcare', 'Finance', 'Insurance', 'Military', 'Government', 'Education', 'Retail & E-commerce',
+      'Technology', 'Consulting', 'Media & Entertainment', 'Logistics & Transportation', 'Energy & Utilities',
+      'Manufacturing', 'Telecommunications', 'Legal', 'Real Estate', 'Hospitality & Travel', 'Nonprofit', 'Other',
+    ]
+  );
+  assert.equal(new Set(industries.INDUSTRIES.map((entry) => entry.id)).size, industries.INDUSTRIES.length, 'ids are unique');
+  for (const entry of industries.INDUSTRIES) assert.match(entry.id, /^[a-z]+(_[a-z]+)*$/, entry.id);
+  assert.equal(industries.isIndustryId('not_specified'), true);
+  assert.equal(industries.isIndustryId('fintech'), false);
+  assert.equal(industries.industryLabel('not_specified'), '', 'not specified shows as a blank cell');
+  assert.equal(industries.industryLabel('retail_ecommerce'), 'Retail & E-commerce');
+  assert.equal(industries.industryLabel('made-up'), '');
+
+  for (const [answer, expected] of [
+    ['healthcare', 'healthcare'],
+    ['  Real Estate ', 'real_estate'],
+    ['Retail & E-commerce', 'retail_ecommerce'],
+    ['retail and e-commerce', 'retail_ecommerce'],
+    ['MEDIA_ENTERTAINMENT', 'media_entertainment'],
+    ['fintech', 'finance'],
+    ['SaaS', 'technology'],
+    ['defense_military', 'military'],
+    ['Investment banking', 'finance'],
+    ['Space mining', 'other'],
+    ['Other', 'other'],
+    ['not_specified', 'not_specified'],
+    ['Unknown', 'not_specified'],
+    ['', 'not_specified'],
+    [null, 'not_specified'],
+    [42, 'not_specified'],
+  ]) {
+    assert.equal(facts.normalizeIndustry(answer), expected, String(answer));
+  }
+
+  const list = industries.renderIndustryListForPrompt();
+  assert.equal(list, industries.renderIndustryListForPrompt(), 'the same text every time');
+  for (const entry of industries.INDUSTRIES) assert.ok(list.includes(`- ${entry.id}: ${entry.label}`), entry.id);
+  assert.match(list, /- not_specified: [^\n]+$/);
+  assert.deepEqual(industries.listIndustriesForClient().at(-1), { id: 'not_specified', label: 'Not specified' });
+});
+
+test('an analysis has an industry only when its answer had one: an older analysis, row or sheet cell stays without', () => {
+  useTempStorage('job-analyses-industry');
+  const { normalizeJobAnalysisResponse } = require('../dist/services/resumeService');
+  const { normalizeSheetAnalysis } = require('../dist/services/jobAnalysis/gate');
+  const answer = analysis();
+  delete answer.sourceJobDescription;
+
+  const older = normalizeJobAnalysisResponse(answer, 'A posting.');
+  assert.equal('industry' in older, false, 'no key, not a default');
+  assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: 'Insurance' }, 'A posting.').industry, 'insurance');
+  assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: null }, 'A posting.').industry, 'not_specified');
+  assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: 'Asteroid farming' }, 'A posting.').industry, 'other');
+  assert.equal('industry' in normalizeSheetAnalysis(answer, 'A posting.'), false, 'nor does a sheet cell written before it');
+
+  // Stored and read back, each as it was.
+  const without = insert('A posting stored before industries.', undefined);
+  assert.equal('industry' in repository.getJobAnalysisById(without.row.id).analysis, false);
+  const withIt = insert('A posting stored after industries.', undefined, { industry: 'education' });
+  assert.equal(repository.getJobAnalysisById(withIt.row.id).analysis.industry, 'education');
+  // Its industry derived when it is read - from its company category here - and nothing written back.
+  const before = sqlite.getDb().prepare('SELECT analysis_json FROM job_analyses WHERE id = ?').get(without.row.id).analysis_json;
+  assert.equal(facts.industryOf(repository.getJobAnalysisById(without.row.id).analysis), 'technology');
+  assert.equal(sqlite.getDb().prepare('SELECT analysis_json FROM job_analyses WHERE id = ?').get(without.row.id).analysis_json, before);
+});
+
+test("an older analysis's industry comes from its company category, else its free-text industry, else not specified", () => {
+  const older = (companyCategory, industry, extra = {}) => ({
+    jobMeta: { title: 'Engineer', seniority: 'senior', industry, department: '' },
+    filter: { jobType: 'not_specified', onsiteInterview: 'not_specified', companyCategory, clearanceRequired: 'none', region: 'us', usState: '' },
+    ...extra,
+  });
+  const cases = [
+    // Its own key wins, whatever it says, even "not specified".
+    [older('healthcare', 'Banking', { industry: 'finance' }), 'finance'],
+    [older('healthcare', 'Banking', { industry: 'not_specified' }), 'not_specified'],
+    [older('healthcare', 'Banking', { industry: 'Basket weaving' }), 'other'],
+    // Then the company category.
+    [older('fintech', 'Healthcare'), 'finance'],
+    [older('defense_military', ''), 'military'],
+    [older('consulting', ''), 'consulting'],
+    [older('enterprise_software', ''), 'technology'],
+    // "other" says no category fit: the free text is read.
+    [older('other', 'SaaS'), 'technology'],
+    [older('other', 'Healthcare IT'), 'healthcare'],
+    [older('other', 'Insurtech'), 'insurance'],
+    [older('other', 'e-commerce'), 'retail_ecommerce'],
+    [older('other', 'Defense contractor'), 'military'],
+    [older('other', 'devtools'), 'technology'],
+    [older('other', 'Logistics'), 'logistics_transportation'],
+    [older('other', 'Non-profit'), 'nonprofit'],
+    [older('other', 'Widgets'), 'not_specified'],
+    [older('other', ''), 'not_specified'],
+    // An analysis from before the filter facts: the free text alone.
+    [{ jobMeta: { title: '', seniority: '', industry: 'fintech', department: '' } }, 'finance'],
+    [{}, 'not_specified'],
+    [null, 'not_specified'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(facts.industryOf(input), expected, JSON.stringify(input));
+  }
+  // Every company category but "other" names an industry of the list.
+  for (const category of facts.FILTER_FACT_VALUES.companyCategory) {
+    if (category === 'other') continue;
+    assert.ok(industries.isIndustryId(facts.COMPANY_CATEGORY_INDUSTRY[category]), category);
+  }
+});
+
+test('job type is Remote, Hybrid or Onsite or blank; a clearance is required unless the analysis says none or does not say', () => {
+  const withFilter = (filter) => ({ filter: { jobType: 'not_specified', clearanceRequired: 'none', ...filter } });
+  for (const [jobType, expected] of [
+    ['remote', 'remote'],
+    ['hybrid', 'hybrid'],
+    ['on_site', 'on_site'],
+    ['Onsite', 'on_site'],
+    ['not_specified', ''],
+    ['flexible', ''],
+  ]) {
+    assert.equal(facts.jobTypeOf(withFilter({ jobType })), expected, jobType);
+  }
+  assert.equal(facts.jobTypeOf({}), '');
+  assert.equal(facts.jobTypeOf(null), '');
+  assert.deepEqual(
+    ['remote', 'hybrid', 'on_site', '', 'nonsense'].map(facts.jobTypeLabel),
+    ['Remote', 'Hybrid', 'Onsite', '', '']
+  );
+  assert.deepEqual(facts.listJobTypesForClient().map((option) => option.id), ['remote', 'hybrid', 'on_site', 'not_specified']);
+
+  for (const [clearanceRequired, expected] of [
+    ['none', false],
+    ['not_specified', false],
+    ['', false],
+    [null, false],
+    ['public_trust', true],
+    ['secret', true],
+    ['TS/SCI', true],
+    // Fails closed, as the Job Filter does: a clearance word the list lacks is still a clearance.
+    ['DoD Secret', true],
+    [true, true],
+  ]) {
+    assert.equal(facts.clearanceRequiredOf(withFilter({ clearanceRequired })), expected, String(clearanceRequired));
+  }
+  assert.equal(facts.clearanceRequiredOf({}), false, 'no filter facts at all: nothing said');
+  assert.deepEqual(facts.analysisFactsOf(withFilter({ jobType: 'remote', clearanceRequired: 'secret', companyCategory: 'govtech' })), {
+    jobType: 'remote',
+    clearance: true,
+    industry: 'government',
+  });
+});

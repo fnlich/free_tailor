@@ -1,3 +1,13 @@
+import {
+  foldIndustryWord,
+  INDUSTRY_ALIASES,
+  industryFromText,
+  isIndustryId,
+  NOT_SPECIFIED_INDUSTRY_ID,
+  NOT_SPECIFIED_WORDS,
+  OTHER_INDUSTRY_ID,
+  INDUSTRIES,
+} from '../../config/industries';
 import type { JobFilterFacts, JobSalary, JobSalaryPeriod } from '../../types/template';
 
 /**
@@ -229,4 +239,129 @@ export function formatSalary(salary: JobSalary | null | undefined): string {
   if (bounds.length === 0) return '';
   const range = bounds.join(' - ');
   return [salary.currency, range].filter(Boolean).join(' ') + (salary.period ? ` / ${salary.period}` : '');
+}
+
+/* ---------------------------------------------- job type, clearance, industry -- */
+
+/**
+ * The three facts a lake row and an app sheet show beside a job's field and
+ * salary (v6): Job Type, Clearance and Industry. Pure functions of a stored
+ * analysis, so every place that shows them - the lake's columns and filters,
+ * the admin sheet, the job sheet's cells - derives the same value from the
+ * same analysis, and an analysis stored before they existed is never asked
+ * for them again: what it lacks is derived here, when it is read.
+ */
+
+/** A job type as a lake row stores it: the filter's word, '' when the posting does not say. */
+export type JobTypeId = 'remote' | 'hybrid' | 'on_site' | '';
+
+/** What a page and a sheet call each job type. */
+export const JOB_TYPE_LABELS: Readonly<Record<Exclude<JobTypeId, ''>, string>> = Object.freeze({
+  remote: 'Remote',
+  hybrid: 'Hybrid',
+  on_site: 'Onsite',
+});
+
+/** The job types as a page offers them for a filter; `not_specified` stands for ''. */
+export function listJobTypesForClient(): Array<{ id: string; label: string }> {
+  return [
+    ...Object.entries(JOB_TYPE_LABELS).map(([id, label]) => ({ id, label })),
+    { id: 'not_specified', label: 'Not specified' },
+  ];
+}
+
+export function jobTypeLabel(id: unknown): string {
+  return typeof id === 'string' && id in JOB_TYPE_LABELS ? JOB_TYPE_LABELS[id as keyof typeof JOB_TYPE_LABELS] : '';
+}
+
+function filterOf(analysis: unknown): JobFilterFacts {
+  const source = analysis && typeof analysis === 'object' && !Array.isArray(analysis) ? (analysis as Record<string, unknown>) : {};
+  return normalizeFilterFacts(source.filter);
+}
+
+/** Remote, hybrid or on site, as the analysis read it off the posting; '' when it does not say. */
+export function jobTypeOf(analysis: unknown): JobTypeId {
+  const jobType = filterOf(analysis).jobType;
+  return jobType === 'remote' || jobType === 'hybrid' || jobType === 'on_site' ? jobType : '';
+}
+
+/**
+ * Whether the posting REQUIRES a clearance: false only when the analysis says
+ * none, or does not say - true for every clearance it names, an off-list word
+ * included (`normalizeClearance` keeps those, failing closed, as the Job
+ * Filter does). An analysis with no filter facts at all says nothing: false.
+ */
+export function clearanceRequiredOf(analysis: unknown): boolean {
+  const clearance = filterOf(analysis).clearanceRequired;
+  return clearance !== 'none' && clearance !== 'not_specified';
+}
+
+/**
+ * An industry as the analysis prompt's list spells it: an id or a label
+ * (case, spacing and `&` forgiven), a known short form ("fintech", "SaaS",
+ * a company category), or free text naming one by keyword. Nothing, or a word
+ * meaning "not stated", is `not_specified`; any other word is `other` - never
+ * itself, so a stored industry is always one of the list.
+ */
+export function normalizeIndustry(value: unknown): string {
+  if (typeof value !== 'string') return NOT_SPECIFIED_INDUSTRY_ID;
+  const word = foldIndustryWord(value);
+  if (!word || NOT_SPECIFIED_WORDS.has(word)) return NOT_SPECIFIED_INDUSTRY_ID;
+  if (isIndustryId(word)) return word;
+  const byLabel = INDUSTRIES.find((entry) => foldIndustryWord(entry.label) === word);
+  if (byLabel) return byLabel.id;
+  return INDUSTRY_ALIASES[word] ?? industryFromText(value) ?? OTHER_INDUSTRY_ID;
+}
+
+/**
+ * The company categories of the filter facts (FILTER_FACT_VALUES) as
+ * industries. `other` is not here: it says only that none of the categories
+ * fit, so the free text is read instead.
+ */
+export const COMPANY_CATEGORY_INDUSTRY: Readonly<Record<string, string>> = Object.freeze({
+  healthcare: 'healthcare',
+  fintech: 'finance',
+  consulting: 'consulting',
+  defense_military: 'military',
+  saas: 'technology',
+  ecommerce: 'retail_ecommerce',
+  cybersecurity: 'technology',
+  ai_ml: 'technology',
+  edtech: 'education',
+  govtech: 'government',
+  insurtech: 'insurance',
+  legaltech: 'legal',
+  media_entertainment: 'media_entertainment',
+  logistics: 'logistics_transportation',
+  energy: 'energy_utilities',
+  enterprise_software: 'technology',
+});
+
+/**
+ * A stored analysis's industry, in this order:
+ *
+ *   1. its own `industry`, whenever the analysis has the key - one made since
+ *      the prompt asked for it, whatever it answered;
+ *   2. otherwise (an analysis from before) its filter facts' company category;
+ *   3. otherwise keywords in its free-text `jobMeta.industry`;
+ *   4. otherwise `not_specified`.
+ *
+ * Never a model call: an older analysis's industry is worked out from what it
+ * already holds, every time it is read, and nothing is written back into it.
+ */
+export function industryOf(analysis: unknown): string {
+  if (!analysis || typeof analysis !== 'object' || Array.isArray(analysis)) return NOT_SPECIFIED_INDUSTRY_ID;
+  const source = analysis as Record<string, unknown>;
+  if (source.industry !== undefined) return normalizeIndustry(source.industry);
+  const category = COMPANY_CATEGORY_INDUSTRY[filterOf(analysis).companyCategory];
+  if (category) return category;
+  const meta = source.jobMeta && typeof source.jobMeta === 'object' ? (source.jobMeta as Record<string, unknown>) : {};
+  return industryFromText(meta.industry) ?? NOT_SPECIFIED_INDUSTRY_ID;
+}
+
+/** The three facts at once, as a lake row stores them. */
+export type AnalysisFacts = { jobType: JobTypeId; clearance: boolean; industry: string };
+
+export function analysisFactsOf(analysis: unknown): AnalysisFacts {
+  return { jobType: jobTypeOf(analysis), clearance: clearanceRequiredOf(analysis), industry: industryOf(analysis) };
 }

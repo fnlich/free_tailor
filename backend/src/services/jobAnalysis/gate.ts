@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { resolveAnalysisModel } from '../../config/aiModelConfig';
 import { describeAiChoice, type AiChoice } from '../../config/aiPreferences';
+import { renderIndustryListForPrompt } from '../../config/industries';
 import { renderJobFieldListForPrompt } from '../../config/jobFields';
 import {
   attachCompanyName,
@@ -124,9 +125,13 @@ function postingKeys(input: { jd?: string; link?: string }): PostingKeys {
  * Link first: the same job reached from two sheets with its text reworded is
  * one posting when its link says so. A posting found by its text that had no
  * link on record is given this one, so the next request with the link and
- * different words finds it too. Store only: never a model call.
+ * different words finds it too - unless `readOnly` (a preview a GET serves,
+ * which writes nothing). Store only: never a model call.
  */
-export function findStoredAnalysis(input: { jd?: string; link?: string }): StoredJobAnalysis | null {
+export function findStoredAnalysis(
+  input: { jd?: string; link?: string },
+  options: { readOnly?: boolean } = {}
+): StoredJobAnalysis | null {
   const keys = postingKeys(input);
   if (keys.link) {
     const byLink = findJobAnalysisByLinkKey(keys.link);
@@ -135,7 +140,7 @@ export function findStoredAnalysis(input: { jd?: string; link?: string }): Store
   if (keys.hash) {
     const byText = findJobAnalysisByContentHash(keys.hash);
     if (byText) {
-      if (keys.link && !byText.linkKey) attachLinkKey(byText.id, keys.link, (input.link ?? '').trim());
+      if (keys.link && !byText.linkKey && !options.readOnly) attachLinkKey(byText.id, keys.link, (input.link ?? '').trim());
       return byText;
     }
   }
@@ -362,7 +367,8 @@ function useSheetAnalysis(
  * The analysis instructions an administrator's record lacks when it was
  * written before postings had a job field (`predatesJobField` on Admin ->
  * Prompts): appended to the turn so its postings are still classified, priced
- * and screened. The shipped prompt carries all of this in its cached part.
+ * and screened - and filed under an industry, which such a record predates
+ * too. The shipped prompt carries all of this in its cached part.
  *
  * Seniority included: such a record asks for an older, shorter list of words
  * (no "intern", "director" or "vp"), and the Job Filter now judges the
@@ -377,8 +383,9 @@ export function buildAnalysisFactsOverride(): string {
     '"Engineering Manager" -> "manager", "Director" -> "director", "VP" or "Vice President" -> "vp"); otherwise years of',
     'experience: 0-2 -> "junior", 3-5 -> "mid", more than 5 -> "senior".',
     '',
-    'ALSO RETURN, in the same JSON object, these three keys - read off the posting itself, never guessed:',
+    'ALSO RETURN, in the same JSON object, these four keys - read off the posting itself, never guessed:',
     '"jobField": exactly ONE id from the list below (the text before the colon), or "unclassified" when none fits.',
+    INDUSTRY_INSTRUCTION,
     '"salary": { "min", "max", "currency", "period", "raw" } - ONLY what the posting explicitly states, numbers for',
     'min and max, an ISO 4217 code for currency, one of "annual", "monthly", "weekly", "daily", "hourly" for period,',
     'the posting\'s own words for raw; all five null when it states no salary.',
@@ -390,7 +397,45 @@ export function buildAnalysisFactsOverride(): string {
     '',
     'JOB FIELDS (id: label):',
     renderJobFieldListForPrompt(),
+    '',
+    'INDUSTRIES (id: label):',
+    renderIndustryListForPrompt(),
   ].join('\n');
+}
+
+/** What the analysis is asked about the industry, worded once for both appended instructions. */
+const INDUSTRY_INSTRUCTION =
+  '"industry": exactly ONE id from the INDUSTRIES list (the text before the colon) - the industry of the company or ' +
+  'client the job is for, from the company and its product when the posting does not say; "other" when none fits, ' +
+  '"not_specified" only when the posting gives nothing to tell it by.';
+
+/**
+ * The industry instructions alone, for an administrator's record written
+ * after postings had a job field but before they had an industry
+ * (`predatesIndustry` on Admin -> Prompts): appended to every turn so its
+ * postings are filed under one. A record that predates the job field gets
+ * these inside `buildAnalysisFactsOverride` instead.
+ */
+export function buildIndustryOverride(): string {
+  return [
+    'ALSO RETURN, in the same JSON object, this key - read off the posting itself, never guessed:',
+    INDUSTRY_INSTRUCTION,
+    '',
+    'INDUSTRIES (id: label):',
+    renderIndustryListForPrompt(),
+  ].join('\n');
+}
+
+/**
+ * What an administrator's analysis record lacks, appended to its every turn:
+ * everything since the job field when it never names `[[jobFieldList]]`, the
+ * industry alone when it names that but not `[[industryList]]`, else nothing.
+ */
+export function analysisOverrideFor(content: string | undefined): string | null {
+  if (typeof content !== 'string') return null;
+  if (!/\[\[\s*jobFieldList\s*\]\]/.test(content)) return buildAnalysisFactsOverride();
+  if (!/\[\[\s*industryList\s*\]\]/.test(content)) return buildIndustryOverride();
+  return null;
 }
 
 /** SHA-256 of the prompt text that produced an analysis - an audit, never part of its identity. */
@@ -417,7 +462,7 @@ async function analyseAndStore(
     modelLabel: model.name,
   };
   const record = await resolvePromptByExactId(ANALYSIS_PROMPT_ID).catch(() => null);
-  const predates = Boolean(record && !/\[\[\s*jobFieldList\s*\]\]/.test(record.content));
+  const override = record ? analysisOverrideFor(record.content) : null;
 
   const startedAt = process.hrtime.bigint();
   console.log(`[analysis] Analysing a new posting (${describeAiChoice(choice)})`);
@@ -432,7 +477,7 @@ async function analyseAndStore(
     responseFormat: 'json',
     useExactPromptId: true,
     runChoiceWins: true,
-    ...(predates ? { appendToUserBody: buildAnalysisFactsOverride() } : {}),
+    ...(override ? { appendToUserBody: override } : {}),
     signal,
   });
   const analysis = parseJobAnalysisContent(content, input.jd);

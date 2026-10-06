@@ -48,11 +48,21 @@ export type ReportRowStatus =
 /** What the run wrote into the row's Lake Status cell. */
 export type LakeStatusText = 'Added' | 'Replaced' | 'Duplicate' | 'Unclassified' | 'Skipped';
 
+/**
+ * What became of a posting the first time this account reported it, as the
+ * server's record of who reported what (`job_reports`) keeps it: the outcome
+ * a later row of the same posting is "Reported before" with.
+ */
+export type JobReportOutcome = 'added' | 'replaced' | 'duplicate' | 'unclassified';
+
 export type ReportRowOutcome = {
   row: number;
   company: string;
   title: string;
   status: ReportRowStatus;
+  /** For a row reported before (`already-reported`): its posting's first outcome. Null otherwise. */
+  priorOutcome: JobReportOutcome | null;
+  /** What the run wrote into the row's Lake Status cell: for a row reported before, its first outcome again. */
   lakeStatus: LakeStatusText | null;
   jobHash: string | null;
   lakeId: number | null;
@@ -126,15 +136,19 @@ export type ReportPreviewRow = {
   title: string;
   link: string;
   descriptionLength: number;
+  /** The lake row the posting reached the first time it was reported, when it reached one. */
   jobHash: string | null;
-  lakeStatus: string | null;
   /**
-   * The row's Lake Status says it was reported (Added, Replaced, Duplicate,
-   * Unclassified) beside the Analysis cell of the posting in the row now: a
-   * run skips it. A status left by a posting the row held before is not
-   * counted - the server decides, the page only shows it.
+   * This account reported the row's posting before - from this row or any
+   * other, this tab or another - as the server's record says, and this is the
+   * first row of it in the range: a run skips it. Nothing in the sheet decides
+   * it (its Lake Status is never read); the server decides, the page only
+   * shows it. A later row of the same posting is not reported: the run makes
+   * it a duplicate of the one above.
    */
   reported: boolean;
+  /** What became of the posting the first time, for a row `reported`; null otherwise. */
+  priorOutcome: JobReportOutcome | null;
 };
 
 export type ReportPreview = {
@@ -172,7 +186,26 @@ export type LakeReward = {
   revokedAt: string | null;
 };
 
-export type LakeEntry = {
+/**
+ * A lake row's job type, clearance and industry, taken from its posting's
+ * analysis, with the words the server shows for them. Null (and '' for a
+ * label) while a row an older build wrote is not filled in yet - the server
+ * fills it at its next start.
+ */
+export type LakeFacts = {
+  /** 'remote' | 'hybrid' | 'on_site', or '' when the posting does not say. */
+  jobType: 'remote' | 'hybrid' | 'on_site' | '' | null;
+  /** Remote, Hybrid, Onsite, or ''. */
+  jobTypeLabel: string;
+  /** Whether the posting requires a clearance. */
+  clearance: boolean | null;
+  /** An industry id, or `not_specified`. */
+  industry: string | null;
+  /** The industry's label; '' for `not_specified` (and for a row not filled in). */
+  industryLabel: string;
+};
+
+export type LakeEntry = LakeFacts & {
   id: number;
   jobHash: string;
   hashVersion: number;
@@ -197,7 +230,7 @@ export type LakeEntry = {
   requester: LakeRequester;
 };
 
-export type LakeHistoryEntry = {
+export type LakeHistoryEntry = LakeFacts & {
   id: number;
   lakeId: number;
   jobHash: string;
@@ -322,9 +355,20 @@ export type JobFieldCatalog = {
 
 export type Paged<Row> = { rows: Row[]; total: number; limit: number; offset: number };
 
+/** One choice of a lake filter, in the server's words (`id` is what the filter sends). */
+export type LakeFilterOption = { id: string; label: string };
+
+/**
+ * GET /api/admin/job-lake's page, with what the job type and industry filters
+ * may be - the server's own lists, `not_specified` ("Not specified") last.
+ */
+export type LakePage = Paged<LakeEntry> & {
+  options?: { jobTypes: LakeFilterOption[]; industries: LakeFilterOption[] };
+};
+
 export const adminJobLakeApi = {
   /** `query` is lib/jobLakeDisplay.ts's `lakeQueryString`. */
-  list: (query: string) => apiFetch<Paged<LakeEntry>>(`/admin/job-lake${query ? `?${query}` : ''}`),
+  list: (query: string) => apiFetch<LakePage>(`/admin/job-lake${query ? `?${query}` : ''}`),
   get: (id: number) => apiFetch<{ entry: LakeEntry; history: LakeHistoryEntry[] }>(`/admin/job-lake/${id}`),
   remove: (id: number, revokeReward: boolean) =>
     apiFetch<{ deleted: true; id: number; revoke: RevokeOutcome | null }>(

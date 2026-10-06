@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 
 import { jobRewardsSince, readBalanceMilli } from '../database/creditRepository';
-import { countLakeEntriesBy, utcDayStart } from '../database/jobLakeRepository';
+import { countLakeEntriesBy, findJobReports, utcDayStart } from '../database/jobLakeRepository';
 import { getReportRateMilli } from '../database/userRepository';
 import { requireReporter } from '../middleware/auth';
 import { PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
@@ -16,11 +16,11 @@ import {
 } from '../services/jobLake/reportRun';
 import {
   inspectReportTab,
-  lakeStatusIsRowsOwn,
   lastRowInGrid,
   readReportRows,
   rowHoldsAJob,
 } from '../services/jobLake/reportSheet';
+import { findStoredAnalysis } from '../services/jobAnalysis/gate';
 import { ensureAccountSheet, listAddressableSheetTabs } from '../services/sheets/accountSheet';
 
 /**
@@ -34,7 +34,7 @@ import { ensureAccountSheet, listAddressableSheetTabs } from '../services/sheets
  *
  *   GET  /            what the page opens on: the sheet, the rate in effect, today's earnings, the latest run
  *   GET  /tabs        the sheet's tabs, today's first
- *   GET  /rows        ?tab=&from=&to= - the rows, and which are reported already
+ *   GET  /rows        ?tab=&from=&to= - the rows, and which this account reported before (and what became of them)
  *   POST /runs        { tabName, fromRow, toRow } -> 202 { run }: the background run
  *   GET  /runs/current  the latest run, or null
  *   GET  /runs/:id    one run of the caller's
@@ -104,26 +104,40 @@ router.get('/rows', async (req: Request, res: Response) => {
     }
     // Google refuses a read past the grid; rows that do not exist hold nothing.
     const toRow = lastRowInGrid(tab, range.toRow);
-    const rows =
-      toRow < range.fromRow
-        ? []
-        : await readReportRows(spreadsheetId, range.tabName, range.fromRow, toRow, { columnCount: tab.columnCount });
+    const rows = (
+      toRow < range.fromRow ? [] : await readReportRows(spreadsheetId, range.tabName, range.fromRow, toRow)
+    ).filter(rowHoldsAJob);
+    // What a run would skip, from the database alone - exactly as the run
+    // decides it: the posting is stored and this account reported it before,
+    // and this is the first row of it in the range (a second row of the same
+    // posting is merged, and is a duplicate). Store only: no model, no write.
+    const storedIds = rows.map(
+      (row) => findStoredAnalysis({ jd: row.jobDescription, link: row.link }, { readOnly: true })?.id ?? null
+    );
+    const reports = findJobReports(
+      req.user!.id,
+      storedIds.filter((id): id is string => id !== null)
+    );
+    const firstRowOf = new Set<string>();
     res.json({
       ...range,
       jobTab: true,
-      rows: rows.filter(rowHoldsAJob).map((row) => ({
-        row: row.row,
-        company: row.company,
-        title: row.title,
-        link: row.link,
-        descriptionLength: row.jobDescription.trim().length,
-        jobHash: row.jobHash || null,
-        lakeStatus: row.lakeStatus || null,
-        // A run skips these: Added, Replaced, Duplicate or Unclassified already,
-        // beside the Analysis cell of the posting in the row now - a status
-        // left by the posting that sat in the row before does not count.
-        reported: lakeStatusIsRowsOwn(row),
-      })),
+      rows: rows.map((row, index) => {
+        const analysisId = storedIds[index];
+        const prior = analysisId && !firstRowOf.has(analysisId) ? reports.get(analysisId) ?? null : null;
+        if (analysisId && prior) firstRowOf.add(analysisId);
+        return {
+          row: row.row,
+          company: row.company,
+          title: row.title,
+          link: row.link,
+          descriptionLength: row.jobDescription.trim().length,
+          // The lake row the posting reached the first time, when it did.
+          jobHash: prior?.jobHash ?? null,
+          reported: prior !== null,
+          priorOutcome: prior?.outcome ?? null,
+        };
+      }),
     });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to read the rows of your job sheet');

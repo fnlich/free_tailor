@@ -18,7 +18,9 @@ process.env.DB_DIR = process.env.DB_DIR || fs.mkdtempSync(path.join(os.tmpdir(),
  * salary line the sheet's Salary column holds, the Analysis cell's states, the
  * whitespace a posting's identity ignores, and the columns the six protected
  * cells sit in. A copy that drifted would mark a row "Skips analysis" that the
- * server then analyses, or show a salary the sheet spells differently.
+ * server then analyses, or show a salary the sheet spells differently. And
+ * the notes Admin -> Prompts puts on an analysis prompt written before job
+ * fields or industries (lib/promptNotes.ts), held to the server's flags.
  *
  * Loaded the way frontendHelpers.test.js loads its modules: transpiled with
  * the backend's TypeScript, importing nothing at runtime.
@@ -322,4 +324,67 @@ test('a loaded row says whether its build skips analysis, with the Job Field and
     [null, '', ''],
     [null, '', ''],
   ]);
+});
+
+// -- Admin -> Prompts: the notes on an analysis prompt written before ----- //
+
+test('the editor notes a prompt that predates job fields, industries or the section switches exactly when the server flags it', async () => {
+  const notes = loadFrontendModule('lib/promptNotes.ts');
+  const gate = require('../dist/services/jobAnalysis/gate');
+  const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
+
+  const analysisTexts = [
+    'Analyze.\n[[jobDescription]]',
+    'Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
+    'Analyze.\n[[ jobFieldList ]]\n[[industryList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
+    'Analyze.\n[[jobFieldList]]\n[[ industryList ]]\n[[jobDescription]]',
+    // Named in prose, never as a variable: not a use.
+    'Analyze. Use the jobFieldList and the industryList.\n[[jobDescription]]',
+    'Analyze.\n[[industryList]]\n[[jobDescription]]',
+    'Analyze.\n[jobFieldList]\n[[jobDescription]]',
+  ];
+  const tailorTexts = ['Old.\n[[profileJson]]', 'New.\n[[profileJson]]\nStrengths: [[ includeStrengths ]]', 'includeStrengths\n[[profileJson]]'];
+
+  // What the gate appends to an analysis turn: everything since job fields,
+  // the industry alone, or nothing - the page's two notes, in that order.
+  for (const content of analysisTexts) {
+    const override = gate.analysisOverrideFor(content);
+    assert.equal(notes.lacksJobFieldList('analyze-job-description', content), override === gate.buildAnalysisFactsOverride(), content);
+    assert.equal(notes.lacksIndustryList('analyze-job-description', content), override === gate.buildIndustryOverride(), content);
+    assert.equal(notes.lacksJobFieldList('tailor-resume', content), false);
+    assert.equal(notes.lacksIndustryList('tailor-resume', content), false);
+  }
+
+  // And the flags the server serves on the saved record, the pills beside its name.
+  const storage = useTempStorage('frontend-prompt-notes');
+  const shipped = path.join(__dirname, '..', 'static');
+  fs.cpSync(path.join(shipped, 'skills'), path.join(storage.staticDir, 'skills'), { recursive: true });
+  const write = (id, content) =>
+    writeStaticJson(storage.staticDir, `prompts/${id}.json`, {
+      id,
+      content,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+  for (const [index, content] of analysisTexts.entries()) {
+    write('analyze-job-description', content);
+    write('tailor-resume', tailorTexts[index % tailorTexts.length]);
+    const listed = new Map((await loadFresh('../dist/services/promptService').listPrompts()).map((prompt) => [prompt.id, prompt]));
+    const analysis = listed.get('analyze-job-description');
+    assert.equal(notes.lacksJobFieldList(analysis.featureKey, content), analysis.predatesJobField === true, content);
+    assert.equal(notes.lacksIndustryList(analysis.featureKey, content), analysis.predatesIndustry === true, content);
+    const tailor = listed.get('tailor-resume');
+    const tailorText = tailorTexts[index % tailorTexts.length];
+    assert.equal(notes.lacksSectionSwitches(tailor.featureKey, tailorText), tailor.predatesSectionSwitches === true, tailorText);
+    assert.equal(notes.lacksSectionSwitches(analysis.featureKey, content), false);
+  }
+  // Never both notes on one prompt: the job-field instructions ask for the industry too.
+  for (const content of analysisTexts) {
+    assert.ok(!(notes.lacksJobFieldList('analyze-job-description', content) && notes.lacksIndustryList('analyze-job-description', content)));
+  }
+  // The shipped prompt carries neither.
+  const shippedText = JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', 'analyze-job-description.json'), 'utf8')).content;
+  assert.equal(notes.lacksJobFieldList('analyze-job-description', shippedText), false);
+  assert.equal(notes.lacksIndustryList('analyze-job-description', shippedText), false);
+  assert.equal(notes.ANALYSIS_PROMPT_FEATURE, 'analyze-job-description');
 });

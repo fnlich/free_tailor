@@ -11,28 +11,20 @@
  *     the tab list behind GET /api/report/tabs;
  *   - the reporter run's client (`setReportSheetsClientForTests`): the tab
  *     inspection that refuses a tab that is not a job tab, the verify, the
- *     one read of B:E and K:P, the Lake Status write and the red paint;
+ *     one read of B:E, the Lake Status write and the red paint;
  *   - the analysis columns' client (`setAnalysisSheetsClientForTests`): the
  *     sheet-first read of a run's analysis cells and the write-back;
  *   - the admin sheet's client (`setAdminLakeSheetClientForTests`).
  *
  * The first three read and write the SAME rows, so the statuses a run writes
- * are what the next preview of those rows reads - the way the page proves the
- * sheet was written. The run, the lake, its rewards and its rules are the
- * shipping code.
+ * and the analyses it writes back are in the rows the next preview reads. The
+ * run, the lake, its rewards and its rules are the shipping code.
  *
- * Today's tab, row by row (B Company, C Job Title, D Job Link, E Job
- * Description; O is Lake Status):
- *
- *   2  Acme Corp    a posting           -> Added
- *   3  ACME, Inc.   another posting     -> Duplicate: the same company in the
- *                                          same field, once normalised - red
- *   4  Globex LLC   a third posting     -> Added
- *   5  Initech      O = "Added" already, beside the Analysis cell an earlier
- *                   run wrote for its posting -> reported before, not taken
- *   6  (no company) a posting           -> Skipped
- *   7  Umbrella     no description, and a `javascript:` link that must never
- *                   become an anchor   -> Skipped
+ * Today's tab's rows are report-sheet-rows.js's, which report-run.js reads
+ * too: two of them hold postings the reporter reported before, which the
+ * script records in the database before the run - the database, never a
+ * Lake Status cell, is what says a row was reported before, so this sheet
+ * holds no status for them.
  *
  * "My notes" is a tab of the reporter's own (its header is not the job
  * sheet's), which the preview and the run refuse before touching it.
@@ -46,52 +38,17 @@ const analysisColumns = require(path.join(DIST, 'services', 'sheets', 'analysisC
 const reportSheet = require(path.join(DIST, 'services', 'jobLake', 'reportSheet'));
 const adminSheet = require(path.join(DIST, 'services', 'jobLake', 'adminSheet'));
 const { JOB_SHEET_HEADERS } = require(path.join(DIST, 'integrations', 'googleSheets'));
-const { postingKeysOf } = require(path.join(DIST, 'services', 'jobAnalysis', 'identity'));
+const { posting, todayRows } = require('./report-sheet-rows');
 
 const OLDER_TAB = '09/30/2026';
 const NOTES_TAB = 'My notes';
-
-const posting = (what) =>
-  `${what}: a senior backend engineer to build TypeScript services on Node.js for a SaaS platform, owning APIs end to end.`;
-
-/**
- * The Analysis cell an earlier run wrote for a posting: a run skips a row as
- * reported only when its Lake Status sits beside its own posting's cell. It
- * names a stored row this fresh database lacks, so the posting keys it
- * records are what tie it to the row.
- */
-const analysisCell = (jd, link) =>
-  JSON.stringify({
-    v: 1,
-    id: '00000000-0000-4000-8000-000000000004',
-    posting: postingKeysOf({ jd, link }),
-    jobField: 'backend',
-    analysis: { jobMeta: { title: 'Engineer', seniority: 'senior', industry: '', department: '' }, jobField: 'backend' },
-  });
 
 /** Each tab's rows from row 2 (row 1 is the header), columns A..P, kept and written to in memory. */
 const sheet = new Map();
 function rowsFor(tab) {
   if (!sheet.has(tab)) {
     if (tab === accountSheet.todaySheetTitle()) {
-      const blank = (count) => Array.from({ length: count }, () => '');
-      sheet.set(tab, [
-        ['1', 'Acme Corp', 'Backend Engineer', 'https://acme.example/jobs/1', posting('Acme one')],
-        ['2', 'ACME, Inc.', 'Platform Engineer', 'https://acme.example/jobs/2', posting('Acme two')],
-        ['3', 'Globex LLC', 'API Engineer', 'https://globex.example/careers/7', posting('Globex')],
-        [
-          '4',
-          'Initech',
-          'Engineer',
-          'https://initech.example/jobs/4',
-          posting('Initech'),
-          ...blank(9),
-          'Added',
-          analysisCell(posting('Initech'), 'https://initech.example/jobs/4'),
-        ],
-        ['5', '', 'Engineer with no company', '', posting('Nameless')],
-        ['6', 'Umbrella', 'Engineer', 'javascript:alert(1)', ''],
-      ]);
+      sheet.set(tab, todayRows());
     } else if (tab === OLDER_TAB) {
       sheet.set(tab, [['1', 'Older Co', 'Engineer', 'https://older.example/jobs/1', posting('Older')]]);
     } else {
