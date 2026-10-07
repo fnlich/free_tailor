@@ -1,4 +1,5 @@
 import {
+  ANALYSIS_TRUNCATED_MARKER,
   cellIsForPosting,
   isAppOwnedSheet,
   parseAnalysisCell,
@@ -164,12 +165,19 @@ export async function resolveAnalysesAtSubmit(
               'cell is replaced.'
           );
         } else if (cell.state === 'ok') {
+          // A description cut at a cell's limit (a push writes a longer one
+          // so) is that analysis's posting only exactly as it was cut: say
+          // so, rather than blame a sort for an edit.
+          const cut = job.jobDescription.trim().endsWith(ANALYSIS_TRUNCATED_MARKER.trim());
           console.warn(
             `[analysis] Sheet row ${row}'s Analysis cell was not written for the posting in the row now${
               cell.analysisId ? ` (it names ${cell.analysisId})` : ''
-            } - the row's posting was replaced, or rows were sorted; it is not used${
-              cell.analysisId ? ", and is replaced once the row's own posting is analysed" : ''
-            }.`
+            } - ${
+              cut
+                ? "its Job Description, cut at 50,000 characters, is not that analysis's posting as it was cut " +
+                  "(edited since), or the row's posting was replaced, or rows were sorted"
+                : "the row's posting was replaced, or rows were sorted"
+            }; it is not used${cell.analysisId ? ", and is replaced once the row's own posting is analysed" : ''}.`
           );
         }
         continue;

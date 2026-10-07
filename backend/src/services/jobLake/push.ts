@@ -25,12 +25,7 @@ import {
   sheetDateText,
   TEMP_TAB,
 } from '../sheets/accountSheet';
-import {
-  ANALYSIS_CELL_LIMIT,
-  ANALYSIS_TRUNCATED_MARKER,
-  analysisColumnValues,
-  forgetTabWriteBacks,
-} from '../sheets/analysisColumns';
+import { analysisColumnValues, descriptionCell, forgetTabWriteBacks } from '../sheets/analysisColumns';
 
 /**
  * Push to Google Sheet (Admin -> Job Lake, owner decision L1): the lake jobs
@@ -62,12 +57,15 @@ import {
  * Each row is A:L of the job layout: Date (the day the lake row was added or
  * last replaced, in SHEET_TIMEZONE, as a real date), NO(DATE) (1, 2, 3 ...
  * down the rows of each day), Company, Job Title, Job Link, Job Description
- * (cut at Google's 50,000 characters, with the Analysis cell's marker), and
- * the six analysis cells exactly as a build's write-back puts them there
- * (`analysisColumnValues`) for the row's stored analysis - blank when it has
- * none. So a build from Temp For AI reads each row's analysis from its own
- * Analysis cell, which names the stored analysis of that very posting, and
- * asks no model (sheet first, P7).
+ * (cut at Google's 50,000 characters, with the Analysis cell's marker -
+ * analysisColumns.ts's `descriptionCell`), and the six analysis cells exactly
+ * as a build's write-back puts them there (`analysisColumnValues`) for the
+ * row's stored analysis - blank when it has none. So a build from Temp For AI
+ * reads each row's analysis from its own Analysis cell, which names the
+ * stored analysis of that very posting, and asks no model (sheet first, P7) -
+ * a cut description included, with no link to tie it: the cut copy is
+ * matched to the analysis the cell names exactly as it was cut
+ * (`isAnalysisOfPosting`).
  *
  * The rows are at most JOB_LAKE_PUSH_MAX_ROWS, the newest; the answer says
  * how many matched and whether the cap cut them.
@@ -232,12 +230,6 @@ export function clearDataRowsRequest(gid: number): Record<string, unknown> {
       fields: 'userEnteredValue,userEnteredFormat.backgroundColor',
     },
   };
-}
-
-/** A description as a cell takes it: whole, or cut at Google's limit with the Analysis cell's marker. */
-export function descriptionCell(text: string): string {
-  if (text.length <= ANALYSIS_CELL_LIMIT) return text;
-  return text.slice(0, ANALYSIS_CELL_LIMIT - ANALYSIS_TRUNCATED_MARKER.length) + ANALYSIS_TRUNCATED_MARKER;
 }
 
 /**

@@ -259,7 +259,7 @@ function lakeJob(n, company, at, analysis = {}, extra = {}) {
       jobMeta: { title: `Engineer ${n}`, seniority: 'senior', industry: '', department: '' },
       ...analysis,
     },
-    { jobDescription: extra.jobDescription ?? posting(n), jobLink: `https://jobs.example.com/${n}`, companyName: company }
+    { jobDescription: extra.jobDescription ?? posting(n), jobLink: extra.jobLink ?? `https://jobs.example.com/${n}`, companyName: company }
   );
   const stored = analyses.getJobAnalysisById(id);
   const merged = service.mergeIntoLake(service.lakeJobFromAnalysis(stored, 'merge', { company }), null, { reward: false, now: at });
@@ -536,19 +536,22 @@ test('the rows go in writes of at most 200 rows and about 1.5 MB, the grid grown
   const huge = ['x'.repeat(push.PUSH_WRITE_MAX_BYTES + 10)];
   assert.deepEqual(push.pushChunks([['a'], huge, ['b']]).map((chunk) => chunk.length), [1, 1, 1]);
   assert.deepEqual(push.pushChunks(Array.from({ length: 401 }, () => ['a'])).map((chunk) => chunk.length), [200, 200, 1]);
-  assert.equal(push.descriptionCell('short'), 'short');
+  assert.equal(columns.descriptionCell('short'), 'short');
+  // Never half of a character spelled with two code units: the cut lands
+  // before it, so the cell reads back exactly as it was cut.
+  const emoji = columns.descriptionCell(`${'a'.repeat(49_969)}\u{1F600}${'b'.repeat(100)}`);
+  assert.equal(emoji, `${'a'.repeat(49_969)} ...[cut at 50,000 characters]`);
+  assert.equal(emoji.length, 49_999);
 });
 
-test('rows pushed into Temp For AI are trusted by a build from it: sheet first, no analysis call, nothing written back', async (t) => {
-  const h = await serve('trusted');
-  t.after(() => h.close());
-  const now = Date.now();
-  for (let n = 1; n <= 3; n += 1) lakeJob(n, `Company ${n}`, now - n * DAY);
-  assert.equal((await h.pushAs('owner')).status, 200);
+/**
+ * Builds the pushed rows of Temp For AI as the builder's sheet panel sends
+ * them - C:F and the row number, the tab the account's own - and waits for
+ * the run. Answers the queue's log lines.
+ */
+async function buildFromTemp(h, rows) {
   const temp = h.google.tab(h.sheets.owner, TEMP);
-  const writesBefore = h.google.calls.writes.length;
-
-  const jobs = [2, 3, 4].map((row) => ({
+  const jobs = rows.map((row) => ({
     companyName: temp.rows[row].C,
     role: temp.rows[row].D,
     jobLink: temp.rows[row].E,
@@ -557,10 +560,11 @@ test('rows pushed into Temp For AI are trusted by a build from it: sheet first, 
   }));
   const lines = [];
   const realLog = console.log;
+  const realWarn = console.warn;
   console.log = (...args) => lines.push(args.map(String).join(' '));
-  let response;
+  console.warn = (...args) => lines.push(args.map(String).join(' '));
   try {
-    response = await h.post('/generation/batches', {
+    const response = await h.post('/generation/batches', {
       mode: 'order',
       format: 'pdf',
       includeCoverLetterDocx: false,
@@ -572,7 +576,20 @@ test('rows pushed into Temp For AI are trusted by a build from it: sheet first, 
     await untilFinished(response.body.batchId);
   } finally {
     console.log = realLog;
+    console.warn = realWarn;
   }
+  return lines;
+}
+
+test('rows pushed into Temp For AI are trusted by a build from it: sheet first, no analysis call, nothing written back', async (t) => {
+  const h = await serve('trusted');
+  t.after(() => h.close());
+  const now = Date.now();
+  for (let n = 1; n <= 3; n += 1) lakeJob(n, `Company ${n}`, now - n * DAY);
+  assert.equal((await h.pushAs('owner')).status, 200);
+  const writesBefore = h.google.calls.writes.length;
+
+  const lines = await buildFromTemp(h, [2, 3, 4]);
   assert.ok(
     lines.some((line) => line.includes(`Sheet run on "${TEMP}": 3 job(s) analysed in the sheet, 0 from the store, 0 to analyse`)),
     lines.filter((line) => line.includes('Sheet run')).join('\n')
@@ -582,6 +599,52 @@ test('rows pushed into Temp For AI are trusted by a build from it: sheet first, 
   assert.ok(h.google.calls.reads.some((call) => call.id === h.sheets.owner && call.ranges.some((range) => range.includes(`'${TEMP}'!G2:L4`))));
   await columns.flushAnalysisWriteBacks();
   assert.equal(h.google.calls.writes.length, writesBefore, 'the cells already hold their analyses');
+});
+
+test('a pushed job with no link and a description past 50,000 characters is still its posting: the cut copy, not edited, asks no model', async (t) => {
+  const h = await serve('cut-no-link');
+  t.after(() => h.close());
+  const { getDb } = require('../dist/database/sqlite');
+  const stored = () => getDb().prepare('SELECT COUNT(*) AS n FROM job_analyses').get().n;
+  // As the builder's /resume/analyze stores one: no link, and no route caps
+  // how long a description may be.
+  const full = `${posting(7)} ${'Owns the payments platform end to end. '.repeat(1_700)}`;
+  assert.ok(full.length > 60_000);
+  const long = lakeJob(7, 'LongCo', Date.now() - DAY, {}, { jobDescription: full, jobLink: '' });
+  assert.equal(long.linkKey, null, 'nothing but its text ties the row to its analysis');
+
+  assert.equal((await h.pushAs('owner')).status, 200);
+  const temp = h.google.tab(h.sheets.owner, TEMP);
+  assert.equal(temp.rows[2].E, '');
+  assert.equal(temp.rows[2].F.length, 50_000);
+  assert.ok(temp.rows[2].F.endsWith(' ...[cut at 50,000 characters]'));
+  assert.equal(JSON.parse(temp.rows[2].L).id, long.id);
+  // The cut copy is not the stored text: by link or hash alone it is another posting.
+  assert.notEqual(require('../dist/services/jobAnalysis/identity').contentHash(temp.rows[2].F), long.contentHash);
+  const before = { analyses: stored(), writes: h.google.calls.writes.length };
+
+  const lines = await buildFromTemp(h, [2]);
+  assert.ok(
+    lines.some((line) => line.includes(`Sheet run on "${TEMP}": 1 job(s) analysed in the sheet, 0 from the store, 0 to analyse`)),
+    lines.filter((line) => /Sheet run|Sheet row/.test(line)).join('\n')
+  );
+  assert.equal(h.seats.analyses().length, 0, 'not analysed a second time');
+  assert.equal(stored(), before.analyses, 'no second stored analysis of the cut text');
+  await columns.flushAnalysisWriteBacks();
+  assert.equal(h.google.calls.writes.length, before.writes, 'its cells already hold its analysis');
+  assert.equal(JSON.parse(temp.rows[2].L).id, long.id);
+
+  // Matched only exactly as cut: a description edited since is another
+  // posting, analysed once, and the log says so rather than blame a sort.
+  temp.rows[2].F = temp.rows[2].F.replace('Posting 7:', 'Posting seven:');
+  const edited = await buildFromTemp(h, [2]);
+  const warned = edited.filter((line) => line.includes("Sheet row 2's Analysis cell was not written for the posting in the row now"));
+  assert.equal(warned.length, 1, edited.join('\n'));
+  assert.match(warned[0], /its Job Description, cut at 50,000 characters, is not that analysis's posting as it was cut \(edited since\)/);
+  assert.equal(h.seats.analyses().length, 1);
+  assert.equal(stored(), before.analyses + 1);
+  await columns.flushAnalysisWriteBacks();
+  assert.notEqual(JSON.parse(temp.rows[2].L).id, long.id, "the cell now names the edited posting's own analysis");
 });
 
 test('one push per administrator at a time: a second is refused while the first runs, another administrator is not', async (t) => {

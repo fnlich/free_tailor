@@ -74,7 +74,9 @@ Coverage currently focuses on:
   cached prefix holding the job field and industry lists ahead of the
   posting, an administrator's prompt from before job fields asked for all of
   them every turn and one from before industries (`predatesIndustry`) asked
-  for the industry alone (`analysisGate.test.js`); the table, its UNIQUE
+  for the industry alone, and a sheet row's cell worth only the stored
+  analysis its id names for that posting - an unknown id never stored, and
+  nothing in the code writing `source = 'sheet'` (`analysisGate.test.js`); the table, its UNIQUE
   indexes, the link and text identities, EXPLAIN QUERY PLAN on every lookup
   (and on the lake's two reads) and the repair of an unreadable row, the
   closed industry list with stable ids (an unknown word Other), an industry
@@ -86,8 +88,10 @@ Coverage currently focuses on:
   job field, salary and filter, never reaching the tailoring prompt nor
   changing a tailoring cache key (`tokenBudget.test.js`); and the app sheet's six
   analysis columns - sheet-first builds with one batched read, write-back once
-  and RAW, the trust rule, row identity, a cell used only for the posting it
-  was written for (a replaced posting, a sort under the protected columns), a
+  and RAW, the trust rule, row identity, a cell used only when it names its
+  posting's stored analysis (a replaced posting, a sort under the protected
+  columns, a program-shaped cell naming an analysis the store never held -
+  never registered, analysed once and replaced; one with no id left alone), a
   person's own tab left alone, a moved row not settled, the protection's
   request shape and repair with the Analysis column cleared (a cell forged
   while unprotected never trusted), the grid grown past twelve columns and the
@@ -141,15 +145,33 @@ Coverage currently focuses on:
   same posting moved, on another row or on another tab *Reported before* and
   unpaid, the same posting twice in one run a red duplicate the second time,
   a row whose first outcome was a duplicate painted red again, a job an older
-  build deleted from the lake reported again, a Lake Status left by a
-  replaced posting ignored, a Skipped row's analysis cells written once it is
-  reported, one row's seat or merge failure failing only that row, Lake Status
-  cells kept out of rows that were sorted), the admin merge, the company a
-  build or the Job Filter names on an analysis, and the admin lake API
-  (`jobLakeReport.test.js`). The pages' half (`frontendJobLake.test.js`): the
+  build deleted from the lake reported again, a posting pasted over another
+  reported like any other and its row's analysis cells put right, a Skipped
+  row's analysis cells written once it is reported, one row's seat or merge
+  failure failing only that row, duplicates painted only in rows that still
+  hold their posting and nothing written into a cell), the admin merge, the
+  company a build or the Job Filter names on an analysis, and the admin lake API
+  (`jobLakeReport.test.js`); Push to Google Sheet over HTTP against every
+  account's spreadsheet in memory - Temp For AI's A:L below the header
+  replaced, values and red paint, the header and the person's columns past L
+  kept, newest first, Date in SHEET_TIMEZONE and NO(DATE) per day, the six
+  analysis cells as a build writes them (blank with no analysis), the list's
+  own filters and refusals, the cap, writes of at most 200 rows and about
+  1.5 MB with the grid grown first and a long description cut with the
+  marker (never through a surrogate pair), a build from the pushed rows
+  asking no model - a link-less job whose description was cut among them,
+  matched by its cut copy until that is edited - one push per
+  administrator, a Temp For AI that is not a job tab or whose name is the
+  person's own refused before any write, admins only, and the read's plan
+  (`jobLakePush.test.js`). The pages' half (`frontendJobLake.test.js`): the
   rows a run is asked for, the settings boxes and what a save sends, and the
   lake's filters, each refused by the page exactly when and in the words the
-  server refuses them; every row and merge status given its words, *Reported
+  server refuses them; the filter boxes in the owner's order (pinned, and
+  drawn from it by the Lake tab), the job type and clearance choices against
+  the server's, and the query string in that order; Push to Google Sheet's
+  body - the search's own filters - pushing exactly the jobs Search lists, in
+  its order, and refused in its words, its confirm and its result (the cap
+  sentence included) read from real pushes; every row and merge status given its words, *Reported
   before (Added)* and the rest in the server's, and red exactly for a
   duplicate and a row reported before whose first outcome was one - the rows
   a run paints; a lake job's type, clearance and industry in the server's
@@ -432,13 +454,25 @@ Coverage currently focuses on:
   and range, and tagged with when it is read - and its README row showing the
   same default, range and tag; plus the CLI budgets shipped commented out
   (`envExample.test.js`)
-- the README's rollback procedure (`rollbackDocs.test.js`): the statements of
-  "Rolling back this release", taken from the README itself (its sqlite3 and
-  node spellings agreeing), run against a database this build made - every
-  column the previous release selects there under its old name, only
-  announcements left in `notifications`, no enabled account in a role it does
-  not know - and the record and settings log the section names being the ones
-  this build writes
+- the README's rollback procedure (`rollbackDocs.test.js`), taken from the
+  README itself (its sqlite3 and node spellings agreeing) and run against a
+  database this build made: the check before going back to the previous
+  release (5177fc3) lists an open payout request and an edited analysis prompt
+  naming `[[industryList]]`, spaced `[[ industryList ]]` too (that build reads
+  it the same) - not a payout request already decided, nor an older analysis
+  variant edited here, whose row names the variable only outside its text -
+  and nothing once the payout is recorded and the variable taken out; every
+  place it says how to build from All under 5177fc3 names the From/To columns
+  and the four mapped ones, which that build's panel check (frozen) takes as
+  All's own C to F; that build's own reads (accounts, refund requests, the
+  lake) and its lake insert
+  still run against this build's schema, it reads a payout request as a
+  resume's, and the next start here fills in the facts of the job it added
+  and records its report; and the statements for going back to 90adbaf leave
+  every column it selects under its old name, only announcements in
+  `notifications` and no enabled account in a role it does not know, with the
+  record and settings log that subsection names being the ones this build
+  writes
 
 ## Testing the CLI providers
 

@@ -54,9 +54,10 @@ function fail(req: Request, res: Response, error: unknown): void {
  * a read. Doing it here too is what covers the account whose sign-in ran while
  * Google was down, and the one that predates the feature entirely.
  *
- * `?recheck=1` - sent by the Job Sheet page alone - looks at a recorded tab
- * name clash again (`describeAccountSheet`); without it a clash is reported
- * from the stored row, since the shell asks this on every page load.
+ * `?recheck=1` - sent by the Job Sheet page alone - looks at the sheet's two
+ * tabs again (`describeAccountSheet`): a recorded name clash, and an All or
+ * Temp For AI deleted or renamed since, which it puts back. Without it the
+ * answer is the stored row, since the shell asks this on every page load.
  */
 router.get('/', async (req: Request, res: Response) => {
   try {

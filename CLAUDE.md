@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~85s with the tsc step, 1664 tests)
+npm test                       # backend node:test suite (~85s with the tsc step, 1685 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack)
 ```
 
@@ -211,12 +211,19 @@ backend/src/
                       #   (jobLakeFacts.ts, every start, by condition - see
                       #   "The Job Data Lake" below - never fatal), then the
                       #   migrations.
-                      #   An older build reads users.plan: rolling back means
-                      #   renaming it back first (README, "Rolling back this
-                      #   release", which gathers every step a rollback needs;
-                      #   test/rollbackDocs.test.js runs its statements against
-                      #   this build's schema, so a column renamed or a notice
-                      #   stored differently fails it until the README follows).
+                      #   Rolling back to the previous release (5177fc3) needs
+                      #   no statement - nothing it reads was renamed - only
+                      #   open payout requests decided and [[industryList]]
+                      #   out of an edited analysis prompt, which the README's
+                      #   check lists; 90adbaf reads users.plan, so going back
+                      #   that far renames it back first (README, "Rolling back
+                      #   this release" and its "Going back further, to
+                      #   90adbaf", which gather every step a rollback needs;
+                      #   test/rollbackDocs.test.js runs the check and the
+                      #   statements against this build's schema, and 5177fc3's
+                      #   own reads and lake insert too, so a column renamed,
+                      #   a request kind or a notice stored differently fails
+                      #   it until the README follows).
                       #   Saved templates are NOT a table:
                       #   templateFiles.ts is their store, `<id>.json` in
                       #   static/templates (see the note under this block);
@@ -412,7 +419,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 137 files; fixtures/cli, codex and gemini
+  test/               # node:test, 138 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -862,8 +869,8 @@ prices go to $0 BY RULE (an absent `pricePerResumeMilli` reads as 0) - the
 settings row is deliberately NOT rewritten, because that would change what
 migration 001 snapshots for `ai:rollback`. It is safe to have not run: every
 dollar column starts at 0, so old data already reads as reset. A ROLLBACK
-across it is not lossless (README, "Rolling back this release"): dollars held
-by a run in flight are never refunded (the older build sees `units = 0`, then
+across it - to 90adbaf - is not lossless (README, "Going back further, to
+90adbaf"): dollars held by a run in flight are never refunded (the older build sees `units = 0`, then
 closes the reservation, and a closed one takes no refund here), the first
 settings save of any kind rewrites every model without `creditsPerResume`, so
 an older build prices them all at 1 credit - and the OLDER build's first save
@@ -912,7 +919,10 @@ savepoint) and `markRefundRequestRefunded`; a refusal (409
 commit. Its wording is kind-aware (*Payout request approved/declined*, *Payout
 recorded: $X*, link `/credits`); a refunded payout reads *Paid out*.
 `toRequest` derives the kind from the ITEM KEY (`kindOfItemType`) - it used to
-read any unknown kind as a resume and any unknown item type as a payment - and
+read any unknown kind as a resume and any unknown item type as a payment, which
+5177fc3 still does: there a payout request is a resume's refund it can neither
+pay nor close, so a rollback decides every open one first (the README's check
+lists them, `kind = 'payout'`) - and
 marks an item type this build does not know `unrecognised` (refundable never,
 409 `unrecognised`; declinable). `GET /api/refund-requests?kind=` filters by
 kind. Asking for a purchase or resume refund is CLOSED (R1): `POST /` and
@@ -993,10 +1003,11 @@ announcement editor lists, edits and deletes announcements only, and
 `deleteUser` deletes the account's own notices. The bell draws a notice's
 `link` only through lib/appLinks.ts's `safeAppPath` (a copy of the server's,
 run against it by test/frontendRefunds.test.js) and marks a notice "For you".
-An older build has no recipient filter and reads EVERY row as an announcement,
-so a rollback deletes `WHERE recipient_id IS NOT NULL` first (README,
-"Rolling back this release") - or every bell shows other people's refund notices, emails and
-reasons included.
+90adbaf has no recipient filter and reads EVERY row as an announcement, so a
+rollback that far deletes `WHERE recipient_id IS NOT NULL` first (README,
+"Going back further, to 90adbaf") - or every bell shows other people's refund
+and payout notices, emails and reasons included. 5177fc3 filters as this
+build does.
 
 **Contact** (owner decision A2): `app_settings['contact'] = { channels: [{ type,
 label, value }] }`, types closed (`email|telegram|discord|whatsapp|other`),
@@ -1426,12 +1437,22 @@ is the only function that runs the analysis prompt - test/analysisGate.test.js
 reads every source file and fails on any other that names
 `analyze-job-description`, builds or parses its completion, or keeps an
 analysis path of its own. It answers, in order: (0) a Google Sheet row's own
-analysis, read BY THE SERVER from the row's protected Analysis cell, and only
-when the cell was written for the posting in the row NOW (`SheetRowAnalysis.
-posting` / `analysisMatchesPosting`: a replaced posting, or rows sorted under
-the protected columns, leave another posting's cell behind) - the stored row
-it names, else its content registered with `source = 'sheet'` and no model
-call, which needs the posting keys the cell records; (1) the stored row of the posting, by its normalised link and
+analysis, read BY THE SERVER from the row's protected Analysis cell: the
+STORED analysis the cell's id names (`SheetRowAnalysis` is `{ analysisId,
+row }` and nothing else), and only when that stored analysis is the posting
+in the row NOW, by content hash or link key - or, for a posting longer than a
+cell, by the hash of the copy the program cuts into one (`analysisMatchesPosting`
+-> analysisColumns.ts's `isAnalysisOfPosting` / `cellCopyHash`, so a pushed
+row with no link still matches; an edited cut copy does not): a
+replaced posting, or rows sorted under the protected columns, leave another
+posting's cell behind. The cell's CONTENT is never used and never stored: a
+cell naming an id the store lacks - another install's, or program-shaped text
+that is not the program's (a formula spilled into L from an unprotected
+column) - is ignored with a log line (`names an analysis this store does not
+have`) and the row falls to (1) and then (3); nothing writes `source =
+'sheet'` any more (test/analysisGate.test.js greps for it), which once let
+such a cell become a posting's only analysis for ever. Rows an older build
+registered that way stay readable as they were; (1) the stored row of the posting, by its normalised link and
 then by its whitespace-normalised text - `identity.ts`'s `linkKey` (host
 lower-cased, http/https and a default port folded, fragment, `utm_*`/`gclid`/
 `fbclid`/`ref`/... dropped, remaining parameters sorted, one trailing slash
@@ -1556,15 +1577,20 @@ free lands it second), and its daily tabs are never read, written, re-headed,
 protected or cleared again - they are not job tabs. A tab already called All
 or Temp For AI that is not a job tab is left alone and reported (`conflict: {
 tabs, message }` on the state, logged once when found). Only the Job Sheet
-page looks at a recorded clash again - `GET /api/sheet?recheck=1`
-(`describeAccountSheet`'s `recheck`), so a renamed tab is replaced at its next
-load; every other read, the shell's on every page load included, answers from
-the row, and a look Google refuses falls back to it. It is
+page looks at the two tabs again - `GET /api/sheet?recheck=1`
+(`describeAccountSheet`'s `recheck`, a verifying ensure on EVERY such load, not
+only while a clash is recorded), so a clashing tab renamed since is replaced,
+and an All or Temp For AI deleted or renamed under a recorded layout is put
+back, at its next load - the one way a REPORTER, who has no export, gets a
+deleted All back; every other read, the shell's on every page load included,
+answers from the row (a deleted tab's link included), and a look Google
+refuses falls back to it. It is
 recorded in `users.sheet_layout` (2) with `sheet_all_gid` / `sheet_temp_gid`
 (NULL at layout 2 = that name clashes), added columns; `sheet_tab_date` /
 `sheet_tab_gid` are an older build's and never written, so a rollback resumes
 its daily tabs. Once layout 2 is recorded a sign-in makes NO Google call; a
-verifying ensure (the export) lists the tabs once and puts back a deleted All;
+verifying ensure (the export, the push, the Job Sheet page's look) lists the
+tabs once and puts back a deleted All or Temp For AI;
 the boot backfill also lays out sheets below layout 2
 (`listAccountsNeedingSheetLayout`). The state is `{ configured,
 spreadsheetId, spreadsheetUrl, defaultTab, defaultTabUrl, tempTab,
@@ -1594,8 +1620,10 @@ importer (routes/admin.ts, own sheet only) refuses a write touching G-L of a
 job tab, and any write into a column under a protection of the program's
 (`analysisProtectionHit`: our description, or exactly G:L - so an older
 build's K:P too) whatever row 1 says (409 `protected-columns`): the server's
-identity is the protection's only editor, so a write through it could
-otherwise forge a trusted Analysis cell - and row 1 is not protected, so
+identity is the protection's only editor, so a write through it is the one
+way past the protection (a written Analysis cell can still only name a stored
+analysis, used only when it is the row's posting; G-K would show what was
+typed) - and row 1 is not protected, so
 deciding on the header alone let A1 be changed, L written and A1 changed
 back. A protected range Google reads back without a `sheetId` is the tab's
 own (it leaves a 0 out - All's gid on every new sheet).
@@ -1641,9 +1669,13 @@ run of consecutive rows); a row that no longer names the job's company (or
 link) is neither read nor written; a cut (`...[cut at 50,000 characters]`) or
 unreadable cell falls back to the stored row it names, then the store, then
 the gate, logged with its row. The cell records its posting's keys
-(`{ v, id, posting: { hash, link }, jobField, analysis }`); `cellIsForPosting`
-decides whether it is the row's. A row whose cell was empty, or held the
-program's cell for ANOTHER posting, is written back once per row and analysis
+(`{ v, id, posting: { hash, link }, jobField, analysis }`) for a reader;
+`cellIsForPosting` decides whether it is the row's on the stored analysis its
+`id` names ALONE (`isAnalysisOfPosting`: link, text hash, or a long text's
+cut copy) - an id the store lacks is nobody's, whatever keys it
+records. A row whose cell was empty, or held a program-shaped cell (an `id`)
+that is not its posting's stored analysis - another posting's, or one this
+store never held - is written back once per row and analysis
 (`analysisColumns.ts`'s `queueAnalysisWriteBack`, batched per spreadsheet for
 1.5 s, RAW, after re-reading the rows: skipped, and NOT settled, when moved;
 skipped when the cell already holds this posting's analysis, when it is not
@@ -1885,10 +1917,46 @@ old sheet meanwhile marks nothing and goes round again on the new one.
 At-least-once across a crash between Google's answer and the mark. Seam:
 `setAdminLakeSheetClientForTests`.
 
+**Push to Google Sheet** (`services/jobLake/push.ts`, owner decision L1;
+POST /api/admin/job-lake/push, filters in the JSON body under the list's own
+names, read by the one `readLakeFilters` that reads GET /'s query string, so a
+push holds exactly what Search shows and a bad filter is refused in Search's
+words, 400, before Google is asked anything). The CALLER's own sheet and its
+Temp For AI tab only - no spreadsheet or tab is read from the request: one
+push per administrator at a time (in memory, 409 `push-in-progress`);
+`ensureAccountSheet(admin, { verifyTab: true })` (a Temp For AI deleted or
+renamed since is put back; the name held by a tab of the person's own is 409
+`tab-name-clash`, the Job Sheet page's clash sentence ending "then push
+again."); Temp For AI inspected once and refused unless a job tab (409
+`not-job-tab`, `tempTabNotJobTabSentence`), then verified on that read; the
+rows (`listLakeForPush(filters, JOB_LAKE_PUSH_MAX_ROWS)`: `whereOf`, newest
+first by `updated_at DESC, id DESC`, read as cap + 1 with the COUNT in the
+same read transaction; `PUSH_DEFAULT_SQL` walks idx_job_lake_updated, pinned
+by test/jobLakePush.test.js); ONE `:batchUpdate` - `appendDimension` ROWS when
+the grid is short, `clearDataRowsRequest` (an `updateCells` of A:L from row 2
+to the end, fields `userEnteredValue,userEnteredFormat.backgroundColor`, so a
+duplicate's red paint goes too - never the header, never a column past L),
+`jobRowLayoutRequests`; then RAW writes of A:L in chunks of at most
+`PUSH_WRITE_MAX_ROWS` (200) rows and `PUSH_WRITE_MAX_BYTES` (1.5 MB of JSON;
+one bigger row goes alone). A row is Date (`sheetDateText` of `updated_at` in
+SHEET_TIMEZONE, sent as `sheetDateSerial`), NO(DATE) (1, 2, ... down each
+day's rows), Company, Job Title, Job Link, Job Description (analysisColumns.ts's
+`descriptionCell`: cut at 50,000 with `ANALYSIS_TRUNCATED_MARKER`, never
+through a surrogate pair) and `analysisColumnValues` of
+the row's stored analysis - six blanks when it has none - so a build from the
+tab finds each row's Analysis cell naming its posting's stored analysis and
+asks no model (and writes nothing back) - a cut description with no link
+included, matched by `cellCopyHash` (the hash of `descriptionCell` of the
+stored text), which test/jobLakePush.test.js pushes and builds. The tab's settled write-backs are
+forgotten (`forgetTabWriteBacks`). Answers `{ pushed, matched, capped,
+maxRows, tabName, tabUrl }`; 0 matches empties the tab. GET / carries the cap
+as `pushMaxRows`, for the page's confirm. Seam: `setLakePushSheetsClientForTests`.
+
 **Routes**: `/api/report` (GET /, /tabs, /rows, POST /runs -> 202, GET
 /runs/current, /runs/:id) and `/api/admin/job-lake` (GET /, /settings, PUT
-/settings, GET|POST /sync, POST /sheet, GET|POST /merge, GET|DELETE /:id, POST
-/:id/revoke-reward), each a row in test/routeAccess.test.js. The run's summary
+/settings, GET|POST /sync, POST /sheet, GET|POST /merge, POST /push, GET|DELETE
+/:id, POST /:id/revoke-reward - /push declared before /:id), each a row in
+test/routeAccess.test.js. The run's summary
 is `{ added (added + replaced), total, duplicates, unclassified, replaced,
 skipped, failed, alreadyReported, earnedMilli, balanceMilli, sheetUpdated }`.
 
@@ -1899,7 +1967,11 @@ against the server: `readReportRange` is `readRunRange`'s refusal word for
 word, `lakeSettingsProblems` / `lakeSettingsChanges` are `updateLakeSettings`'s
 (only what changed is sent, AS TYPED, '' to clear), `lakeFilterProblem` the
 lake route's 400s (the job type and industry against the route's own
-`options` lists, never a copied one), `notJobTabMessage` the run's own
+`options` lists, never a copied one), `lakeFilterBody` the one spelling of
+the filters sent - the query string's parameters and Push to Google Sheet's
+body alike, in `LAKE_FILTER_ORDER` - with `describePushConfirm` /
+`describePushResult` drawn from a real push's answer (the cap sentence names
+JOB_LAKE_PUSH_MAX_ROWS), `notJobTabMessage` the run's own
 refusal, the statuses' labels and `JOB_REPORT_OUTCOME_LABELS` (the "(Added)"
 in *Reported before (Added)*) are read against the source, and
 `describeRunSummary` - the owner's "N out of M was added, your current
@@ -1924,8 +1996,21 @@ reaches an href only through `safeWebLink` (http(s), a host, no credentials).
 **/admin/job-lake** (app/admin/job-lake/: page.tsx, LakeTab, MergeTab,
 SettingsTab) is a Settings -> Administration tab (navModel's
 SETTINGS_ADMIN_TABS), its own tabs in `?tab=` (lake, merge, settings) as
-Payments keeps them; the lake's filters apply on Search (a bumped epoch on
-usePagedList); the table and Details show each job's Job type, Clearance and
+Payments keeps them; the lake's filter boxes are drawn FROM
+`LAKE_FILTER_ORDER` and `LAKE_FILTER_LABELS` - the owner's order: Updated
+from, Updated to, Requested by, Job field, Job type, Clearance, Industry,
+Company, Salary from, Salary to, Full text (frontendJobLake.test.js pins it
+and that LakeTab maps it) - Job type offering `LAKE_JOB_TYPE_CHOICES` (a copy
+of `listJobTypesForClient` less `not_specified`, drift-tested), Clearance
+Required / Not required, Industry the route's own `options.industries`; the
+filters apply on Search (a bumped epoch on usePagedList). **Push to Google
+Sheet**, beside Search, pushes `applied` - the search on the page, never boxes
+changed since, which its kit Dialog confirm says - after naming the count THAT
+search's latest answer gave (`searched`, guarded against an older answer
+landing late; `pushBlocker` waits for it) and that it replaces Temp For AI of
+your own sheet; the result is a Notice (warn when capped) linking to the tab
+through `safeWebLink`, a refusal an ErrorNotice. The table and Details show
+each job's Job type, Clearance and
 Industry in the server's words (`jobTypeLabel`, `industryLabel`;
 `lakeFactCells`, and `describeLakeFacts`, which says *Not stated*, or *Not
 filled in yet* for a NULL an older build left); Details is a kit Dialog with
@@ -1933,7 +2018,11 @@ Revoke reward and Delete + "Also revoke the reward"; the money boxes are text, n
 and the page is in frontendMoney.test.js's FRONTEND_MONEY_SOURCES.
 test/e2e/report-run.js drives both against stub-report-sheets.js and
 stub-seat.js, recording the reporter's earlier reports in the database first
-(report-sheet-rows.js, which both share) - a Lake Status cell decides nothing.
+(report-sheet-rows.js, which both share) - a Lake Status cell decides nothing;
+test/e2e/lake-push.js drives the filter form and the push against
+stub-lake-push-sheets.js (every account its own spreadsheet, the cells written
+to a JSON file in DB_DIR for the script to read), then builds from the pushed
+rows: their cells are read and nothing is written back.
 
 ## Conventions from the history
 
@@ -1943,7 +2032,10 @@ one was needed - Phase 9's 4b43c01). The README's
 "What changed in this release" and "Rolling back this release" are rewritten
 for each release from the commits since the last one: what an operator must DO
 after upgrading, in order, and every step a rollback needs, checked against the
-older build's code. The pattern in nearly every feature arc is a feature commit
+older build's code. The release before that keeps its steps too, marked *From
+<commit>* in the one ordered list and summed up under "Coming from ...", and
+going back that far keeps a subsection of its own ("Going back further, to
+...") - an install may skip a release. The pattern in nearly every feature arc is a feature commit
 followed by one or more "fix what the adversarial review found" commits, so
 expect review passes to be part of the work rather than an afterthought.
 

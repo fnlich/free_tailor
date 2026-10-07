@@ -210,6 +210,56 @@ test('a tab name clash is looked at again only when the Job Sheet page asks (?re
   }
 });
 
+test("a reporter's All deleted in Google Sheets is put back when their Job Sheet page loads (?recheck=1) - a reporter has no export to do it", async () => {
+  /** The spreadsheet's tabs as Google would list them: title -> gid. */
+  const present = new Map();
+  let listings = 0;
+  let nextGid = 500;
+  const server = await serve({
+    async listSheetTabs() {
+      listings += 1;
+      return [...present].map(([title, gid]) => ({ title, gid }));
+    },
+    async addSheetTabWithHeaders(_id, title) {
+      const gid = (nextGid += 1);
+      present.set(title, gid);
+      return { gid, created: true, protection: 'added', jobTab: true };
+    },
+  });
+  try {
+    const rita = server.users.createUser({ email: 'rita@example.com', role: 'reporter' });
+    const token = server.users.createSession(rita.id);
+    const read = async (path) => {
+      const response = await server.request(token, path);
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const first = await read('/');
+    const gidOf = (url) => Number(/#gid=(\d+)$/.exec(url)[1]);
+    // The spreadsheet arrives with All (the fake does not list it until told).
+    present.set('All', gidOf(first.defaultTabUrl));
+    assert.equal(present.get('Temp For AI'), gidOf(first.tempTabUrl));
+
+    // Deleted in Google Sheets: the shell's read answers the gone tab, from the row.
+    present.delete('All');
+    assert.equal((await read('/')).defaultTabUrl, first.defaultTabUrl);
+    assert.equal(listings, 0, 'no Google read on an ordinary page load');
+
+    // Her Job Sheet page looks, and All is back, under a new gid.
+    const fixed = await read('/?recheck=1');
+    assert.equal(listings, 1);
+    assert.ok(present.has('All'));
+    assert.equal(fixed.defaultTabUrl.endsWith(`#gid=${present.get('All')}`), true);
+    assert.notEqual(fixed.defaultTabUrl, first.defaultTabUrl);
+    assert.equal(fixed.tempTabUrl, first.tempTabUrl, 'Temp For AI, still there, kept');
+    assert.equal(fixed.conflict, undefined);
+    // And every reader after it links to the new tab.
+    assert.equal((await read('/')).defaultTabUrl, fixed.defaultTabUrl);
+  } finally {
+    server.close();
+  }
+});
+
 test('the toggle flips sharing and answers with what Drive says afterwards', async () => {
   const server = await serve();
   try {

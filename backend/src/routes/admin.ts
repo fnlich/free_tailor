@@ -114,9 +114,10 @@ router.put('/google-sheets/range', requireAdmin, async (req: Request, res: Respo
     /*
      * Never into the program's analysis columns. The server's identity is the
      * protection's only editor, so a write through here is the one write a
-     * person could make that the protection would let through - and an
-     * Analysis cell written by it would be trusted by the next build as the
-     * program's own (sheet first). Job Field to Industry are the program's too.
+     * person could make that the protection would let through. The six cells
+     * are the program's: an Analysis cell written by it could only name a
+     * stored analysis, used only when it is the row's posting (gate step 0),
+     * and Job Field to Industry would show what was typed.
      *
      * Decided on the tab's PROTECTION, not on its row 1: row 1 is the
      * person's, so A1 changed (here, or by hand) makes a job tab "not a job

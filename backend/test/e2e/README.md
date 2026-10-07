@@ -12,6 +12,7 @@ a frontend) that are already running. None of them is part of `npm test`.
 | `section-switches.js` | The profile preview with Strengths and Soft Skills unticked, on uploaded-style templates and a built-in | [The profile preview, sections switched off](#the-profile-preview-sections-switched-off) |
 | `immediate-run.js`, `sheet-panel.js` | Generate Immediately, Order and the sheet panel, against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Building resumes, with the seat stubbed](#building-resumes-with-the-seat-stubbed) |
 | `report-run.js` | Report Jobs and Admin -> Job Lake, against a stubbed sheet and seat (`stub-report-sheets.js`) | [Report Jobs and the job lake](#report-jobs-and-the-job-lake-with-google-stubbed) |
+| `lake-push.js` | Admin -> Job Lake's filter form and Push to Google Sheet, and a build from the pushed rows, against a stubbed sheet and seat (`stub-lake-push-sheets.js`) | [Push to Google Sheet](#push-to-google-sheet-with-google-stubbed) |
 | `providers.js` | Admin -> Models -> Providers, against a stubbed seat | [Providers, with the seat stubbed](#providers-with-the-seat-stubbed) |
 | `shell.js` | Every page as a user, an administrator and a reporter | [The shell, as every role](#the-shell-as-every-role) |
 | `dev-reload.js` | A second tab must not reload the first, in each mode the frontend can be served in | [A second tab, in each dev mode](#a-second-tab-in-each-dev-mode) |
@@ -102,7 +103,7 @@ DB_DIR=/path/to/db node test/e2e/refunds.js
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `report-run.js` and `providers.js` use puppeteer, which the backend
+`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `report-run.js`, `lake-push.js` and `providers.js` use puppeteer, which the backend
 already installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
@@ -184,7 +185,11 @@ sheet exists, as an upgraded sheet looks: **All** and **Temp For AI** in the
 twelve-column layout (A to F the user's, G to L the analysis's), an older
 build's daily tab in ITS layout (Company in B, sixteen columns), and *Notes*, a
 job tab of the person's own; rows held in memory, All's first row already
-carrying its six analysis cells (G:L) - through the same three seams the unit
+carrying its six analysis cells (G:L), whose Analysis cell names an analysis
+the stub stores in the server's own database the first time the tab is read -
+a build trusts a cell only when it names its posting's stored analysis, so a
+canned id the store never had would be analysed and replaced, and the panel's
+*Skips analysis* would be the page's word alone - through the same three seams the unit
 tests use (the account sheet's client - the tab list and the one batched read
 of every tab's row 1 the layouts come from - the range reader `POST
 /api/import` calls, and the analysis columns' client: the tab verify, reported
@@ -263,9 +268,11 @@ cancelled on Orders; Generate Immediately builds the loaded rows here and
 hands each of their twelve files to the browser once - and, reloaded after it,
 every row says *Skips analysis*: the two it analysed (or found stored) were
 written back, all six G:L cells. At 390px the loaded table scrolls inside its
-box rather than widening the page. The server's log shows the run's analysis
-calls (`[e2e stub] call N: analyze-job-description`) and each write-back
-(`[e2e stub] wrote the analysis cells 'All'!G3:L3`). Last, the **Job Filter**
+box rather than widening the page. The server's log says where the run found
+each analysis - `[queue] Sheet run on "All": 1 job(s) analysed in the sheet, 2
+from the store, 0 to analyse.`: Today Inc's cell names the analysis the stub
+stored, and the other rows share its posting's text, so no model is asked -
+and each write-back (`[e2e stub] wrote the analysis cells 'All'!G3:L3`). Last, the **Job Filter**
 on All lists the same tabs (the old one disabled) and shows each row's
 verdict on the page - *1 pass, 3 not judged*: Today Inc passes on its stored
 analysis with no page fetched, Now LLC's `javascript:` link cannot be opened,
@@ -366,6 +373,63 @@ stored rate, the window *60 (the default)* and the admin sheet with every job
 on it, *Retry now* has nothing to send, and $0.0505 is refused under the rate
 box; Merge has nothing to merge; Admin -> Accounts' rate boxes say *Global
 rate ($0.05)*.
+
+## Push to Google Sheet, with Google stubbed
+
+`lake-push.js` drives Admin -> Job Lake's filter form and **Push to Google
+Sheet**, then builds from what the push wrote. `stub-lake-push-sheets.js` is
+its Google: every account gets a spreadsheet of its OWN (so a push into one
+administrator's sheet can be seen to leave another's alone) with **All** and
+**Temp For AI**, the latter holding what an earlier push left - rows 2 to 6
+filled across A:L, a note of the person's own in M, rows 3 and 4 painted red
+across A:M - except for an account whose email contains `clash`, whose Temp For
+AI is a tab of the person's own. Four seams, the ones the unit tests use: the
+account sheet's client, the push's (`setLakePushSheetsClientForTests`: the
+inspection, the verify, the ONE `:batchUpdate` - applied to the cells, values
+and paint as its `fields` say - and the RAW writes), the analysis columns'
+(what a build from the tab reads, and any write-back) and the admin sheet's.
+The cells, and every read and write in order, are written to a JSON file after
+each change - `E2E_SHEET_STATE`, else `e2e-lake-push-sheets.json` in `DB_DIR` -
+which the script reads to see the sheet as a person would. The script seeds the
+lake itself (five jobs a day apart, each from an analysis stored for its
+posting, with its own job type, clearance and industry) in the database the
+server shares, so the database must be FRESH. Start the server with
+`JOB_LAKE_PUSH_MAX_ROWS=4`, so pushing all five is cut at the cap; give the
+script the server's log as `E2E_BACKEND_LOG` and it also checks the server's own
+line that the build took every analysis from the sheet.
+
+```bash
+cd backend && npm run build
+E2E_STUB_DELAY_MS=300 JOB_LAKE_PUSH_MAX_ROWS=4 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-lake-push-sheets.js dist/index.js > /tmp/e2e-backend.log 2>&1
+# the frontend, built against that backend, in another terminal; then
+DB_DIR=/tmp/e2e-db E2E_BACKEND_LOG=/tmp/e2e-backend.log node test/e2e/lake-push.js
+```
+
+`lake-push.js` — 29 claims. The filter boxes are in the owner's order
+(*Updated from, Updated to, Requested by, Job field, Job type, Clearance,
+Industry, Company, Salary from, Salary to, Full text*), *Job type* offers Any,
+Remote, Hybrid, Onsite, *Clearance* Any, Required, Not required, *Industry* Any
+and the server's own list, and **Push to Google Sheet** sits between Clear and
+Search. Pushing the unfiltered lake asks first - *Push the newest 4 of the 5
+jobs these filters match - a push takes at most 4 (JOB_LAKE_PUSH_MAX_ROWS) -
+into the Temp For AI tab of your own job sheet* - and says afterwards that the
+oldest was left out, with *Open Temp For AI* linking to the tab. Temp For AI
+then holds the newest four from row 2, newest first, each row a date, its
+number for the day, company, link and description and the six analysis cells
+naming its posting's stored analysis; the earlier push's sixth row is emptied
+across A:L, the red is gone from A:L, and column M and the header are as they
+were. A search for *Remote*, with the Company box changed afterwards, pushes
+the search on the page - the confirm names its 2 jobs and says the boxes
+changed since are not what is pushed - and leaves just those two, the rest of
+A:L emptied. An order built from those two rows reads their analysis cells
+and writes nothing back - a cell the server did not trust would be replaced -
+and, with the log, the server says *2 job(s) analysed in the sheet, 0 from the
+store, 0 to analyse*. The other administrator's Temp For AI is exactly as it
+was, every push wrote only into the pusher's sheet, an administrator whose
+Temp For AI is a tab of their own is refused in the Job Sheet page's words
+with their tab left alone, and the Lake tab adds no horizontal scrollbar at
+390px.
 
 ## Providers, with the seat stubbed
 

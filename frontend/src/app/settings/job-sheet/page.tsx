@@ -52,8 +52,9 @@ export default function JobSheetSettingsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        // The one reader that asks for a name clash to be looked at again:
-        // the conflict note below tells the person to rename and reload here.
+        // The one reader that asks for the tabs to be looked at again: the
+        // conflict note below tells the person to rename and reload here, and
+        // an All or Temp For AI deleted in Google Sheets is put back by it.
         setSheet(await sheetApi.get({ recheck: true }));
       } catch (caught) {
         setSheetError(caught ?? new Error('Could not load your sheet.'));

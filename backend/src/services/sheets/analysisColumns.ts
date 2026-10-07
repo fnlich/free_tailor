@@ -15,7 +15,7 @@ import { jobFieldLabel } from '../../config/jobFields';
 import { getUserBySheetId } from '../../database/userRepository';
 import { getJobAnalysisById, type StoredJobAnalysis } from '../../database/jobAnalysisRepository';
 import { clearanceRequiredOf, formatSalary, industryOf, jobTypeLabel, jobTypeOf } from '../jobAnalysis/facts';
-import { linkKey, postingKeysOf, samePosting, type PostingKeys } from '../jobAnalysis/identity';
+import { contentHash, linkKey, postingKeysOf, samePosting, type PostingKeys } from '../jobAnalysis/identity';
 
 /**
  * The six analysis columns of an app sheet's job tab, G to L (owner decision
@@ -60,6 +60,23 @@ import { linkKey, postingKeysOf, samePosting, type PostingKeys } from '../jobAna
 /** Google's limit on one cell. The Analysis cell is cut to fit, with a marker. */
 export const ANALYSIS_CELL_LIMIT = 50_000;
 export const ANALYSIS_TRUNCATED_MARKER = ' ...[cut at 50,000 characters]';
+
+/**
+ * A posting's text as the program writes it into a sheet cell (Push to Google
+ * Sheet's Job Description): whole, or cut at Google's limit with the Analysis
+ * cell's marker. Never through the middle of a character spelled with two
+ * code units (an emoji): half of one is not well-formed text, with no promise
+ * of reading back as it was sent, and the cut copy must read back exactly as
+ * cut - it is how a row with no link is known for its posting
+ * (`isAnalysisOfPosting`).
+ */
+export function descriptionCell(text: string): string {
+  if (text.length <= ANALYSIS_CELL_LIMIT) return text;
+  let end = ANALYSIS_CELL_LIMIT - ANALYSIS_TRUNCATED_MARKER.length;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end) + ANALYSIS_TRUNCATED_MARKER;
+}
 
 /** The version of the Analysis cell's JSON shape. */
 const CELL_VERSION = 1;
@@ -190,7 +207,8 @@ export function parseAnalysisCell(text: unknown): ParsedAnalysisCell {
 
 /**
  * Whether an Analysis cell names the STORED analysis of one of these postings
- * (their keys, `postingKeysOf`), by link or by text. Nothing else makes a
+ * (their keys, `postingKeysOf`), by link or by text - or by the cut copy of
+ * its text a cell holds (`isAnalysisOfPosting`). Nothing else makes a
  * cell any posting's: a cell naming an analysis this store does not have -
  * another install's, a backup's, or text that only looks like the program's
  * (a formula spilled into the column, a row pasted in) - is nobody's, whatever
@@ -204,7 +222,35 @@ export function cellIsForPosting(cell: ParsedAnalysisCell, ...postings: Array<Pa
   if (cell.state === 'empty' || !cell.analysisId) return false;
   const named = getJobAnalysisById(cell.analysisId);
   if (!named) return false;
-  return postings.some((posting) => samePosting({ hash: named.contentHash, link: named.linkKey }, posting));
+  return postings.some((posting) => isAnalysisOfPosting(named, posting));
+}
+
+/**
+ * The text hash of a stored analysis's posting as a sheet cell holds it, when
+ * a cell cannot hold it whole: a posting longer than Google's 50,000
+ * characters goes into a cell cut, with the marker (`descriptionCell` - Push
+ * to Google Sheet writes a lake job's description so), and the cut copy
+ * hashes differently from the text the analysis was stored under. Null for a
+ * posting a cell holds whole, whose own hash is the one to compare.
+ */
+export function cellCopyHash(stored: StoredJobAnalysis): string | null {
+  const text = stored.analysis.sourceJobDescription ?? '';
+  return text.length > ANALYSIS_CELL_LIMIT ? contentHash(descriptionCell(text)) : null;
+}
+
+/**
+ * Whether a stored analysis is the one of this posting (its keys,
+ * `postingKeysOf`): by link or by text, as the store's lookups match - or as
+ * the cut copy of its text the program wrote into a sheet cell
+ * (`cellCopyHash`), which a row with no link is known by and nothing else.
+ * The copy is matched only exactly as cut: a cut description edited since is
+ * another posting. Only ever asked of an analysis the caller already holds -
+ * the one a row's cell names, or a page names - so it is never a way to FIND
+ * an analysis: the store has no key for a cut copy.
+ */
+export function isAnalysisOfPosting(stored: StoredJobAnalysis, posting: Partial<PostingKeys>): boolean {
+  if (samePosting({ hash: stored.contentHash, link: stored.linkKey }, posting)) return true;
+  return Boolean(posting.hash) && posting.hash === cellCopyHash(stored);
 }
 
 /** Company names compared as a person would: case and spacing forgiven. */

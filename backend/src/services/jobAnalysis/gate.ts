@@ -15,8 +15,9 @@ import {
 import { createPromptCompletion } from '../ai';
 import { resolvePromptByExactId } from '../promptService';
 import { buildAnalyzeJobDescriptionPromptValues, parseJobAnalysisContent } from '../resumeService';
+import { isAnalysisOfPosting } from '../sheets/analysisColumns';
 import { SENIORITY_VALUES } from './facts';
-import { normalizeJobDescriptionText, postingKeysOf, samePosting, type PostingKeys } from './identity';
+import { normalizeJobDescriptionText, postingKeysOf, type PostingKeys } from './identity';
 
 export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
 
@@ -147,14 +148,16 @@ export function loadAnalysis(analysisId: unknown): StoredJobAnalysis | null {
 }
 
 /**
- * Whether a stored analysis is the one of THIS posting, by link or by text.
+ * Whether a stored analysis is the one of THIS posting, by link or by text -
+ * or by the copy of its text cut at a sheet cell's limit, which a pushed row
+ * with no link is known by (analysisColumns.ts's `isAnalysisOfPosting`).
  * A client may name any analysis it was given, and a sheet row's Analysis
  * cell may name one written for the posting that sat in the row before; only
  * one that matches the posting being built for is used for it, or written
  * back into its row.
  */
 export function analysisMatchesPosting(stored: StoredJobAnalysis, input: { jd?: string; link?: string }): boolean {
-  return samePosting({ hash: stored.contentHash, link: stored.linkKey }, postingKeys(input));
+  return isAnalysisOfPosting(stored, postingKeys(input));
 }
 
 /* ------------------------------------------------------------ in flight -- */

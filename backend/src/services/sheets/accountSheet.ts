@@ -543,14 +543,18 @@ async function ensureOwnerAccess(spreadsheetId: string, email: string): Promise<
 
 export type DescribeOptions = {
   /**
-   * Look at a recorded name clash again (GET /api/sheet?recheck=1), so the
-   * job tab is added the moment the name is free. Only the Job Sheet page
-   * asks: it is where the clash is reported and where somebody who renamed
-   * their tab reloads. Every other reader - the shell on every page load,
-   * Build Resumes, the job pages - is answered from the stored row, because
-   * a look is a listing plus a read of the clashing tab (all of it, when its
-   * row 1 is blank) on the read quota every account shares, for as long as
-   * the person keeps their tab.
+   * Look at the sheet's two tabs again (GET /api/sheet?recheck=1): a
+   * verifying ensure, so the job tab is added the moment a clashing name is
+   * free, and an All or Temp For AI deleted or renamed in Google Sheets is
+   * put back, with the links answered for the new tab rather than the gone
+   * one. Only the Job Sheet page asks: it is where the clash is reported,
+   * where somebody who renamed their tab reloads, and the one page that
+   * shows the sheet that every account opens - a reporter included, who has
+   * no export to put a deleted All back. Every other reader - the shell on
+   * every page load, Build Resumes, the job pages - is answered from the
+   * stored row, because a look is a listing (plus, while a name clashes, a
+   * read of the clashing tab - all of it, when its row 1 is blank) on the
+   * read quota every account shares.
    */
   recheck?: boolean;
 };
@@ -561,14 +565,16 @@ export async function describeAccountSheet(
   options: DescribeOptions = {}
 ): Promise<AccountSheetState & { visibility?: SheetVisibility }> {
   let state = await ensureAccountSheet(account);
-  if (state.conflict && options.recheck) {
+  // Not only on a recorded clash: a tab deleted under a recorded layout
+  // leaves nothing in the row to say so, and only a listing finds it.
+  if (options.recheck && state.spreadsheetId) {
     try {
       state = await ensureAccountSheet(account, { verifyTab: true });
     } catch (error) {
       // The look is a courtesy: Google refusing it must not take away the
       // page that reports the clash, or the sheet's link. The stored row
       // still says what is true as far as anybody here knows.
-      console.warn(`[sheets] Could not look at ${account.email}'s tab name clash again; answering from what is recorded.`, error);
+      console.warn(`[sheets] Could not look at ${account.email}'s job sheet tabs again; answering from what is recorded.`, error);
     }
   }
   if (!state.spreadsheetId) return state;

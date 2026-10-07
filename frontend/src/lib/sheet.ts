@@ -43,10 +43,10 @@ export type AccountSheet = {
 
 export const sheetApi = {
   /**
-   * `recheck` asks the server to look at a tab name clash again, so a tab the
-   * person renamed is replaced by the job tab now. Only the Job Sheet page
-   * asks - the shell reads this on every page load, and a look costs Google
-   * reads for as long as the clash stays.
+   * `recheck` asks the server to look at the two tabs again: a clashing tab
+   * the person renamed is replaced by the job tab now, and an All or Temp For
+   * AI they deleted is put back. Only the Job Sheet page asks - the shell
+   * reads this on every page load, and a look costs Google reads.
    */
   get: (options: { recheck?: boolean } = {}) => apiFetch<AccountSheet>(options.recheck ? '/sheet?recheck=1' : '/sheet'),
   setVisibility: (visibility: SheetVisibility) =>

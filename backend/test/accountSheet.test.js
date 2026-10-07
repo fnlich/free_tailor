@@ -408,7 +408,7 @@ test('a look at a clash that Google refuses still answers, from the row - and th
     assert.deepEqual(state.conflict.tabs, ['All'], 'the clash still reported');
     assert.equal(state.spreadsheetId, hers, 'and the sheet still linked');
     assert.equal(state.visibility, 'private');
-    assert.ok(warnings.some((line) => line.includes("Could not look at alice@example.com's tab name clash again")));
+    assert.ok(warnings.some((line) => line.includes("Could not look at alice@example.com's job sheet tabs again")));
   } finally {
     console.warn = realWarn;
   }
@@ -428,6 +428,46 @@ test('a verifying call puts back an All somebody deleted, and trusts one still u
   const again = await sheets.ensureAccountSheet(users.getUserById(account.id), { verifyTab: true });
   assert.deepEqual(titles(state.spreadsheetId), ['All', 'Temp For AI']);
   assert.notEqual(again.defaultTabUrl, state.defaultTabUrl, 'the new tab\'s gid');
+});
+
+test('the Job Sheet page\'s look puts back an All or Temp For AI deleted under a recorded layout - with no clash recorded, which is how a reporter (no export) gets theirs back', async () => {
+  const { users, sheets, named, tabs, titles, calls } = setup('recheck-deleted');
+  const rita = users.createUser({ email: 'rita@example.com', role: 'reporter' });
+  const state = await sheets.ensureAccountSheet(rita);
+  const id = state.spreadsheetId;
+  assert.equal(state.conflict, undefined);
+
+  // Both there: the look is ONE listing, and nothing is added or verified.
+  calls.length = 0;
+  const looked = await sheets.describeAccountSheet(users.getUserById(rita.id), { recheck: true });
+  assert.deepEqual(calls.map((call) => call[0]), ['isConfigured', 'isConfigured', 'listSheetTabs', 'getSpreadsheetVisibility']);
+  assert.equal(looked.defaultTabUrl, state.defaultTabUrl);
+
+  // All deleted in Google Sheets. Nothing in the row says so: the shell's
+  // read (no look) still answers the gone tab's link, asking Google nothing...
+  tabs.set(id, tabs.get(id).filter((tab) => tab.title !== 'All'));
+  calls.length = 0;
+  const shell = await sheets.describeAccountSheet(users.getUserById(rita.id));
+  assert.equal(shell.defaultTabUrl, state.defaultTabUrl);
+  assert.equal(named('listSheetTabs').length, 0);
+  // ...and the Job Sheet page's look puts it back, first, and links to it.
+  const fixed = await sheets.describeAccountSheet(users.getUserById(rita.id), { recheck: true });
+  assert.deepEqual(titles(id), ['All', 'Temp For AI']);
+  assert.deepEqual(named('addSheetTabWithHeaders').map((call) => [call[2], call[3]]), [['All', 0]]);
+  assert.match(fixed.defaultTabUrl, /#gid=\d+$/);
+  assert.notEqual(fixed.defaultTabUrl, state.defaultTabUrl, 'the new tab, not the deleted one');
+  assert.equal(fixed.conflict, undefined);
+  // Recorded: every other reader now answers the new tab from the row.
+  assert.equal((await sheets.describeAccountSheet(users.getUserById(rita.id))).defaultTabUrl, fixed.defaultTabUrl);
+
+  // Temp For AI renamed: put back second, the renamed tab left as it is.
+  tabs.get(id)[1].title = 'Old temp';
+  calls.length = 0;
+  const again = await sheets.describeAccountSheet(users.getUserById(rita.id), { recheck: true });
+  assert.deepEqual(titles(id), ['All', 'Temp For AI', 'Old temp']);
+  assert.deepEqual(named('addSheetTabWithHeaders').map((call) => [call[2], call[3]]), [['Temp For AI', 1]]);
+  assert.notEqual(again.tempTabUrl, fixed.tempTabUrl);
+  assert.equal(again.defaultTabUrl, fixed.defaultTabUrl, 'All, still under its recorded gid, is not asked about');
 });
 
 test('two calls racing join rather than each creating a spreadsheet', async () => {

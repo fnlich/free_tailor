@@ -30,8 +30,8 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Order & Download** | Two ways to build. **Generate Immediately** follows the run on the page and downloads each resume as it lands; closing the tab stops it and refunds what had not started. **Order** answers with an order number instead of making you wait: track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
 | **Payouts, refunds and Contact admin** | A reporter can **ask for a payout** of their earned balance (*Ask for Refund*), and an administrator records what they sent, approves or declines it from one queue - where refund requests made before asking was removed are still decided; every step reaches the person's bell. Users and administrators no longer ask for refunds in the app. **Contact admin** lists how to reach the administrator, on every page and on the sign-in screen |
-| **Job analysis, once** | Each job posting is read once, ever - its keywords, title, job field and stated salary - and every profile, model, retry and run after reuses it. In an account's own job sheet the analysis is written into six columns only the program can edit |
-| **Job Data Lake** | One shared record of who is hiring for what. **Reporters** add jobs from their own job sheets and are paid per job accepted; administrators merge in what builds analysed, and every job added is copied to an administrators' spreadsheet |
+| **Job analysis, once** | Each job posting is read once, ever - its keywords, title, job field, industry and stated salary - and every profile, model, retry and run after reuses it. Every account has a job sheet of its own, with an **All** and a **Temp For AI** tab, where the analysis is written into six columns only the program can edit |
+| **Job Data Lake** | One shared record of who is hiring for what. **Reporters** add jobs from their own job sheets and are paid per job accepted; administrators merge in what builds analysed, search it by field, job type, clearance, industry and more, and push a search into their own sheet to build from; every job added is copied to an administrators' spreadsheet |
 | **Several sign-ins per seat** | An administrator can add more **providers** of a seat - another Claude, Codex or Gemini account signed in at a folder of its own - each with its own limit and queue, and resumes spread over them. Building again for an unchanged profile, posting and model reuses the tailoring with no model call |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
@@ -47,100 +47,207 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 
 ## 🆕 What changed in this release
 
-For an operator upgrading an install from the release before this one - the
-one that rebuilt Edit Profile around a live preview (commit `90adbaf`). The
-first start does everything that needs doing to the data, once, and logs it;
-what it cannot decide for you is in the steps below. Each change is described
-in full in the section it links to, and everything about going back is in one
-place: [Rolling back this release](#-rolling-back-this-release).
+For an operator upgrading an install from the release before this one - commit
+`5177fc3`, the one that made credits dollars and added refund requests,
+reporters, the once-per-posting job analysis and the Job Data Lake. The first
+start does everything that needs doing to the data, once, and logs it; what it
+cannot decide for you is in the steps below. Each change is described in full
+in the section it links to, and everything about going back is in one place:
+[Rolling back this release](#-rolling-back-this-release).
+
+An install still on the release before that (commit `90adbaf`) upgrades
+straight to this one: its first start runs both releases' one-time steps, in
+order. The steps marked **From `90adbaf`** are for such an install alone, and
+[Coming from 90adbaf](#coming-from-90adbaf) sums up what that release changed.
 
 ### Upgrading, step by step
 
-1. **Before stopping the old build, let the queue drain** - or cancel what is
-   left on **Orders**. A run carried across the upgrade still finishes, on the
-   credits it was paid with, but a resume of it that fails gives nothing back:
-   the credits it would have refunded are reset with every balance (see
-   [Credits are dollars](#10-credits-are-dollars)).
+1. **From `90adbaf`: before stopping the old build, let the queue drain** - or
+   cancel what is left on **Orders**. A run carried across that upgrade still
+   finishes, on the credits it was paid with, but a resume of it that fails
+   gives nothing back: the credits it would have refunded are reset with every
+   balance (see [Credits are dollars](#10-credits-are-dollars)). From `5177fc3`
+   a queued run carries across as it is.
 2. **Stop the backend and back up** the database file in `DB_DIR` *and*
-   `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), which now
-   holds the templates administrators save.
+   `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), which holds
+   the templates administrators save.
 3. **Pull, install and build**: `npm run install:all`, then
    `npm run build --prefix backend` and `npm run build --prefix frontend`. The
-   two halves ship together - an API field renamed in this release has no alias.
-4. **Let the server write templates.** The user the backend runs as must be
-   able to write `backend/static/templates`: the first start moves every saved
-   template out of the database into a file there. Startup says which:
-   `Templates: <dir> (built-in and saved templates; writable).` or
+   two halves ship together - the job sheet's state, its tab listing and the
+   Job Filter's answer changed shape in this release, with no alias.
+4. **From `90adbaf`: let the server write templates.** The user the backend
+   runs as must be able to write `backend/static/templates`: the first start
+   moves every saved template out of the database into a file there. Startup
+   says which: `Templates: <dir> (built-in and saved templates; writable).` or
    `... is NOT writable (...)`.
-5. **Check `.env`.** `CREDIT_SIGNUP_GRANT` is read in **dollars** now - an old
-   `5`, five credits, grants `$5.000`. `AI_CLI_TIMEOUT_MS_FILTER`,
-   `AI_CODEX_TIMEOUT_MS_FILTER` and `AI_GEMINI_TIMEOUT_MS_FILTER` are read by
-   nothing; delete them. Four settings are new, and their defaults are meant to
-   be left alone: `IMMEDIATE_TAB_GRACE_MS`, `IMMEDIATE_FILE_RETENTION_MS`,
-   `JOB_LAKE_DUPLICATE_WINDOW_DAYS` and `TAILOR_CACHE_DAYS` (see
-   [Configuration](#-configuration)).
-6. **Start the backend and read its log.** Each one-time step says what it did,
-   once: `[db] Renamed users.plan to subscription: ...`, `[templates] Moved N
-   saved template(s) from the database to files ...` (and a line for each one
-   it had to rename), `[credits] Credits are dollars now: ...`.
-7. **Before anybody else signs in, price every model** under **Admin →
-   Models**. Every balance was reset to `$0.000` and every model to a price of
-   `$0.000` - free - and until a model has a price, every resume on it is built
-   for nothing. The page lists each free enabled model in red until none is
-   left (and startup says `[credits] Every model is FREE until it is priced`
+5. **Check `.env`.** One setting is new: `JOB_LAKE_PUSH_MAX_ROWS`, the most
+   jobs one **Push to Google Sheet** writes (default `1000`). `SHEET_BACKFILL`
+   now also covers adding the All and Temp For AI tabs at startup - `off`
+   leaves that to each account's next sign-in. **From `90adbaf`:**
+   `CREDIT_SIGNUP_GRANT` is read in **dollars** - an old `5`, five credits,
+   grants `$5`; `AI_CLI_TIMEOUT_MS_FILTER`, `AI_CODEX_TIMEOUT_MS_FILTER` and
+   `AI_GEMINI_TIMEOUT_MS_FILTER` are read by nothing, so delete them; and
+   `IMMEDIATE_TAB_GRACE_MS`, `IMMEDIATE_FILE_RETENTION_MS`,
+   `JOB_LAKE_DUPLICATE_WINDOW_DAYS` and `TAILOR_CACHE_DAYS` are new, with
+   defaults meant to be left alone (see [Configuration](#-configuration)).
+6. **Start the backend and read its log.** With Google Sheets set up, the
+   startup backfill adds the two new tabs to every sheet an older build made:
+   `[sheets] Preparing the job sheets of N account(s) from before this build (a
+   spreadsheet, or its All and Temp For AI tabs).`, then `[sheets] Backfill
+   finished: N prepared, M left for next time.` - those left get them at their
+   next sign-in. A sheet that already has a tab of its own called All or Temp
+   For AI says so (`[sheets] <spreadsheet> already has a tab named "All" that
+   is not a job tab; ...`; see step 13). If the lake holds jobs, `[lake] Filled
+   in job type, clearance and industry for N lake row(s) ... - no model was
+   asked - and recorded N report(s) of them.` **From `90adbaf`**, each one-time
+   step of that release says what it did, once, as well: `[db] Renamed
+   users.plan to subscription: ...`, `[templates] Moved N saved template(s)
+   from the database to files ...` (and a line for each one it had to rename),
+   `[credits] Credits are dollars now: ...`.
+7. **From `90adbaf`: before anybody else signs in, price every model** under
+   **Admin → Models**. Every balance was reset to `$0` and every model to a
+   price of `$0` - free - and until a model has a price, every resume on it is
+   built for nothing. The page lists each free enabled model in red until none
+   is left (and startup says `[credits] Every model is FREE until it is priced`
    when it reset stored prices). Prices are dollars, in steps of `$0.001`
    (`0.023`).
-8. **Choose the analysis model** under **Admin → Settings → General** - the one
-   model every job posting is read on, once. Left empty it is the default
-   model.
-9. **Fill in the Contact list** on the same page: how people reach you. It is
-   shown to everybody, signed in or not, and every *contact your administrator*
-   sentence links to it.
-10. **If you will have reporters**, set the global rate per job on **Admin →
-    Job Lake → Settings** (nobody is paid until it is set), then make each
-    reporter on **Admin → Accounts** - by changing a user's role, or adding the
-    address as a Reporter before they first sign in.
-11. **Check the job sheets' Google identity**: `cd backend && npm run
-    sheets:doctor`. The analysis columns are protected so that only the server
-    can write them, and the server has to learn which Google account it is to
-    do that - for a `sheets:login` credential, that needs the Drive API.
-12. **Reload every page left open.** One loaded before the upgrade is refused
-    wherever it would send money in the old unit (*This page is from an older
-    version of the app. Reload it and try again.*), and an Accounts page left
-    open breaks on its first subscription change.
-13. **Tell people** that their balance starts again at `$0.000` (their Credit
-    History ends with a *reset* row saying what it was), and that **Generate
-    Immediately** now stops when its tab is closed and downloads each resume by
-    itself - the browser may ask once to allow several downloads.
+8. **From `90adbaf`: choose the analysis model** under **Admin → Settings →
+   General** - the one model every job posting is read on, once. Left empty it
+   is the default model.
+9. **Check the Contact list** on **Admin → Settings → General** (**from
+   `90adbaf`**, fill it in): how people reach you. Nobody asks for a refund in the app any more -
+   every place that offered one, and a page left open from before, now tells
+   them to contact the administrator, and that sentence links to this list,
+   which everybody sees, signed in or not.
+10. **Payouts.** A reporter now asks to be paid out with **Ask for Refund** on
+    their Credits page; each request arrives in **Admin → Payments → Refund
+    requests**, marked *Payout*, and every administrator is told. **Record
+    payout** there records what you actually sent (see [Refund and payout
+    requests](#refund-and-payout-requests)). **From `90adbaf`**, if you will
+    have reporters: set the global rate per job on **Admin → Job Lake →
+    Settings** (nobody is paid until it is set), then make each reporter on
+    **Admin → Accounts** - by changing a user's role, or adding the address as
+    a Reporter before they first sign in.
+11. **An analysis prompt you edited** is marked *Predates industries* under
+    **Admin → Prompts** (see [Industries, and the lake's new
+    facts](#15-industries-and-the-lakes-new-facts)). It keeps working: the
+    industry list is sent beside it on every call. Adding `[[industryList]]`
+    under its own heading after `[[jobFieldList]]`, and `"industry": ""` to
+    its output - or pasting the shipped text from
+    `backend/static/prompts/analyze-job-description.json` over it - puts the
+    list in the cached part. Mind that the older build
+    refuses a prompt naming it ([Rolling back this
+    release](#-rolling-back-this-release), step 2). **From `90adbaf`**, one
+    edited before job fields is marked as predating job fields instead (see
+    [Job analysis runs once](#11-job-analysis-runs-once)).
+12. **Check the job sheets' Google identity**: `cd backend && npm run
+    sheets:doctor`. The analysis columns - G to L now - are protected so that
+    only the server can write them, the moment a tab is laid out, and the
+    server has to learn which Google account it is to do that - for a
+    `sheets:login` credential, that needs the Drive API.
+13. **Tell people about their job sheets** (see [Own job sheets: All and Temp
+    For AI](#14-own-job-sheets-all-and-temp-for-ai)). Every sheet now has an
+    **All** tab, which every job page uses unless another job tab is picked,
+    and a **Temp For AI** tab, both in the new twelve-column layout. The daily
+    `MM/DD/YYYY` tabs are kept as they are but **no longer read or written**:
+    to use their rows, copy them into All - Company, Job Title, Job Link and
+    Job Description, columns B to E there, go into C to F. The saved shared
+    sheets (*Bid History* and the like) are gone from every page; copy their
+    rows into your own All the same way. The Job Filter shows its verdicts on
+    the page and writes nothing into the sheet. Anybody whose **Settings → Job
+    Sheet** says a tab named All or Temp For AI is in the way renames or
+    deletes that tab, then reloads the page.
+14. **Reload every page left open.** One loaded before the upgrade reads the
+    job sheet, its tabs and the Job Filter's answer in shapes the server no
+    longer sends, and asking for a refund from one is answered *Refunds are no
+    longer asked for in the app. If you think a purchase or a resume should be
+    refunded, contact your administrator.* **From `90adbaf`**, such a page is
+    also refused wherever it would send money in the old unit (*This page is
+    from an older version of the app. Reload it and try again.*), and an
+    Accounts page left open breaks on its first subscription change.
+15. **From `90adbaf`: tell people** that their balance starts again at `$0`
+    (their Credit History ends with a *reset* row saying what it was), and that
+    **Generate Immediately** stops when its tab is closed and downloads each
+    resume by itself - the browser may ask once to allow several downloads.
 
 ### What is new, and what it asks of you
 
 | Change | What it means | What to do |
 |---|---|---|
-| **Plans are subscriptions** | The account tier (Default, Premium, Premium+, Premium Max) is called a subscription on every page, in the API and in the database (`users.plan` became `users.subscription`). `/settings/plan` opens **Settings → Subscription** | Nothing, beyond step 12. A script that reads `plan` reads `subscription` now - see [Plans are now subscriptions](#8-plans-are-now-subscriptions) |
-| **Credits are dollars** | A credit is a dollar, counted to `$0.001`. Balances and model prices were **reset** to `$0.000`, not converted; history keeps its old figures. Purchases credit exactly what they charge - the crypto fee is gone | Steps 5 and 7 - see [Credits](#credits) and [Credits are dollars](#10-credits-are-dollars) |
-| **Ask for a refund** | A user asks about a purchase (its unspent part comes back) or one resume (its charge comes back as credit), with a reason. An administrator approves, declines with a reason, or refunds, in **Admin → Payments → Refund requests** - a card refund goes to Stripe from there. Notices now reach one account as well as everybody | Watch the queue. See [Refund and payout requests](#refund-and-payout-requests) |
-| **Contact admin** | The administrator's contact channels - email, Telegram, Discord, WhatsApp, a link - shown to everybody, the sign-in and account-disabled screens included | Step 9. See [Contacting the administrator](#contacting-the-administrator) |
-| **Generate Immediately and Order** | Every build is queued. **Generate Immediately** is tied to the tab that started it: it downloads each resume as it lands, closing or leaving the tab stops it and refunds what had not started, and its files are deleted ten minutes after it ends. **Order** runs whether or not anybody watches. Building for more than one profile needs Premium or higher; a single profile, sheet mode and Order are open to every subscription. The builder's *Fallback Role* is gone - an untitled row takes the title its posting's analysis reads | Step 13. See [Order & Download](#order--download) |
-| **Reporters** | A third role, beside User and Administrator: Report Jobs, Credits and two Settings tabs - no resume builder, no job scrapers, no buying credits. Paid per job the lake accepts; an administrator records each payout made outside the app with **Record payout** | Step 10. See [Roles](#roles) |
-| **Job analysis runs once** | A posting is analysed once, ever, on one **analysis model**, and the analysis gains a job field and the salary it states. The job filter makes no model call of its own. An account's own job sheet gains six columns, **Job Field** to **Analysis**, that only the server's Google identity can edit | Steps 8 and 11. An analysis prompt you edited is flagged under **Admin → Prompts** and still works. See [Job analysis: once per posting](#job-analysis-once-per-posting) and [Job analysis runs once](#11-job-analysis-runs-once) |
-| **The Job Data Lake** | One row per job - a company hiring in a job field - added by reporters' runs and the administrators' **Merge**, deduplicated over a window (60 days by default), and copied to a spreadsheet the server makes for the administrators | Step 10. See [The Job Data Lake](#the-job-data-lake) |
-| **Providers of one type** | **Admin → Models → Providers** adds more sign-ins of a seat, each with its own folder, limit and queue; a model's resumes spread over every provider of its type that can take work | Nothing: each type's built-in provider reads `.env` exactly as before. See [Several providers of one type](#several-providers-of-one-type) |
-| **The tailoring cache** | Building again for the same unchanged profile, posting, model and prompt reuses the tailoring, with no model call, and is charged as usual | Nothing (`TAILOR_CACHE_DAYS`, 30 by default). See [The tailoring cache](#the-tailoring-cache) |
-| **Saved templates are files** | Templates an administrator imports, extracts or builds are `<id>.json` files beside the built-ins, not database rows | Steps 2 and 4. See [Saved templates are files](#9-saved-templates-are-files) |
-| **Smaller things** | An administrator can no longer disable, demote or delete their own account. The profile preview draws a sample person in whatever the profile leaves empty, and no longer shakes. An unticked Soft Skills or Strengths box hides its list and keeps it, and switched-off Strengths are not sent to the model. Reopening Build Resumes follows only a run started from that tab | Nothing |
+| **Payout requests** | A reporter asks to be paid out with **Ask for Refund** - the whole earned balance, one request at a time, never at `$0`. An administrator records what they actually sent, up to the balance at that moment, with **Record payout** in the refund queue, which turns the request *Paid out* in the same step; a payout recorded on **Admin → Accounts** closes the open request too, so nothing is paid twice | Step 10. See [Refund and payout requests](#refund-and-payout-requests) |
+| **No more refund asks** | Users and administrators no longer ask for refunds in the app: the buttons on purchases, Credit History and an order's resumes are gone, and `POST /api/refund-requests` answers 410. Requests already open stay in the queue and are decided as before, and an administrator can still refund a payment or adjust a balance directly | Step 9 |
+| **Money without trailing zeros** | Amounts read `$1`, `$4.1`, `$0.023`, `$0` rather than `$1.000` - every digit that matters, never rounded. Notes already stored in a history keep the text they were written with | Nothing. See [Credits](#credits) |
+| **Your own job sheet, and only it** | Build Resumes, the Job Filter, the export, Report Jobs and **Admin → Google Sheets** read and write the signed-in account's own sheet and no other - an administrator's saved Google Sheets are gone, and any other spreadsheet id is a 404, an administrator's included | Step 13. See [The job sheet](#the-job-sheet) |
+| **All, Temp For AI and twelve columns** | Every sheet has an **All** tab, the default everywhere, and **Temp For AI**, laid out Date, NO(DATE), Company, Job Title, Job Link, Job Description - yours, A to F - then Job Field, Salary, Job Type, Clearance, Industry and Analysis - the program's, G to L, protected. Every row is 21 px high, long text clipped. The old daily tabs are kept and never read or written again | Steps 6, 12 and 13. See [Own job sheets](#14-own-job-sheets-all-and-temp-for-ai) |
+| **The Job Filter writes nothing** | Each row's Pass or Fail and its reason are shown on the page; no verdict is written into the sheet | Nothing |
+| **Industry, job type and clearance** | The analysis names the posting's **industry** from a closed list, and its job type and clearance come from facts it already held - in the sheet's G to L, on every lake job, as the lake's filters and in the admin sheet. A posting analysed before is never asked again: its industry is worked out from its analysis | Step 11. See [Job analysis: once per posting](#job-analysis-once-per-posting) and [15](#15-industries-and-the-lakes-new-facts) |
+| **Reported before, by the database** | Whether a reporter reported a posting before is the database's record (`job_reports`), by the posting, wherever its row has been moved, sorted or copied to - the sheet's *Lake Status* column is gone. The same posting twice in one run is a duplicate the second time | Nothing. See [The Job Data Lake](#the-job-data-lake) |
+| **Push to Google Sheet** | **Admin → Job Lake**'s Lake tab - its filters now in a fixed order, Job type, Clearance and Industry among them - writes the jobs of a search into the *Temp For AI* tab of the pushing administrator's own sheet, replacing what that tab held, each row with its analysis cells, so building from it analyses nothing again | Optional: `JOB_LAKE_PUSH_MAX_ROWS` (step 5). See [The Job Data Lake](#the-job-data-lake) |
+| **Analysis cells point at the database** | A sheet's Analysis cell is used only for the stored analysis it names, and only when that is the row's posting. One naming an analysis this database does not have - another install's, an older backup's, or text that only looks like the program's - is ignored: the posting is found in the database or analysed once, and the cell rewritten | Nothing |
+| **Smaller things** | Switching off Strengths or Soft Skills removes the whole section, its heading included, in an uploaded template as well. The range importer refuses writes into G to L of a job tab. The root `npm run dev` runs the frontend on Turbopack - webpack's dev server reloaded every open tab when another connected, which stopped a Generate Immediately run - and `npm run dev:live` keeps webpack | Nothing |
 
-**For a script that calls the API**, four things changed shape. An account's
-`plan`, `planLabel` and `planSummary` are `subscription...`, and
-`/api/auth/plans` is `/api/auth/subscriptions`. Every amount is answered in an
-integer field ending `Milli` and sent as dollars in one ending `Usd`; a request
-that still carries `credits`, `amount`, `creditsPerResume` or `minCents` is
-refused. `POST /api/generation/batches` queues a **Generate Immediately** run
-unless the body says `"mode": "order"` (or `"asOrder": true`) - and an immediate
-run is cancelled `IMMEDIATE_TAB_GRACE_MS` after nobody follows its progress
-stream, so a script that does not read the stream must order. And a
-`jobAnalysis` object in a body is no longer read: send the `analysisId` that
-`/api/resume/analyze` answers, or the job description and link.
+**For a script that calls the API**: `GET /api/sheet` answers `defaultTab` /
+`defaultTabUrl` (All) and `tempTab` / `tempTabUrl` - plus `conflict` while a
+tab of the person's own holds one of those names - instead of `todayTab` /
+`todayTabUrl`. `GET /api/import/tabs` lists the caller's own sheet only, each
+tab with its `layout` (`job`, `blank` or `other`), and any other sheet id
+sent to a job route - import and its tabs, the job export and filter, a sheet
+run's submission (`sheet.spreadsheetId`) and Admin → Google Sheets' range
+reads and writes - is a 404 (`GET /api/sheet`, Report Jobs and Push to Google
+Sheet read none from a request); the Bid Assistant's own saved sheet sources
+are unchanged. `googleSheetsSources` is gone from the admin settings.
+`POST /api/jobs/filter-google-sheet` takes `{ tabName, startRow, endRow? }` and
+answers each row's verdict in `rows`, writing nothing; the export ignores
+column numbers. `POST /api/refund-requests` and `GET
+/api/refund-requests/options` answer 410 `refund-requests-closed`, and a
+reporter's `GET` and `POST /api/refund-requests/payout` are new. Report Jobs'
+rows carry `reported` and `priorOutcome` instead of `lakeStatus`. An analysis
+may carry `industry`. `GET /api/admin/job-lake` also filters on `jobType`,
+`clearance` and `industry` and answers `options` and `pushMaxRows`, and `POST
+/api/admin/job-lake/push` is new.
+
+### Coming from 90adbaf
+
+The release before this one changed more, and everything it changed is still
+true. For an install coming from `90adbaf` - the one that rebuilt Edit Profile
+around a live preview - the steps above marked **From `90adbaf`** are that
+release's; what it changed, briefly, and where each is described:
+
+- **Plans are subscriptions** - the account tier is called a subscription on
+  every page, in the API and in the database (`users.plan` became
+  `users.subscription`; [8](#8-plans-are-now-subscriptions)).
+- **Credits are dollars**, counted to `$0.001`. Balances and model prices were
+  **reset** to `$0`, not converted; history keeps its old figures, and
+  purchases credit exactly what they charge ([10](#10-credits-are-dollars),
+  [Credits](#credits)).
+- **Saved templates are files** beside the built-ins, not database rows
+  ([9](#9-saved-templates-are-files)).
+- **Refund requests and Contact admin** - the queue an administrator decides
+  in (asking was closed in this release) and the administrator's
+  contact channels, shown to everybody ([Contacting the
+  administrator](#contacting-the-administrator)).
+- **Generate Immediately and Order** - every build is queued; an immediate run
+  is tied to its tab, downloads each resume as it lands, and stops when the
+  tab closes ([Order & Download](#order--download)).
+- **Reporters**, a third role, paid per job the lake accepts
+  ([Roles](#roles)), and **the Job Data Lake** itself
+  ([12](#12-the-job-data-lake)).
+- **Job analysis runs once**, on one analysis model
+  ([11](#11-job-analysis-runs-once)).
+- **Several providers of one type** and **the tailoring cache**
+  ([13](#13-providers-of-one-type-and-the-tailoring-cache)).
+
+For a script, that release changed four things. An account's `plan`,
+`planLabel` and `planSummary` are `subscription...`, and `/api/auth/plans` is
+`/api/auth/subscriptions`. Every amount is answered in an integer field ending
+`Milli` and sent as dollars in one ending `Usd`; a request that still carries
+`credits`, `amount`, `creditsPerResume` or `minCents` is refused.
+`POST /api/generation/batches` queues a **Generate Immediately** run unless the
+body says `"mode": "order"` (or `"asOrder": true`) - and an immediate run is
+cancelled `IMMEDIATE_TAB_GRACE_MS` after nobody follows its progress stream, so
+a script that does not read the stream must order. And a `jobAnalysis` object
+in a body is no longer read: send the `analysisId` that `/api/resume/analyze`
+answers, or the job description and link.
 
 ---
 
@@ -840,10 +947,11 @@ who asked - and nobody else's: *Your refund request for … was approved*,
 a payout, *Your payout request FT-RF-… was approved* or *… was declined: …*,
 and *Payout recorded: $X*.
 
-**Rolling back past this** needs these notices deleted first: an older build
-reads every row of `notifications` as an announcement for everybody, so it
-would show every bell the notices written for one account - step 4 of
-[Rolling back this release](#-rolling-back-this-release).
+**Rolling back past this** - to `90adbaf` - needs these notices deleted
+first: that build reads every row of `notifications` as an announcement for
+everybody, so it would show every bell the notices written for one account -
+step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf).
+`5177fc3` reads them as this build does.
 
 ### Contacting the administrator
 
@@ -953,9 +1061,11 @@ last; for `SMTP_USER`'s address, set `ADMIN_EMAILS` to the administrators you
 do mean.
 
 **Rolling back to a build without reporters would hand every reporter the
-full app** - an older build reads a role it does not know as *user* - so they
-are disabled first, and enabled again after upgrading back: step 4 of
-[Rolling back this release](#-rolling-back-this-release).
+full app** - `90adbaf` reads a role it does not know as *user* - so they are
+disabled first, and enabled again after upgrading back: step 4 of [Going back
+further, to 90adbaf](#going-back-further-to-90adbaf). `5177fc3` has reporters,
+but no **Ask for Refund** (see [Rolling back this
+release](#-rolling-back-this-release)).
 
 ### What each account can reach
 
@@ -976,7 +1086,7 @@ everybody but a reporter.
 | **Report Jobs** | reporters (administrators may open it) | adding jobs from their own sheet to the job lake |
 | **Payouts** (Record payout, the rate per job) | **administrators** | on Admin → Accounts, for a reporter's row, and on a payout request in the refund queue |
 | **Payout requests** (asking) | **reporters** | for their own earned balance (`GET`/`POST /api/refund-requests/payout`). An administrator is refused (409 `not-a-reporter`): their balance is not earnings |
-| **Job Lake** (the lake, its merge, the global rate and duplicate window, the admin sheet) | **administrators** | the lake is shared, and what a job pays is the installation's decision - see [The Job Data Lake](#the-job-data-lake) |
+| **Job Lake** (the lake, its merge, Push to Google Sheet, the global rate and duplicate window, the admin sheet) | **administrators** | the lake is shared, and what a job pays is the installation's decision - see [The Job Data Lake](#the-job-data-lake) |
 | **Payments** (the list, refunds and the refund-request queue) | **administrators** | reconciliation against the provider's dashboard, and the only buttons in the product that move money outward |
 | **Refund requests** (asking) | nobody | removed: a user or administrator is answered 410 `refund-requests-closed` with a sentence asking them to contact the administrator, a reporter 403 `role-not-allowed` as before |
 | **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
@@ -1360,9 +1470,10 @@ six of G to L: Job Field, Salary, Job Type, Clearance (TRUE/FALSE), Industry
 and the whole analysis as JSON in **Analysis** (cut with a marker at Google's
 50,000-character cell limit). Values are written as plain values, never
 formulas. A row that already has its analysis is **not analysed again**: a
-build from the sheet - Order or Generate Immediately - reads the rows' analysis
-cells itself, in one call per run, and uses what is there. That is only safe
-because nobody else can write those cells:
+build from the sheet - Order or Generate Immediately - and a reporter's run read
+the rows' analysis cells themselves, in one call per run, and use the stored
+analysis each names. That is only safe because nobody else can write those
+cells, and because a cell is only ever a pointer into the database:
 
 - The six columns are a **protected range**, header included, editable only by
   the server's Google identity. Anybody else - including the account the sheet
@@ -1375,11 +1486,17 @@ because nobody else can write those cells:
   those rows are read from the database, or analysed, and each row's cells are
   written again from the database on its next run. So an Analysis cell is only
   ever trusted once the program has written it under the protection.
-- A cell is used only for the posting it was written for: it records its
-  posting's link and text hash. Paste another posting into a row, or sort the
-  job columns (the protected ones cannot move with them), and the cell left
-  behind is not used for the new posting - which is found in the database, or
-  analysed once - and the app writes the right analysis over it.
+- **A cell is used only as a pointer to the database.** It names its stored
+  analysis by id, and the build uses that stored analysis - never what the
+  cell holds - and only when it is the row's posting, by the posting's link or
+  text. Paste another posting into a row, or sort the job columns (the
+  protected ones cannot move with them), and the cell left behind is not used
+  for the new posting - which is found in the database, or analysed once - and
+  the app writes the right analysis over it. A cell naming an analysis this
+  database does not have - copied from another install, left from a database
+  restored from an older backup, or text that only looks like the program's -
+  is ignored the same way (the log says the row's *Analysis cell names an
+  analysis this store does not have*), and rewritten.
 - Before writing, the app re-reads the row's company and link, so a sheet
   sorted or trimmed since the run started is not written into the wrong row.
 - **With `npm run sheets:login`** the server's Google identity is the
@@ -1391,15 +1508,17 @@ Only the app's own job sheets get the columns, and in them only **job tabs** -
 a tab whose first row starts with Date, NO(DATE), Company, Job Title, Job Link,
 Job Description, or a tab with nothing in it at all (see [The job
 sheet](#the-job-sheet)). Any other tab - one you made yourself, or a daily tab
-an older build laid out - keeps its own header and its own columns: a build
-from it reads no analysis cells and writes none, and its postings are found in
-the database or analysed.
+an older build laid out - keeps its own header and its own columns: the app
+never re-heads, protects or writes it, and the job pages do not offer it.
 
 ### The job sheet
 
 Every account gets **one Google spreadsheet of its own**, with two tabs of the
 app's: **All**, first, which every job page reads and writes unless you pick
-another tab, and **Temp For AI**, second. Both open with the job columns,
+another tab, and **Temp For AI**, second - a job tab like All, and the one
+**Push to Google Sheet** on Admin → Job Lake replaces with the jobs of a
+search, for the administrator who pushes (see [The Job Data
+Lake](#the-job-data-lake)). Both open with the job columns,
 frozen, filtered and formatted, every row 21 px high with long text clipped
 rather than wrapped:
 
@@ -1421,12 +1540,15 @@ first time the app uses it. Every other tab is left exactly as it is: the app
 never re-heads, protects, clears, reads or writes it. That includes a tab with
 data under an empty row 1, and every **daily `MM/DD/YYYY` tab an older build
 made**: those keep their rows and their old sixteen columns, and the app no
-longer reads them (copy rows into All by hand to use them - the columns are in
-other places). A sheet an older build made is given All and Temp For AI in front
+longer reads them (copy rows into All by hand to use them - their B to E go
+into C to F; see [Own job sheets](#14-own-job-sheets-all-and-temp-for-ai)). A sheet an older build made is given All and Temp For AI in front
 of its daily tabs the next time its owner signs in, or at the startup backfill.
 If the sheet already has a tab called All or Temp For AI that is not a job tab,
 that tab is left alone and Settings > Job Sheet says so; rename it and reload the
-page, and the app adds its own.
+page, and the app adds its own. The same page puts back an All or Temp For AI
+deleted or renamed in Google Sheets: it is the one page that looks at the
+sheet's tabs again each time it loads (so do an export and Push to Google
+Sheet), while every other page links to the tabs as they were recorded.
 
 Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
 being able to log in is not, so a Google outage must not become an outage of
@@ -1595,8 +1717,9 @@ list itself stays in the settings, untouched, for a rollback.)
 - **Admin -> Google Sheets** (the range importer) reads and writes a range of
   the administrator's own sheet, and refuses a write into **G to L of a job
   tab** - those cells are the program's, and the server's identity is the only
-  editor the protection lets through, so a write from here is the one way a
-  person could forge an Analysis cell a later build would trust.
+  editor the protection lets through, so a write from here would be the one
+  way past it. (Even an Analysis cell written past it could not change an
+  analysis: a build uses only the stored analysis a cell names.)
 
 `SHEET_TIMEZONE` decides which day an exported row is dated, and so numbered. A
 server running in UTC rolls the day over at midnight UTC, which for a user in
@@ -1674,13 +1797,13 @@ while the job is inside the window (its *seen* count goes up once more), or,
 once the job is older than the window, a replacement - paid like any other.
 From then on it is *Reported before*.
 
-**Reporting (Report Jobs).** A reporter picks a tab of their own job sheet -
-today's is chosen for them - and a range of rows (up to 500 at a time),
+**Reporting (Report Jobs).** A reporter picks a job tab of their own job
+sheet - All is chosen for them - and a range of rows (up to 500 at a time),
 presses **Preview rows** to see the rows that hold a job and which of them a
 run will skip because they were reported before (with what became of them
-then), and presses **Add to job lake**. The page opens with what a job pays them (their own rate, or the global
-one), what they have earned today against any daily cap, their balance and how
-many of the lake's jobs are theirs. The run goes on in the background, with a
+then), and presses **Add to job lake**. The page opens with what a job pays
+them (their own rate, or the global one), what they have earned today against
+any daily cap, their balance and how many of the lake's jobs are theirs. The run goes on in the background, with a
 progress bar - the page may be left and come back to, and shows the last run
 for an hour after it ends; for each row:
 
@@ -1692,9 +1815,10 @@ for an hour after it ends; for each row:
    posting - nothing in the row says it: a row moved or copied elsewhere is
    still skipped, and a new posting pasted over an old row's is reported like
    any other;
-2. its posting's analysis is found, sheet first: the row's own **Analysis**
-   cell, else the stored analysis of the posting, else **one** model call
-   (written back into the row) - a posting analysed before costs nothing;
+2. its posting's analysis is found, sheet first: the stored analysis the
+   row's own **Analysis** cell names, else the stored analysis of the posting,
+   else **one** model call (written back into the row) - a posting analysed
+   before costs nothing;
 3. the job is merged: **added**, **replaced** or **duplicate**, as above.
 
 Then the run paints the duplicates' rows red in the sheet (a row whose posting
@@ -1747,8 +1871,8 @@ Clearance a real TRUE/FALSE); a replacement is a new line too, so the sheet is
 a log of everything the lake ever accepted. An admin sheet made before Job
 Type, Clearance and Industry gets its header row rewritten once, just before
 its next line is appended; the lines already there keep those three columns
-blank (**Create a new admin sheet** sends the whole lake again, with them). The database is the
-record and the sheet follows it: a job is committed first, then appended in
+blank (**Create a new admin sheet** sends the whole lake again, with them).
+The database is the record and the sheet follows it: a job is committed first, then appended in
 batches - right after each report run and merge, and at every start - and an
 append that fails never undoes anything; the job waits, the page shows how
 many are waiting and why, and **Retry now** sends them. Taking an
@@ -1758,13 +1882,29 @@ whole lake.
 
 **Admin → Job Lake** (a tab of Settings → Administration) has three tabs of
 its own. **Lake** lists the lake - newest first, with each job's type,
-clearance and industry; by company (compared as above), job field, salary, who
-reported it, when, and free text over company, title and description (the API,
-`GET /api/admin/job-lake`, also takes `jobType`, `clearance=true|false` and
-`industry`) - and **Details** opens a row with its description and history,
-where **Revoke reward** takes the reward back and **Delete** removes the job
-(it can then be reported again, as a new one), with **Also revoke the reward**
-to take its reward back in the same step. **Merge** is the merge above.
+clearance and industry - filtered, when **Search** is pressed, by *Updated
+from* and *Updated to* (UTC days), *Requested by*, *Job field*, *Job type*
+(Remote, Hybrid, Onsite), *Clearance* (Required or Not required), *Industry*,
+*Company* (compared as above), a salary range (*Salary from*, *Salary to*) and
+*Full text* over company, title and description, in that order - and
+**Details** opens a row with its description and history, where **Revoke
+reward** takes the reward back and **Delete** removes the job (it can then be
+reported again, as a new one), with **Also revoke the reward** to take its
+reward back in the same step. **Push to Google Sheet**, beside Search, writes
+the jobs of the search on the page - newest first, at most
+`JOB_LAKE_PUSH_MAX_ROWS` of them - into the *Temp For AI* tab of the pushing
+administrator's OWN job sheet, replacing what that tab held below its header
+(columns A to L, a duplicate's red paint included; another tab, or a column
+past L, is never touched). It pushes the search on the page, never boxes
+changed since, and asks first - naming how many jobs go, and saying so when
+the boxes were changed - then links to the tab, and says when the cap cut the
+search short. Each row is dated by the day its job was last updated, numbered
+in NO(DATE) within that day, and carries the six analysis cells of its
+posting's stored analysis, so building resumes from *Temp For AI* analyses
+none of them again - a description longer than a cell's 50,000 characters
+included: it is written cut, ending *...[cut at 50,000 characters]*, and that
+cut copy is still read as its posting, link or no link, as long as it is not
+edited. **Merge** is the merge above.
 **Settings** holds the global rate per job (dollars, in `$0.001` steps), the
 duplicate window - with where the value in effect comes from: set there, `.env`
 or the built-in 60 - and the daily cap; and the admin sheet: its link, who it
@@ -1796,18 +1936,19 @@ the locked choices greyed out with a *Premium* pill; the server is the real
 lock - a run, a quote or a multi-profile preview for more than one profile (or
 for all of them) is refused with 403 `subscription-too-low`.
 
-**Sheet mode reads any tab.** Pick the sheet, the **Tab** (every tab of it is
-listed, today's selected), and the rows; *Load rows* shows the jobs found
-before anything is built, then **Generate Immediately** or **Order**. On your
-own job sheet the table's **Analysis** column says what each row's build will
-do about its analysis, read from the row's protected **Analysis** cell (column
-P, beside Job Field and Salary in K and L): *Skips analysis*, with the job
-field and salary the row holds, for a row analysed before; *When built* for a
-row whose posting is analysed the first time a build needs it (or found
-already stored); *Cell unreadable* for a cell the program cannot use. The
-server reads those cells again itself when the run starts - the page's table
-is a preview, never something the server is sent. A tab you laid out yourself
-is read through your column mapping and never given the analysis columns.
+**Sheet mode reads a job tab of your own sheet.** Pick the **Tab** (every tab
+is listed, All selected, and one that is not a job tab greyed out with why)
+and the rows; *Load rows* shows the jobs found before anything is built, then
+**Generate Immediately** or **Order**. The table's **Analysis** column says
+what each row's build will do about its analysis, read from the row's
+protected **Analysis** cell (column L, beside Job Field and Salary in G and H):
+*Skips analysis*, with the job field and salary the row holds, for a row whose
+cell names its posting's stored analysis; *When built* for a row whose posting
+is analysed the first time a build needs it (or found already stored); *Cell
+unreadable* for a cell the program cannot use. The server reads those cells
+again itself when the run starts - the page's table is a preview, never
+something the server is sent - and trusts one only for the stored analysis it
+names (see [Job analysis: once per posting](#job-analysis-once-per-posting)).
 
 **Generate Immediately is tied to its tab.** The first click asks *"If you
 close the tab or the network drops, the run can be stopped. Would you like to
@@ -1916,17 +2057,17 @@ For a page or a script, the queue's contract is:
 | Profiles, groups, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
 | Which spreadsheet belongs to an account, and how far it is laid out | The same database, on the account's row: `sheet_layout` (2 once its All and Temp For AI tabs are there) with their gids, `sheet_all_gid` and `sheet_temp_gid` (NULL at layout 2 = a tab of that name was already there and is not a job tab, so it was left alone). `sheet_tab_date` and `sheet_tab_gid` are an older build's daily tab and are no longer written. Along with them, `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
-| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir`. A Generate Immediately run has a row there too, `kind = 'immediate'`, which **Orders** never lists - it is what files its resumes per account, checks who downloads them, keeps what each was charged for a refund, and tells the sweep when its files are due (`finished_at` + `IMMEDIATE_FILE_RETENTION_MS`). An older build reads those rows as ordinary orders, so after a rollback they show up on its Orders page |
+| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir`. A Generate Immediately run has a row there too, `kind = 'immediate'`, which **Orders** never lists - it is what files its resumes per account, checks who downloads them, keeps what each was charged for a refund, and tells the sweep when its files are due (`finished_at` + `IMMEDIATE_FILE_RETENTION_MS`). `90adbaf` reads those rows as ordinary orders, so after a rollback that far they show up on its Orders page |
 | Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
 | Credit ledger and open reservations | The same database, in thousandths of a dollar. The ledger is append-only and `users.balance_milli` is a cache of the sum of its `delta_milli`; a disagreement between the two is reported at startup rather than silently repaired. The whole-credit columns beside them (`users.credits`, `credit_ledger.delta`, `credit_reservations.units`, `payments.credits`...) hold the history from before credits were dollars, and every row written since puts `0` in them |
 | AI models and their prices | The same database, in the app settings row: each model's display name, seat, model name, price per resume (`pricePerResumeMilli`, thousandths of a dollar) and description. A run's price is copied onto each of its queued tasks (`costMilli`) when it is submitted |
 | API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory. A settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log; migration 007 deletes them from the oldest settings snapshot too |
 | Providers, the analysis model and the contact list | The same database, in app settings: the providers an administrator added or changed (`aiProviders`) and the analysis model (`analysisModelId`) in the settings row beside the models, the contact channels under their own key (`contact`). A built-in provider nobody changed is not stored - it is `.env` |
-| Job analyses | The same database, in `job_analyses`: one row per posting, ever, found by its normalised link or its text's hash. Never expired and never overwritten - it is what stops a posting being analysed twice. An account's own job sheet holds a copy in its protected columns |
+| Job analyses | The same database, in `job_analyses`: one row per posting, ever, found by its normalised link or its text's hash. Never expired and never overwritten - it is what stops a posting being analysed twice. An account's own job sheet holds a copy in its protected columns, whose Analysis cell is used only as a pointer back to this row |
 | Refund requests and personal notices | The same database: `refund_requests` (each request, its state, reason and what moved), and `notifications` - an announcement has no `recipient_id`, a notice for one account names it |
 | Tailored answers kept for reuse | The same database, in `tailor_cache`: the model's answer to a tailoring or a cover letter, under a hash of everything it was made from, pruned after `TAILOR_CACHE_DAYS`. Safe to empty - the next build asks the model again |
-| The Job Data Lake | The same database: `job_lake` (one row per job, its `job_hash` unique, the reward its current version paid and at what rate), `job_lake_history` (each version a later report replaced) and `job_lake_fts` (the full-text index, kept in step by triggers). The rewards and revokes are ledger rows (`job-report-reward`, `job-report-reward-revoked`). The lake's settings and the admin sheet's id are app settings (`job-lake`, `job-lake.admin-sheet`). The admin sheet itself is a copy - a row whose `sheet_synced_at` is empty has not reached it yet |
+| The Job Data Lake | The same database: `job_lake` (one row per job, its `job_hash` unique, its job type, clearance and industry, the reward its current version paid and at what rate), `job_lake_history` (each version a later report replaced), `job_reports` (each posting each reporter reported, once, with what became of it the first time - what *Reported before* is decided by) and `job_lake_fts` (the full-text index, kept in step by triggers). The rewards and revokes are ledger rows (`job-report-reward`, `job-report-reward-revoked`). The lake's settings and the admin sheet's id are app settings (`job-lake`, `job-lake.admin-sheet`). The admin sheet itself is a copy - a row whose `sheet_synced_at` is empty has not reached it yet |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
 | Built-in resume templates | `backend/static/templates/*.json`, read from the file on every request - so an edited file shows at once, with no import. What an administrator changes about a built-in - its name, description, disabled flag and the layouts it is offered for - is an override row in the database (`template_overrides`) laid over the file, never the file itself |
@@ -2336,9 +2477,9 @@ database. What each one allows is unchanged.
   the page (so do a delete and any refused change, which reload a list the old
   page no longer reads), and an invite says to reload.
 
-An older build reads `users.plan`, and against an upgraded database every
-account read fails with `no such column: plan`: renaming the column back is
-step 4 of [Rolling back this release](#-rolling-back-this-release), and
+`90adbaf` reads `users.plan`, and against an upgraded database every account
+read fails with `no such column: plan`: renaming the column back is step 4 of
+[Going back further, to 90adbaf](#going-back-further-to-90adbaf), and
 upgrading again renames it forward.
 
 ### 9. Saved templates are files
@@ -2376,11 +2517,11 @@ database from now on.
   name an id can have; the startup line names any that is not (see
   Troubleshooting).
 
-**Rolling back**: an older build reads every saved template as a read-only
-built-in, and a renamed one twice. Step 5 of [Rolling back this
-release](#-rolling-back-this-release) says which files to move aside, and its
-*Upgrading again* how to bring forward what was created or changed under the
-older build.
+**Rolling back**: `90adbaf` reads every saved template as a read-only
+built-in, and a renamed one twice. Step 5 of [Going back further, to
+90adbaf](#going-back-further-to-90adbaf) says which files to move aside, and
+its *Upgrading again* how to bring forward what was created or changed under
+the older build.
 
 ### 10. Credits are dollars
 
@@ -2437,17 +2578,18 @@ would send money in the old unit - a price in credits, a balance or grant in
 credits, payment limits in cents, a purchase as a count of credits - with
 *This page is from an older version of the app. Reload it and try again.*
 
-**Rolling back** across this switch is not lossless: dollars held by a run in
-flight are lost for good, model prices go back to 1 credit once this build has
-saved the settings row, and credits the older build sells are not carried
-forward. [Rolling back this release](#-rolling-back-this-release) says what to
-do about each, starting with letting the queue drain.
+**Rolling back** across this switch - to `90adbaf` - is not lossless: dollars
+held by a run in flight are lost for good, model prices go back to 1 credit
+once this build has saved the settings row, and credits the older build sells
+are not carried forward. [Going back further, to
+90adbaf](#going-back-further-to-90adbaf) says what to do about each, starting
+with letting the queue drain.
 
 ### 11. Job analysis runs once
 
-Nothing has to be done on upgrade - choosing an analysis model is optional
-(step 8 of [Upgrading, step by step](#upgrading-step-by-step)); what changes on
-the first start:
+For an install coming from `90adbaf`, nothing has to be done - choosing an
+analysis model is optional (step 8 of [Upgrading, step by
+step](#upgrading-step-by-step)); what changes on the first start:
 
 - A new table, `job_analyses`, holds every posting's analysis from now on.
   The in-memory cache it replaces is gone. Postings analysed before the upgrade
@@ -2465,51 +2607,36 @@ the first start:
   predating job fields. It keeps working; adding `[[jobFieldList]]` (before the
   posting) and the new keys - or pasting the shipped text from
   `backend/static/prompts/analyze-job-description.json` over it - puts the
-  field list back in the cached part of the prompt. One edited after job fields
-  but before industries is flagged as predating the industry instead: the
-  industry list is sent beside it on every call, and adding `[[industryList]]`
-  after `[[jobFieldList]]` and `"industry": ""` to its output puts it in the
-  cached part too.
-- **Industries.** Postings analysed from now on are also filed under an
-  industry. Nothing analysed before is analysed again for one: its industry is
-  worked out from what its analysis holds.
-- **Job sheets** gain six columns. A tab made earlier is widened, given the new
-  header and protected the next time the app checks it - on the next job run
-  against it.
+  field list back in the cached part of the prompt (and see
+  [15](#15-industries-and-the-lakes-new-facts) for the industry list).
+- **Job sheets** get the six analysis columns in the All and Temp For AI tabs
+  this release adds (see [14](#14-own-job-sheets-all-and-temp-for-ai)); a
+  daily tab an older build made is left exactly as it is.
 
-**Rolling back**: an older build does not read `job_analyses` and analyses
-again, as it always did - see [Rolling back this
-release](#-rolling-back-this-release).
+**Rolling back**: `90adbaf` does not read `job_analyses` and analyses again,
+as it always did - see [Going back further, to
+90adbaf](#going-back-further-to-90adbaf).
 
 ### 12. The Job Data Lake
 
-Nothing has to be done on upgrade unless reporters are to be paid (step 10 of
-[Upgrading, step by step](#upgrading-step-by-step)); what changes on the first
-start:
+For an install coming from `90adbaf`, nothing has to be done unless reporters
+are to be paid (step 10 of [Upgrading, step by
+step](#upgrading-step-by-step)); what changes on the first start:
 
 - New tables, `job_lake` and `job_lake_history`, and a full-text index over
   the lake. They start empty: the lake holds what reporters add and
   administrators merge from now on.
 - **Nobody is paid until an administrator sets the global rate** on Admin →
   Job Lake (or a reporter's own rate on Admin → Accounts): the rate starts at
-  `$0.000`. The duplicate window is 60 days unless `.env` or that page says
+  `$0`. The duplicate window is 60 days unless `.env` or that page says
   otherwise.
 - The admin sheet is created the first time the lake has a job to send, not
   at startup.
-- **Job type, clearance and industry** are filled in for every job already in
-  the lake at the first start, from their analyses - no model is asked - and
-  the reports those jobs hold are remembered, so their reporters' rows read
-  *Reported before*. Only a report that added or replaced a job left a lake
-  row to read it from: a row an earlier build marked *Duplicate* or
-  *Unclassified* is not remembered, and the first run over it merges it again
-  (no model call) - unclassified again, unpaid; a duplicate again while the
-  job is inside the window, its *seen* count going up once more; or, once the
-  job is older than the window, a replacement, paid. It is remembered from
-  then on. An admin sheet made earlier gets the three columns' header just
-  before its next line.
 
-**Rolling back**: an older build reads none of the lake's tables and leaves
-them alone - see [Rolling back this release](#-rolling-back-this-release).
+**Rolling back**: `90adbaf` reads none of the lake's tables and leaves them
+alone - see [Going back further, to 90adbaf](#going-back-further-to-90adbaf).
+`5177fc3` reads and writes the lake, but none of what this release added to it
+(see [15](#15-industries-and-the-lakes-new-facts)).
 
 ### 13. Providers of one type, and the tailoring cache
 
@@ -2519,49 +2646,226 @@ model, prompt override, profile and queued resume still names a type, which is
 still a provider. A resume queued before the upgrade comes back in its type's
 lane (`cli`, `codex` and `gemini` are read as the three types).
 
-Going back to an older build loses the added providers - see [Rolling back
-this release](#-rolling-back-this-release).
+Going back to `90adbaf` loses the added providers - see [Going back further,
+to 90adbaf](#going-back-further-to-90adbaf).
+
+### 14. Own job sheets: All and Temp For AI
+
+Nothing has to be done for the app to work; what changes, at the first start
+and at each account's next sign-in, and what the people using it may want to
+do about it:
+
+- **Two tabs are added to every sheet an older build made**: **All** at the
+  front and **Temp For AI** second, each with the twelve-column header (see
+  [The job sheet](#the-job-sheet)), frozen and filtered, every row 21 px high,
+  and G to L protected. The startup backfill does it for every account at once
+  unless `SHEET_BACKFILL=off`, and a sign-in does it for one; once both tabs
+  are there (`users.sheet_layout` is 2) a sign-in asks Google nothing. A new
+  sheet is created with them.
+- **Nothing else in the sheet is touched.** The daily `MM/DD/YYYY` tabs keep
+  their rows, their sixteen columns and their protection, and no page reads
+  or writes them again - not Build Resumes, the export, the Job Filter or
+  Report Jobs, which list them greyed out as *old layout, not read*. **To use
+  their rows, copy them into All**: Company, Job Title, Job Link and Job
+  Description - columns B to E of a daily tab - into C to F of All, below its
+  last row. Date and NO(DATE) may stay empty, and G to L are the program's: a
+  posting analysed before is found in the database by its link or text when
+  its row is first built or reported, so the copy costs no analysis, and its
+  cells are written then. The old Filter Result and Filter Reason, Job Hash,
+  Analyzed At and Lake Status columns stay as they were written: the Job
+  Filter answers on the page now, and the lake remembers reports in the
+  database.
+- **A tab already called All or Temp For AI** that is not laid out as a job
+  tab is left exactly as it is, and **Settings → Job Sheet** says so. Rename
+  or delete it in Google Sheets and reload that page, and the app adds its
+  own.
+- **The saved shared sheets are gone** from Admin → Google Sheets, the builder
+  and the job pages. Their list is kept, unchanged, in the stored settings, for
+  a rollback; copy the rows you still need from one into your own All the same
+  way, from whatever columns that sheet used.
+
+**Rolling back**: the older build carries on with its daily tabs, and treats
+All and Temp For AI as tabs of the person's own - see [Rolling back this
+release](#-rolling-back-this-release).
+
+### 15. Industries, and the lake's new facts
+
+Nothing has to be done, bar the edited prompt below:
+
+- **Postings analysed from now on are also filed under an industry**, from a
+  closed list. Nothing analysed before is analysed again for one: its
+  industry - and every posting's job type and clearance - is worked out from
+  what its analysis already holds, every time it is read.
+- **An analysis prompt you edited** after job fields but before industries is
+  flagged *Predates industries* under Admin → Prompts. It keeps working: the
+  industry list is sent beside it on every call. Adding `[[industryList]]`
+  after `[[jobFieldList]]` (under its own `INDUSTRIES (id: label):` heading)
+  and `"industry": ""` to its output puts the list in the cached part too -
+  but the older build refuses a prompt naming it, so a rollback takes it out
+  first.
+- **Job type, clearance and industry are filled in for every job already in
+  the lake** at the first start, from their analyses - no model is asked - and
+  the reports those jobs hold are remembered (`job_reports`), so their
+  reporters' rows read *Reported before*. Only a report that added or replaced
+  a job left a lake row to read it from: a row an earlier build marked
+  *Duplicate* or *Unclassified* is not remembered, and the first run over it
+  merges it again (no model call) - unclassified again, unpaid; a duplicate
+  again while the job is inside the window, its *seen* count going up once
+  more; or, once the job is older than the window, a replacement, paid. It is
+  remembered from then on.
+- **An admin sheet made earlier** gets the three new columns' header (Job
+  Type, Clearance, Industry, I to K) just before its next line; the lines
+  already there keep them blank.
+
+**Rolling back**: the older build reads and writes the lake as it did, and
+none of this - see [Rolling back this release](#-rolling-back-this-release).
 
 ---
 
 ## ⏪ Rolling back this release
 
-Going back to the release before this one (commit `90adbaf`) works, but not by
-checking it out alone: this release renamed a column the older build reads,
-writes notices and a role it does not understand, and keeps money and saved
-templates where it does not look. Every step below was checked against the
-older build's own code, and the database steps were run against it. Do them in
-this order.
+Going back to the release before this one (commit `5177fc3`) needs no change
+to the database: this release renamed nothing that build reads, and what it
+added - three columns on `users`, three on `job_lake` and `job_lake_history`,
+the `job_reports` table, payout requests in `refund_requests` - the older build
+either never looks at or reads as something it knows. What it cannot do is
+finish what only this release understands, so that is done first. Every step
+below was checked against the older build's own code, and the check in step 3
+was run against a database this build made. Do them in this order. An install
+that came to this release straight from `90adbaf` goes back with [Going back
+further, to 90adbaf](#going-back-further-to-90adbaf) instead.
+
+**Before stopping this build**
+
+1. **Decide every open payout request** in **Admin → Payments → Refund
+   requests** - **Record payout**, or **Decline**. The older build reads a
+   payout request as a request to refund a resume: its queue says *That
+   purchase was not found.* beside it, **Mark refunded** fails with the same
+   sentence, and a payout recorded on its **Admin → Accounts** does not close
+   the request - so one left open there is still open, and payable again, when
+   you upgrade. (It can still decline one, in refund words.)
+2. **Take `[[industryList]]` out of an edited analysis prompt.** The older
+   build refuses an **Analyze Job Description** that names it - *Prompt
+   "analyze-job-description" contains unknown variables: industryList* - and
+   every new posting's analysis fails. Delete the variable and its
+   `INDUSTRIES (id: label):` heading from the text under **Admin → Prompts**
+   (`"industry": ""` in its output may stay), or paste the older release's
+   shipped text over it: `git show
+   5177fc3:backend/static/prompts/analyze-job-description.json`.
+3. **Check that nothing is left.** This lists every payout request still open
+   and every prompt whose text still names `industryList` - the older build
+   reads `[[ industryList ]]`, spaces and all, as the same variable - and
+   prints nothing once steps 1 and 2 are done:
+
+   ```sh
+   sqlite3 "$DB_DIR/free_tailor.db" "SELECT 'Open payout request ' || reference FROM refund_requests WHERE kind = 'payout' AND state IN ('requested', 'approved') UNION ALL SELECT 'Prompt naming [[industryList]]: ' || id FROM prompts WHERE json_extract(data, '$.content') LIKE '%industryList%'"
+   # or, without the sqlite3 shell, from the repository root:
+   node -e "const db = new (require('./backend/node_modules/better-sqlite3'))(process.argv[1], { readonly: true }); console.log(db.prepare(\"SELECT 'Open payout request ' || reference FROM refund_requests WHERE kind = 'payout' AND state IN ('requested', 'approved') UNION ALL SELECT 'Prompt naming [[industryList]]: ' || id FROM prompts WHERE json_extract(data, '$.content') LIKE '%industryList%'\").pluck().all().join('\n'))" "$DB_DIR/free_tailor.db"
+   ```
+
+4. **Stop the backend and back up** `free_tailor.db` in `DB_DIR` and
+   `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), together.
+   A run in the queue carries across: it is in the same unit and shape as the
+   older build's, and a sheet run's rows of All get no analysis written back
+   there.
+5. **Check out `5177fc3`, then `npm run install:all` and build both halves** -
+   the frontend has to be the older one too: this build's pages read the job
+   sheet, its tabs and the refund queue in shapes the older server does not
+   send. `JOB_LAKE_PUSH_MAX_ROWS` in `.env` is ignored by it.
+
+**While the older build runs**, it reads what it always read:
+
+- **Job sheets.** It goes back to one tab a day: each account's next sign-in
+  adds that day's `MM/DD/YYYY` tab in its own sixteen-column layout (this
+  build never moved `users.sheet_tab_date`, and the older build never reads
+  `sheet_layout`), and its export, Job Filter and Report Jobs use that tab
+  unless told otherwise. To it, **All** and **Temp For AI** are tabs of the
+  person's own: it never re-heads, protects, clears or writes them, reads no
+  analysis cell in them, and Report Jobs refuses them (*is not laid out as a
+  job sheet tab*). Build Resumes still lists them, but reads its own columns,
+  B to E - to build from All there, open its **Advanced columns** and set
+  From column C and To column F, then Company C, Job Title D, Job Link E and
+  Job Description F. Its **Admin →
+  Google Sheets** writes any range, G to L of All included; nothing written
+  there is trusted when you upgrade again, since an Analysis cell counts only
+  for the stored analysis it names.
+- **Saved Google Sheets** come back on every page that had them: the list was
+  kept in the settings as it stood at the upgrade.
+- **Refunds** can be asked for again - the buttons are back on purchases,
+  Credit History and an order's resumes - and a reporter has no Ask for
+  Refund. A payout request decided here is listed in its queue as a resume's,
+  *Payout of earnings*, with its outcome.
+- **Money** is shown with three decimals again (`$1.000`); every amount is
+  the same.
+- **Analysis.** It reads `job_analyses` as before. A posting analysed here
+  carries its `industry`, which the older build passes to the tailoring model
+  with the rest of the analysis - nothing else comes of it.
+- **The lake** works on its own columns. It does not read or write job type,
+  clearance, industry or `job_reports`: a job it adds shows them blank, its
+  Lake tab has neither the new filters nor Push to Google Sheet, and it
+  decides *reported before* by the sheet row alone, as it always did - this
+  build kept writing the row's reference (`job_lake.report_ref`) for it. The
+  lines it appends to the admin sheet leave Job Type, Clearance and Industry
+  blank.
+- **`npm run dev`** runs the frontend on webpack's dev server again, which
+  reloads every open tab of the app when another tab connects (Troubleshooting,
+  *Opening a second tab of the app reloads the first one*).
+
+**Upgrading again** is the ordinary upgrade, with the following on top:
+
+- **Lake jobs** the older build added or replaced get their job type,
+  clearance and industry at the first start, from their analyses (`[lake]
+  Filled in ...`), and the reports they hold are recorded. A duplicate or
+  unclassified report it made is not remembered, and the first run over that
+  posting merges it again - as at the first upgrade (see
+  [15](#15-industries-and-the-lakes-new-facts)).
+- **Its daily tabs** are not read: copy the rows wanted into All as at the
+  first upgrade ([step 13](#upgrading-step-by-step)). The sheets keep their
+  All and Temp For AI. One deleted meanwhile is put back the next time its
+  owner opens **Settings → Job Sheet** - the way back for a reporter, who has
+  no export - or by a builder's next export. Until then the other pages link
+  to the tab as it was recorded, and the tab selects start on the job tab
+  that is left (Temp For AI).
+- **Refund requests** asked for meanwhile stay in the queue and are decided as
+  usual; asking is closed again.
+- **The admin sheet's header** is written once more if the older build
+  stored the sheet's record without its header version - which it does
+  whenever it shares the sheet with another administrator or makes a new one.
+- **Saved Google Sheets** changed meanwhile stay in the settings, unused.
+
+### Going back further, to 90adbaf
+
+For an install that upgraded to this release straight from `90adbaf` - the
+release that rebuilt Edit Profile around a live preview. Going back there
+works, but not by checking it out alone: since then a column the older build
+reads was renamed, notices and a role it does not understand were written,
+and money and saved templates were moved where it does not look. Every step
+below was checked against the older build's own code, and the database steps
+were run against it. Do steps 1 to 3 above first - in step 2, take
+`[[jobFieldList]]` out of an edited analysis prompt as well, since `90adbaf`
+refuses it too - and then these, in place of steps 4 and 5.
 
 **Before stopping this build**
 
 1. **Let the queue drain, or cancel what is left** (**Cancel** on **Orders**;
    **Admin → Settings → General** shows each provider's queued and running
-   resumes). A run carried across a rollback is the one thing that loses money
-   for good. The older build reads only the whole-credit columns, which are `0`
-   on everything this release wrote, so it sees a run started here as holding
-   nothing: a resume of it that fails gives nothing back, and the run's settle -
-   or that build's 6-hour startup sweep - closes its reservation, which
-   upgrading again cannot reopen. The older build also has no tab lease, so a
-   Generate Immediately run would build to the end whether or not its tab was
-   still open.
+   resumes). A run carried across this rollback is the one thing that loses
+   money for good. The older build reads only the whole-credit columns, which
+   are `0` on everything written since the switch to dollars, so it sees a run
+   started here as holding nothing: a resume of it that fails gives nothing
+   back, and the run's settle - or that build's 6-hour startup sweep - closes
+   its reservation, which upgrading again cannot reopen. The older build also
+   has no tab lease, so a Generate Immediately run would build to the end
+   whether or not its tab was still open.
 2. **Finish every card refund Stripe has not confirmed.** A refund request
    whose row says *A $X card refund was sent and not confirmed* holds that
    credit off the balance until Stripe answers: press **Mark refunded** again
    until it ends one way or the other. And while the older build runs, refund
-   nothing it lists that was bought under this release: it measures what to
-   take back in whole credits, finds none, and returns the money while the
-   dollars stay on the balance - to reappear when you upgrade again.
+   nothing it lists that was bought since the switch to dollars: it measures
+   what to take back in whole credits, finds none, and returns the money while
+   the dollars stay on the balance - to reappear when you upgrade again.
 3. **Stop the backend and back up** `free_tailor.db` in `DB_DIR` and
    `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), together.
-
-**An analysis prompt edited under this release.** If Admin → Prompts shows an
-edited **Analyze Job Description** whose text names `[[jobFieldList]]` or
-`[[industryList]]`, the older build refuses it - *Prompt
-"analyze-job-description" contains unknown variables* - and every new
-posting's analysis fails. Before stopping this build, take those two variables
-(and the lists' headings around them) out of the text, or paste the older
-release's shipped text over it.
 
 **With the backend stopped, make the database one the older build can read**
 
@@ -2581,11 +2885,11 @@ release's shipped text over it.
      drift apart.
    - **The notices**: the older build has no idea a notice can be addressed to
      one account, and reads every row of `notifications` as an announcement
-     for everybody - each administrator's *New refund request* (which names
-     the requester's email, the amount and their reason) and each person's
-     *approved*, *declined* and *refunded* notice would show in every bell.
-     The requests themselves stay in `refund_requests`, and announcements are
-     untouched.
+     for everybody - each administrator's *New refund request* or *New payout
+     request* (which names the requester's email, the amount and their reason)
+     and each person's *approved*, *declined*, *refunded* and *Payout
+     recorded* notice would show in every bell. The requests themselves stay
+     in `refund_requests`, and announcements are untouched.
    - **The reporters**: the older build reads a role it does not know as
      *user*, which hands a reporter the whole app - the builder, the job
      scrapers, buying credits. Disabled, they cannot sign in until you upgrade
@@ -2601,32 +2905,32 @@ release's shipped text over it.
    renamed rows, which stay: their profiles name the new id now, and would be
    drawn with `default` without the file. The renames are the `renamed` list in
    `SELECT value FROM schema_meta WHERE key = 'templates_moved_to_files'`.
-   Templates created or edited since the upgrade exist only as files.
+   Templates created or edited since that upgrade exist only as files.
 6. **`.env`**: the older build reads `CREDIT_SIGNUP_GRANT` as whole credits
-   (`5` is five credits again, `0.25` is nothing). The settings only this
-   release reads are ignored by it.
-7. **Check out the older release, then `npm run install:all` and build both
-   halves** - the frontend has to be the older one too.
+   (`5` is five credits again, `0.25` is nothing). The settings only later
+   releases read are ignored by it.
+7. **Check out `90adbaf`, then `npm run install:all` and build both halves** -
+   the frontend has to be the older one too.
 
-**While the older build runs**, it reads what it always read, and nothing this
-release added:
+**While the older build runs**, it reads what it always read, and nothing
+added since:
 
 - **Money.** Every balance reads `0` credits - the reset - plus what it credits
   itself; the dollars bought, granted and earned since are in
-  `users.balance_milli`, out of its sight. A checkout opened under this release
+  `users.balance_milli`, out of its sight. A checkout opened since the switch
   carries `0` credits, so if it is paid meanwhile the older build holds it for
   a person instead of crediting a guess. Credits it sells or grants are in the
   old unit, and are **not** carried forward when you upgrade again - the switch
   to dollars ran once and does not run again - so take no payments while rolled
   back, or grant them again in dollars afterwards.
 - **Prices.** It prices a model from `creditsPerResume`. That is still the old
-  figure as long as this release never saved the settings row; after any
-  settings save here - a price, a payment limit, a General setting - every
+  figure as long as the settings row was never saved since the switch; after
+  any settings save - a price, a payment limit, a General setting - every
   model costs its default of 1 credit, and a credit its default price. The old
   figures are in `app_settings["migration-log.credits-to-dollars"]` (`models`,
   `pricing`), to put back by hand.
 - **Its own first settings save** rewrites the row without everything only
-  this release knows: every model's dollar price, the providers added under
+  later releases know: every model's dollar price, the providers added under
   **Admin → Models → Providers**, and the analysis model. Everything runs on the
   built-in seats meanwhile, whatever was saved.
 - **Orders.** A Generate Immediately run is an `orders` row it reads as an
@@ -2634,15 +2938,17 @@ release added:
   files are gone if it ended more than ten minutes before this build stopped;
   otherwise the older build's own sweep deletes them at its next pass, since
   such a row is stamped to expire the moment it is placed.
+- **Job sheets.** Like `5177fc3` (above), it adds a daily tab at each sign-in
+  and uses it, and All and Temp For AI are tabs it does not know.
 - **Job analysis.** It analyses postings as it always did, again, without
   reading `job_analyses`; its job filter reads its own prompt file, which the
-  older checkout brings back. The six analysis columns of the job sheets stay
+  older checkout brings back. The analysis columns of the job sheets stay
   protected, so nobody but the server can clear them, and it writes none of
   them.
 - **The lake** - `job_lake`, its history and index, `job_reports`, the
-  settings and the admin sheet - is not read or touched. The ledger rows of rewards and payouts show
-  in its credit history with a change of `0` and their raw reasons
-  (`job-report-reward`, `reporter-payout`).
+  settings and the admin sheet - is not read or touched. The ledger rows of
+  rewards and payouts show in its credit history with a change of `0` and their
+  raw reasons (`job-report-reward`, `reporter-payout`).
 - `tailor_cache`, `refund_requests`, `order_items.provider_id`,
   `users.report_rate_milli`, the contact list and the `orders.kind` column are
   left as they are, unread.
@@ -2652,7 +2958,7 @@ release added:
 - `users.plan` is renamed forward by itself on the first start.
 - **Enable the reporters** on **Admin → Accounts** (**Enable** on each row).
 - **If the older build saved its settings**: price every model again - each
-  reads `$0.000` and is listed in red - add the providers again, and choose the
+  reads `$0` and is listed in red - add the providers again, and choose the
   analysis model again.
 - **Credits** the older build sold or granted are history in the old unit;
   grant them in dollars on **Admin → Accounts** if they are owed.
@@ -2669,8 +2975,8 @@ release added:
   left as it is, unless the row was changed after the file was, in which case
   it replaces the file; a row created under the older build is written out.
 - Postings the older build analysed are not in the store: each is analysed
-  once more the first time it is needed, then never again. A job sheet tab it
-  made is widened and protected at its next check.
+  once more the first time it is needed, then never again. The daily tabs it
+  made are not read - copy their rows into All, as at the first upgrade.
 
 ---
 
@@ -3064,7 +3370,7 @@ unique across the install, which settles all of it in one segment.
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants - and one flagged *predates job fields* was written before postings had a job field: it still works, with the field list sent beside it on every call, but outside the cached part of the prompt. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
-| **Job Lake** | The [Job Data Lake](#the-job-data-lake): query it (company, job field, salary, who reported it, when, free text), open a job and its history, delete one with or without taking its reward back; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
+| **Job Lake** | The [Job Data Lake](#the-job-data-lake): search it (when it was updated, who reported it, job field, job type, clearance, industry, company, salary, free text), open a job and its history, delete one with or without taking its reward back; **Push to Google Sheet** - the jobs of a search into the *Temp For AI* tab of your own job sheet; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
 | **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only - the saved shared sheets of older builds are gone - and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
@@ -3238,13 +3544,15 @@ file. Export them in the shell, for the install and the server alike:
 | **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 12` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a job tab somebody headed by hand narrower than twelve columns is widened to twelve the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
 | The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
 | Every new posting comes back **Unclassified**, or Admin → Prompts flags the analysis prompt as predating job fields (or industries) | The Analyze Job Description prompt was edited before postings had a job field, so its text never asks for one. The field list is sent beside it on every call anyway, so postings should still be classified - when they are not, the edited text is fighting it (an instruction to return exactly some other JSON shape, say). Paste the shipped text (`backend/static/prompts/analyze-job-description.json` - there is no reset button) over it, or add `[[jobFieldList]]` before the posting and the `jobField`, `salary` and `filter` keys to its output. Only postings analysed from then on are affected: a stored analysis is never redone. A prompt flagged as predating **industries** names the field list but not the industry list: the list and the instruction are sent beside it on every call, so postings still get an industry; add `[[industryList]]` (after `[[jobFieldList]]`) and `"industry": ""` to its output to move them into the cached part, which clears the flag. |
-| The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A row moved or sorted since loading (`no longer matches`) is neither read nor written. |
+| The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A Job Description that ends *...[cut at 50,000 characters]* (Push to Google Sheet writes a longer one so) is read as its posting only exactly as it was cut: edit it and it is another posting, analysed once (the same line, saying *its Job Description, cut at 50,000 characters, is not that analysis's posting as it was cut (edited since)*). A row moved or sorted since loading (`no longer matches`) is neither read nor written. |
+| A row's Analysis cell is filled, yet its posting was found in the database or analysed again and the cell rewritten, and the log says `[analysis] Sheet row N's Analysis cell names an analysis this store does not have (<id>); it is ignored, the posting is found in the store or analysed once, and the cell is replaced.` | The cell names a stored analysis this database does not hold - copied from another install's sheet, left from a database restored from an older backup, or never written by the program. A cell is only ever a pointer into the database, never an analysis in itself, so the row is treated as if it were empty: its posting is found in the database (by link or text) or analysed once, and its six cells are written again. The Build Resumes table reads only the cell's shape and cannot tell; it says *Skips analysis* for such a row. |
 | The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
 | The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab (a tab of the person's own, or an older build's daily tab); its columns are left as they are` | A build ran on a tab that is not a job tab: its first row does not start with *Date, NO(DATE), Company, Job Title, Job Link, Job Description*, and it is not empty. Nothing in it is re-headered, protected, read as an analysis or written, and its postings are found in the database or analysed once. The builder offers only job tabs, so this is a page from before the upgrade or a request made by hand. Build from **All** or **Temp For AI**. |
 | After upgrading, the job pages no longer show the daily `MM/DD/YYYY` tabs' rows - Build Resumes, Find Jobs, the Job Filter and Report Jobs list those tabs greyed out as *(old layout, not read)* | Expected (owner decision S2): every account's sheet now has two tabs of the app's, **All** and **Temp For AI**, in a new twelve-column layout (*Date, NO(DATE), Company, Job Title, Job Link, Job Description*, then the six analysis columns G to L), and the daily tabs an older build made are left exactly as they were - never read, written, re-headed, protected or cleared, since their columns are in other places. Their rows are not lost: copy the ones you still want into **All** by hand (Company, Job Title, Job Link and Job Description go into C to F). The two new tabs are added in front of the old ones at the account's next sign-in, or by the startup backfill. |
 | **Settings → Job Sheet** says *Your job sheet already has a tab named "All" that is not laid out as a job tab, so it was left exactly as it is.* (or *"Temp For AI"*, or both) | The sheet already had a tab of that name - one of the person's own, or a tab with data under an empty first row - so the app did not take it over and has no **All** (or **Temp For AI**) of its own: the job pages list that tab greyed out as *All (not a job tab)* and start on the first job tab instead, the note under their tab select says to rename or delete it before copying old jobs into All (rather than to copy them into it, where nothing would read them), and the log says `[sheets] <spreadsheet> already has a tab named "All" that is not a job tab`. Rename or delete that tab in Google Sheets, then reload **Settings → Job Sheet**: that page - and only that page, so the clash costs no Google reads on every other page load - looks again and the app adds its own tab, first (**All**) or second (**Temp For AI**). Until then the other pages go on saying what was recorded. An EMPTY tab of that name is simply taken over. |
-| The **Tab** select on Build Resumes says *No job tab to read* (Find Jobs: *No job tab to write to*, the Job Filter: *No job tab to filter*, Report Jobs: *No job tab to report from*), with every tab of the sheet listed greyed out | No tab of the sheet is a job tab: the app's **All** and **Temp For AI** are not there - their names are taken by tabs of the person's own (Settings → Job Sheet says so, see the row above), or the sheet has not been laid out yet - and every other tab is an older build's daily tab or one of the person's own. Open **Settings → Job Sheet**: it lays the sheet out (or says which name to free), then reload the page. An empty tab added in Google Sheets also works: it is offered, and laid out the first time it is used. |
-| **Admin → Google Sheets** refuses a write: *Columns G to L of a job tab are written by the app only (Job Field, Salary, Job Type, Clearance, Industry, Analysis). Choose a range within columns A to F.* - or *Columns K to P of "<tab>" are the app's protected analysis columns, written by the app only. Choose a range outside them.* (409 `protected-columns`) | The range reaches into the protected analysis columns of a job tab, or into any columns the app's own protection covers on that tab - an older build's daily tab keeps its **K to P**, and a tab whose first row was changed (so it no longer reads as a job tab) keeps its **G to L**. The server's Google identity is the only editor the protection lets through, so a write from the range importer is the one write a person could make into those cells - and a forged **Analysis** cell would be trusted by the next build as the program's own. It is decided on the protection, not on the first row, which anybody may change and change back. Write A to F (or columns past the protected ones, or a tab the app never protected); the analysis columns fill themselves from each row's analysis. The importer also reads and writes only the administrator's own sheet now: any other spreadsheet id - another account's, or a sheet saved under an older build - is *That spreadsheet was not found.* |
+| The **Tab** select on Build Resumes says *No job tab to read* (Find Jobs: *No job tab to write to*, the Job Filter: *No job tab to filter*, Report Jobs: *No job tab to report from*), with every tab of the sheet listed greyed out | No tab of the sheet is a job tab: the app's **All** and **Temp For AI** are not there - their names are taken by tabs of the person's own (Settings → Job Sheet says so, see the row above), they were deleted or renamed in Google Sheets, or the sheet has not been laid out yet - and every other tab is an older build's daily tab or one of the person's own. Open **Settings → Job Sheet**: it lays the sheet out and puts back a deleted tab (or says which name to free), then reload the page. An empty tab added in Google Sheets also works: it is offered, and laid out the first time it is used. |
+| **Your job sheet** (the account menu, Report Jobs, Find Jobs, the Job Filter) opens the spreadsheet but not on **All**, and the tab selects start on **Temp For AI** with no All listed - a page left open from before says *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.* when it reads All | **All** was deleted or renamed in Google Sheets - by hand, or while an older build ran (see [Rolling back this release](#-rolling-back-this-release)). Every page but one links to the tabs as they were recorded, so they point at the tab that is gone; only **Settings → Job Sheet** looks at the tabs again each time it loads (an export and Push to Google Sheet do too). Open **Settings → Job Sheet**: it puts All back, first, and every link follows from then on. That is the way back for a reporter, who has no export. The same goes for **Temp For AI**. A renamed All keeps its rows and stays a job tab under its new name; the new All starts empty. |
+| **Admin → Google Sheets** refuses a write: *Columns G to L of a job tab are written by the app only (Job Field, Salary, Job Type, Clearance, Industry, Analysis). Choose a range within columns A to F.* - or *Columns K to P of "<tab>" are the app's protected analysis columns, written by the app only. Choose a range outside them.* (409 `protected-columns`) | The range reaches into the protected analysis columns of a job tab, or into any columns the app's own protection covers on that tab - an older build's daily tab keeps its **K to P**, and a tab whose first row was changed (so it no longer reads as a job tab) keeps its **G to L**. The server's Google identity is the only editor the protection lets through, so a write from the range importer is the one write a person could make into those cells. Those six cells are the program's: an **Analysis** cell written there could at most name a stored analysis, which a build uses only when it is that row's posting, and Job Field to Industry would just show something false. It is decided on the protection, not on the first row, which anybody may change and change back. Write A to F (or columns past the protected ones, or a tab the app never protected); the analysis columns fill themselves from each row's analysis. The importer also reads and writes only the administrator's own sheet now: any other spreadsheet id - another account's, or a sheet saved under an older build - is *That spreadsheet was not found.* |
 | An administrator's saved Google Sheets ("Bid History" or the like) are gone from **Admin → Google Sheets**, the builder and the job pages | Removed (owner decision S1): every sheet route uses the signed-in account's own sheet only, and naming any other spreadsheet id is *That spreadsheet was not found.* (404). The saved list is still in the settings row, untouched by every save, so rolling back to an older build brings it back. To work with jobs from such a sheet, copy them into **All**. (The Bid Assistant's own saved sources are a separate list and unchanged.) |
 | **Find Jobs** says *Your job sheet kept changing while the jobs were being written, so the rest were not exported. Try again.* (409 `sheet-changed`) | Before each batch of rows an export reads the rows it is about to fill again, and moves below anything that appeared there - somebody typing into the tab, or another export into the same tab from another server process. Five moves in a row and it stops rather than chase the sheet; the rows already written stay. Run the export again when nobody else is writing to the tab. |
 | A reporter's run says *the sheet was not updated*, or a duplicate's row is not red, or a row's analysis columns stay empty after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the sheet could not be written: the log has `[lake] Report run rep_...: the duplicates of "<tab>" could not be painted` or `[sheets] Could not write the analysis of N row(s) back` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since); it is not painted`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds the posting reported before - no model call, no second reward - fills its analysis columns and paints it if it was a duplicate. The run no longer writes a *Lake Status* or *Job Hash* into the row: there are no such columns now - each row's outcome is on the page. |
@@ -3258,6 +3566,12 @@ file. Export them in the shell, for the install and the server alike:
 | A reporter added jobs but earned `$0` | The global rate is still `$0` (Admin → Job Lake shows *not set*) and the reporter has no rate of their own, or the **daily cap** was reached (the job is added, the reward stops at the cap until the next UTC day), or the account is not a Reporter - an administrator reporting is never paid. Each lake row records the rate in effect when it was added. |
 | **Admin → Job Lake** says jobs are waiting for the admin sheet, or the log says `[lake] Could not append to the admin sheet` | The jobs are in the database - the sheet is a copy appended after them, and a failed append never undoes one. Under *Why the last attempt failed* the page shows the sentence and, on the line under it, Google's own reason: *Google Sheets is not configured on this server* means the server has no Google credential (see [The job sheet](#the-job-sheet)); *Google Sheets is busy right now*, over a Google 429, means the shared Sheets quota ran out even after backing off - **Retry now** later; *That spreadsheet or tab could not be found*, over a Google 404, means the spreadsheet was deleted in Google - use **Create a new admin sheet**, which sends it the whole lake (pressed while a sync is sending, that sync stops and starts again on the new sheet). Each sync also runs after the next report run or merge, and at startup. An administrator who cannot open the sheet was disabled when it was shared, or was appointed after the last sync - **Retry now** shares it with them. |
 | The **Merge** tab does not offer a job a build analysed | It offers only analyses with a job field from the list and a company on record, not merged before. An *Unclassified* posting is never offered; one analysed with no company named - the builder's analysis names none, so a posting that was only previewed has none - is offered once a build, a job filter run or a report names its company; and a posting a reporter already reported is merged already. |
+| **Push to Google Sheet** answers *A push to your Temp For AI tab is already going. Wait for it to finish first.* | One push per administrator runs at a time (409 `push-in-progress`), kept in the server's memory; another administrator's push is not held up. Wait for the first to finish - the largest push writes its rows 200 at a time - then push again. A restart forgets a push in progress: the tab holds what it had written so far, and the next push replaces it whole. |
+| **Push to Google Sheet** answers *"Temp For AI" in your job sheet is not laid out as a job tab any more (its first row is not the job header), so nothing was pushed into it. Rename or delete that tab in Google Sheets, then push again: a new Temp For AI tab is added.* | Row 1 of the tab was changed - a push replaces only a job tab, so one whose header was edited, or that was filled with something else, is left exactly as it is (409 `not-job-tab`). Rename or delete it in Google Sheets and push again: the push puts a fresh Temp For AI back first. |
+| **Push to Google Sheet** answers *Your job sheet already has a tab named "Temp For AI" that is not laid out as a job tab, so it was left exactly as it is. Rename or delete it in Google Sheets, then push again.* | The sheet had a tab of the person's own by that name before the app could add its own (409 `tab-name-clash`; **Settings → Job Sheet** says the same), and a push never writes into a tab the app did not lay out. Rename or delete that tab and push again: the app adds its own Temp For AI first. |
+| **Push to Google Sheet** is greyed out, and pointing at it says *Wait for the search to finish first.* or *The lake could not be read, so there is no search to push.* | A push sends the filters of the search on the page, and its confirm names how many jobs go from that search's own answer, so it waits for that answer. Press **Search** - or **Try again** under the error - and wait for the table. *A push is going.* means the last press is still running. |
+| A push says *Pushed the newest N of the M jobs these filters match ... the older K were left out* (or *the oldest was left out*) | A push writes at most `JOB_LAKE_PUSH_MAX_ROWS` jobs (1000 by default, 5000 at most), newest first, and its confirm says so before it starts. Narrow the filters - **Updated from** and **Updated to**, for one - and push again, or raise the setting in `.env` and restart. |
+| Rows or notes typed into **Temp For AI** are gone after a push | By design: a push replaces the tab - every row under its header is emptied in columns A to L, a duplicate's red paint included, before the jobs are written, and the confirm says so. Columns past L and every other tab are left alone. Keep rows of your own in All, or in a tab of your own. |
 | A build fails with *That job analysis was not found. Analyse the job description again.* | The page sent the id of an analysis this server has not stored - a page left open across a database restore, or a request made by hand. Analyse the description again (the builder does it when you press Generate), which finds the posting if it is stored or analyses it once. |
 | Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates, job scrapers or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
 | A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before jobs can be reported.* (or that their job sheet could not be reached, with a `Ref:`); **Settings → Job Sheet** ends the same sentence *...before this page can show you one.* | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
@@ -3285,7 +3599,10 @@ file. Export them in the shell, for the install and the server alike:
 | **Mark refunded** on a crypto purchase's refund request says *Crypto cannot be refunded automatically. Send $X back from your Cryptomus merchant dashboard first, then confirm here that you have.* | Expected: nothing can pull crypto back. Send that amount to the buyer from the Cryptomus dashboard, then confirm - the dialog sends `paidByHand: true` with the amount it named, or what you typed in *Amount actually sent* (whole cents, no more than was asked); the server refuses a confirmation that names no amount (*Say how much you sent back*). Only then is the request set *Refunded*, recorded at what you sent, and that much credit reversed. If the buyer spent some between the request and the confirmation, the reversal takes what is left and the answer reports the rest as a shortfall. |
 | A person's refund request is refused with *What this resume was charged is not on record*, or the resumes of a run show *This run's resumes are no longer listed* | The resume is from an order placed before refund requests existed (its item carries no charge) and its batch is gone, or it is from a builder run queued before Generate Immediately runs were filed with a record of their own, and the queue has since forgotten its run (an hour after it finished at most, or sooner once twenty newer runs on the install had finished). Nothing records what that one resume alone cost, so it cannot be named. Grant the amount by hand under **Admin → Accounts** - the run's reserve row in the account's Credit History says what each resume was charged. |
 | **Mark refunded** on a resume's request says *That account no longer exists, so nothing can be credited back* | The account was deleted after asking. There is no balance left to credit: decline the request with the reason instead. |
-| After rolling back to an older build, every account's bell shows other people's notices - *New refund request FT-RF-…* with somebody's email, amount and reason, *Refund request declined*, *Refund made* | This build writes notices for ONE account (`notifications.recipient_id` set), and an older build has no recipient filter: it reads every row as an announcement for everybody. Stop the backend and run `sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM notifications WHERE recipient_id IS NOT NULL;"` - announcements are untouched, and the requests themselves stay in `refund_requests`, which the older build ignores. Do it before starting an older build - step 4 of [Rolling back this release](#-rolling-back-this-release). |
+| After rolling back to `5177fc3`, a refund request labelled *Payout of earnings* says *That purchase was not found.*, and **Mark refunded** on it fails the same way | It is a reporter's payout request, which that build reads as a resume's refund and can neither pay nor close. Decline it there (the reason reaches the reporter) and record what you pay on **Admin → Accounts** - or upgrade again and record it from the queue. Next time, decide payout requests before rolling back - step 1 of [Rolling back this release](#-rolling-back-this-release). |
+| After rolling back to `5177fc3`, every new posting's analysis fails, and the log says *Prompt "analyze-job-description" contains unknown variables: industryList* | The edited Analyze Job Description names `[[industryList]]`, which that build does not know. Take the variable and its `INDUSTRIES (id: label):` heading out under **Admin → Prompts**, or paste that build's shipped text over it - step 2 of [Rolling back this release](#-rolling-back-this-release). |
+| After rolling back to `5177fc3`, the job pages work on a new `MM/DD/YYYY` tab, and Report Jobs refuses All (*is not laid out as a job sheet tab*) | That build lays a sheet out one tab a day, and reads All and Temp For AI as tabs of the person's own. Use the day's tab while it runs (to build from All there, set From column C and To column F under **Advanced columns**, and the columns to Company C, Job Title D, Job Link E, Job Description F); after upgrading again, copy that tab's rows into All - see [Rolling back this release](#-rolling-back-this-release). |
+| After rolling back to `90adbaf`, every account's bell shows other people's notices - *New refund request FT-RF-…* with somebody's email, amount and reason, *Refund request declined*, *Refund made* | This build writes notices for ONE account (`notifications.recipient_id` set), and `90adbaf` has no recipient filter: it reads every row as an announcement for everybody (`5177fc3` filters, as this build does). Stop the backend and run `sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM notifications WHERE recipient_id IS NOT NULL;"` - announcements are untouched, and the requests themselves stay in `refund_requests`, which that build ignores. Do it before starting it - step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf). |
 | The contact dialog lists fewer channels than were saved, or none, and the backend log says `[contact] A stored contact channel no longer passes its check and is not shown.` (or *not valid JSON*) | The `contact` row in `app_settings` was edited outside the app, or holds a value a rule written since now refuses. Every read re-checks every channel and leaves out the ones that fail - a link on the sign-in page is never shown unchecked. Open **Admin → Settings → General**, fix or re-enter the channel, and save. |
 | A refund says *Could not confirm the refund with Stripe* | The call went out and no answer came back, so this server does not know whether the refund exists - and it deliberately reversed no credits rather than guessing. Press **Refund** again: the request carries `Idempotency-Key: refund:<payment id>`, so Stripe cannot create a second refund for that payment, and the second attempt finishes the reversal. If you would rather look first, the payment in the Stripe dashboard shows whether a refund is there. |
 | A payment closed with *This server could not start that payment* | Not the provider - this end. The settings row would not load, or the database refused a write, before anything was sent anywhere. Nothing was charged. Read the backend log for the reference: the real error is there, and it is usually `DB_DIR` becoming unwritable or a settings row saved as something that will not parse. |
@@ -3303,10 +3620,10 @@ file. Export them in the shell, for the install and the server alike:
 | On **Admin → Templates**, importing, extracting, building or editing a template answers *Template could not be saved. Please try again, or contact your administrator.* with a `Ref:` (or deleting one, *Template could not be deleted.*) | Saved templates are files in `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), and the server could not write there: the directory is read-only to the user the backend runs as - a checkout owned by somebody else, a read-only container layer - or the disk is full. The startup line under `Database:` says so as `Templates: <dir> is NOT writable (<reason>)`; the backend log line carrying the same `Ref` names the file and the error, and an administrator sees it under the message. Give that user write access to the directory (or point `TAILOR_STATIC_DIR` at a writable copy of `backend/static`) and try again. A failed save leaves the template as it was and no temporary file behind. Renaming, disabling or reclassifying a **built-in** still works meanwhile, because those go to the database. |
 | After upgrading, a template that was there before is missing from **Admin → Templates**, and the backend log says `[templates] Template "<id>" was left in the database and is not offered: ...` or `... could not be written to a file and is not offered until it is` | This release keeps saved templates as files, and the first start moved every template out of the database (see [Saved templates are files](#9-saved-templates-are-files)). *Could not be written* means the templates directory was not writable at that start, or a file in the way could not be read: fix it as in the row above and restart - that template, and only it, is tried again. *Left in the database* is for good, and happens only when a file of exactly that id was already there - a built-in, which hid the row before the upgrade too, or a different saved template, which a profile naming that id is drawn with - or when the row's data cannot be read. The row is still in the database: `sqlite3 "$DB_DIR/free_tailor.db" "SELECT data FROM templates WHERE id = '<id>'" > template.json`, then import `template.json` under **Admin → Templates**, which gives it a new id if its own is taken, and pick it again on the profiles that should use it. A log line *Template "Navy_Rule" is now u-1a2b3c4d.json* (or *... is now my-template.json*) is not a problem: ids are lower case with hyphens now, so a row whose id was not one got a new id - its folded one when that was free, else a fresh `u-` one, never a built-in's or another template's - and the profiles naming it were changed to name it. |
 | A template file copied into `backend/static/templates` by hand is not offered any more, a profile that used it is drawn with `default`, and the startup line under `Database:` ends *Not offered, because a template file is named <id>.json with an id of lower-case letters, digits and hyphens: Company_Brand.json* | A template's id is its file name, and ids are lower-case letters, digits and hyphens now; an older release offered a file under any name. Rename the file to its id - `Company_Brand.json` to `company-brand.json` - and it is offered at the next request, with no restart; a profile naming `Company_Brand` finds it again, because a lookup folds case and `_`. What an administrator had changed about it as a built-in on **Admin → Templates** - its name, description, disabled flag and layouts - was recorded under the old id, so set those again there. |
-| After rolling back to an older build, the saved templates show as built-ins that cannot be edited or deleted, or one is listed twice; or, after upgrading again, a template created or changed under the older build is missing | The older build reads every file in `static/templates` as a built-in, and this build moves the database's templates to files only once. [Rolling back this release](#-rolling-back-this-release) says which files to move aside before rolling back (step 5), and how to have the move run again - put the files back and delete the `templates_moved_to_files` record from `schema_meta` - before upgrading again. |
-| Startup warns *users has both "plan" and "subscription"; reading "subscription" and leaving "plan" alone* | A `plan` column was ADDED back by hand - usually to roll back to an older build - instead of renaming `subscription` back (step 4 of [Rolling back this release](#-rolling-back-this-release)). This build reads `subscription`; anything an older build wrote to `plan` since is not read. To keep those values, stop the backend and run `UPDATE users SET subscription = plan; ALTER TABLE users DROP COLUMN plan;` against `free_tailor.db` in your `DB_DIR`; to keep this build's, just drop `plan`. |
-| After rolling back to an older build, every sign-in fails and its log shows `no such column: plan` | The database was upgraded: this release renamed `users.plan` to `users.subscription`, and the older build only knows the old name. Rename it back before starting the older build - the command is step 4 of [Rolling back this release](#-rolling-back-this-release), with the two other statements an older build needs. |
-| After rolling back to an older build and upgrading again, an account is short the dollars a run had taken, and that run's failed resumes gave nothing back; or, while rolled back, every model costs 1 credit | Credits became dollars, and an older build reads only the whole-credit columns. A run started under this build holds `0` credits as far as the older build can see, so a resume of it that fails there refunds nothing, and its settle - or that build's 6-hour startup sweep - closes the reservation; this build never refunds against a closed one. And once this build has saved the settings row at all, no model carries its old `creditsPerResume`, so the older build prices every one at 1 credit. Grant back what the failed resumes cost under Admin → Accounts - the run's reserve row in the account's Credit History says what each resume was charged - and put the old prices back by hand from `app_settings["migration-log.credits-to-dollars"]` (`models`). Next time, let the queue drain before rolling back - step 1 of [Rolling back this release](#-rolling-back-this-release). |
+| After rolling back to `90adbaf`, the saved templates show as built-ins that cannot be edited or deleted, or one is listed twice; or, after upgrading again, a template created or changed under the older build is missing | That build reads every file in `static/templates` as a built-in, and this build moves the database's templates to files only once. [Going back further, to 90adbaf](#going-back-further-to-90adbaf) says which files to move aside before rolling back (step 5), and how to have the move run again - put the files back and delete the `templates_moved_to_files` record from `schema_meta` - before upgrading again. |
+| Startup warns *users has both "plan" and "subscription"; reading "subscription" and leaving "plan" alone* | A `plan` column was ADDED back by hand - usually to roll back to an older build - instead of renaming `subscription` back (step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf)). This build reads `subscription`; anything an older build wrote to `plan` since is not read. To keep those values, stop the backend and run `UPDATE users SET subscription = plan; ALTER TABLE users DROP COLUMN plan;` against `free_tailor.db` in your `DB_DIR`; to keep this build's, just drop `plan`. |
+| After rolling back to `90adbaf`, every sign-in fails and its log shows `no such column: plan` | The database was upgraded: `5177fc3` renamed `users.plan` to `users.subscription`, and `90adbaf` only knows the old name. Rename it back before starting it - the command is step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf), with the two other statements that build needs. (`5177fc3` reads `subscription` and needs none of them.) |
+| After rolling back to `90adbaf` and upgrading again, an account is short the dollars a run had taken, and that run's failed resumes gave nothing back; or, while rolled back, every model costs 1 credit | Credits became dollars, and `90adbaf` reads only the whole-credit columns. A run started under this build holds `0` credits as far as the older build can see, so a resume of it that fails there refunds nothing, and its settle - or that build's 6-hour startup sweep - closes the reservation; this build never refunds against a closed one. And once this build has saved the settings row at all, no model carries its old `creditsPerResume`, so the older build prices every one at 1 credit. Grant back what the failed resumes cost under Admin → Accounts - the run's reserve row in the account's Credit History says what each resume was charged - and put the old prices back by hand from `app_settings["migration-log.credits-to-dollars"]` (`models`). Next time, let the queue drain before rolling back - step 1 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf). |
 | On **Admin → Accounts** after an upgrade, changing a row's subscription, deleting an account, or any change the server refuses (demoting the last administrator, say) turns the page into *Application error: a client-side exception has occurred*; or **Add an account** answers *This page is from an older version of the app. Reload it and try again.* | The page was loaded before the upgrade that renamed plans to subscriptions. It sends the tier as `plan`, which this build refuses rather than ignores, and it reloads the account list expecting the old `plans` field, which is now `subscriptions` - so anything in the table that reloads the list breaks the page, and only the invite form, which does not reload after a refusal, gets as far as the sentence. Reload the page. A subscription change or invite was refused, not half-made: an invite meant for Premium would otherwise have created a Default account. A delete names no tier, so it did go through; the reloaded page shows it. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
@@ -3449,10 +3766,14 @@ are in `jobAnalysisStore.test.js`. The two pages' own decisions - the rows a run
 settings a save sends, the lake's filters, the owner's line drawn from a real
 run's summary, the rows it paints red, what a row reported before says, each
 job's type, clearance and industry - are run against the server's code by
-`frontendJobLake.test.js` (and Admin → Prompts' notes on a prompt that
-predates job fields or industries by `frontendAnalysis.test.js`), and both
-pages in a browser by
-`test/e2e/report-run.js`, against a Google Sheet and a seat stubbed by preloads.
+`frontendJobLake.test.js` - with the Lake tab's filter order and Push to
+Google Sheet, whose body is the search's own filters (the same jobs, refused in
+the same words) and whose confirm and result are read from a real push's
+answer - (and Admin → Prompts' notes on a prompt that predates job fields or
+industries by `frontendAnalysis.test.js`), and both pages in a browser by
+`test/e2e/report-run.js`, and the push - the tab it replaces, a build from it
+that analyses nothing - by `test/e2e/lake-push.js`, against a Google Sheet and
+a seat stubbed by preloads.
 
 Providers of one type are pinned in `providerQueues.test.js` (two Claude
 providers with limits 1 and 2 running three at once, each at its own limit; a
@@ -3555,9 +3876,15 @@ The documentation is checked too. `backend/test/envExample.test.js` reads
 from either, ships uncommented, or is shown with a default, a range or a
 read-timing tag the code no longer matches. `backend/test/rollbackDocs.test.js`
 takes the statements out of [Rolling back this
-release](#-rolling-back-this-release), runs them against a database this build
-made, and fails unless what is left is one the previous release can read - and
-unless the record and log it names are the ones this build writes.
+release](#-rolling-back-this-release) and runs them against a database this
+build made: the check before going back to `5177fc3` must list an open payout
+request and an edited prompt naming `[[industryList]]` (with spaces inside the
+brackets too) and nothing once they are dealt with, what it says about
+building from All under that build must be what its sheet panel takes, its
+own reads and lake writes must still run against this build's schema - and
+the next start must fill in the facts of the rows it wrote - and the
+statements for going back to `90adbaf` must leave a database that build can
+read, naming the record and log this build writes.
 
 ---
 
