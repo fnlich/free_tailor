@@ -10,7 +10,8 @@
  * every open tab whenever a new one connects, and a tab whose own hash is
  * older - anything compiled since it opened, such as the route the second
  * tab asked for - takes that for a restarted server and calls
- * `window.location.reload()`. A production `next start` has no hot reloader.
+ * `window.location.reload()`; 16.3.8's reloads tab A just the same (measured,
+ * not read). A production `next start` has no hot reloader.
  *
  * This is the reproduction, run against each mode the frontend can be served
  * in (README, "Running it"), so the root `dev` script can point at one that

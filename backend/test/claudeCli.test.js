@@ -58,7 +58,7 @@ function makeAdapter(runner, config = {}, extra = {}) {
       loggedIn: true,
       binary: '/nonexistent/claude',
       version: 'test',
-      authMethod: 'oauth_token',
+      authMethod: 'claude.ai',
       checkedAt: new Date().toISOString(),
       detail: 'stub',
     }),
@@ -66,8 +66,12 @@ function makeAdapter(runner, config = {}, extra = {}) {
   });
 }
 
-/** `claude auth status` as the health check reads it: signed in, and with what. */
-function signedInHealth(authMethod = 'oauth_token') {
+/**
+ * `claude auth status` as the health check reads it: signed in, and with what.
+ * `claude.ai` is what `claude auth login` saves, in every CLI that has the
+ * command (2.1.40 on).
+ */
+function signedInHealth(authMethod = 'claude.ai') {
   return {
     ok: true,
     loggedIn: true,
@@ -646,24 +650,28 @@ test('a call turned away by a sign-in hold is auth, not a busy seat, before and 
 test('a fresh health check that finds the subscription signed in lifts a sign-in hold', async () => {
   // The hold is cleared by a success, and turns away every call before one can
   // succeed - so an operator who signed the CLI back in still had the seat
-  // refused for half an hour. The seat check is what lifts it now.
-  let clock = Date.parse('2026-10-04T12:00:00Z');
-  let signedIn = false;
-  const runner = makeFakeCliRunner(() => ({ lines: readCliFixture(signedIn ? 'success-text' : 'auth-failure') }));
-  const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: async () => signedInHealth() });
+  // refused for half an hour. The seat check is what lifts it now. Both of the
+  // CLI's words for the subscription do: `claude.ai`, which `claude auth
+  // login` saves and which this once ignored, and `oauth_token`.
+  for (const authMethod of ['claude.ai', 'oauth_token']) {
+    let clock = Date.parse('2026-10-04T12:00:00Z');
+    let signedIn = false;
+    const runner = makeFakeCliRunner(() => ({ lines: readCliFixture(signedIn ? 'success-text' : 'auth-failure') }));
+    const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: async () => signedInHealth(authMethod) });
 
-  await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
-  assert.equal(adapter.outages().length, 1);
+    await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
+    assert.equal(adapter.outages().length, 1);
 
-  signedIn = true; // `claude auth login`, as the service user
-  clock += 2 * 60_000;
-  const health = await adapter.health();
-  assert.equal(health.ok, true);
-  assert.deepEqual(adapter.outages(), []);
+    signedIn = true; // `claude auth login`, as the service user
+    clock += 2 * 60_000;
+    const health = await adapter.health();
+    assert.equal(health.ok, true);
+    assert.deepEqual(adapter.outages(), [], `lifted on authMethod ${authMethod}`);
 
-  const result = await adapter.complete(makeRequest());
-  assert.equal(result.text, '{"capital": "Paris"}');
-  assert.equal(runner.calls.length, 2, 'the next call spawned');
+    const result = await adapter.complete(makeRequest());
+    assert.equal(result.text, '{"capital": "Paris"}');
+    assert.equal(runner.calls.length, 2, 'the next call spawned');
+  }
 });
 
 test('a usage-limit hold is not lifted by a health check', async () => {
@@ -717,13 +725,167 @@ test('a hold set while the probe was running, or a cached probe, lifts nothing',
 
 test('a sign-in that is not the subscription lifts nothing', async () => {
   let clock = Date.parse('2026-10-04T12:00:00Z');
-  for (const health of [signedInHealth('api_key'), signedInHealth(null), { ...signedInHealth(), loggedIn: false, ok: false }]) {
+  for (const health of [
+    signedInHealth('api_key'),
+    signedInHealth('api_key_helper'),
+    signedInHealth('third_party'),
+    signedInHealth('none'),
+    signedInHealth(null),
+    // A Console login on a CLI before 2.1.286: `claude.ai`, with the key it
+    // made for itself named beside it - billed per token.
+    { ...signedInHealth('claude.ai'), apiKeySource: '/login managed key' },
+    { ...signedInHealth('oauth_token'), apiKeySource: 'apiKeyHelper' },
+    { ...signedInHealth(), loggedIn: false, ok: false },
+  ]) {
     const runner = makeFakeCliRunner({ lines: readCliFixture('auth-failure') });
     const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: async () => health });
     await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
     clock += 60_000;
     await adapter.health({ fresh: true });
-    assert.equal(adapter.outages().length, 1, `authMethod ${health.authMethod}, loggedIn ${health.loggedIn}`);
+    assert.equal(
+      adapter.outages().length,
+      1,
+      `authMethod ${health.authMethod}, apiKeySource ${health.apiKeySource}, loggedIn ${health.loggedIn}`
+    );
+  }
+});
+
+// -- the sign-in check, through `claude auth status` itself ------------------ //
+
+/**
+ * `claude auth status`'s JSON as published CLIs print it - the pairs of
+ * authMethod and apiKeySource read out of their builds (2.1.40, the first
+ * with the command, to 2.1.292). The account fields are made up.
+ */
+const AUTH_STATUS = {
+  // `claude auth login`: the subscription, in every one of those releases.
+  subscription: {
+    loggedIn: true,
+    authMethod: 'claude.ai',
+    apiProvider: 'firstParty',
+    analyticsDisabled: false,
+    email: 'operator@example.com',
+    orgId: '00000000-0000-4000-8000-000000000000',
+    orgName: 'Example',
+    subscriptionType: 'max',
+  },
+  // A token the CLI was handed rather than one it saved, as a hosted machine prints.
+  handedToken: { loggedIn: true, authMethod: 'oauth_token', apiProvider: 'firstParty' },
+  // A Console login, billed per token: `claude.ai` up to 2.1.285, `api_key` from 2.1.286.
+  consoleLoginOlder: {
+    loggedIn: true,
+    authMethod: 'claude.ai',
+    apiProvider: 'firstParty',
+    apiKeySource: '/login managed key',
+    subscriptionType: null,
+  },
+  consoleLogin: { loggedIn: true, authMethod: 'api_key', apiProvider: 'firstParty', apiKeySource: '/login managed key' },
+  envKey: { loggedIn: true, authMethod: 'api_key', apiProvider: 'firstParty', apiKeySource: 'ANTHROPIC_API_KEY' },
+  keyHelper: { loggedIn: true, authMethod: 'api_key_helper', apiProvider: 'firstParty', apiKeySource: 'apiKeyHelper' },
+  thirdParty: { loggedIn: true, authMethod: 'third_party', apiProvider: 'bedrock' },
+  signedOut: { loggedIn: false, authMethod: 'none', apiProvider: 'firstParty' },
+};
+
+/**
+ * Runs `run` with execFile answering as a CLI whose `auth status` prints
+ * `status`, so the real health check runs and nothing is spawned. `auth
+ * status` exits 1 when signed out, which execFile reports as an error with the
+ * JSON still on stdout.
+ */
+async function withAuthStatus(status, run) {
+  const childProcess = require('node:child_process');
+  const real = childProcess.execFile;
+  childProcess.execFile = (_command, args, _options, callback) => {
+    const isStatus = args.join(' ') === 'auth status';
+    const stdout = isStatus ? `${JSON.stringify(status, null, 2)}\n` : '2.1.292 (Claude Code)\n';
+    const failed = isStatus && status.loggedIn !== true ? Object.assign(new Error('exit 1'), { code: 1 }) : null;
+    process.nextTick(() => callback(failed, stdout, ''));
+    return { pid: 0 };
+  };
+  try {
+    return await run();
+  } finally {
+    childProcess.execFile = real;
+  }
+}
+
+test('`claude auth status` on the subscription reads as one: claude.ai and oauth_token, with no key beside them', async () => {
+  const { checkClaudeCliHealth } = load('../dist/services/ai/providers/claudeCli/health');
+  const check = (status) => withAuthStatus(status, () => checkClaudeCliHealth({ binary: 'claude', env: {} }));
+
+  const saved = await check(AUTH_STATUS.subscription);
+  assert.equal(saved.ok, true);
+  assert.equal(saved.loggedIn, true);
+  assert.equal(saved.authMethod, 'claude.ai');
+  assert.equal(saved.apiKeySource, null);
+  assert.equal(saved.warning, undefined, 'no "may not be a subscription" at every start');
+  assert.equal(saved.detail, 'Signed in on a Claude subscription (claude.ai sign-in).');
+  assert.equal(saved.version, '2.1.292 (Claude Code)');
+  assert.doesNotMatch(saved.detail, /operator@example\.com/, 'the account is not in the line');
+
+  const handed = await check(AUTH_STATUS.handedToken);
+  assert.equal(handed.ok, true);
+  assert.equal(handed.warning, undefined);
+  assert.equal(handed.detail, 'Signed in on a Claude subscription (OAuth token).');
+});
+
+test('`claude auth status` on a key reads as one: api_key, api_key_helper, third_party, and an older CLI\'s Console login', async () => {
+  const { checkClaudeCliHealth } = load('../dist/services/ai/providers/claudeCli/health');
+  const check = (status) =>
+    withAuthStatus(status, () => checkClaudeCliHealth({ binary: 'claude', env: {}, signInCommand: 'claude auth login' }));
+
+  for (const [name, status] of Object.entries(AUTH_STATUS)) {
+    if (name === 'subscription' || name === 'handedToken' || name === 'signedOut') continue;
+    const health = await check(status);
+    // Left ok: the call-time check of `system/init` is the one that knows.
+    assert.equal(health.ok, true, name);
+    assert.match(health.warning ?? '', /may not be a subscription sign-in/, name);
+    assert.match(health.warning ?? '', /`claude auth login`/, name);
+    assert.match(health.detail, new RegExp(`authMethod="${status.authMethod}"`), name);
+    assert.doesNotMatch(health.detail, /subscription/, name);
+    if (status.apiKeySource) {
+      assert.match(health.detail, new RegExp(`apiKeySource="${status.apiKeySource}"`), `${name} names the key's source`);
+    }
+  }
+
+  const out = await check(AUTH_STATUS.signedOut);
+  assert.equal(out.ok, false);
+  assert.equal(out.loggedIn, false);
+  assert.equal(out.detail, 'The Claude CLI is installed but not signed in.');
+});
+
+test('the one subscription list: claude.ai and oauth_token, never with a key named beside them', () => {
+  const { SUBSCRIPTION_AUTH_METHODS, isSubscriptionSignIn } = load('../dist/services/ai/providers/claudeCli/health');
+  assert.deepEqual([...SUBSCRIPTION_AUTH_METHODS], ['claude.ai', 'oauth_token']);
+  assert.ok(Object.isFrozen(SUBSCRIPTION_AUTH_METHODS));
+
+  for (const authMethod of SUBSCRIPTION_AUTH_METHODS) {
+    assert.equal(isSubscriptionSignIn({ loggedIn: true, authMethod }), true, authMethod);
+    assert.equal(isSubscriptionSignIn({ loggedIn: true, authMethod, apiKeySource: null }), true);
+    assert.equal(isSubscriptionSignIn({ loggedIn: true, authMethod, apiKeySource: 'none' }), true);
+    assert.equal(isSubscriptionSignIn({ loggedIn: true, authMethod, apiKeySource: '/login managed key' }), false);
+    assert.equal(isSubscriptionSignIn({ loggedIn: false, authMethod }), false, 'signed out is nobody\'s');
+  }
+  for (const authMethod of ['api_key', 'api_key_helper', 'third_party', 'none', '', null, undefined, 'CLAUDE.AI', 'claude_ai_oauth']) {
+    assert.equal(isSubscriptionSignIn({ loggedIn: true, authMethod }), false, String(authMethod));
+  }
+});
+
+test('the real health check lifts a sign-in hold on claude.ai, and not on an older CLI\'s Console login', async () => {
+  // The adapter and the check together, through the JSON as the CLI prints it.
+  for (const [status, lifted] of [
+    [AUTH_STATUS.subscription, true],
+    [AUTH_STATUS.handedToken, true],
+    [AUTH_STATUS.consoleLoginOlder, false],
+    [AUTH_STATUS.keyHelper, false],
+  ]) {
+    let clock = Date.parse('2026-10-04T12:00:00Z');
+    const runner = makeFakeCliRunner({ lines: readCliFixture('auth-failure') });
+    const adapter = makeAdapter(runner, {}, { now: () => clock, healthCheck: undefined });
+    await assert.rejects(() => adapter.complete(makeRequest()), (error) => error.kind === 'auth');
+    clock += 60_000;
+    await withAuthStatus(status, () => adapter.health({ fresh: true }));
+    assert.equal(adapter.outages().length, lifted ? 0 : 1, `${status.authMethod} / ${status.apiKeySource ?? 'no key'}`);
   }
 });
 

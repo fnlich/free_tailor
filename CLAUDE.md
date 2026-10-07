@@ -16,9 +16,9 @@ them. A single `.env` at the repository root feeds both sides.
 ```bash
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
-npm run build --prefix frontend# next build            (~16s)
-npm test                       # backend node:test suite (~85s with the tsc step, 1685 tests)
-npm run dev                    # backend watch + frontend dev server (Turbopack)
+npm run build --prefix frontend# next build            (~17s)
+npm test                       # backend node:test suite (~70s with the tsc step, 1713 tests)
+npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
 Facts worth knowing before you build:
@@ -64,12 +64,55 @@ Facts worth knowing before you build:
   `cmd.exe` cannot expand. Keep using it. Note the frontend's own `dev` is a
   production-style build+start; `dev:turbo` is the Turbopack dev server, which
   the ROOT `npm run dev` runs; `dev:live` (root `npm run dev:live`) is webpack's,
-  opt-in only, because Next 16.1's webpack dev server reloads every other open
-  tab when a new one connects after anything compiled - and a reloaded Build
+  opt-in only, because Next's webpack dev server reloads every other open tab
+  when a new one connects after anything compiled - and a reloaded Build
   Resumes tab releases, so stops, its Generate Immediately run.
-  test/e2e/dev-reload.js measured it (webpack failed; Turbopack and the
-  production-style `dev` passed) and test/devServer.test.js holds the root
-  `dev` to Turbopack.
+  test/e2e/dev-reload.js measured it on 16.1.6 and again on 16.3.8, on Linux
+  (webpack failed both times, 4 of 8 on 16.3.8; Turbopack and the
+  production-style `dev` passed all 8, and on 16.3.8 so did the fallback's
+  `next build --webpack` + `next start`) and test/devServer.test.js holds the
+  root `dev` to Turbopack.
+  **On Windows Turbopack's `next dev` can die natively** with 0xC0000005 a
+  moment after Ready (vercel/next.js#95015; the owner's log, on a hand-moved
+  16.3.5: `npm run dev:turbo --prefix frontend exited with code 3221225477`).
+  Then, and only then - mode `dev`, win32, that code in either spelling
+  (3221225477, or -1073741819 signed), no signal, once - the wrapper prints
+  one explanation and runs `next build --webpack` and, only if that exits 0,
+  `next start` on the same host and port: the production-style server, no
+  hot reload (owner's decision). A failed build ends the wrapper with its
+  code and a note; every other ending passes through as before (a signal
+  re-raised, else the code). It also warns before every launch, in every mode,
+  when the installed Next differs from an EXACT pin in package.json (`[next]
+  Next.js 16.3.5 is installed, but frontend/package.json pins 16.3.8. Run npm
+  run install:all.`), and never refuses. Every decision is
+  `scripts/nextLaunch.mjs` (`afterExit`, `fallbackSteps`,
+  `describeNativeExit`, `fallbackExplanation`, `installedVersionProblem`,
+  `MODES`, `nextArgs`) - no imports and no process, file or env access, which
+  a test checks - imported by devServer.test.js, which also holds the
+  README's quotes of the launcher to its own words. next.mjs launches Next the
+  moment it is evaluated, so the test reads it as text or runs a COPY beside a
+  stand-in Next; the "as Windows" copy injects exactly two lines by text
+  (`platform: process.platform`, and one after `child.on('exit', (code,
+  signal) => {`), so reshape either and update AS_WINDOWS there. No signal
+  handler, on purpose: Ctrl+C reaches the wrapper's process group (or
+  console) and ends it, so no later step starts; a signal to the wrapper's PID
+  ALONE leaves `next-server` running, as it always did - stop a server you
+  started by its process group. Simulated on Linux only (an exit code is a
+  byte here); README Troubleshooting has the row as the owner saw it.
+- **Next is pinned EXACTLY**: `next` and `eslint-config-next` both `16.3.8`
+  (owner's decision), and test/nextPin.test.js holds package.json and the
+  lockfile to one exact, equal release no older than 16.3.3 - GHSA-p293-qw3h-jr36,
+  remote code execution on a Windows-hosted server - and every `postcss` in
+  the lockfile to 8.5.23 or later. Never back to 16.1.6 (its nested postcss
+  8.4.31 is flagged too). Edit package.json and regenerate the lockfile with
+  `npm install --prefix frontend`, never by hand. `next.config.ts` sets `agentRules: false`: under an AI agent
+  (Claude Code included) Next 16.3's `next dev` otherwise writes
+  frontend/AGENTS.md and a frontend/CLAUDE.md on every start. The installed
+  Next's own docs are in frontend/node_modules/next/dist/docs/. Turbopack's
+  build keeps a cache in `.next/cache/turbopack` from 16.3 (~60 MB).
+  When the pin was made `npm audit --omit=dev` in frontend/ still listed
+  baseline-browser-mapping and source-map-js, both fixable in range by `npm
+  audit fix` and left out of the pin.
 - **`better-sqlite3` is native.** Install and run with the same Node major, or
   `npm rebuild better-sqlite3 --prefix backend`. A
   `NODE_MODULE_VERSION 127 ... requires 137` error is this and nothing else.
@@ -419,7 +462,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 138 files; fixtures/cli, codex and gemini
+  test/               # node:test, 139 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -1224,8 +1267,15 @@ lifted early only by a sign-in file written AFTER it (`clearAuth`, keyed on
 the file, so it says "signed in" for a revoked token too. The Claude seat's
 holds record their kind (`auth`, `rateLimited`, `unavailable`) - a held call
 reports that kind, never a guess from the reason's wording - and its sign-in
-hold is lifted by a fresh `claude auth status` on `oauth_token` that STARTED
-after the hold was set. Every hold, health reading and minute's status cache
+hold is lifted by a fresh `claude auth status` on the subscription that
+STARTED after the hold was set. The subscription is claudeCli/health.ts's
+`isSubscriptionSignIn`, the one verdict the startup warning and that lift
+share: `authMethod` in SUBSCRIPTION_AUTH_METHODS - `claude.ai`, which every
+CLI since 2.1.40 (the first with `auth status`) prints for `claude auth
+login`, or `oauth_token`, a token it was handed - with no `apiKeySource`
+beside it, because up to 2.1.285 a Console login billed per token also read
+`claude.ai` (2.1.286 calls it `api_key`). Taking `oauth_token` alone warned
+about every ordinary sign-in and never lifted its hold. Every hold, health reading and minute's status cache
 is the PROVIDER's (its adapter's), not the type's. The admin Settings page's
 seat check (`GET /api/admin/ai/health`) asks every enabled PROVIDER with
 `health({ fresh: true })`, one card each, skipping the minute's cache, which is
@@ -1376,12 +1426,15 @@ absolute, since the page cannot know the server's); what a save sends -
 `refusalField` (which box a server refusal is pinned under); `sourceNote`
 (set here / which `.env` line / default / the type's), `providerStatus`
 (locked, switched off, a hold by its kind - `HOLD_KIND_LABELS`, drift-checked
-against the seats' unions - then the fresh check), `describeTypeHealth`,
-`describeRanOn`; and `hasEnabledProviderOfType`, the third clause of
-lib/api.ts's `isProviderOffered`, so the admin pages offer a type exactly when
-`isProviderEnabled` would run it. lib/aiProviders.ts is the client for the
-routes; test/frontendProviders.test.js fails if a page outside app/admin/
-imports it or names the routes. **Admin -> Models -> Providers**
+against the seats' unions - then the fresh check), `describeSignIn` (a
+card's Sign-in row: `SIGN_IN_LABELS` names the CLI's `authMethod` and never
+says "subscription" - that verdict is the server's detail line - checked
+against SUBSCRIPTION_AUTH_METHODS and the Gemini seat's word),
+`describeTypeHealth`, `describeRanOn`; and `hasEnabledProviderOfType`, the
+third clause of lib/api.ts's `isProviderOffered`, so the admin pages offer a
+type exactly when `isProviderEnabled` would run it. lib/aiProviders.ts is the
+client for the routes; test/frontendProviders.test.js fails if a page outside
+app/admin/ imports it or names the routes. **Admin -> Models -> Providers**
 (app/admin/models/ProvidersSection.tsx) is the table - type, label, folder and
 its variable, binary, limit and lane, each with its source, live status from
 GET /health (read after the list, so a slow CLI never holds the table up) - and
@@ -1715,9 +1768,9 @@ The note under the select is `unreadTabsNoteFor(tabs)`: `UNREAD_TABS_NOTE`
 All is an `other` one (the name clash), `UNREAD_TABS_NOTE_ALL_CLASH`, which
 says to rename or delete it and open Settings > Job Sheet first - never to
 paste into a tab no route reads. Both spell the tab names out on purpose: Next 16.1's
-Turbopack folds an EXPORTED constant built from template literals joined
-with `+` at build time and dropped the middle literal of three, so write such
-a constant as plain string literals. The Job Filter page shows each row's
+Turbopack folded an EXPORTED constant built from template literals joined
+with `+` at build time and dropped the middle literal of three (not tried
+again on 16.3.8), so write such a constant as plain string literals. The Job Filter page shows each row's
 verdict (lib/jobFilterDisplay.ts - its reason words are drift-checked against
 services/jobFilter.ts's reasons by the same test) and sends only `{ tabName,
 startRow, endRow? }`. Admin -> Settings ->

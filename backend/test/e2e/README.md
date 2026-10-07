@@ -214,6 +214,15 @@ Leave `IMMEDIATE_TAB_GRACE_MS` at its default: `immediate-run.js` tells the
 page's own release from the server's 30-second grace by how soon the run
 stops.
 
+Give `sheet-panel.js` a database of its own (a fresh `DB_DIR`, the backend
+restarted on it) once `immediate-run.js` has run on one: the two share a
+posting's text, and `immediate-run.js` stores that posting's analysis with no
+link first, so the analysis `stub-sheets.js` stores for Today Inc is already
+there, linkless, and the Job Filter - which skips the page fetch only for a
+posting stored under its link - fetches `https://today.example/jobs/1`
+(*Could not open the job page*): 35 of 36. On a fresh database it passes all
+36.
+
 The stub's delay applies only to a call that reaches it. A posting analysed
 once is never analysed again, and the tailoring cache answers the same posting,
 profile and model with no call at all, so a repeat build is near-instant - it
@@ -308,13 +317,20 @@ DB_DIR=/tmp/e2e-db E2E_APP=http://localhost:3000 E2E_MODE=dev:live node test/e2e
 
 Against a dev server use `localhost` for `E2E_APP`: Next refuses its dev
 resources to any other origin that `NEXT_PUBLIC_ALLOWED_DEV_ORIGINS` does not
-name. Measured on Next 16.1.6 (this release): `dev:live` (webpack) failed - tab
-A reloaded each time a tab opened, and its run was cancelled (*Your last run
-ended while this page was away*); `dev:turbo` (Turbopack) passed all 8 claims,
-twice (10 s, then 15 s on `/credits` and `/jobs`); the production-style `dev`
-passed all 8. So the root `npm run dev` runs `dev:turbo`, and `npm run dev:live`
-keeps webpack for whoever asks for it by name - `test/devServer.test.js` holds
-the scripts to that.
+name. Measured on Next 16.1.6: `dev:live` (webpack) failed - tab A reloaded
+each time a tab opened, and its run was cancelled (*Your last run ended while
+this page was away*); `dev:turbo` (Turbopack) passed all 8 claims, twice (10 s,
+then 15 s on `/credits` and `/jobs`); the production-style `dev` passed all 8.
+Measured again on 16.3.8, the Next this release pins, each mode on a fresh
+frontend with `.next` deleted: `dev:live` failed 4 of the 8 the same way (tab A
+reloaded after tab B and after tab C, and its run was cancelled), `dev:turbo`
+and `dev` passed all 8, and so did the server the frontend's launcher falls
+back to on Windows - `npx next build --webpack`, then `node scripts/next.mjs
+start` (`E2E_MODE='build --webpack + start'`, a label only). All of it on
+Linux. So the root `npm run dev` runs `dev:turbo`, and `npm run dev:live` keeps
+webpack for whoever asks for it by name - `test/devServer.test.js` holds the
+scripts to that, and runs that Windows fallback against a stand-in Next (a
+real `0xC0000005` cannot be made on Linux).
 
 ## Report Jobs and the job lake, with Google stubbed
 

@@ -597,6 +597,35 @@ export const HOLD_KIND_LABELS: Readonly<Record<string, string>> = {
   modelUnavailable: 'Model unavailable',
 };
 
+/**
+ * What a card's "Sign-in" row calls the CLI's own word for its sign-in
+ * (`authMethod`). They name the METHOD and claim nothing more: whether a
+ * Claude sign-in is the subscription is the server's verdict, in the card's
+ * detail and warning (claudeCli/health.ts `isSubscriptionSignIn`), because a
+ * Claude CLI before 2.1.286 also said `claude.ai` for a Console login billed
+ * per token, telling the two apart only by a field this card is not sent.
+ * The Claude words are `claude auth status`'s (2.1.40 to 2.1.292); Gemini's
+ * is the seat's.
+ */
+export const SIGN_IN_LABELS: Readonly<Record<string, string>> = {
+  'claude.ai': 'claude.ai account',
+  oauth_token: 'OAuth token',
+  api_key: 'API key',
+  api_key_helper: 'API key (apiKeyHelper)',
+  third_party: 'Third-party API (Bedrock, Vertex...)',
+  'oauth-personal': 'Google account (OAuth)',
+};
+
+/**
+ * A sign-in as the card reads it: named when known, otherwise the CLI's word
+ * as it came, so a sign-in this page has never heard of is still visible.
+ * Looked up as an own key only - `constructor` is a word, not a label.
+ */
+export function describeSignIn(authMethod: string | null | undefined): string {
+  if (!authMethod) return 'unknown';
+  return Object.prototype.hasOwnProperty.call(SIGN_IN_LABELS, authMethod) ? SIGN_IN_LABELS[authMethod] : authMethod;
+}
+
 export type ProviderStatus = {
   tone: PillTone;
   label: string;

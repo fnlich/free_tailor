@@ -9,14 +9,68 @@ import type { ProviderHealth } from '../../types';
  *
  * Checked at boot and from the admin health endpoint rather than left to
  * surface as a failed resume generation later. `claude auth status` prints
- * JSON: {"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstParty"}
+ * JSON - {"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
+ * ...} - whose `authMethod` is the CLI's own word for where its credential
+ * came from. Read out of the published builds, from 2.1.40 (the first with
+ * `auth status`) to 2.1.292:
+ *
+ *   claude.ai       the sign-in `claude auth login` saves - the subscription
+ *   oauth_token     a token the CLI was handed rather than one it saved: a
+ *                   token file a host provides (a hosted Claude Code machine
+ *                   prints this), or CLAUDE_CODE_OAUTH_TOKEN, which the child
+ *                   never sees here (env.ts strips every CLAUDE_* but the
+ *                   config dir). 2.1.292 prints it for an `ant` API profile
+ *                   too, which nothing in this JSON tells apart; that one is
+ *                   left to the call-time check, as it always was
+ *   api_key         ANTHROPIC_API_KEY, and from 2.1.286 a Console login
+ *   api_key_helper  an apiKeyHelper in the CLI's settings
+ *   third_party     Bedrock, Vertex or another provider's API
+ *
+ * This check once took `oauth_token` alone for the subscription - what a
+ * hosted machine prints - so a server signed in the ordinary way, which
+ * prints `claude.ai`, was warned about at every start, and the admin seat
+ * check never lifted its sign-in hold.
+ *
+ * From 2.1.40 to 2.1.285 a Console login - an API key the CLI made for itself
+ * at `/login`, billed per token - ALSO read `claude.ai`, told apart only by
+ * the `apiKeySource: "/login managed key"` printed beside it (2.1.286 calls it
+ * `api_key`). So a key source beside a subscription method means it is not
+ * one; the JSON leaves the field out when there is none.
  */
+
+/** The `authMethod`s that are the subscription, when no API key is named beside them. */
+export const SUBSCRIPTION_AUTH_METHODS: readonly string[] = Object.freeze(['claude.ai', 'oauth_token']);
 
 export type ClaudeCliHealth = ProviderHealth & {
   binary: string | null;
   version: string | null;
   loggedIn: boolean;
+  /** `claude auth status`'s `apiKeySource`: absent or null when it names no key. */
+  apiKeySource?: string | null;
 };
+
+/**
+ * The ONE answer to "is this sign-in the subscription?" - the startup line and
+ * the admin card's warning ask it, and so does the adapter before a fresh
+ * check may lift a sign-in hold (index.ts). Signed in, on a method in
+ * SUBSCRIPTION_AUTH_METHODS, with no API key named beside it.
+ */
+export function isSubscriptionSignIn(
+  status: Pick<ClaudeCliHealth, 'loggedIn' | 'authMethod' | 'apiKeySource'>
+): boolean {
+  if (status.loggedIn !== true) return false;
+  if (typeof status.authMethod !== 'string' || !SUBSCRIPTION_AUTH_METHODS.includes(status.authMethod)) {
+    return false;
+  }
+  const key = status.apiKeySource;
+  return key === undefined || key === null || key === '' || key === 'none';
+}
+
+/** What each subscription method is called in the detail line. */
+const SUBSCRIPTION_DETAILS: Readonly<Record<string, string>> = Object.freeze({
+  'claude.ai': 'claude.ai sign-in',
+  oauth_token: 'OAuth token',
+});
 
 function run(
   binary: string,
@@ -106,6 +160,7 @@ export async function checkClaudeCliHealth(options: {
 
   const loggedIn = parsed.loggedIn === true;
   const authMethod = typeof parsed.authMethod === 'string' ? parsed.authMethod : null;
+  const apiKeySource = typeof parsed.apiKeySource === 'string' ? parsed.apiKeySource : null;
   const versionText = version.stdout.trim().split('\n')[0] || null;
 
   if (!loggedIn) {
@@ -115,6 +170,7 @@ export async function checkClaudeCliHealth(options: {
       binary: options.binary,
       version: versionText,
       authMethod,
+      apiKeySource,
       checkedAt,
       detail: 'The Claude CLI is installed but not signed in.',
       warning: `Run \`${signIn}\` as the user this server runs as.`,
@@ -128,17 +184,19 @@ export async function checkClaudeCliHealth(options: {
   // event says it runs on a key, and holds the seat. Left ok, because an auth
   // method this check has never seen may still be the subscription, and the
   // call-time check is the one that knows.
-  const onSubscription = authMethod === 'oauth_token';
+  const onSubscription = isSubscriptionSignIn({ loggedIn, authMethod, apiKeySource });
   return {
     ok: true,
     loggedIn: true,
     binary: options.binary,
     version: versionText,
     authMethod,
+    apiKeySource,
     checkedAt,
     detail: onSubscription
-      ? 'Signed in on a Claude subscription (OAuth).'
-      : `Signed in with authMethod="${authMethod ?? 'unknown'}".`,
+      ? `Signed in on a Claude subscription (${SUBSCRIPTION_DETAILS[authMethod ?? ''] ?? authMethod}).`
+      : `Signed in with authMethod="${authMethod ?? 'unknown'}"` +
+        (apiKeySource && apiKeySource !== 'none' ? ` and apiKeySource="${apiKeySource}".` : '.'),
     warning: onSubscription
       ? undefined
       : 'This may not be a subscription sign-in. A call the CLI starts on an API key is stopped at its first ' +

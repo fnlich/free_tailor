@@ -134,7 +134,13 @@ export type ProviderHealth = {
   readonly ok: boolean;
   readonly detail: string;
   readonly checkedAt: string;
-  /** Present for the CLI provider: 'oauth_token' means a subscription seat. */
+  /**
+   * The CLI's own word for its sign-in, where it reports one: `claude auth
+   * status`'s authMethod, or the Gemini seat's `oauth-personal`. Whether a
+   * Claude one is the subscription is claudeCli/health.ts's
+   * `isSubscriptionSignIn` - `claude.ai` or `oauth_token`, with no API key
+   * named beside it - never this field compared alone.
+   */
   readonly authMethod?: string | null;
   /** A non-fatal problem an operator should still see (e.g. key-based auth). */
   readonly warning?: string;

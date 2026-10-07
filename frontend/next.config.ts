@@ -25,6 +25,16 @@ function siblingIgnorePatterns(name: string): string[] {
 }
 
 const nextConfig: NextConfig = {
+  /*
+   * Since 16.3, `next dev` started by an AI coding agent (Claude Code among
+   * them, detected from its environment) writes frontend/AGENTS.md and
+   * frontend/CLAUDE.md whenever they lack Next's own block - untracked files
+   * in the working tree on every such start, and a second CLAUDE.md that the
+   * agent then loads on top of the repository's. The repository's CLAUDE.md
+   * is the one set of instructions; the docs for the installed Next, which
+   * that block points at, are in node_modules/next/dist/docs/ either way.
+   */
+  agentRules: false,
   allowedDevOrigins: [
     "http://localhost:3000",
     "http://127.0.0.1:3000",

@@ -212,10 +212,11 @@ async function withExecFile(answer, run) {
   return calls;
 }
 
+// What a current CLI signed in with `claude auth login` prints (account fields left out).
 const claudeAnswers = (args) =>
   args[0] === '--version'
-    ? { stdout: '2.0.0 (Claude Code)\n' }
-    : { stdout: '{"loggedIn":true,"authMethod":"oauth_token"}' };
+    ? { stdout: '2.1.292 (Claude Code)\n' }
+    : { stdout: '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}' };
 
 async function claudeProbeTimeouts(vars, options = {}) {
   const { checkClaudeCliHealth } = require('../dist/services/ai/providers/claudeCli/health');
@@ -226,6 +227,7 @@ async function claudeProbeTimeouts(vars, options = {}) {
     })
   );
   assert.equal(health.ok, true, health.detail);
+  assert.equal(health.warning, undefined, 'the subscription draws no warning');
   assert.deepEqual(
     calls.map((call) => call.args.join(' ')),
     ['--version', 'auth status']

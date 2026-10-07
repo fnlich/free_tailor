@@ -4,6 +4,13 @@ import { createRequire } from 'node:module';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  afterExit,
+  fallbackExplanation,
+  installedVersionProblem,
+  MODES,
+  nextArgs,
+} from './nextLaunch.mjs';
 
 /**
  * Launches Next with the repository's own configuration.
@@ -20,6 +27,13 @@ import { fileURLToPath } from 'node:url';
  *    `NEXT_PUBLIC_API_URL` and the rest were only ever picked up if the
  *    operator had separately exported them - the documented `.env` did
  *    nothing. Loading it here and handing it to the child fixes that.
+ *
+ * It also stands in for one crash: on Windows, Turbopack's `next dev` can die
+ * natively with 0xC0000005 a moment after "Ready" (vercel/next.js#95015), and
+ * `dev` then builds and starts the production-style server instead, once. It
+ * warns, too, when the Next installed is not the one package.json pins. What
+ * to run and when is decided in nextLaunch.mjs, which has no side effects and
+ * is tested from backend/test/devServer.test.js; this file runs it.
  *
  * Usage: node scripts/next.mjs <dev|dev-webpack|build|start>
  */
@@ -232,13 +246,6 @@ if (!process.env.NEXT_PUBLIC_API_URL) {
   }
 }
 
-const MODES = {
-  dev: ['dev'],
-  'dev-webpack': ['dev', '--webpack'],
-  build: ['build'],
-  start: ['start'],
-};
-
 const mode = process.argv[2];
 const baseArgs = MODES[mode];
 if (!baseArgs) {
@@ -246,13 +253,12 @@ if (!baseArgs) {
   process.exit(1);
 }
 
-const args = [...baseArgs];
-// `next build` takes neither, and passing them would fail the command. The
-// frontend's own env files may set these too, and they are read above.
-if (mode !== 'build') {
-  args.push('--hostname', process.env.FRONTEND_HOST || '0.0.0.0');
-  args.push('--port', process.env.FRONTEND_PORT || '3000');
-}
+// nextArgs leaves both off `next build`, which takes neither. The frontend's
+// own env files may set these too, and they are read above.
+const address = {
+  hostname: process.env.FRONTEND_HOST || '0.0.0.0',
+  port: process.env.FRONTEND_PORT || '3000',
+};
 
 // Run Next's JS entry point under this Node directly, rather than the `next`
 // shim through a shell. A shell would be needed on Windows to resolve
@@ -267,23 +273,77 @@ try {
   process.exit(1);
 }
 
-const child = spawn(process.execPath, [nextBin, ...args], { stdio: 'inherit' });
+/*
+ * Say so before launching when the Next installed is not the one
+ * package.json pins - the owner's Windows log ran a Next moved by hand, and
+ * nothing said so until its dev server crashed. Read through the same require
+ * that found Next above, so it is the version that runs. Anything unreadable
+ * says nothing: a check of the install must never stop a launch.
+ */
+let installedNext = null;
+try {
+  installedNext = require('next/package.json').version;
+} catch {
+  // Unreadable: no warning, and the fallback's explanation names no version.
+}
+let pinnedNext = null;
+try {
+  pinnedNext = JSON.parse(readFileSync(join(frontendDir, 'package.json'), 'utf8')).dependencies?.next;
+} catch {
+  // Unreadable: nothing to compare with.
+}
+const versionProblem = installedVersionProblem(installedNext, pinnedNext);
+if (versionProblem) {
+  console.warn(versionProblem);
+}
 
-child.on('error', (error) => {
-  console.error(`Could not start next: ${error.message}`);
-  process.exit(1);
-});
-child.on('exit', (code, signal) => {
-  if (signal) {
-    // Re-raise so the shell sees the same cause of death. Windows has no POSIX
-    // signals and process.kill only accepts a few names there, so a signal it
-    // does not know must not become an unhandled throw out of the launcher.
-    try {
-      process.kill(process.pid, signal);
+/*
+ * One step at a time: the mode's command, and - only when Windows ends
+ * Turbopack's dev server with ACCESS_VIOLATION (vercel/next.js#95015) - the
+ * production-style server in its place, once. nextLaunch.mjs's afterExit
+ * decides every step; this only runs them. There is no signal handler here on
+ * purpose: Ctrl-C reaches this process along with Next (the terminal's process
+ * group, Windows' console) and ends it, so no later step ever starts after one
+ * - and a step that a signal or a failure ended is never followed by another
+ * anyway. A signal sent to this process ALONE still leaves its Next running,
+ * as it always has.
+ */
+let state = { mode, platform: process.platform, address, fellBack: false, pending: [] };
+
+function launch(args) {
+  const child = spawn(process.execPath, [nextBin, ...args], { stdio: 'inherit' });
+
+  child.on('error', (error) => {
+    console.error(`Could not start next: ${error.message}`);
+    process.exit(1);
+  });
+  child.on('exit', (code, signal) => {
+    const next = afterExit(state, { args, code, signal });
+    if (next.run) {
+      if (next.crash) {
+        console.warn(fallbackExplanation({ code, crash: next.crash, installed: installedNext, address }));
+      }
+      state = next.state;
+      launch(next.run);
       return;
-    } catch {
-      process.exit(1);
     }
-  }
-  process.exit(code ?? 0);
-});
+    if (next.note) {
+      console.warn(next.note);
+    }
+
+    if (signal) {
+      // Re-raise so the shell sees the same cause of death. Windows has no POSIX
+      // signals and process.kill only accepts a few names there, so a signal it
+      // does not know must not become an unhandled throw out of the launcher.
+      try {
+        process.kill(process.pid, signal);
+        return;
+      } catch {
+        process.exit(1);
+      }
+    }
+    process.exit(code ?? 0);
+  });
+}
+
+launch(nextArgs(baseArgs, address));

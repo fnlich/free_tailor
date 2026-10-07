@@ -152,6 +152,42 @@ test('every hold kind a seat records has a name on the page', () => {
   for (const kind of kinds) assert.ok(display.HOLD_KIND_LABELS[kind], `a label for the hold kind "${kind}"`);
 });
 
+test('every sign-in a seat calls the subscription has a name on its card, and a word the page never heard of shows as it came', () => {
+  // The Claude subscription is `claude.ai` (what `claude auth login` saves) or
+  // `oauth_token`; the card once named only the second, so an ordinary sign-in
+  // read as the raw `claude.ai` under "Sign-in".
+  const { SUBSCRIPTION_AUTH_METHODS } = require('../dist/services/ai/providers/claudeCli/health');
+  assert.ok(SUBSCRIPTION_AUTH_METHODS.length >= 2);
+  for (const method of SUBSCRIPTION_AUTH_METHODS) {
+    assert.notEqual(display.describeSignIn(method), method, `a name for the Claude sign-in "${method}"`);
+  }
+  assert.equal(display.describeSignIn('claude.ai'), 'claude.ai account');
+  assert.equal(display.describeSignIn('oauth_token'), 'OAuth token');
+
+  // Gemini's word, read off the seat's own health check.
+  const gemini = fs.readFileSync(path.join(__dirname, '..', 'src/services/ai/providers/geminiCli/health.ts'), 'utf8');
+  const geminiMethods = [...gemini.matchAll(/authMethod: '([^']+)'/g)].map((match) => match[1]);
+  assert.ok(geminiMethods.length > 0, 'the Gemini check names its sign-in');
+  for (const method of geminiMethods) {
+    assert.notEqual(display.describeSignIn(method), method, `a name for the Gemini sign-in "${method}"`);
+  }
+
+  // A name says which method, never "subscription": that verdict is the
+  // server's detail line, because an older CLI's Console login said claude.ai too.
+  for (const label of Object.values(display.SIGN_IN_LABELS)) assert.doesNotMatch(label, /subscription/i);
+
+  assert.equal(display.describeSignIn('claude_ai_oauth'), 'claude_ai_oauth', 'a new word is shown as it came');
+  assert.equal(display.describeSignIn('constructor'), 'constructor', 'an own key only');
+  assert.equal(display.describeSignIn('__proto__'), '__proto__');
+  assert.equal(display.describeSignIn('toString'), 'toString');
+  for (const nothing of [null, undefined, '']) assert.equal(display.describeSignIn(nothing), 'unknown');
+
+  // And the Settings card draws its row through it, with no table of its own.
+  const page = fs.readFileSync(path.join(SRC, 'app/admin/settings/page.tsx'), 'utf8');
+  assert.match(page, /describeSignIn\(provider\?\.authMethod\)/);
+  assert.doesNotMatch(page, /AUTH_METHOD_LABELS|oauth_token|'claude\.ai'/);
+});
+
 test("the limit box reads concurrency_max_requests exactly as the server does, refusing in its words", () => {
   const inputs = ['1', '4', '32', ' 7 ', '07', '0', '33', '-1', '4.5', '1e1', 'four', '', ' ', '99999999999999999999', '+3', '0x10'];
   for (const input of inputs) {
@@ -368,7 +404,7 @@ test("a provider's state: locked, switched off, held, signed out, busy, ready", 
       ok: true,
       detail: 'Signed in.',
       warning: null,
-      authMethod: 'oauth_token',
+      authMethod: 'claude.ai',
       checkedAt: '2026-10-05T10:00:00.000Z',
       ready: true,
       held: null,

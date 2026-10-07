@@ -28,6 +28,7 @@ import { messageWithDetail } from '@/lib/userMessage';
 import { seatHolds } from '@/lib/seatHolds';
 import {
   describeLane,
+  describeSignIn,
   describeTypeHealth,
   normalizeAdminProviders,
   PROVIDER_TYPE_NAMES,
@@ -80,15 +81,6 @@ function describeProviderHealth(
 function formatPercent(value: number | null): string {
   return value === null ? 'unknown' : `${Math.round(value * 100)}%`;
 }
-
-/**
- * How a seat's sign-in reads. The raw `authMethod` is shown for anything not
- * named here, so a sign-in this page has never heard of is still visible.
- */
-const AUTH_METHOD_LABELS: Record<string, string> = {
-  oauth_token: 'Subscription (OAuth)',
-  'oauth-personal': 'Google account (OAuth)',
-};
 
 /**
  * Readiness of one PROVIDER - one sign-in of a seat's CLI.
@@ -176,9 +168,7 @@ function SubscriptionCard({
           <div className="flex gap-2">
             <dt className="text-subtle">Sign-in</dt>
             <dd className="text-ink">
-              {provider?.authMethod
-                ? AUTH_METHOD_LABELS[provider.authMethod] ?? provider.authMethod
-                : 'unknown'}
+              {describeSignIn(provider?.authMethod)}
             </dd>
           </div>
           {seatWindow && (

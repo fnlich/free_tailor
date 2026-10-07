@@ -80,7 +80,7 @@ test('a Claude provider\'s child signs in at its own folder and runs its own bin
     const healthEnvs = [];
     const healthCheck = async ({ binary, env }) => {
       healthEnvs.push({ binary, home: env.CLAUDE_CONFIG_DIR });
-      return { ok: true, loggedIn: true, binary, version: 't', authMethod: 'oauth_token', checkedAt: new Date().toISOString(), detail: 'ok' };
+      return { ok: true, loggedIn: true, binary, version: 't', authMethod: 'claude.ai', checkedAt: new Date().toISOString(), detail: 'ok' };
     };
     const a = createClaudeCliAdapter({
       runner: runA,
@@ -129,7 +129,7 @@ test("the built-in Claude provider with nothing set keeps the server's own CLAUD
       runner,
       instance: { id: 'claude-cli', label: 'Claude', builtIn: true, homeDir: null, binaryPath: 'claude', concurrency: 4 },
       config: { workdir: process.env.TMPDIR || os.tmpdir(), firstEventMs: 1_000, queueWaitMs: 1_000 },
-      healthCheck: async () => ({ ok: true, loggedIn: true, authMethod: 'oauth_token', checkedAt: '', detail: '' }),
+      healthCheck: async () => ({ ok: true, loggedIn: true, authMethod: 'claude.ai', checkedAt: '', detail: '' }),
     });
     await adapter.complete(request());
     assert.equal(runner.calls[0].env.CLAUDE_CONFIG_DIR, PARENT.CLAUDE_CONFIG_DIR);
@@ -233,7 +233,7 @@ test("a Gemini provider's child gets its own GEMINI_CLI_HOME, workspace and stat
 
 test('holds are per provider: one signed out, the other serving', async () => {
   const { rootDir } = useTempStorage('provider-seat-holds');
-  const signedIn = async () => ({ ok: true, loggedIn: true, authMethod: 'oauth_token', checkedAt: '', detail: 'ok' });
+  const signedIn = async () => ({ ok: true, loggedIn: true, authMethod: 'claude.ai', checkedAt: '', detail: 'ok' });
   const config = { workdir: path.join(rootDir, 'work'), firstEventMs: 1_000, queueWaitMs: 1_000 };
   const out = createClaudeCliAdapter({
     runner: makeFakeCliRunner({ lines: readCliFixture('auth-failure') }),
@@ -450,7 +450,7 @@ test("a Claude provider under a weekly Opus cap reads as held for Opus, and only
     runner,
     instance: instance('prv-dddd0004', '/srv/capped', '/opt/claude'),
     config: { workdir: path.join(rootDir, 'work'), firstEventMs: 1_000, queueWaitMs: 1_000, model: 'sonnet' },
-    healthCheck: async () => ({ ok: true, loggedIn: true, authMethod: 'oauth_token', checkedAt: '', detail: 'ok' }),
+    healthCheck: async () => ({ ok: true, loggedIn: true, authMethod: 'claude.ai', checkedAt: '', detail: 'ok' }),
   });
   await assert.rejects(() => capped.complete(request({ modelName: 'opus' })), (error) => error.kind === 'rateLimited');
 

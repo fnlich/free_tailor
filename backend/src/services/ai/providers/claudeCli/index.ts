@@ -19,7 +19,7 @@ import { buildClaudeArgv, resolveCliModel } from './argv';
 import { buildChildEnv } from './env';
 import { createEventReducer, createTurnState, readTurnText } from './events';
 import { classifyCliFailure } from './classify';
-import { checkClaudeCliHealth, type ClaudeCliHealth } from './health';
+import { checkClaudeCliHealth, isSubscriptionSignIn, type ClaudeCliHealth } from './health';
 import { interpretRateLimitEvent, OutageTable, type OutageKind } from './limits';
 import { readClaudeCliConfig, resolveTimeoutMs, type ClaudeCliConfig } from './options';
 import { createSpawnRunner, ensureCliWorkdir, type CliRunner, type CliRunOutcome } from '../cli/runner';
@@ -139,10 +139,12 @@ export function createClaudeCliAdapter(options: ClaudeCliAdapterOptions = {}): C
       // The only thing that lifts a sign-in hold early. A success would clear
       // it too, but the hold turns every call away before one can succeed,
       // so without this an operator who signed the CLI back in still saw the
-      // seat refused for up to half an hour. Only the subscription counts: a
+      // seat refused for up to half an hour. Only the subscription counts - the
+      // same verdict as the health check's warning, `claude.ai` (what
+      // `claude auth login` saves) or `oauth_token` with no key beside it: a
       // key sign-in is what the hold may be about. If the stored token is in
       // fact dead, the next call finds out in one fast failure and holds again.
-      if (value.loggedIn && value.authMethod === 'oauth_token') {
+      if (isSubscriptionSignIn(value)) {
         outages.clearAuth(probeStartedAt);
       }
       return value;
