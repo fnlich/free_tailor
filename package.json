@@ -2,9 +2,12 @@
   "name": "free_tailor",
   "private": true,
   "scripts": {
-    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend",
+    "install:all": "npm install --include=dev && npm install --include=dev --prefix backend && npm install --include=dev --prefix frontend",
+    "predev": "node scripts/checkInstall.mjs",
     "dev": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:turbo --prefix frontend\"",
+    "predev:live": "node scripts/checkInstall.mjs",
     "dev:live": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev --prefix backend\" \"npm run dev:live --prefix frontend\"",
+    "predev:poll": "node scripts/checkInstall.mjs",
     "dev:poll": "concurrently --names backend,frontend --prefix-colors cyan,magenta \"npm run dev:poll --prefix backend\" \"npm run dev --prefix frontend\"",
     "dev:backend": "npm run dev --prefix backend",
     "dev:backend:poll": "npm run dev:poll --prefix backend",

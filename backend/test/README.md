@@ -14,6 +14,8 @@ npm run test --prefix backend
 
 The backend tests use Node's built-in `node:test` runner and require no extra test dependencies. The test script builds TypeScript first, then runs the compiled JavaScript from `backend/dist` through `backend/scripts/runTests.js`.
 
+The suite needs only the backend installed. Two tests in `installCheck.test.js` check this checkout's own install - every package the root, backend and frontend `package.json` files name is installed, and `scripts/checkInstall.mjs` prints nothing - and are skipped, saying why, where the root's or the frontend's `node_modules` was never made (a backend-only install such as `npm ci --prefix backend`). A `node_modules` that is there but short of a package still fails them; `npm run install:all` from the repository root puts it right.
+
 Storage tests point `DB_DIR` (SQLite database) and `TAILOR_STATIC_DIR` (default prompts, skill seed, built-in templates) at temporary folders under `os.tmpdir()`, so they never touch the real database or shipped assets.
 
 **The run cleans up after itself.** The suite makes a fresh temporary directory for nearly every test (several hundred per run) and nothing deletes them one by one, so `scripts/runTests.js` gives the whole run a temporary root of its own - it sets `TMPDIR`, `TEMP` and `TMP` (what `os.tmpdir()` reads on each platform, inherited by any child a test spawns) to a new `tailor-test-run-*` directory, runs `node --test "test/*.test.js"`, deletes the directory and exits with the suite's own code. The system temp directory gains nothing from a run. To look at what a failing test left behind, keep it:
@@ -430,6 +432,17 @@ Coverage currently focuses on:
   with webpack's opt-in by name, because webpack's reloads every other open tab
   when a new one connects - measured by `e2e/dev-reload.js`
   (`devServer.test.js`)
+- what the root `npm run dev` (and `dev:live`, `dev:poll`) checks first, from
+  npm's `pre` hooks: every package the three package.json files name is in
+  that package's node_modules, else one message naming what is missing and
+  `npm run install:all` from the repository root by its path, the
+  devDependencies sentence only when npm's settings, as a script sees them,
+  leave them out - each row measured with npm 10.9.4, and worded as a hint
+  pointing to `npm config get omit`, since an `omit=dev` behind
+  `NODE_ENV=production` never reaches a script (run through the real npm) -
+  and exit 1 before concurrently; `install:all` passing `--include=dev` to all
+  three installs; the real runner silent on this checkout (skipped where the
+  root or the frontend was never installed) (`installCheck.test.js`)
 - which wins, the environment or `.env`: the environment, on both halves, with
   any name set in both reported by name only (`envFile.test.js`), and the mail
   doctor naming such a setting as overriding the file (`mailDoctor.test.js`)

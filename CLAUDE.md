@@ -17,15 +17,54 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~70s with the tsc step, 1713 tests)
+npm test                       # backend node:test suite (~70s with the tsc step, 1739 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
 Facts worth knowing before you build:
 
-- **`npm run install:all` after every pull.** A pull brings `package.json`
-  entries but not packages; the symptom is `TS2307` / `Cannot find module`
-  naming a dependency that is plainly listed.
+- **`npm run install:all` after every pull, from the repository root.** A pull
+  brings `package.json` entries but not packages; the symptom is `TS2307` /
+  `Cannot find module` naming a dependency that is plainly listed. It passes
+  `--include=dev` to all three installs: the repository builds from source and
+  needs its devDependencies (the root's `concurrently`, the backend's
+  `typescript` / `ts-node-dev`, the frontend's `tailwindcss` / `typescript`),
+  and an npm with `NODE_ENV=production` or `omit=dev` leaves them out of a plain
+  install and REMOVES them if present; `--include=dev` beats both (measured on
+  npm 10.9.4). The root `dev`, `dev:live` and `dev:poll` - the three scripts
+  that start `concurrently`, command lines unchanged - have npm `pre` hooks
+  (`predev`, `predev:live`, `predev:poll`; npm 10 runs one for a name with a
+  colon too) running `node scripts/checkInstall.mjs`, from a ROOT `scripts/`
+  beside the backend's and the frontend's: every name in the root, backend and
+  frontend `dependencies` + `devDependencies` must have
+  `node_modules/<name>/package.json`, else ONE message - what is missing per
+  package (five names, then "and N more"), `npm run install:all` from the
+  repository root by its path, and a hint that npm skips devDependencies only
+  when its settings as a script sees them say so - and exit 1, so npm never
+  reaches `concurrently` (the owner's Windows log ended on cmd's *'concurrently'
+  is not recognized ...*: the root's own node_modules was gone). Silent and exit
+  0 otherwise, and never throws; npm skips it while `ignore-scripts` is on
+  (measured). Its decisions are `scripts/installCheck.mjs` (no imports, no
+  process or console: `missingPackages`, `installAdvice`,
+  `devDependenciesOmitted`, `npmSettingsFrom`, `scriptBefore`,
+  `GUARDED_SCRIPTS`), run by test/installCheck.test.js, which also holds every
+  root script starting `concurrently` to its hook; its two checks of this
+  checkout skip, saying why, where the root's or the frontend's node_modules
+  was never made (a backend-only install), and fail on one short a package. The devDependencies sentence
+  is a HINT, worded so, pointing to `npm config get omit` (npm's own answer,
+  which agreed with the install in every case measured): npm passes a setting to
+  a script only when it differs from npm's default, and a deprecated one
+  (`production`, `dev`, `also`) never; a variable already in the environment the
+  script just inherits. So a script sees `npm_config_omit` /
+  `npm_config_include` from an .npmrc, the environment or the command line
+  EXCEPT an omit=dev from an .npmrc or the command line while
+  NODE_ENV=production is already in the environment (then the default: the
+  script sees NODE_ENV alone, as it does beside an .npmrc's production=false
+  that makes npm install them after all); `npm_config_production` only from the
+  environment; an exported empty `npm_config_omit`, which npm ignores, reads
+  exactly as `--omit=`, which it obeys; and NODE_ENV=production whenever npm is
+  leaving devDependencies out - npm sets it. installCheck.test.js runs the
+  omit=dev and production=false cases through the real npm.
 - **The backend postinstall downloads Chrome** (`scripts/installBrowser.js
   --if-missing`) for PDF rendering. It is idempotent and skips an existing
   download. If the download is blocked, `npm run setup:browser` retries, or set
@@ -462,7 +501,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 139 files; fixtures/cli, codex and gemini
+  test/               # node:test, 140 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
