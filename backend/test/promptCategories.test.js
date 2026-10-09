@@ -92,7 +92,9 @@ test('a custom prompt inherits the category of the feature it is attached to', a
   const built = await service.createPrompt({
     name: 'My tailoring prompt',
     featureKey: 'tailor-resume',
-    content: 'Tailor this.\n[[profileJson]]\n[[jobAnalysisJson]]',
+    content:
+      'Tailor this.\n[[profileJson]]\n[[jobAnalysisJson]]\n' +
+      'Strengths: [[includeStrengths]]. Soft skills: [[includeSoftSkills]]. Skills: [[technicalSkillsLayout]].',
   });
   assert.equal(built.category, 'building');
   assert.equal(built.categoryLabel, 'Building Prompts');

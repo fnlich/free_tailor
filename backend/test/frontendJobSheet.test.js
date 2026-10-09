@@ -13,9 +13,9 @@ const { loadFresh, useTempStorage } = require('./helpers');
  * verdicts (lib/jobFilterDisplay.ts) - each run against the server's own code:
  * the tab names it gives every sheet, the listing it answers with (and which
  * tab it starts on), and the reasons the filter fails a posting for. A copy
- * that drifted would offer an older build's daily tab - whose columns are not
- * the job sheet's - as if it held jobs, start a page on a tab the server
- * refuses, or show a verdict as a bare code.
+ * that drifted would offer a tab whose columns are not the job sheet's as if
+ * it held jobs, start a page on a tab the server refuses, or show a verdict as
+ * a bare code.
  *
  * Loaded the way frontendHelpers.test.js loads its modules: transpiled with
  * the backend's TypeScript, importing nothing at runtime.
@@ -41,8 +41,11 @@ const tabs = loadFrontendModule('lib/sheetTabs.ts');
 const filter = loadFrontendModule('lib/jobFilterDisplay.ts');
 const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
 
-/** Row 1 of a daily tab an older build made: sixteen columns, Company in B. */
-const OLD_DAILY = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder'];
+/**
+ * Row 1 of a tab laid out in other columns - Company in B - under a day's
+ * name: to the server it is a tab of the person's own like any other.
+ */
+const OTHER_COLUMNS = ['NO(DATE)', 'Company', 'Job Title', 'Job Link', 'Job Description', 'Rate', 'note', 'Job Finder'];
 
 /** The server's listing of a sheet with these tabs and row-1 headers, through its own code. */
 async function serverListing(tabList, headers) {
@@ -105,15 +108,15 @@ test("every tab the server lists is offered when it is a job tab, and listed but
       { title: 'Notes', gid: 14 },
       { title: 'Spare', gid: 15 },
     ],
-    { All: [...JOB_SHEET_HEADERS], 'Temp For AI': [...JOB_SHEET_HEADERS], '09/30/2026': OLD_DAILY, Notes: ['Idea', 'Where'] }
+    { All: [...JOB_SHEET_HEADERS], 'Temp For AI': [...JOB_SHEET_HEADERS], '09/30/2026': OTHER_COLUMNS, Notes: ['Idea', 'Where'] }
   );
   assert.deepEqual(
     tabs.sheetTabOptions(listing.tabs),
     [
       { title: 'All', label: 'All', usable: true },
       { title: 'Temp For AI', label: 'Temp For AI', usable: true },
-      // An older build's daily tab, in its own columns: never read.
-      { title: '09/30/2026', label: '09/30/2026 (old layout, not read)', usable: false },
+      // Other columns under a date's name: a tab of the person's own, never read.
+      { title: '09/30/2026', label: '09/30/2026 (not a job tab)', usable: false },
       // A tab of the person's own.
       { title: 'Notes', label: 'Notes (not a job tab)', usable: false },
       // Row 1 empty: the server lays it out the first time it is used, if the whole tab is empty.
@@ -137,7 +140,7 @@ test("without a job tab called All, the page starts where the server does - and 
       { title: 'All', gid: 2 },
       { title: 'Jobs', gid: 3 },
     ],
-    { '09/30/2026': OLD_DAILY, All: ['My own'], Jobs: [...JOB_SHEET_HEADERS] }
+    { '09/30/2026': OTHER_COLUMNS, All: ['My own'], Jobs: [...JOB_SHEET_HEADERS] }
   );
   assert.equal(clash.listing.defaultTab, 'Jobs');
   assert.equal(tabs.chosenTab(clash.listing), 'Jobs');
@@ -147,46 +150,35 @@ test("without a job tab called All, the page starts where the server does - and 
   assert.equal(tabs.unreadTabsNoteFor(clash.listing.tabs), tabs.UNREAD_TABS_NOTE_ALL_CLASH);
 
   // Nothing a job could be read from: nothing is chosen, and the select says so.
-  const none = await serverListing([{ title: '09/30/2026', gid: 1 }], { '09/30/2026': OLD_DAILY });
+  const none = await serverListing([{ title: '09/30/2026', gid: 1 }], { '09/30/2026': OTHER_COLUMNS });
   assert.equal(none.listing.defaultTab, null);
   assert.equal(tabs.chosenTab(none.listing), '');
   assert.equal(tabs.chosenTab(none.listing, '09/30/2026'), '');
 });
 
-test('a listing from a server older than the layouts offers every tab, as it used to', () => {
-  const listing = { tabs: [{ title: 'Sheet1' }, { title: 'Other' }], defaultTab: null };
-  assert.deepEqual(
-    tabs.sheetTabOptions(listing.tabs).map((option) => option.usable),
-    [true, true]
-  );
-  assert.equal(tabs.chosenTab(listing), 'Sheet1');
-  assert.equal(tabs.hasUnreadTabs(listing.tabs), false);
-});
-
-test("the note under the tab select says where an old daily tab's columns go in All", () => {
+test("the note under the tab select says where a job in a tab that is not read goes in All", () => {
   const { JOB_SHEET_COLUMNS } = require('../dist/integrations/googleSheets');
   const letter = (column) => String.fromCharCode(64 + column);
-  // C to F, the job's four columns in the new layout - the old tab has them in B to E.
+  // C to F, the job's four columns in a job tab.
   assert.equal(letter(JOB_SHEET_COLUMNS.company), 'C');
   assert.equal(letter(JOB_SHEET_COLUMNS.jobDescription), 'F');
   assert.equal(
     tabs.UNREAD_TABS_NOTE,
-    `Tabs that are not laid out as job tabs - the daily tabs from before ${tabs.DEFAULT_TAB} and ${tabs.TEMP_TAB}, and ` +
-      'tabs of your own - are listed but not read. To use a job from an old daily tab, copy its Company, Job Title, ' +
-      `Job Link and Job Description into columns C to F of ${tabs.DEFAULT_TAB}.`,
-    'the whole sentence, with both tab names - spelled out in the source, so held to the constants here'
+    'Tabs that are not laid out as job tabs are listed but not read. To use a job from one, copy its Company, ' +
+      `Job Title, Job Link and Job Description into columns C to F of ${tabs.DEFAULT_TAB}.`,
+    'the whole sentence, with the tab name - spelled out in the source, so held to the constant here'
   );
-  assert.equal(OLD_DAILY.indexOf('Company'), 1, 'the old layout keeps Company in B');
+  // Nothing about a day's tab, or a layout from before: such a tab is simply not a job tab.
+  assert.doesNotMatch(`${tabs.UNREAD_TABS_NOTE} ${tabs.UNREAD_TABS_NOTE_ALL_CLASH}`, /daily|old layout|from before/i);
 
-  // While All is a job tab - a daily tab or a Temp For AI of somebody's own
-  // beside it changes nothing - the note says to copy into All.
+  // While All is a job tab - a tab under a date's name or a Temp For AI of
+  // somebody's own beside it changes nothing - the note says to copy into All.
   const ordinary = [
     { title: tabs.DEFAULT_TAB, layout: 'job' },
     { title: tabs.TEMP_TAB, layout: 'other' },
     { title: '09/30/2026', layout: 'other' },
   ];
   assert.equal(tabs.unreadTabsNoteFor(ordinary), tabs.UNREAD_TABS_NOTE);
-  assert.equal(tabs.unreadTabsNoteFor([{ title: tabs.DEFAULT_TAB }]), tabs.UNREAD_TABS_NOTE, 'a listing older than the layouts');
 
   // When All is the person's own tab, copying into it would be copying into a
   // tab no job route reads: the note says to clear the name first, and where
@@ -199,11 +191,10 @@ test("the note under the tab select says where an old daily tab's columns go in 
   assert.equal(tabs.unreadTabsNoteFor(clash), tabs.UNREAD_TABS_NOTE_ALL_CLASH);
   assert.equal(
     tabs.UNREAD_TABS_NOTE_ALL_CLASH,
-    `Tabs that are not laid out as job tabs - the daily tabs from before ${tabs.DEFAULT_TAB} and ${tabs.TEMP_TAB}, and ` +
-      `tabs of your own - are listed but not read. Your own tab named ${tabs.DEFAULT_TAB} is one of them: rename or ` +
-      `delete it in Google Sheets, then open Settings > Job Sheet to have the job tab ${tabs.DEFAULT_TAB} added. To ` +
-      'use a job from an old daily tab, copy its Company, Job Title, Job Link and Job Description into columns C to F ' +
-      `of that new ${tabs.DEFAULT_TAB}.`
+    `Tabs that are not laid out as job tabs are listed but not read. Your own tab named ${tabs.DEFAULT_TAB} is one ` +
+      `of them: rename or delete it in Google Sheets, then open Settings > Job Sheet to have the job tab ` +
+      `${tabs.DEFAULT_TAB} added. To use a job from a tab that is not read, copy its Company, Job Title, Job Link ` +
+      `and Job Description into columns C to F of that new ${tabs.DEFAULT_TAB}.`
   );
   // The page it names is the one that re-checks a clash, under the label it has.
   const pageSource = fs.readFileSync(path.join(SRC, 'app', 'settings', 'job-sheet', 'page.tsx'), 'utf8');

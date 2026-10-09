@@ -41,13 +41,11 @@ export const CLI_BASE_SYSTEM_PROMPT =
 /**
  * Narrows a stored model name to something the CLI will actually serve.
  *
- * This is the single load-bearing safety net for a database written before the
- * migration. Every model name such an install carries - `openai/gpt-5.4-nano`
- * on both shipped prompts, the six persisted OpenRouter rows - makes the CLI
- * exit with "There's an issue with the selected model (...). It may not exist
- * or you may not have access to it" (verified: HTTP 404). Degrading to the
- * configured default with one warning is the difference between a migration
- * that is optional and one that is mandatory before the next request.
+ * A stored name the CLI would not serve - a prompt override saved by hand, a
+ * model a narrowed `.env` list no longer names - makes the CLI exit with
+ * "There's an issue with the selected model (...). It may not exist or you may
+ * not have access to it" (verified: HTTP 404). Degrading to the configured
+ * default with one warning keeps every request running meanwhile.
  */
 export function resolveCliModel(requested: string | undefined, fallback: string): string {
   const name = (requested ?? '').trim();

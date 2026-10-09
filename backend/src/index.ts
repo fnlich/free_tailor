@@ -1,9 +1,12 @@
 // Must be first: it loads .env before any other module reads process.env.
 import './config/env';
+// Second, before any route module reads the database as it loads: a database
+// this build refuses stops the server here, by name (database/openAtStartup.ts).
+import './database/openAtStartup';
 import express from 'express';
 import cors from 'cors';
 import os from 'os';
-import { getDatabasePath, getDb } from './database/sqlite';
+import { getDatabasePath } from './database/sqlite';
 import { describeTemplatesDirectory } from './database/templateFiles';
 
 import profileRoutes from './routes/profiles';
@@ -41,7 +44,6 @@ import aiHealthRoutes from './routes/aiHealth';
 import { publicErrorHandler } from './middleware/publicError';
 import { preflightAllProviders } from './services/ai';
 import { startTailorCachePrune } from './services/tailorCache';
-import { describeRetiredProviderVariables } from './config/providerCatalog';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
 import { applyProxyTrust } from './config/proxyTrust';
 import {
@@ -300,9 +302,9 @@ function listServerUrls(): string[] {
   return urls;
 }
 
-// Open the database eagerly so schema problems - and the provider migration -
-// surface at startup rather than on the first request.
-getDb();
+// The database was opened by database/openAtStartup.ts, the second import
+// above, so schema problems - and a database this build refuses - surface at
+// startup rather than on the first request.
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);
@@ -333,11 +335,6 @@ const server = app.listen(PORT, HOST, () => {
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
-  // An upgraded .env still holding the metered providers' keys or the seats'
-  // old allow-a-key switches: nothing reads them, and saying so once here is
-  // the only way an operator learns it. Names only - never a value.
-  const retiredVariables = describeRetiredProviderVariables();
-  if (retiredVariables) console.warn(retiredVariables);
   // Reachable whenever ADMIN_EMAILS is set and somebody else signs in first -
   // that path never falls back to the first-account rule, so the install can
   // genuinely end up with nobody who can administer it.
@@ -345,7 +342,6 @@ const server = app.listen(PORT, HOST, () => {
   // by ADMIN_EMAILS or SMTP_USER becomes an administrator here, and warning
   // first would report a problem this line is about to fix.
   try {
-    // And runs the migrations that were waiting for an administrator, at once.
     const promoted = applyConfiguredAdmins();
     if (promoted > 0) console.log(`[auth] ${describeAdminIdentity()}`);
   } catch (error) {
@@ -360,17 +356,10 @@ const server = app.listen(PORT, HOST, () => {
   // was mid-build when it stopped is built again, and whatever was queued
   // carries on - which is the whole point of the queue being on disk.
   //
-  // After the promotion above, not before it. Promoting an administrator runs
-  // the migrations that were waiting for one, 006 among them, synchronously;
-  // the restore reads profiles and settings as it starts, and reading them
-  // first meant warning about a profile's choice - and residue in the settings
-  // row - that 006 cleared a moment later.
-  //
   // Then the credits, and only once the restore has FINISHED: restore requeues
   // what was mid-flight, and a reservation whose tasks are about to run again
-  // must not be released as abandoned in between. The restore resolves a model
-  // again for a task queued on a provider that has since been removed, which
-  // is a settings read and so asynchronous; chaining on it keeps the order.
+  // must not be released as abandoned in between. The restore reads the
+  // settings first, which is asynchronous; chaining on it keeps the order.
   // Neither ever rejects.
   //
   // And told WHICH batches came back: age alone cannot tell an abandoned

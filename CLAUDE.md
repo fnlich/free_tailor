@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~70s with the tsc step, 1739 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 1595 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -76,20 +76,30 @@ Facts worth knowing before you build:
   the files you pass it) with TMPDIR/TEMP/TMP pointed at a fresh directory of
   its own and deletes that directory afterwards, propagating the exit code -
   the suite makes ~760 temp directories per run and used to leave them all in
-  the system temp dir, which filled a disk. `TAILOR_KEEP_TEST_TMP=1` keeps it
-  and prints where. A test that writes anywhere but `os.tmpdir()` escapes it.
+  the system temp dir, which filled a disk. It also sets DB_DIR to `<that
+  directory>/db`, over the environment: a test that loaded the PDF generator
+  before `useTempStorage` used to open the REAL database (test/testRunner
+  .test.js holds it). `TAILOR_KEEP_TEST_TMP=1` keeps the directory and prints
+  where. A test that writes anywhere but `os.tmpdir()` escapes it.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
   `src/bid-assistant/App.jsx` (lines 271, 305, 381; `src/app/page.tsx`
   contributes none), and no warnings.
   Not a build gate: `next build` does not run ESLint. Do not treat a red lint as
   something your change caused without checking `git stash` first.
+- **A stale `frontend/.next/dev` fails `next build`'s type check.** The
+  frontend's tsconfig includes `.next/dev/types/**`, which only `next dev`
+  (Turbopack, the root `npm run dev`) writes, so after a pull or a change that
+  deletes a page, `npm run build --prefix frontend` and the production-style
+  `dev` fail with `TS2307: Cannot find module '../../../src/app/<page>/page.js'`
+  from `.next/dev/types/validator.ts`. Delete `frontend/.next/dev` (or run
+  `npm run dev` once) - README Troubleshooting has the row.
 - **Dark mode does not work the way it looks.** `globals.css` ends with a block
   that remaps light utilities under `html.dark` (`html.dark .bg-white { ... }`).
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. 32 of the 33 App Router pages carry no `dark:` at all (only
+  ignored. 29 of the 30 App Router pages carry no `dark:` at all (only
   `/test` does); they are built from the kit and the tokens rather than the
   utilities it remaps, but it is still loaded and still wins wherever it
   matches. New chrome uses the `@theme inline` tokens instead
@@ -170,8 +180,11 @@ A variable on the command line like that beats the same one in `.env`. Unset,
 most common first-run failure) and `%LOCALAPPDATA%\free_tailor\db` on Windows.
 The backend prints the resolved path, the Chrome it will print with, and a
 readiness line per enabled AI provider at startup; a CLI that is missing or signed out is
-reported, not fatal, and so is any removed metered-provider variable
-(`OPENAI_API_KEY`, `AI_CLI_ALLOW_API_KEY`...) still set in `.env`.
+reported, not fatal. A database an older build never finished upgrading IS
+fatal, before anything else: one `[db] The database at <path> has not finished
+upgrading: <what is missing>. Start build ac3df79 once on this database ...`
+line and exit code 1 (database/upgradeGuard.ts, below) - start ac3df79 on that
+`DB_DIR` once, then this build.
 
 To sign in, `.env` needs Google OAuth (`GOOGLE_CLIENT_ID`) or SMTP.
 `ADMIN_EMAILS` (else an `SMTP_USER` that is an address) names the
@@ -211,7 +224,9 @@ backend/src/
                       #   Configuration table. The drift test
                       #   test/envExample.test.js fails until all three agree.
                       #   providerCatalog.ts is the ONE list of seats (TYPES)
-                      #   and of retired ids; aiProviders.ts the PROVIDERS -
+                      #   - `coerceProviderId` answers null for any other id,
+                      #   with no alias or retired-id map; aiProviders.ts the
+                      #   PROVIDERS -
                       #   every place a type runs, see "Providers of one type"
                       #   below; jobFields.ts the job fields a posting
                       #   is classified into (stable ids, never reused);
@@ -271,58 +286,72 @@ backend/src/
                       #   everybody's; adding with metadata, editing and deleting
                       #   are requireAdmin.
   database/           # better-sqlite3, one repository per table. getDb()
-                      #   runs, in order: renameColumns (COLUMN_RENAMES -
-                      #   users.plan became users.subscription - guarded by
-                      #   PRAGMA table_info and NOT a schema_meta marker, so a
-                      #   database renamed back for a rollback is renamed
-                      #   forward again; check and ALTER in one BEGIN
-                      #   IMMEDIATE, so a second opener of the file waits and
-                      #   finds it done; fatal on failure), then SCHEMA, then
-                      #   addMissingColumns (never fatal), then
+                      #   runs, in ONE IMMEDIATE transaction taken before
+                      #   anything is read (a second opener of a new file
+                      #   waits, and never sees a users table before its
+                      #   stamp): for an EXISTING database (one with a `users`
+                      #   table) the startup guard, then SCHEMA; for a fresh
+                      #   one SCHEMA, then `stampCurrentDatabase`. Then
+                      #   addMissingColumns (never fatal; ADDED_COLUMNS is
+                      #   empty today, the place a new column goes), then
                       #   addIndexesAfterColumns (INDEXES_AFTER_COLUMNS: every
                       #   index naming an added column - in SCHEMA it would
-                      #   fail every upgraded boot), then the one-time
-                      #   move of `templates` rows to files
-                      #   (templateFileMove.ts, schema_meta
-                      #   `templates_moved_to_files`, never fatal; recorded
-                      #   row by row, so only a row it could not WRITE is
-                      #   tried at the next start), then the one-time switch
-                      #   of credits to dollars (dollarSwitch.ts, schema_meta
-                      #   `credit_unit`, never fatal - see "Money" below),
-                      #   then the lake's facts for rows an older build wrote
-                      #   (jobLakeFacts.ts, every start, by condition - see
-                      #   "The Job Data Lake" below - never fatal), then the
-                      #   migrations.
-                      #   Rolling back to the previous release (5177fc3) needs
-                      #   no statement - nothing it reads was renamed - only
-                      #   open payout requests decided and [[industryList]]
-                      #   out of an edited analysis prompt, which the README's
-                      #   check lists; 90adbaf reads users.plan, so going back
-                      #   that far renames it back first (README, "Rolling back
-                      #   this release" and its "Going back further, to
-                      #   90adbaf", which gather every step a rollback needs;
-                      #   test/rollbackDocs.test.js runs the check and the
-                      #   statements against this build's schema, and 5177fc3's
-                      #   own reads and lake insert too, so a column renamed,
-                      #   a request kind or a notice stored differently fails
-                      #   it until the README follows).
+                      #   fail every upgraded boot), then the migrations.
+                      #   THE STARTUP GUARD (upgradeGuard.ts, owner decision
+                      #   L1): the code that upgraded older databases - the
+                      #   migrations 001 and 003-008, the switch of credits to
+                      #   dollars, the move of saved templates into files, the
+                      #   users.plan rename, the lake's facts fill - is gone,
+                      #   so a database build ac3df79 did not finish would read
+                      #   WRONGLY here, not fail. `assertUpgradeFinished`
+                      #   refuses one unless schema_meta has
+                      #   `provider_schema_version` = 8,
+                      #   `credit_unit` = 'usd-milli' and
+                      #   `templates_moved_to_files` (not `"complete": false`),
+                      #   `users` has `subscription` (not `plan`), and no
+                      #   `job_lake` row has `job_type IS NULL` (no such
+                      #   column refuses too): `DatabaseNotUpgradedError
+                      #   { databasePath, problems }`, "The database at <path>
+                      #   has not finished upgrading: <phrases, '; '>. Start
+                      #   build ac3df79 once on this database to finish its
+                      #   upgrade, then start this build." (a migrations
+                      #   phrase adds that they wait for an administrator when
+                      #   none exists). A database that passes is stamped
+                      #   `schema_meta.baseline_build` = ac3df79, once, and
+                      #   later starts read ONLY the stamp (the lake check
+                      #   would read every row); that first stamp also deletes
+                      #   the `job_reports` records whose lake row is gone. A
+                      #   fresh database is stamped with the three schema_meta
+                      #   marks and the stamp (`stampCurrentDatabase`).
+                      #   openAtStartup.ts is index.ts's SECOND import (after
+                      #   config/env, before any route): modules that read the
+                      #   database as they LOAD (the PDF generator reads the
+                      #   skill library) would otherwise hit the refusal first,
+                      #   as a stack trace; there it prints `[db] <message>`
+                      #   and exits 1 (test/upgradeGuard.test.js spawns it,
+                      #   and holds the README's quotes of the line to it).
+                      #   There is no rollback (L1): nothing documents going
+                      #   back, and a database this build CREATED has no
+                      #   `templates` table and no `users.sheet_tab_*` or
+                      #   `job_lake.report_ref` - an upgraded one keeps them,
+                      #   and its migration logs and settings snapshots in
+                      #   app_settings, unread.
                       #   Saved templates are NOT a table:
                       #   templateFiles.ts is their store, `<id>.json` in
                       #   static/templates (see the note under this block);
                       #   templateRepository.ts keeps the four signatures it
                       #   had, plus the template_overrides table.
-  database/migrations # numbered, run on first DB use, and a CHAIN: a step that
-                      #   defers (003 waits for an admin; 006 and 007 for a
-                      #   settings row that names what they remove but does
-                      #   not parse; 008 for one whose model list does not)
-                      #   stops the ones after it. Adding a seed model needs a
-                      #   migration - stored `aiModels` is read verbatim, never
-                      #   unioned with the defaults, so a seed reaches fresh
-                      #   installs only (005 did it for Codex, 008 for Gemini).
-                      #   The chain is 001, 003-008: 002 seeded the browser-chat
-                      #   models and went with them, and the runner skips any
-                      #   version it has passed, so the gap is harmless. Never
-                      #   reuse a retired number.
+  database/migrations # the runner, `runDataMigrations(db, steps = MIGRATIONS)`
+                      #   (never throws; the version is written after EACH
+                      #   step; a step may defer, which stops the ones after
+                      #   it), `SCHEMA_VERSION_KEY` and BASELINE_SCHEMA_VERSION
+                      #   = 8. MIGRATIONS is empty: 001 and 003-008 ran on
+                      #   every database the guard admits, so what they
+                      #   produced is in SCHEMA and the seeded defaults. The
+                      #   next step is 9 - never a number below it. Adding a
+                      #   seed model needs a step: stored `aiModels` is read
+                      #   verbatim, never unioned with the defaults, so a seed
+                      #   reaches fresh installs only.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service.
@@ -353,9 +382,9 @@ backend/src/
                       #   a reporter's payout and closes their open payout
                       #   request in the same transaction (`closedRequestId`;
                       #   see "Money" below).
-                      #   refundRequests.ts (a reporter's payout request, the
-                      #   410 for the retired refund asks, and the admin
-                      #   queue) and
+                      #   refundRequests.ts (a reporter's payout request, an
+                      #   account's own requests, and the admin queue - there
+                      #   is no route to ASK for a refund, not even a 410) and
                       #   contact.ts (GET /api/contact is PUBLIC, no session)
                       #   are described under "Money" below. generation.ts is
                       #   the queue's HTTP side - see services/queue/ below for
@@ -384,8 +413,8 @@ backend/src/
                       #   the run's before (or without) its item recording it;
                       #   test/orderFileAccess.test.js sends the spellings raw.
   scripts/            # operator tools, each behind an npm script: mail:doctor,
-                      #   sheets:login, sheets:doctor, migrate:legacy,
-                      #   ai:rollback. The doctors share one shape -
+                      #   sheets:login, sheets:doctor. The doctors share one
+                      #   shape -
                       #   walk the real chain in order, stop at the first break,
                       #   name the remedy - because each diagnoses a failure whose
                       #   single error message covers several causes.
@@ -408,8 +437,10 @@ backend/src/
                       #   its POOL (`laneFor` = its model's type) and is placed
                       #   with a serving provider of it - see "Providers of one
                       #   type" below. A restored row naming a lane this process
-                      #   lacks (a removed provider, an older build's `cli`/
-                      #   `codex`/`gemini`) goes to its type's pool. A task row's `data` is a
+                      #   lacks (a removed provider) goes to the pool of the
+                      #   type its choice resolved to (`restoredLane`); a
+                      #   provider no catalog knows lands in the first seat's
+                      #   (`laneFor`). A task row's `data` is a
                       #   hand-picked PROJECTION built by index.ts's `taskRow`,
                       #   not the Task serialized, so a new field must be named
                       #   there AND in the restore mapper or it silently does
@@ -423,11 +454,11 @@ backend/src/
                       #   KIND is there: `shared.kind = 'order' | 'immediate'`
                       #   (`isOrderBatch`, `isImmediateBatch`; submit body
                       #   `mode`, default immediate, `asOrder: true` an alias
-                      #   for order; a restored batch from before kinds is an
-                      #   order if its `orders` row says so, else an older
-                      #   builder run left to finish - no lease, no priority).
-                      #   EVERY run gets an `orders` row (`orders.kind`, an
-                      #   added column; immediate rows number `FT-RUN-...`, are
+                      #   for order; a batch naming neither is never one the
+                      #   routes submit - `batchKind` null, no lease, no
+                      #   priority).
+                      #   EVERY run gets an `orders` row (`orders.kind`;
+                      #   immediate rows number `FT-RUN-...`, are
                       #   hidden from listOrdersForUser and the order routes'
                       #   `mine()`, and are filed under ORDER_OUTPUT_PATH_TEMPLATE
                       #   like an order - the admin's output template files
@@ -473,6 +504,12 @@ backend/src/
                       #   answer to a tailoring or a cover-letter call, reused
                       #   for the same unchanged profile, posting, model and
                       #   prompt - see "The tailoring cache" below.
+  services/sheets/    # each account's OWN job sheet (accountSheet.ts), the
+                      #   program's analysis columns (analysisColumns.ts), and
+                      #   jobExport.ts's `appendJobRows` - the writer the
+                      #   removed Apify job search exported with, kept for Find
+                      #   Jobs and called by no route yet (see "The export
+                      #   writer" below).
   services/templateChoice.ts # THE answer to "which template is this resume
                       #   drawn with" - resolveTemplateForProfile, for the live
                       #   preview, /resume/preview, /preview-all,
@@ -482,8 +519,9 @@ backend/src/
                       #   Its job board is SHARED (deleting a job, which takes
                       #   every account's answers, and the one Ask AI template
                       #   are requireAdmin); sheet sources carry an `account_id`
-                      #   (added in place, PRAGMA + ALTER - an owner-less legacy
-                      #   row is listed for all, changed by an admin, and a
+                      #   (in the CREATE; no table is rebuilt or altered at
+                      #   load - an owner-less row an older build saved is
+                      #   listed for all and changed by an admin only, and a
                       #   deleted account's is listed to admins only); answers
                       #   are scoped through the reader's own profiles, and so
                       #   is a job's `has_answers`. Answers are keyed by profile
@@ -492,30 +530,20 @@ backend/src/
                       #   and loading database.js sweeps any left orphaned.
   types/, utils/      # shared types; path, storage and filename helpers
 backend/
-  scrapers/           # NOT under src/, and the bulk of the backend's
-                      #   JavaScript: seven Apify actors plus one shared
-                      #   apify.js, behind one registry, reached from
-                      #   services/scraperProviders.ts and routes/jobs.ts.
-                      #   (bidAssistant/database.js and scripts/installBrowser.js
-                      #   are JavaScript too.)
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 140 files; fixtures/cli, codex and gemini
+  test/               # node:test, 130 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
-  app/                # App Router pages: /, /settings/*, /admin/*, /jobs,
-                      #   /orders, /credits (+ /credits/invoice, drawn with no
-                      #   shell - navModel's isBareRoute). /account redirects
-                      #   in a client effect (router.replace), by its hash,
-                      #   which never reaches the server: #subscription ->
-                      #   /settings/subscription, #credits -> /credits, #sheet
-                      #   -> /settings/job-sheet, else /settings - so it cannot
-                      #   be a redirect(). /settings/plan goes to
-                      #   /settings/subscription by a static redirect() the
-                      #   client follows on hydration (the root layout's shell
-                      #   streams first, so it is never an HTTP 307).
+  app/                # App Router pages: /, /settings/*, /admin/*,
+                      #   /jobs/filter, /orders, /credits (+ /credits/invoice,
+                      #   drawn with no shell - navModel's isBareRoute). There
+                      #   is no /jobs page until Find Jobs is built there (the
+                      #   rail's Find Jobs is still the external link to the
+                      #   account's own All tab), and no /account or
+                      #   /settings/plan redirect any more - a Next 404.
                       #   /admin/profiles, /admin/profiles/new and
                       #   /admin/profiles/[id] are EVERY builder's own profiles
                       #   and their editor, whatever the path says. /report
@@ -616,7 +644,7 @@ frontend/src/
                       #   off with the server's reason (`payoutBlocker`) at $0 or
                       #   with a request open, opening PayoutRequestDialog - the
                       #   whole balance, an optional note, never an amount.
-                      #   PayDialog is only an alias of ui/Dialog.tsx.
+                      #   BuyCreditsDialog uses ui/Dialog.tsx directly.
                       #   The administrators' queue is app/admin/payments/
                       #   RefundQueue.tsx, the `?tab=refunds` of Payments, where
                       #   every "New refund/payout request" notice links: a
@@ -744,11 +772,14 @@ confined to `verifyWebhookSign` and explained there.
 
 Two earlier crypto paths were deleted once nothing was in flight through them:
 a non-custodial watcher reading four blockchains, and Coinbase Commerce.
-**`'chain'` and `'coinbase'` stay in `PaymentProvider`** so their rows still
-read and still refund with the right advice, and `chain_invoices`,
-`chain_cursors` and `chain_orphans` are left in any database that has them -
-the `CREATE TABLE` statements are gone from `database/sqlite.ts`, the tables
-are not dropped.
+**`'chain'` and `'coinbase'` stay in `PaymentProvider`** as display names
+only, so their rows still read: no variable of theirs is read (the crypto
+method's unavailable reason names Cryptomus's two alone), and refunding one
+gets the one sentence that cannot be wrong about where it was taken (*Send the
+funds back from wherever this payment was taken, then adjust the balance from
+the accounts page.*). `chain_invoices`, `chain_cursors` and `chain_orphans` are
+left in any database that has them, never read - the `CREATE TABLE`
+statements are gone from `database/sqlite.ts`, the tables are not dropped.
 
 All dynamic data lives in SQLite, except saved templates. `backend/static` is
 never written, except `static/templates`, which also holds saved templates -
@@ -773,25 +804,14 @@ renamed over the file (a crash leaves the old file or the new, never half);
 ids are `[a-z0-9-]`, at most 100, never a Windows device name, checked before
 any path is built (`templateFileId`); a built-in's id, or an unreadable file's,
 is never overwritten; `supportsSoftSkills` / `supportsStrengths` / `isBuiltIn`
-are never written. Every reference goes through `currentTemplateId`
-(templateRepository.ts): a file id is itself; an older build's spelling is
-first looked up EXACTLY in the move's renames, then folded (case and `_`,
-`canonicalTemplateId`) - in that order, because `Navy_Rule` folded is the
-shipped `navy-rule`, not the row the older build drew it with. A profile's
-`preferredTemplate` is stored (`normalizeProfilePayload`) and read
-(`profileRepository`) under that id, because the editor, the Profiles list and
-the one-template-per-profile rule compare ids as they are. A write that fails
+are never written. An id is taken exactly as its file carries it - no folding
+of case or `_`, no rename aliases - and a profile's `preferredTemplate` is
+stored as given, trimmed, because the editor, the Profiles list and the
+one-template-per-profile rule compare ids as they are. A write that fails
 throws `TemplateStoreError`, which the template routes answer with "Template
-could not be saved." and a ref. `getDb()` wrote an older database's
-`templates` rows out once (templateFileMove.ts) and left them as an unread
-backup: rows whose id is already a file id go first and keep it; any other is
-filed under its folded id if free, else a `u-` id derived from the old one
-(so a re-run finds it), never a built-in's or another row's, and the profiles
-naming it are repointed in the same transaction; the renames stay as aliases.
-It is recorded row by row - a row that failed to write is retried alone, a
-moved one is never looked at again - and the README's "Rolling back this
-release" (step 5, and *Upgrading again*) says how to roll back and run it
-again. Saved files are not
+could not be saved." and a ref. The rows ac3df79 moved out of an older
+database's `templates` table are left there, never read (the guard requires
+that move's `templates_moved_to_files` record, complete). Saved files are not
 gitignored, so they show in `git status` and can be committed to ship them.
 Startup prints whether the directory is writable, and names any `.json` there
 no id can have (not offered), under `Database:`.
@@ -919,13 +939,17 @@ ending `Milli` (`balanceMilli`, `heldMilli`, `deltaMilli`, `balanceAfterMilli`,
 `costMilli`, `pricePerResumeMilli`, `neededMilli`, `amountMilli`,
 `creditMilli`...). Every amount in a request is dollars, as text or a JSON
 number, in a field ending `Usd` (`pricePerResumeUsd`, `balanceUsd`, `amountUsd`,
-`minUsd`...). A request still carrying an amount in the old unit (`credits`,
-`amount`, `creditsPerResume`, `minCents`) is refused as a stale page, never read
-as dollars. The old integer-credit fields are gone from responses, not aliased.
+`minUsd`...). A field in the old unit (`credits`, `amount`, `creditsPerResume`,
+`minCents`) is never read, as dollars or anything else: where the `Usd` field
+is required its absence is refused (a checkout or quote: *Choose an amount in
+dollars and cents, like 25 or 12.50.*; a model create without
+`pricePerResumeUsd`; a payment limit without `minUsd`), and elsewhere the old
+field is ignored. The old integer-credit fields are gone from responses, not
+aliased.
 
-**Storage is NEW columns, never the old ones reinterpreted** - that is a 1000x
-rollback hazard: `users.balance_milli`, `credit_ledger.delta_milli` /
-`balance_after_milli`, `credit_reservations.units_milli` / `refunded_milli`,
+**Storage is NEW columns, never the old ones reinterpreted** - the old ones
+hold history, in its own unit: `users.balance_milli`, `credit_ledger.delta_milli`
+/ `balance_after_milli`, `credit_reservations.units_milli` / `refunded_milli`,
 `payments.credit_milli` / `credited_milli` / `refunded_milli`. Every row written
 now puts 0 in the whole-credit columns beside them (`credits`, `delta`,
 `units`, `payments.credits`, `unit_price_cents`), so a ledger row is in exactly
@@ -938,29 +962,16 @@ credit; `creditPaid` grants `creditMilli`, or `amountCents * 10` for a
 checkout opened before dollars), and refunding a payment from before dollars
 reverses nothing (`creditedMilli` is 0: those credits were reset).
 
-**The switch** (`database/dollarSwitch.ts`) ran once in `getDb()` with marker
-`schema_meta.credit_unit = 'usd-milli'` and snapshot
-`app_settings["migration-log.credits-to-dollars"]`. The owner chose a RESET
-(M1): a `reset` ledger row per account with old credits (reason `reset`, in the
-old unit; an account whose credits were all held by a run gets one at delta 0
-saying its run stops refunding), `users.credits` zeroed, open reservations
-closed, every task given
-`payload.costMilli: 0` (it finishes on the credits it was paid with and refunds
-nothing), pending payments stamped `credit_milli = amount_cents * 10`. Model
-prices go to $0 BY RULE (an absent `pricePerResumeMilli` reads as 0) - the
-settings row is deliberately NOT rewritten, because that would change what
-migration 001 snapshots for `ai:rollback`. It is safe to have not run: every
-dollar column starts at 0, so old data already reads as reset. A ROLLBACK
-across it - to 90adbaf - is not lossless (README, "Going back further, to
-90adbaf"): dollars held by a run in flight are never refunded (the older build sees `units = 0`, then
-closes the reservation, and a closed one takes no refund here), the first
-settings save of any kind rewrites every model without `creditsPerResume`, so
-an older build prices them all at 1 credit - and the OLDER build's first save
-drops every `pricePerResumeMilli` (its normaliser builds the row field by
-field, as it drops `aiProviders` and `analysisModelId`), so after upgrading
-back every model reads free again. Its refund of a purchase made here
-reverses nothing (`credits_granted` and `credits` are 0) while returning the
-money.
+**The switch to dollars** was build ac3df79's `dollarSwitch.ts`, gone with
+the rest of the upgrade code - the startup guard requires its marker,
+`schema_meta.credit_unit = 'usd-milli'`. The owner chose a RESET (M1), and what
+it left is history this build still reads: a `reset` ledger row per account
+that held old credits (reason `reset`, in the old unit, served as
+`legacyCredits`; one at delta 0 for an account whose credits were all held by
+a run), `users.credits` zeroed, and a snapshot in
+`app_settings["migration-log.credits-to-dollars"]` that nothing reads. Model
+prices read $0 BY RULE: an absent `pricePerResumeMilli` is 0, with no
+write-back.
 
 **Reporter payouts** (owner decision A4). A reporter's earnings are paid
 OUTSIDE the app; an administrator records each one with POST
@@ -977,9 +988,8 @@ services/refunds `recordDirectPayout`: the payout AND, in the same
 Refunded with that amount (`closedRequestId`), so the queue cannot pay it
 again. `MAX_PAYOUT_NOTE`, `PAYOUT_REQUEST_ID` and `readPayoutNote` live in
 services/credits, shared by both places that record one. Reporters cannot buy:
-/api/payments is `requireUser`, and so are refund-requests' retired /options
-and POST (a user or admin gets their 410) - a purchase refund gives back the
-UNSPENT balance, which for a reporter is earnings.
+/api/payments is `requireUser` - a purchase refund gives back the UNSPENT
+balance, which for a reporter is earnings.
 
 **Payout requests** (owner decisions R1, R2). The ONE thing still asked for:
 `POST /api/refund-requests/payout { reason? }` (`requireReporter`; an admin is
@@ -1000,18 +1010,19 @@ savepoint) and `markRefundRequestRefunded`; a refusal (409
 `account-missing`) throws and moves nothing; the reporter's notice follows the
 commit. Its wording is kind-aware (*Payout request approved/declined*, *Payout
 recorded: $X*, link `/credits`); a refunded payout reads *Paid out*.
-`toRequest` derives the kind from the ITEM KEY (`kindOfItemType`) - it used to
-read any unknown kind as a resume and any unknown item type as a payment, which
-5177fc3 still does: there a payout request is a resume's refund it can neither
-pay nor close, so a rollback decides every open one first (the README's check
-lists them, `kind = 'payout'`) - and
-marks an item type this build does not know `unrecognised` (refundable never,
-409 `unrecognised`; declinable). `GET /api/refund-requests?kind=` filters by
-kind. Asking for a purchase or resume refund is CLOSED (R1): `POST /` and
-`GET /options` answer 410 `refund-requests-closed` with
-`REFUND_ASKING_CLOSED_MESSAGE`, which ends "contact your administrator";
-`createRefundRequest` stays, unrouted, for tests and e2e seeding, and every
-request made before is decided as below.
+`toRequest` derives the kind from the ITEM KEY (`kindOfItemType`) and marks an
+item type this build does not know - an older build's `task:`, or a row edited
+by hand - `unrecognised`: served as itemType `payment` with `unrecognised:
+true` and UNRECOGNISED_REASON (*This request names something this version of
+the app cannot measure, so it cannot be refunded here. Decline it, and refund
+by hand from Accounts if it is owed.*), refundable never (409 `unrecognised`),
+declinable. `GET /api/refund-requests?kind=` filters by kind. Asking for a
+purchase or resume refund is CLOSED (R1), and there is no route for it at all
+(`POST /` and `GET /options` are gone - a 404) and no service function either:
+tests and the e2e scripts seed such a request with test/refundSeed.js's
+`seedRefundRequest({ refunds, refundDb, sqlite }, account, { itemType, itemId,
+reason })`, which makes the checks the asking route made and throws
+`RefundRequestError`. Every request made before is decided as below.
 
 **Refund requests** (owner decision M3; `services/refunds`,
 `database/refundRequestRepository.ts`, `routes/refundRequests.ts`). Somebody
@@ -1022,16 +1033,15 @@ required, final) or -> Refunded (the money moves in the same step, final). The
 state machine is in the WHERE clauses; a repeat of the same action answers 200
 `changed: false` and moves nothing. ONE OPEN REQUEST PER ITEM is a partial
 UNIQUE index on `refund_requests(item_key) WHERE state IN ('requested',
-'approved')`, not a route check. An item is one of five names (`payout:<account>`
-above, and four for a charge), and a resume has exactly one: `payment:<id>`; `order-item:<id>` (durable - `order_items.cost_milli`
-is copied from the task's `costMilli` at `createOrder`, because the task is
-evicted); `charge:<reservation id>` for a `/resume/generate` build (a
-`kind: 'request'` reservation is that one resume); `task:<id>` for a queued
-resume with NO order row, only while the queue holds its batch (a task of a
-batch with an order row always resolves to its order item). Every run queued
-now has one - a Generate Immediately run's is `orders.kind = 'immediate'` - so
-`task:` is left only for a builder run an older build queued; it stays so such
-requests still read. A resume's refund is
+'approved')`, not a route check. An item is one of four names
+(`REFUND_ITEM_TYPES`): `payout:<account>` above, `payment:<id>`,
+`order-item:<id>` (durable - `order_items.cost_milli` is copied from the
+task's `costMilli` at `createOrder`, because the task is evicted) and
+`charge:<reservation id>` for a `/resume/generate` build (a `kind: 'request'`
+reservation is that one resume). Every queued run has an order row - a
+Generate Immediately run's is `orders.kind = 'immediate'` - so a queued resume
+is always its order item (an older build's `task:` reads as unrecognised,
+above). A resume's refund is
 `refundRequestedCharge` - `refundAgainstReservation` with `includeClosed`, key
 `refund-request:<id>`, reason `refund-request`, under the reservation's SQL cap
 - in the same `.immediate()` transaction as the state change and the notice.
@@ -1085,11 +1095,6 @@ announcement editor lists, edits and deletes announcements only, and
 `deleteUser` deletes the account's own notices. The bell draws a notice's
 `link` only through lib/appLinks.ts's `safeAppPath` (a copy of the server's,
 run against it by test/frontendRefunds.test.js) and marks a notice "For you".
-90adbaf has no recipient filter and reads EVERY row as an announcement, so a
-rollback that far deletes `WHERE recipient_id IS NOT NULL` first (README,
-"Going back further, to 90adbaf") - or every bell shows other people's refund
-and payout notices, emails and reasons included. 5177fc3 filters as this
-build does.
 
 **Contact** (owner decision A2): `app_settings['contact'] = { channels: [{ type,
 label, value }] }`, types closed (`email|telegram|discord|whatsapp|other`),
@@ -1150,13 +1155,13 @@ stale falls back to the default with a warning once. The bare-provider and
 **Price per resume.** `pricePerResumeMilli` is thousandths of a dollar,
 0..1,000,000 ($0-$1,000), 0 = free (`config/pricePerResume.ts`). There is
 NO default: an admin create without `pricePerResumeUsd` is refused, and a stored
-record without the field - a seed a migration adds, or one priced in credits
-before dollars (its `creditsPerResume` is never read as a price) - reads as 0
-in memory, no write-back, and the admin payload's `freeEnabledModelIds` lists
+record without the field - a shipped seed, or one an older build priced in
+credits (its `creditsPerResume` is never read) - reads as 0 in memory, no
+write-back, and the admin payload's `freeEnabledModelIds` lists
 every enabled model at 0 for Admin -> Models to show in red. Junk or a fraction
 of a thousandth reads as 0 and warns once; out of range clamps; admin mutations
-refuse a bad value by name (`creditsPerResume` in a mutation is a stale page,
-refused), and a partial edit keeps it. A resume is priced at submit by the same
+refuse a bad value by name (`creditsPerResume` in a mutation is ignored), and
+a partial edit keeps it. A resume is priced at submit by the same
 resolution its task runs (`resolvePricedAiChoice` -> `{ choice, costMilli }`:
 request, then profile, then default) and the price is snapshotted on the task
 as `payload.costMilli` - OUTSIDE `payload.choice`, so a restore that re-resolves
@@ -1188,7 +1193,23 @@ fixes and is the same on every call is listed in `STABLE_PROMPT_VARIABLES`
 instead of starting the call's data at it. Create, update,
 `/prompts/validate` and `/preview` refuse or report any other name (`Unknown
 prompt variables: x`; an unsaved draft names its `featureKey`), and a stored
-record holding one fails at render with `contains unknown variables`. The
+record holding one fails at render with `contains unknown variables`. Some
+are REQUIRED (`PromptFeatureDefinition.requiredVariables`,
+`listRequiredPromptVariables(featureKey)`): `jobFieldList` and `industryList`
+for analyze-job-description, `includeStrengths`, `includeSoftSkills` and
+`technicalSkillsLayout` for tailor-resume. Create and update refuse a text
+without them (400 `Missing required prompt variables: a, b. Every <Label>
+prompt must use [[a]] and [[b]].`); validate and preview report them
+(`validation.missingVariables: string[]`; `allowedVariables[].required: true`).
+A STORED record without them - edited before the rule, or by hand - is listed
+`needsUpdate: true` and never run: at runtime (resolvePromptByExactId /
+ByRuntimeId, renderPrompt*, renderPromptSegmentsByExactId) promptService's
+`usableAtRuntime` puts the feature's built-in in its place - the admin's edit
+of it when complete, else the shipped file - and logs `[prompts] The prompt
+"<name>" (<id>) does not use [[...]], which every <Label> prompt must; the
+built-in <Label> prompt runs instead until it is updated under Admin ->
+Prompts.` once per record id and updatedAt. So no turn carries an override for
+a prompt that predates a variable. The
 tailor-resume prompt gets the profile's section choices as three words -
 `[[includeStrengths]]` / `[[includeSoftSkills]]` yes|no and
 `[[technicalSkillsLayout]]` grouped|plain (`buildResumeSectionPromptValues`) -
@@ -1196,18 +1217,16 @@ never inside `profileJson`, and referenced AFTER it in the shipped prompt so the
 cacheable stable part is byte-identical. The switches do decide what
 `profileJson` HOLDS: `buildPromptProfile` sends `strengths` only while
 Strengths is on (off means not given to the model, tailoring and cover letter
-alike), and never sends `softSkills`, which the code lists after the answer. Because an admin-edited row may never
-mention them, `buildFinalSkillOverride(profile)` - a function of the profile,
-not a constant - is appended to the user body of EVERY tailor-resume turn and
-states all three; `parseTailoredResumeContent` then enforces them against the
-profile as it is NOW (strengths `[]` when off, never a made-up "Core Strength";
+alike), and never sends `softSkills`, which the code lists after the answer.
+Whichever record runs, `buildFinalSkillOverride(profile)` - a function of the
+profile, not a constant - is appended to the user body of EVERY tailor-resume
+turn and states all three; `parseTailoredResumeContent` then enforces them
+against the profile as it is NOW (strengths `[]` when off, never a made-up "Core Strength";
 the profile's own soft skills first when on; a Plain hard-skill list with no
 library padding; the summary's `Working style:` sentence only while Soft Skills
 is off). `runResumeTask` runs client-held preview content through the same
 parse (`finaliseHeldContent`), as `/resume/generate` does, so a switch flipped
-between preview and batch is honoured. No migration touches an admin's prompt
-text; a tailor-resume record that never mentions `[[includeStrengths]]` is
-flagged `predatesSectionSwitches` for admins. Nothing about a profile is in a
+between preview and batch is honoured. Nothing about a profile is in a
 posting's analysis, on purpose: the analysis reads the posting, not the
 profile, and one analysis serves every profile, for ever (below).
 
@@ -1234,40 +1253,21 @@ it names nothing about how the server is run. Never send
 also checks a `Symbol.for` brand, because the tests `loadFresh` modules and a
 reloaded class fails `instanceof`.
 
-Two families of providers were deleted, and both are **retired, not
-aliased**: the browser-chat pair `claude-web` / `chatgpt-web`, which drove
-claude.ai and chatgpt.com in a debug Chrome (migration 006), and the metered
-APIs `claude` (Anthropic), `openai` and `deepseek` (migration 007). Unlike
-`openrouter` in `LEGACY_PROVIDER_ALIASES` they map onto nothing: a browser
-record's `modelName: 'chat'` is no seat's, and moving an API model onto a seat
-would change what a run costs. `RETIRED_PROVIDER_IDS` and `RETIRED_MODEL_IDS`
-in `config/providerCatalog.ts` are null-prototype maps from id to family
-(`'browser-chat' | 'metered-api'`, so a warning names the right removal). The
-model map holds `free-hybrid`, `claude-web-chat`, `chatgpt-web-chat` and the
-seven shipped metered seeds, and `isRetiredModelId` also matches the seed id an
-old `OPENAI_MODEL` / `CLAUDE_MODEL` / `DEEPSEEK_MODEL` produced, while that
-variable is still set. They let a stored row, a profile, a prompt override or a
-stale tab that names them read as "the default" instead of throwing, and they
-are permanent for the reason the alias map is: a restored backup, a hand-edited
-row or a page left open from before the upgrade can bring the ids back at any
-time. There is deliberately no prefix rule (it would swallow `claude-cli-*`),
-and a deleted model that was never retired is still an error - do not widen the
-tolerance to "any unknown id". 006 and 007 each strip their family once and keep
-a settings snapshot minus any stored API keys, and 007 also deletes the keys
-from 001's snapshot. The read-time tolerance - including the in-memory repair,
-onto a seat not locked here, of a row left with nothing it can run
-(`rescueRetiredProviderRow`, ranked exactly as 007 ranks: switched on, then not
-recorded, then switched off; then has an enabled model; then catalog order) -
-has to stand on its own, because both sit after 003 in the chain and wait with
-it until an administrator exists. Their logs, `migration-log.provider-schema-6`
-and `-7`, are read back and so load-bearing: their `removedModelIds` keep an
-administrator's own retired model (a UUID) reading as the default after a
-restart, and the LATEST `leftRunning` across both limits the in-memory repair to
-a row still as the migrations left it - after an admin's own save, a new lock
-fails by name. 008's log (`-8`) is read back too: the Gemini model it appends
-counts as part of what the migrations left. 006 itself is frozen history; on a
-database that skips straight here it can still land on a metered model, which
-007 moves in the same boot.
+Older builds had more providers: `openrouter`, the browser-chat pair
+`claude-web` / `chatgpt-web` and the metered APIs `claude` (Anthropic),
+`openai` and `deepseek`. Nothing of them is left - no alias map, no retired-id
+maps, no in-memory repair, no migration-log readers (ac3df79's migrations
+removed them from every database the guard admits; their logs and settings
+snapshots stay in app_settings, unread). An id outside the catalog is simply
+unknown: `coerceProviderId` answers null, a settings READ drops a model record
+naming one (an admin save refuses it), a REQUEST naming one of their models is
+400 `model-unavailable` like any other unknown model, a profile save naming one
+is refused, a STORED profile choice naming one falls back to the default with
+a warning once, and a prompt override naming a provider this build lacks is no
+override (aiModelCatalog's `readStoredPromptModelSelection`: warned once, never
+a throw, so Admin -> Prompts still lists; saving one is refused). The flat
+`claudeCliEnabled` / `openrouterEnabled` flags are neither read nor served:
+`providersEnabled` is the only shape, on both halves.
 
 All three seats share the spawn seam in `services/ai/providers/cli/`:
 `runner.ts` is the only module under `services/ai` that imports
@@ -1439,8 +1439,8 @@ without a line of its own, while work waits on a model every lane is held for.
 Before the first reading a task waits under its own name. `runningOn` and the
 persisted `ranOn` are the lane = provider id (stripped for non-admins by
 generation.ts's `readerSnapshot`); `taskStarted` logs it and
-`markItemRunning(batch, seq, provider)` puts it on `order_items.provider_id`
-(an added column), served on GET /api/orders/:id to an administrator only as
+`markItemRunning(batch, seq, provider)` puts it on `order_items.provider_id`,
+served on GET /api/orders/:id to an administrator only as
 `ranOn: { id, label, type }`.
 
 **Routes** (routes/aiHealth.ts, `/api/admin/ai`, requireAdmin): GET
@@ -1574,7 +1574,7 @@ overwrite of a readable row; a row found by its text that had no link is given t
 found with (`attachLinkKey`, NULL only). `merged_at` is the Job Data Lake's (set
 by `mergeIntoLake`, for a report or a merge, on every outcome but `unclassified`
 and `no-company`, which write nothing to the lake). `company_name`
-(an added column, '' on older rows) is the company a caller knew the posting by -
+('' on older rows) is the company a caller knew the posting by -
 the gate takes an optional `company` and records it on insert or, when the row
 has none, afterwards (`attachCompanyName`, '' only; the builder routes, the
 queue task, the submission step, the Job Filter and the reporter run all pass
@@ -1626,16 +1626,11 @@ what they were - pinned by test/tokenBudget.test.js; `jobMeta.industry`, the
 posting's own word, is in it as it always was). The analysis prompt's variables
 are `jobFieldList` and `industryList` (both stable, before `[[jobLink]]`, so
 the cached system part is byte-identical across postings - test pins it),
-`jobLink` and `jobDescription`; an administrator's record that never mentions
-`[[jobFieldList]]` is flagged `predatesJobField` and gets
-`buildAnalysisFactsOverride()` appended to every turn - the seniority words
-(`SENIORITY_VALUES`, which the filter judges) as well as the four keys, the
-industry among them; one that names `[[jobFieldList]]` but not
-`[[industryList]]` is flagged `predatesIndustry` and gets
-`buildIndustryOverride()` alone (gate.ts `analysisOverrideFor` decides; never
-both flags). An older build (5177fc3 and before) refuses a stored analysis
-record naming `[[industryList]]` (*contains unknown variables*), so a rollback
-takes it out of an edited prompt first. The analysis model is
+`jobLink` and `jobDescription`, and the two lists are REQUIRED: an
+administrator's record without either is refused on save and, stored, is
+`needsUpdate` and never run - the shipped prompt runs in its place (see "Prompt
+variables are the code's, strictly" above), so the gate appends nothing to an
+analysis turn. The analysis model is
 `analysisModelId` in the admin settings ('' = the app default model; a stale
 one falls back with a warning; a save CHANGING it to a model that cannot run
 is refused by name) - never in an ordinary account's payload.
@@ -1654,37 +1649,34 @@ listed), and so are the `AI_*_TIMEOUT_MS_FILTER` budgets.
 
 **The account's own sheet** (owner decisions S1-S3;
 `services/sheets/accountSheet.ts`). Every job route - Build Resumes' sheet
-mode, the Job Filter, the export, the reporter run, Admin -> Google Sheets -
-reads and writes the caller's OWN spreadsheet and no other
-(`resolveAddressableSheet`: any other id is 404 before Google is asked, an
-administrator's included). The saved "shared" sheets are gone:
-`googleSheetsSources` is in no payload, but stays in the stored settings row,
-unchanged by every save (a stale page sending one is dropped), so a rollback
-finds it. A sheet has two tabs of the app's: **All** (first, the default of
-every route) and **Temp For AI** (second, what Phase 4's push replaces). A new
-sheet is created with All and gets Temp For AI at index 1; a sheet an older
-build made (one `MM/DD/YYYY` tab a day) gets whichever is missing, All at 0
-and Temp at 1 (at 0 while All's name clashes, so the All added once it is
-free lands it second), and its daily tabs are never read, written, re-headed,
-protected or cleared again - they are not job tabs. A tab already called All
+mode, the Job Filter, the reporter run, the push, Admin -> Google Sheets, and
+jobExport.ts's writer - reads and writes the caller's OWN spreadsheet and no
+other (`resolveAddressableSheet`: any other id is 404 before Google is asked,
+an administrator's included). `googleSheetsSources`, an older build's saved
+"shared" sheets, is gone from the types, the defaults and the normaliser, so
+the next settings save drops it from a stored row. A sheet has two tabs of
+the app's: **All** (first, the default of every route) and **Temp For AI**
+(second, what the push replaces). A new sheet is created with All and gets
+Temp For AI at index 1; an ensure that finds one missing - a sheet not yet at
+layout 2, or a tab deleted since - adds All at 0 and Temp at 1 (at 0 while
+All's name clashes, so the All added once it is free lands it second); any
+other tab is never read, written, re-headed, protected or cleared - it is not
+a job tab. A tab already called All
 or Temp For AI that is not a job tab is left alone and reported (`conflict: {
 tabs, message }` on the state, logged once when found). Only the Job Sheet
 page looks at the two tabs again - `GET /api/sheet?recheck=1`
 (`describeAccountSheet`'s `recheck`, a verifying ensure on EVERY such load, not
 only while a clash is recorded), so a clashing tab renamed since is replaced,
 and an All or Temp For AI deleted or renamed under a recorded layout is put
-back, at its next load - the one way a REPORTER, who has no export, gets a
-deleted All back; every other read, the shell's on every page load included,
-answers from the row (a deleted tab's link included), and a look Google
+back, at its next load - the one way a REPORTER gets a deleted All back; every
+other read, the shell's on every page load included, answers from the row (a deleted tab's link included), and a look Google
 refuses falls back to it. It is
 recorded in `users.sheet_layout` (2) with `sheet_all_gid` / `sheet_temp_gid`
-(NULL at layout 2 = that name clashes), added columns; `sheet_tab_date` /
-`sheet_tab_gid` are an older build's and never written, so a rollback resumes
-its daily tabs. Once layout 2 is recorded a sign-in makes NO Google call; a
-verifying ensure (the export, the push, the Job Sheet page's look) lists the
-tabs once and puts back a deleted All or Temp For AI;
-the boot backfill also lays out sheets below layout 2
-(`listAccountsNeedingSheetLayout`). The state is `{ configured,
+(NULL at layout 2 = that name clashes). Once layout 2 is recorded a sign-in
+makes NO Google call; a verifying ensure (the push, the Job Sheet page's look)
+lists the tabs once and puts back a deleted All or Temp For AI; the boot
+backfill allocates a sheet only for an account that has none
+(`listAccountsWithoutSheet`). The state is `{ configured,
 spreadsheetId, spreadsheetUrl, defaultTab, defaultTabUrl, tempTab,
 tempTabUrl, conflict? }`. `sheetDateText` is a day in SHEET_TIMEZONE,
 `sheetDateSerial` / `sheetDateOfCell` its serial number and its reading back.
@@ -1702,8 +1694,8 @@ with data under a blank row 1, not an older build's daily tab, not the
 person's own. `verifyJobSheetTab` has NO option to touch any other tab - it
 returns `jobTab: false` and sends nothing - and every caller (the analysis
 columns' read and write-back, the reporter run, `addSheetTabWithHeaders`, the
-export) goes through it. Every row of a job tab is 21 px high with its data
-cells CLIPPED and the Date column formatted as a date (`jobRowLayoutRequests`,
+push, the export writer) goes through it. Every row of a job tab is 21 px high
+with its data cells CLIPPED and the Date column formatted as a date (`jobRowLayoutRequests`,
 the header's own format CLIP too): sent on every format, on a conversion, with
 every verify that sends anything, and before every export write.
 `addSheetTabWithHeaders(id, title, { index, existing })` adds a tab at its
@@ -1720,19 +1712,28 @@ deciding on the header alone let A1 be changed, L written and A1 changed
 back. A protected range Google reads back without a `sheetId` is the tab's
 own (it leaves a 0 out - All's gid on every new sheet).
 
-**The export** (`POST /api/jobs/scrapers/export`): own sheet, the tab named or
-All, a job tab only (409 `not-job-tab` before the search runs; an empty tab is
-laid out). After the search, ONE read of A:E gives the duplicate check (a
-company already in the tab is skipped), the first row after the last used one
-and NO(DATE) - 1 + the highest number on rows dated today (in any form
-`sheetDateOfCell` reads). It writes A:F RAW in chunks of 50 - Date as a serial
-number (a real date), NO(DATE), Company, Job Title, Job Link, Job Description -
-never a column the caller names (they are ignored), never G-L; before each
-chunk its rows are read again (A:F) and a row holding anything moves the rest
-below the last used row (409 `sheet-changed` after five tries), and one
+**The export writer** (`services/sheets/jobExport.ts`, owner decision F4: the
+Apify job search, its routes and `backend/scrapers/` are gone, and only its
+sheet writer was kept, for Find Jobs; no route calls it yet).
+`appendJobRows(account, tabName, rows, { duplicateKeys? })`: own sheet (404
+otherwise), the tab named or All, a job tab only (409 `not-job-tab` before
+anything is read; an empty tab is laid out). ONE read of A:E gives the
+duplicate check (`duplicateKeys` per row, default `companyDuplicateKeys` - a
+company once per tab; a row sharing a key with one there, or with one written
+earlier in the call, is skipped), the first row after the last used one and
+NO(DATE) - 1 + the highest number on rows dated today (in any form
+`sheetDateOfCell` reads). It writes RAW in chunks of 50 - Date as a serial
+number (a real date), NO(DATE), Company, Job Title, Job Link, Job Description
+(`descriptionCell`) - and, for a `JobExportRow` carrying `analysis`, the six
+G-L cells in the same write (A:L); never a column the caller names. Before
+each chunk its rows are read again (A:F) and a row holding anything moves the
+rest below the last used row (409 `sheet-changed` after five tries), and one
 `:batchUpdate` grows the grid when the chunk runs past it and lays the rows
-out. Exports to one tab are serialised in-process. The answer's `export`
-carries `date, firstNo, lastNo, startRow, endRow, updatedRanges, tabUrl`.
+out. Writes to one tab are serialised in-process. It answers
+`JobExportResult` (`spreadsheetId, spreadsheetTitle, tabName, tabUrl, date,
+updatedRanges, rowsWritten, startRow, endRow, firstNo, lastNo,
+unresolvedJobLinks, skippedDuplicates`); `exportPlaceOf` is its pure placement.
+test/jobSheetRoutes.test.js drives it.
 
 **The analysis columns** (G-L, J5): only the app's OWN sheets
 (`isAppOwnedSheet`: allocated to an account) get them, in job tabs. They are a
@@ -1795,18 +1796,18 @@ the server's default - there is no other) and each row's `jobLink`, never a
 cell; it reads the rows' C:F, then G:L in a SECOND, best-effort range read (a
 job tab narrower than twelve columns refuses a range past its grid - the rows
 then say *When built*) to show which rows skip analysis. It has no sheet
-select and no column mapping. Every page that picks a tab - the panel, Find
-Jobs' export, the Job Filter, Report Jobs - draws the server's listing through
-lib/sheetTabs.ts: `sheetTabOptions` lists a `layout: 'other'` tab DISABLED
-with why (*old layout, not read* for a `MM/DD/YYYY` title, else *not a job
-tab*) and `chosenTab` starts on the server's `defaultTab` (All) and never
-yields an `other` tab, however the select was driven;
-test/frontendJobSheet.test.js runs both against `listAddressableSheetTabs`.
-The note under the select is `unreadTabsNoteFor(tabs)`: `UNREAD_TABS_NOTE`
-(copy an old daily tab's jobs into C to F of All), or, while the tab named
-All is an `other` one (the name clash), `UNREAD_TABS_NOTE_ALL_CLASH`, which
-says to rename or delete it and open Settings > Job Sheet first - never to
-paste into a tab no route reads. Both spell the tab names out on purpose: Next 16.1's
+select and no column mapping. Every page that picks a tab - the panel, the
+Job Filter, Report Jobs - draws the server's listing through
+lib/sheetTabs.ts: `sheetTabOptions` lists a `layout: 'other'` tab DISABLED as
+*(not a job tab)*, whatever its name, and `chosenTab` starts on the server's
+`defaultTab` (All) and never yields an `other` tab, however the select was
+driven; test/frontendJobSheet.test.js runs both against
+`listAddressableSheetTabs`. The note under the select is
+`unreadTabsNoteFor(tabs)`: `UNREAD_TABS_NOTE` (copy a job from a tab that is
+not read into C to F of All), or, while the tab named All is an `other` one
+(the name clash), `UNREAD_TABS_NOTE_ALL_CLASH`, which says to rename or delete
+it and open Settings > Job Sheet first - never to paste into a tab no route
+reads. Both spell the tab name out on purpose: Next 16.1's
 Turbopack folded an EXPORTED constant built from template literals joined
 with `+` at build time and dropped the middle literal of three (not tried
 again on 16.3.8), so write such a constant as plain string literals. The Job Filter page shows each row's
@@ -1816,12 +1817,17 @@ startRow, endRow? }`. Admin -> Settings ->
 General has the Analysis model select (its own Save; a stored model that
 stopped running stays listed as "cannot run here"); Admin -> Prompts offers no
 New Variant, Duplicate, Save Active or model override for the analysis
-feature, and pills `predatesJobField` / `predatesIndustry` /
-`predatesSectionSwitches` - with the editor's own note on the text as typed,
-lib/promptNotes.ts (`lacksJobFieldList` / `lacksIndustryList` /
-`lacksSectionSwitches`, the server's variable syntax), which
-test/frontendAnalysis.test.js holds to those flags and to the gate's
-`analysisOverrideFor`. The profile
+feature; it marks a record the server sends `needsUpdate` (a *Needs update*
+pill and *Not run: it does not use [[...]].*), pills each required variable
+*Required*, and in the editor says what runs in a flagged record's place and
+what the text as typed lacks - refusing Save, with no request sent, in the
+server's own sentence. Those decisions are lib/promptRequirements.ts
+(`requiredVariables` read from `allowedVariables[].required`,
+`missingRequiredVariables`, `missingVariablesSentence`, `needsUpdateNote`; no
+runtime import), which test/frontendAnalysis.test.js holds to
+`listRequiredPromptVariables`, `validatePromptContent` and `updatePrompt`'s
+refusal. The page loads its model options with `adminApi.getSettings` (there
+is no `/api/admin/ai-models` any more). The profile
 editor's Extracting prompt select is gone with `analyzeJobPromptId`.
 test/frontendAnalysis.test.js runs every copy here against the server's code.
 
@@ -1847,40 +1853,23 @@ external-content index `job_lake_fts` points at rows by rowid, which VACUUM
 renumbers on a table without one; three triggers keep it in step) and the plan's
 indexes exactly - `job_hash` UNIQUE, `updated_at`, `(job_field_id, updated_at)`,
 `(company_key, updated_at)`, `requested_by`, and `id WHERE sheet_synced_at IS
-NULL` (the outbox), and `id WHERE job_type IS NULL` (the boot step's rows still
-to fill) - plus `job_lake_history(lake_id)`, `job_lake_history(id) WHERE
-job_type IS NULL` (its earlier versions still to fill) and `job_reports`' two
+NULL` (the outbox) - plus `job_lake_history(lake_id)` and `job_reports`' two
 (below), all in `INDEXES_AFTER_COLUMNS`. test/jobLakeStore.test.js pins them
 and their plans (`FIND_BY_HASH_SQL`, `LIST_DEFAULT_SQL`, `UNSYNCED_SQL`,
-`HISTORY_SQL`, `FIND_JOB_REPORT_SQL`, `findJobReportsSql`,
-`DELETE_LAKE_REPORTS_SQL`, and jobLakeFacts.ts's `LAKE_TO_FILL_SQL`,
-`HISTORY_TO_FILL_SQL` and `DROP_STALE_REPORT_SQL`).
+`HISTORY_SQL`, `FIND_JOB_REPORT_SQL`, `findJobReportsSql` and
+`DELETE_LAKE_REPORTS_SQL`).
 
 **Facts** (v6): `job_lake` and `job_lake_history` carry `job_type` ('remote' |
 'hybrid' | 'on_site' | ''), `clearance` (0/1) and `industry` (a
 config/industries.ts id or `not_specified`) - the analysis's, through
 `lakeJobFromAnalysis` -> facts.ts `analysisFactsOf`, never the caller's;
-written on insert, replace and the history copy. NULL means "not filled yet":
-a row an older build wrote. `database/jobLakeFacts.ts`'s `fillLakeFacts` runs
-in getDb() every start (after the dollar switch, before the connection is
-registered - so no repository and no getDb() inside it), by CONDITION, not a
-marker: rows whose `job_type` IS NULL (the two partial indexes, so a start
-with nothing to fill reads two empty indexes and neither table), history
-first, in IMMEDIATE batches of 500, from each row's stored `analysis_json` through the
-same pure functions - NO model, nothing written into an analysis; a row whose
-analysis is gone or unreadable gets '' / 0 / `not_specified`. A history row
-found NULL also marks its lake row for a refill, because only an older build's
-REPLACE leaves one (it overwrote the row without touching the facts). In the
-same batches it records the reports those rows hold in `job_reports` (below):
-a `source = 'report'` row's versions only - never a merge's, whose
-`requested_by` is the analysis's maker - the first `added`, each later one
-`replaced`. A duplicate or unclassified report an older build made left no
-row, so it is NOT remembered: the first run over it merges it again (a
-duplicate again inside the window, a paid replacement after it), and records
-that - the README says so where it promises a re-run pays nothing.
-Never fatal; a second start is a no-op. `toEntry` / `toHistory` serve `jobType`,
-`jobTypeLabel` (Remote, Hybrid, Onsite, ''), `clearance` (boolean), `industry`
-and `industryLabel` ('' for `not_specified`), all null/'' while unfilled.
+written on insert, replace and the history copy. Never NULL in a lake the
+guard admits (a NULL `job_type` refuses the database: ac3df79 filled every row
+an older build wrote, from its stored analysis), and read with defaults
+anyway: `toEntry` / `toHistory` serve `jobType` ('' when not stated),
+`jobTypeLabel` (Remote, Hybrid, Onsite, ''), `clearance` (a boolean),
+`industry` (`not_specified` by default) and `industryLabel` ('' for
+`not_specified`) - never null.
 `LakeQuery` (and GET /api/admin/job-lake) filters on `jobType`
 (`not_specified` = ''), `clearance` (`true`/`false`) and `industry`, with no
 index of their own: the page still reads `idx_job_lake_updated` in order, no
@@ -1898,13 +1887,11 @@ sorted or copied to - no sheet cell is read for it. `findJobReports(account,
 analysisIds)` reads it. `deleteLakeEntry` deletes the reports that reached
 the row (`DELETE_LAKE_REPORTS_SQL`), so the job can be reported again, by any
 of them; an `unclassified` record names no row, so nothing forgets it (its
-analysis is final - it would be unclassified again). A record whose lake row is gone anyway (an older build, which knows
-nothing of the records, deleted it) counts for nothing: `findJobReports` skips
-it (`findJobReportsSql`'s EXISTS), so the run and the preview never call the
-posting reported before, and the merge drops it when it meets it; when that
-build took the same report again as a new row, the boot step's seed replaces
-the record with one naming that row (`DROP_STALE_REPORT_SQL`, one seek), so
-Delete here forgets it. No sweep of the table at startup.
+analysis is final - it would be unclassified again). `findJobReportsSql` is a
+plain seek: a record always names a lake row that exists, because this build
+deletes the two together, and the guard's first stamp deleted, once, every
+record an older build (which knew nothing of the records) left naming a row
+it had deleted.
 
 **`mergeIntoLake(job, requestedBy, policy)`** is the only way in, for the
 reporter run and the admin merge alike: ONE `.immediate()` transaction - for a
@@ -1921,10 +1908,11 @@ A report decided added, replaced, duplicate or unclassified is then recorded
 (`INSERT OR IGNORE`); `no-company` is not - the reporter fills it in and
 reports again. Another account's report of the same posting is a `duplicate`
 (and recorded as theirs). A merge (source `merge`) is nobody's report: never
-`already`, never recorded. `job_lake.report_ref`
-(`reportRefOf(spreadsheet, tab, row)`, from `LakeJob.reportedFrom`) is still
-written, because an older build decides ITS `already` on it, but decides
-nothing here. The analysis is marked merged in the same transaction. The decision reads the database ONLY
+`already`, never recorded. A report's sheet row (`LakeJob.reportedFrom`) goes
+on its `job_reports` record; `job_lake.report_ref`, which an older build
+decided its own `already` on, is neither in SCHEMA nor written (an upgraded
+database keeps the column, unread). The analysis is marked merged in the same
+transaction. The decision reads the database ONLY
 (J10) - test/jobLakeSync.test.js runs it with every Google seam set to throw -
 and worker threads in test/jobLakeStore.test.js race four writers for one job.
 `services/jobLake/index.ts`'s wrapper resolves the policy from the settings at
@@ -2104,8 +2092,8 @@ your own sheet; the result is a Notice (warn when capped) linking to the tab
 through `safeWebLink`, a refusal an ErrorNotice. The table and Details show
 each job's Job type, Clearance and
 Industry in the server's words (`jobTypeLabel`, `industryLabel`;
-`lakeFactCells`, and `describeLakeFacts`, which says *Not stated*, or *Not
-filled in yet* for a NULL an older build left); Details is a kit Dialog with
+`lakeFactCells`, and `describeLakeFacts`, which says *Not stated* for a blank
+one); Details is a kit Dialog with
 Revoke reward and Delete + "Also revoke the reward"; the money boxes are text, never `type="number"`,
 and the page is in frontendMoney.test.js's FRONTEND_MONEY_SOURCES.
 test/e2e/report-run.js drives both against stub-report-sheets.js and
@@ -2121,13 +2109,14 @@ rows: their cells are read and nothing is written back.
 Some 200 commits, no tags; releases are merge PRs named for their branch (v2.0,
 v3.0, v4.0, and v4.1, built one commit per phase plus a review-fix commit where
 one was needed - Phase 9's 4b43c01). The README's
-"What changed in this release" and "Rolling back this release" are rewritten
-for each release from the commits since the last one: what an operator must DO
-after upgrading, in order, and every step a rollback needs, checked against the
-older build's code. The release before that keeps its steps too, marked *From
-<commit>* in the one ordered list and summed up under "Coming from ...", and
-going back that far keeps a subsection of its own ("Going back further, to
-...") - an install may skip a release. The pattern in nearly every feature arc is a feature commit
+"What changed in this release" is rewritten for each release from the commits
+since the last one, and the short **Upgrading** list under Quick Start (stop,
+back up, pull, `npm run install:all`, build, start) says what an operator does. There is no
+rollback procedure and no per-release upgrade history any more (owner decision
+L1: every install ran ac3df79, and nobody goes back): a release that needs
+data changed carries the code that changes it, and a database too old for it
+is refused by the startup guard, which names the build to start once first.
+The pattern in nearly every feature arc is a feature commit
 followed by one or more "fix what the adversarial review found" commits, so
 expect review passes to be part of the work rather than an afterthought.
 

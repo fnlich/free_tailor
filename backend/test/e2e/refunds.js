@@ -8,8 +8,8 @@
  *
  *  - nobody but a reporter asks any more: a user's purchases, Credit History
  *    and order offer no Ask for refund, the Refund Requests tab is read-only
- *    and says to contact the administrator, and a stale page's ask is
- *    answered 410;
+ *    and says to contact the administrator, and the server has no route to
+ *    ask one (404, nothing created);
  *  - a reporter presses Ask for Refund - where a user's Purchase Credits sits
  *    - the request reaches every administrator's bell with a link to the
  *    queue, an administrator records what they actually paid (more than was
@@ -22,9 +22,9 @@
  *
  * Nothing is bought: the purchases are written straight into the database the
  * server reads (the same DB_DIR), paid the way a webhook pays them
- * (`creditPaid`), and the old requests are made through the service the
- * routes used to call (`createRefundRequest`, kept unrouted for exactly
- * this). The crypto one is refunded by hand, which is the path that needs the
+ * (`creditPaid`), and the old requests are seeded the way the app made them
+ * before (test/refundSeed.js, which the server suite seeds with too). The
+ * crypto one is refunded by hand, which is the path that needs the
  * "send it back FIRST" step on the page. The card one, with no Stripe keys,
  * fails at Stripe - which is how this reaches the generic "contact your
  * administrator" sentence, its Contact admin link, and a dialog over a dialog.
@@ -48,6 +48,9 @@ const payments = require(path.join(DIST, 'services', 'payments'));
 const credits = require(path.join(DIST, 'services', 'credits'));
 const orders = require(path.join(DIST, 'database', 'orderRepository'));
 const refunds = require(path.join(DIST, 'services', 'refunds'));
+const refundDb = require(path.join(DIST, 'database', 'refundRequestRepository'));
+const sqlite = require(path.join(DIST, 'database', 'sqlite'));
+const { seedRefundRequest } = require(path.join(__dirname, '..', 'refundSeed'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -258,10 +261,10 @@ async function main() {
   orders.settleOrderIfFinished(order.id);
   const acmeItem = orders.listOrderItems(order.id).find((item) => item.companyName === 'Acme');
 
-  // The requests this person made before asking was removed - the four kinds
-  // the queue still decides - through the service the routes used to call.
+  // The requests this person made before asking was removed - the kinds the
+  // queue still decides - seeded as the app made them then.
   const asked = (itemType, itemId, reason) =>
-    refunds.createRefundRequest(users.getUserById(user.id), { itemType, itemId, reason });
+    seedRefundRequest({ refunds, refundDb, sqlite }, users.getUserById(user.id), { itemType, itemId, reason });
   const first = asked('payment', crypto.id, 'Bought twice by mistake.');
   const secondRequest = asked('payment', second.id, 'Changed my mind.');
   const cardRequest = asked('payment', card.id, 'Not needed.');
@@ -290,20 +293,18 @@ async function main() {
   });
   check('setup: the administrator lists two ways to reach them', saved.status === 200, `got ${saved.status}`);
 
-  // A page left open from before asking was removed: answered, not obeyed.
-  const stale = await asUser('/refund-requests', {
+  // The routes that once asked are gone: nothing answers them, and nothing is made.
+  const before = (await (await asUser('/refund-requests')).json()).total;
+  const ask = await asUser('/refund-requests', {
     method: 'POST',
-    body: JSON.stringify({ itemType: 'payment', itemId: crypto.id, reason: 'From an old tab.' }),
+    body: JSON.stringify({ itemType: 'payment', itemId: crypto.id, reason: 'Asked anyway.' }),
   });
-  const staleBody = await stale.json().catch(() => ({}));
-  const staleOptions = await asUser(`/refund-requests/options?paymentId=${encodeURIComponent(crypto.id)}`);
+  const options = await asUser(`/refund-requests/options?paymentId=${encodeURIComponent(crypto.id)}`);
+  const after = (await (await asUser('/refund-requests')).json()).total;
   check(
-    'a stale page asking for a refund is answered 410, in a sentence that says to contact the administrator',
-    stale.status === 410 &&
-      staleOptions.status === 410 &&
-      staleBody.code === 'refund-requests-closed' &&
-      staleBody.error === refunds.REFUND_ASKING_CLOSED_MESSAGE,
-    JSON.stringify({ status: stale.status, options: staleOptions.status, staleBody })
+    'nobody can ask for a refund: the asking routes answer 404 and no request is made',
+    ask.status === 404 && options.status === 404 && before === 4 && after === 4,
+    JSON.stringify({ ask: ask.status, options: options.status, before, after })
   );
 
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
@@ -449,7 +450,6 @@ async function main() {
 
     const adminBell = await readBell(adminPage);
     const newPayout = adminBell.notices.find((n) => n.text.includes(`New payout request ${payoutRef}`));
-    const newRequest = adminBell.notices.find((n) => n.text.includes(`New refund request ${reference}`));
     check(
       "admin: the bell says there is something new, and the payout request's notice links to the queue",
       /new/.test(adminBell.label ?? '') &&
@@ -458,11 +458,6 @@ async function main() {
         newPayout.linkText === 'Open the refund queue' &&
         newPayout.text.includes(`${reporter.email} asks to be paid out $5 of earnings: "PayPal to my usual address, please."`),
       JSON.stringify({ label: adminBell.label, newPayout })
-    );
-    check(
-      'admin: the older refund request was announced the same way',
-      Boolean(newRequest) && /\$25 back/.test(newRequest.text) && /Bought twice by mistake/.test(newRequest.text),
-      JSON.stringify(newRequest)
     );
     await adminPage.evaluate(() => {
       const link = Array.from(document.querySelectorAll('[role="dialog"][aria-label="Notifications"] a')).find(

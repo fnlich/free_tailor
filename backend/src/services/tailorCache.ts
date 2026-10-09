@@ -216,8 +216,3 @@ export function startTailorCachePrune(): void {
   pruneTimer.unref?.();
 }
 
-export function stopTailorCachePruneForTests(): void {
-  if (pruneTimer) clearInterval(pruneTimer);
-  pruneTimer = null;
-  warnedUnavailable = false;
-}

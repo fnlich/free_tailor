@@ -141,19 +141,13 @@ router.get('/methods', async (req: Request, res: Response) => {
  * visit to the summary, and burned two of the twenty checkouts an account may
  * open in an hour for one purchase. This creates nothing and calls nobody.
  *
- * It takes the same COUNT of credits the checkout takes, and no amount - for
- * the same reason.
+ * It takes the same `amountUsd` the checkout takes, for the same reason.
  */
 router.get('/quote', async (req: Request, res: Response) => {
   try {
     const method = req.query.method;
     if (method !== 'card' && method !== 'crypto') {
       throw new PaymentError('Choose a payment method.');
-    }
-    // A count of credits from a buy page loaded before credits were dollars.
-    // Read as dollars it would quote a different purchase than the page shows.
-    if (req.query.credits !== undefined && req.query.amountUsd === undefined) {
-      throw new PaymentError('This page is from an older version of the app. Reload it and try again.');
     }
     // No coin is named here. The buyer chooses it on the provider's own page,
     // so an `asset` in the query could not change the amount and is not read.
@@ -179,12 +173,6 @@ router.post('/checkout', async (req: Request, res: Response) => {
      * which is why a stale tab still sending `asset` is simply not read.
      */
     const body = (req.body ?? {}) as Record<string, unknown>;
-    // A count of credits from a buy page loaded before credits were dollars:
-    // at the old price, 10 credits was $5, and nothing here can say which the
-    // buyer meant. Refused, before a checkout is opened.
-    if (body.credits !== undefined && body.amountUsd === undefined) {
-      throw new PaymentError('This page is from an older version of the app. Reload it and try again.');
-    }
     const started = await startCheckout(
       req.user!,
       {

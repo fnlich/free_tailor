@@ -60,7 +60,7 @@ export function nextAttach(
 export type ListedBatch = {
   batchId: string;
   state: string;
-  /** 'immediate' for a Generate Immediately run, 'order' for a placed order, null for one from before kinds. */
+  /** 'immediate' for a Generate Immediately run, 'order' for a placed order; null when the server no longer holds the batch. */
   kind?: string | null;
 };
 

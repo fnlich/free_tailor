@@ -13,11 +13,22 @@ export interface PromptVariableDefinition {
   name: string;
   description?: string;
   sampleValue?: string;
+  /**
+   * True on a feature variable every record of that feature must use
+   * (services/promptService.ts `requiredVariables`); absent otherwise.
+   */
+  required?: true;
 }
 
 export interface PromptValidation {
   usedVariables: string[];
   unknownVariables: string[];
+  /**
+   * The feature's required variables the text does not use, in the
+   * feature's order; [] for a complete record and for an unattached prompt.
+   * A save with any is refused; a stored record with any is `needsUpdate`.
+   */
+  missingVariables: string[];
 }
 
 export interface PromptSummary {
@@ -45,26 +56,12 @@ export interface PromptSummary {
   allowedVariables: PromptVariableDefinition[];
   validation: PromptValidation;
   /**
-   * Present (true) only on a tailor-resume record whose text never mentions
-   * `[[includeStrengths]]`: written before a profile could switch its Strengths
-   * and Soft Skills sections. Admin -> Prompts says so; the app enforces the
-   * switches for it anyway.
+   * Present (true) only on a stored record that lacks one of its feature's
+   * required variables (`validation.missingVariables` names them). Such a
+   * record is never run: the feature's built-in prompt runs in its place
+   * until an administrator adds them under Admin -> Prompts.
    */
-  predatesSectionSwitches?: boolean;
-  /**
-   * Present (true) only on the analysis record whose text never mentions
-   * `[[jobFieldList]]`: written before a posting had a job field. Admin ->
-   * Prompts says so; the analysis appends the job field, salary and filter
-   * instructions to every turn it runs for such a record.
-   */
-  predatesJobField?: boolean;
-  /**
-   * Present (true) only on an analysis record that names `[[jobFieldList]]`
-   * but never `[[industryList]]`: written after postings had a job field and
-   * before they had an industry. Admin -> Prompts says so; the analysis
-   * appends the industry instructions to every turn it runs for such a record.
-   */
-  predatesIndustry?: boolean;
+  needsUpdate?: true;
   isBuiltIn: boolean;
   isActiveForFeature?: boolean;
   usage?: string;

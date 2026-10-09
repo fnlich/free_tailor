@@ -48,7 +48,6 @@ const ROUTES = [
   '/settings/subscription',
   '/orders',
   '/credits',
-  '/jobs',
   '/jobs/filter',
   '/bid-assistant',
   '/calendar',
@@ -70,7 +69,6 @@ const REPORTER_ELSEWHERE = [
   '/orders/no-such-order',
   '/credits/invoice?payment=no-such-payment',
   '/credits/return',
-  '/account',
 ];
 
 /** Administrator-only on top of those. */
@@ -518,39 +516,6 @@ async function main() {
       `lit: ${userSettings.activeLabels.join(', ')}`
     );
 
-    // The old account page still answers, by sending people to its new home.
-    await page.goto(`${APP}/account`, { waitUntil: 'networkidle2' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    check('user /account: redirects to /settings', new URL(page.url()).pathname === '/settings', page.url());
-    await page.goto(`${APP}/account#subscription`, { waitUntil: 'networkidle2' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    check(
-      'user /account#subscription: redirects to /settings/subscription',
-      new URL(page.url()).pathname === '/settings/subscription',
-      page.url()
-    );
-
-    // So does the tier's page from before it was called a subscription, and
-    // it replaces the history entry: Back must not land on it and bounce.
-    await page.goto(`${APP}/settings`, { waitUntil: 'networkidle2' });
-    await page.goto(`${APP}/settings/plan`, { waitUntil: 'networkidle2' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    check(
-      'user /settings/plan: redirects to /settings/subscription',
-      new URL(page.url()).pathname === '/settings/subscription',
-      page.url()
-    );
-    const lit = await page.evaluate(
-      () => document.querySelector('nav.tl-tabs[aria-label="Settings"] .tl-tab[data-active="true"]')?.textContent.trim()
-    );
-    check('user /settings/plan: lands with Subscription lit', lit === 'Subscription', String(lit));
-    await page.goBack({ waitUntil: 'networkidle2' });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    check(
-      'user /settings/plan: Back goes to the page before it, not to the old address',
-      new URL(page.url()).pathname === '/settings',
-      page.url()
-    );
     await page.goto(`${APP}/settings/subscription`, { waitUntil: 'networkidle2' });
     await new Promise((resolve) => setTimeout(resolve, 500));
     const tierCopy = await page.evaluate(() => document.querySelector('.tl-main')?.innerText ?? '');
@@ -761,7 +726,7 @@ async function main() {
     // The prefix collision that a vertical rail makes obvious.
     const filter = await visit(page, '/jobs/filter', 'user');
     check(
-      'user /jobs/filter: lights Job Filter alone, not Job Search too',
+      'user /jobs/filter: lights Job Filter alone',
       filter.activeLabels.length === 1 && filter.activeLabels[0] === 'Job Filter',
       `lit: ${filter.activeLabels.join(', ') || 'nothing'}`
     );

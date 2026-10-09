@@ -442,16 +442,15 @@ test('an unset GENERATION_MAX_ATTEMPTS means three goes, not one', async () => {
 });
 
 /**
- * Rows written by a build that still had the browser chat providers.
+ * Rows as the store holds them, written by an earlier process.
  *
- * Those builds ran a third lane, `browser`, and wrote the chat sites a task
- * could use beside it. A restart onto this build reads those rows back, and a
- * lane this build does not have is not a lane anything will ever dispatch: with
- * no slot to take it, the task would sit queued for ever while its credit stayed
- * reserved. So the restore mapper puts it in a lane that exists, and the runner
- * resolves its model again, because the one stored with it is gone.
+ * A restart reads them back, and a lane this process does not have - a
+ * provider an administrator removed since - is not a lane anything will ever
+ * dispatch: with no slot to take it, the task would sit queued for ever while
+ * its credit stayed reserved. So the restore mapper puts it in its type's pool,
+ * and the queue places it with a provider of that type.
  */
-function legacyTaskRow(batchId, id, seq, state, data) {
+function storedTaskRow(batchId, id, seq, state, data) {
   return {
     id,
     batchId,
@@ -465,7 +464,7 @@ function legacyTaskRow(batchId, id, seq, state, data) {
   };
 }
 
-function legacyBatchRow(id, jobCount) {
+function storedBatchRow(id, jobCount) {
   return {
     id,
     state: 'running',
@@ -478,13 +477,12 @@ function legacyBatchRow(id, jobCount) {
   };
 }
 
-/** The choice a hybrid task was stored with, exactly as that build wrote it. */
-const HYBRID_CHOICE = {
-  provider: 'claude-web',
-  modelName: 'chat',
-  modelId: 'free-hybrid',
-  modelLabel: 'Free chat (hybrid)',
-  route: 'hybrid',
+/** A choice as a queued task stores it. */
+const SONNET_CHOICE = {
+  provider: 'claude-cli',
+  modelName: 'sonnet',
+  modelId: 'claude-cli-sonnet',
+  modelLabel: 'Claude Sonnet',
 };
 
 async function untilSettled(queue, batchId) {
@@ -498,101 +496,14 @@ async function untilSettled(queue, batchId) {
   return queue.snapshot(batchId);
 }
 
-test('a task queued on the removed browser lane is restored onto a live lane, and runs', async () => {
-  useTempStorage('queue-persistence-browser-lane');
-  const store = loadFresh('../dist/database/generationRepository');
-  store.saveBatchWithTasks(legacyBatchRow('bat_legacy', 3), [
-    // Mid-build on a browser when the old process died.
-    legacyTaskRow('bat_legacy', 'tsk_hybrid', 0, 'running', {
-      queue: 'browser',
-      sites: ['claude-web', 'chatgpt-web'],
-      payload: { batchId: 'bat_legacy', profileId: 'p-default', jobIndex: 0, choice: HYBRID_CHOICE },
-    }),
-    // Pinned to one site, by a profile that has a model of its own today.
-    legacyTaskRow('bat_legacy', 'tsk_pinned', 1, 'queued', {
-      queue: 'browser',
-      sites: ['chatgpt-web'],
-      payload: {
-        batchId: 'bat_legacy',
-        profileId: 'p-own',
-        jobIndex: 0,
-        choice: { provider: 'chatgpt-web', modelName: 'chat', modelId: 'chatgpt-web-chat', modelLabel: 'ChatGPT (free)' },
-      },
-    }),
-    // A lane name no build ever had, and a Codex choice: placed by provider.
-    legacyTaskRow('bat_legacy', 'tsk_codex', 2, 'queued', {
-      queue: 'constructor',
-      payload: {
-        batchId: 'bat_legacy',
-        profileId: 'p-default',
-        jobIndex: 0,
-        choice: { provider: 'codex-cli', modelName: 'default', modelId: 'codex-cli-default', modelLabel: 'Codex' },
-      },
-    }),
-  ]);
-
-  const queueModule = loadFresh('../dist/services/queue/index');
-  queueModule.resetGenerationQueueForTests();
-  const { __currentChoiceForTests } = require('../dist/services/queue/resumeTask');
-  const profiles = {
-    'p-default': { id: 'p-default', name: 'Ada', profileSettings: {} },
-    'p-own': { id: 'p-own', name: 'Ada', profileSettings: { ai: { modelId: 'claude-cli-opus' } } },
-  };
-
-  // The real queue and the real restore, with a runner that does the one thing
-  // the real one does before any model is called: resolve the choice it runs
-  // on. The rest of a resume - a template, a model call, a PDF - is not what is
-  // under test here.
-  const ran = [];
-  const queue = queueModule.getGenerationQueue();
-  queueModule.registerTaskRunner(queueModule.RESUME_TASK_KIND, async (payload, assignment) => {
-    const choice = await __currentChoiceForTests(payload.choice, profiles[payload.profileId]);
-    ran.push({ profileId: payload.profileId, lane: assignment.queue, model: `${choice.provider}/${choice.modelId}` });
-    return { profileId: payload.profileId };
-  });
-
-  const report = await queueModule.restoreGenerationQueue();
-  assert.equal(report.batches, 1);
-  assert.equal(report.requeued, 1, 'the task that was mid-build is built again');
-
-  const snapshot = await untilSettled(queue, 'bat_legacy');
-  assert.deepEqual(
-    snapshot.tasks.map((task) => task.state),
-    ['done', 'done', 'done'],
-    'nothing is left queued on a lane no slot serves'
-  );
-
-  const byProfileAndLane = ran.map((entry) => `${entry.profileId}@${entry.lane}:${entry.model}`).sort();
-  assert.deepEqual(byProfileAndLane, [
-    // The hybrid task, on the app default.
-    'p-default@claude-cli:claude-cli/claude-cli-sonnet',
-    // A Codex choice is not retired, so it runs as stored, on its own seat's
-    // lane - the built-in Codex provider's - even from a lane named
-    // `constructor`, which no build ever had.
-    'p-default@codex-cli:codex-cli/codex-cli-default',
-    // The pinned task, on what its profile names today rather than on the app
-    // default: the credit paid for a resume built the way a new one would be.
-    'p-own@claude-cli:claude-cli/claude-cli-opus',
-  ]);
-
-  // Written back without the old lane or the site list, so a second restart
-  // reads rows this build wrote.
-  const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
-  for (const task of row.tasks) {
-    assert.ok(['claude-cli', 'codex-cli', 'gemini-cli'].includes(task.data.queue), `${task.id} is on a lane this build has`);
-    assert.equal('sites' in task.data, false, `${task.id} no longer carries chat sites`);
-  }
-});
-
 test('one batch that cannot be restored does not cost the others theirs', async () => {
   useTempStorage('queue-persistence-isolation');
   const store = loadFresh('../dist/database/generationRepository');
   for (const id of ['bat_first', 'bat_broken', 'bat_last']) {
-    store.saveBatchWithTasks(legacyBatchRow(id, 1), [
-      legacyTaskRow(id, `tsk_${id}`, 0, 'queued', {
-        queue: 'browser',
-        sites: ['claude-web'],
-        payload: { batchId: id, profileId: 'p-default', jobIndex: 0, choice: HYBRID_CHOICE },
+    store.saveBatchWithTasks(storedBatchRow(id, 1), [
+      storedTaskRow(id, `tsk_${id}`, 0, 'queued', {
+        queue: 'claude-cli',
+        payload: { batchId: id, profileId: 'p-default', jobIndex: 0, choice: SONNET_CHOICE },
       }),
     ]);
   }
@@ -635,88 +546,6 @@ test('one batch that cannot be restored does not cost the others theirs', async 
   }
 });
 
-test('a restored task that named a browser site goes in the lane of the provider it now runs on', async () => {
-  // Placed by the stored provider, it went to the Claude seat's lane, and then
-  // ran on whatever its profile resolved to - with the Claude seat locked, the
-  // Codex seat. Four such tasks then held four Claude-lane slots while queueing
-  // at a Codex semaphore one wide, deadlines running: the oversubscription the
-  // lane split exists to prevent. Resolved before they are placed, they wait in
-  // the Codex lane instead, one at a time.
-  useTempStorage('queue-persistence-retired-lane');
-  process.env.AI_LOCKED_PROVIDERS = 'claude-cli';
-  delete process.env.AI_UNLOCKED_PROVIDERS;
-  process.env.AI_CLI_CONCURRENCY = '4';
-  process.env.AI_CODEX_CONCURRENCY = '1';
-  try {
-    const { buildNewProfile } = loadFresh('../dist/services/profileService');
-    loadFresh('../dist/database/profileRepository').saveProfile(
-      buildNewProfile(
-        {
-          name: 'Ada',
-          title: 'Engineer',
-          skills: ['C#'],
-          contact: { email: 'a@b.c', phone: '1', location: 'X' },
-          summary: 's',
-          experience: [],
-          strengths: [],
-          education: [],
-        },
-        'p-default'
-      )
-    );
-
-    const store = loadFresh('../dist/database/generationRepository');
-    store.saveBatchWithTasks(
-      legacyBatchRow('bat_lane', 4),
-      [0, 1, 2, 3].map((seq) =>
-        legacyTaskRow('bat_lane', `tsk_${seq}`, seq, seq === 0 ? 'running' : 'queued', {
-          queue: 'browser',
-          sites: ['claude-web', 'chatgpt-web'],
-          payload: { batchId: 'bat_lane', profileId: 'p-default', jobIndex: 0, choice: HYBRID_CHOICE },
-        })
-      )
-    );
-
-    const queueModule = loadFresh('../dist/services/queue/index');
-    queueModule.resetGenerationQueueForTests();
-    const queue = queueModule.getGenerationQueue();
-    let release;
-    const held = new Promise((resolve) => {
-      release = resolve;
-    });
-    const started = [];
-    queueModule.registerTaskRunner(queueModule.RESUME_TASK_KIND, async (payload, assignment) => {
-      started.push({ lane: assignment.queue, provider: payload.choice.provider });
-      await held;
-      return {};
-    });
-
-    await queueModule.restoreGenerationQueue();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    const stats = queue.stats();
-    assert.equal(stats['claude-cli'].queued + stats['claude-cli'].running, 0, 'nothing waits in the Claude seat\'s lane');
-    assert.equal(stats['codex-cli'].queued + stats['codex-cli'].running, 4, 'all four are Codex work, in the Codex lane');
-    assert.equal(stats['codex-cli'].running, 1, 'one at a time, as AI_CODEX_CONCURRENCY says');
-    assert.deepEqual(started, [{ lane: 'codex-cli', provider: 'codex-cli' }]);
-
-    // The fresh choice is written back, so a second restart reads it as stored.
-    const [row] = loadFresh('../dist/database/generationRepository').loadBatchRows();
-    for (const task of row.tasks) {
-      assert.equal(task.data.queue, 'codex-cli', `${task.id} is stored on the lane it runs on`);
-      assert.equal(task.data.payload.choice.provider, 'codex-cli');
-      assert.equal('route' in task.data.payload.choice, false);
-    }
-
-    release();
-    queueModule.resetGenerationQueueForTests();
-  } finally {
-    delete process.env.AI_LOCKED_PROVIDERS;
-    delete process.env.AI_CLI_CONCURRENCY;
-    delete process.env.AI_CODEX_CONCURRENCY;
-  }
-});
-
 test('Gemini work comes back on the Gemini lane: stored there, or placed there by its provider', async () => {
   // A task's lane is the resource it waits for. Restored into the Claude
   // seat's lane, Gemini work would hold Claude slots while queueing at the
@@ -726,15 +555,15 @@ test('Gemini work comes back on the Gemini lane: stored there, or placed there b
   try {
     const choice = { provider: 'gemini-cli', modelName: 'auto', modelId: 'gemini-cli-auto', modelLabel: 'Gemini' };
     const store = loadFresh('../dist/database/generationRepository');
-    store.saveBatchWithTasks(legacyBatchRow('bat_gemini', 2), [
+    store.saveBatchWithTasks(storedBatchRow('bat_gemini', 2), [
       // Mid-build on the Gemini seat when the process died.
-      legacyTaskRow('bat_gemini', 'tsk_stored', 0, 'running', {
-        queue: 'gemini',
+      storedTaskRow('bat_gemini', 'tsk_stored', 0, 'running', {
+        queue: 'gemini-cli',
         payload: { batchId: 'bat_gemini', profileId: 'p1', jobIndex: 0, choice },
       }),
-      // A lane this build lacks: placed again by the provider it runs on.
-      legacyTaskRow('bat_gemini', 'tsk_placed', 1, 'queued', {
-        queue: 'constructor',
+      // A provider removed since: placed again in the pool of its type.
+      storedTaskRow('bat_gemini', 'tsk_placed', 1, 'queued', {
+        queue: 'prv-0badf00d',
         payload: { batchId: 'bat_gemini', profileId: 'p1', jobIndex: 0, choice },
       }),
     ]);

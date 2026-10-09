@@ -252,7 +252,6 @@ test('every admin settings and model response carries the option lists, every se
 
     const responses = {
       'GET /settings': await server.call('GET', '/settings'),
-      'GET /ai-models': await server.call('GET', '/ai-models'),
       'PUT /settings': await server.call('PUT', '/settings', { defaultTheme: 'dark' }),
       'POST /models': created,
       'PUT /models/:id': await server.call('PUT', `/models/${fable.id}`, { description: 'Hardest prompts.' }),
@@ -482,14 +481,13 @@ test('Set Default refuses a model that cannot run, by name, instead of quietly c
     const stored = JSON.parse(readSettingRaw(process.env.DB_DIR, APP_SETTINGS_KEY));
     assert.equal(stored.defaultModelId, 'claude-cli-opus');
 
-    // A form that re-sends the default it loaded saves, and so does a page from
-    // before the upgrade naming a retired model: that falls back, as every
-    // retired reference does.
+    // A form that re-sends the default it loaded saves; an id no model has -
+    // a retired provider's among them - is not found, like any other.
     const resent = await server.call('PUT', '/settings', { defaultModelId: 'claude-cli-opus', defaultTheme: 'dark' });
     assert.equal(resent.status, 200);
     const stale = await server.call('PUT', '/settings', { defaultModelId: 'openai-gpt-5-1' });
-    assert.equal(stale.status, 200);
-    assert.equal(stale.body.defaultModelId, 'claude-cli-opus', 'the default in force stays');
+    assert.equal(stale.status, 400);
+    assert.match(stale.body.error, /"openai-gpt-5-1" was not found/);
   } finally {
     server.close();
     delete process.env.AI_LOCKED_PROVIDERS;
@@ -526,14 +524,14 @@ test('an override saved before the list stopped offering it survives edits that 
   const { staticDir } = useTempStorage('model-administration-prompt-update');
   writeStaticJson(staticDir, 'prompts/analyze-job-description.json', {
     id: 'analyze-job-description',
-    content: 'Analyze [[jobDescription]]',
+    content: 'Analyze [[jobFieldList]] [[industryList]] [[jobDescription]]',
     createdAt: '2026-04-18T00:00:00.000Z',
     updatedAt: '2026-04-18T00:00:00.000Z',
   });
   const promptService = loadFresh('../dist/services/promptService');
   const custom = await promptService.createPrompt({ ...PROMPT, name: 'Custom', modelProvider: 'claude-cli', modelName: 'haiku' });
   await promptService.updatePrompt('analyze-job-description', {
-    content: 'Analyze [[jobDescription]]',
+    content: 'Analyze [[jobFieldList]] [[industryList]] [[jobDescription]]',
     modelProvider: 'claude-cli',
     modelName: 'haiku',
   });
@@ -555,7 +553,7 @@ test('an override saved before the list stopped offering it survives edits that 
     });
     assert.equal(resent.modelName, 'haiku');
     const builtIn = await promptService.updatePrompt('analyze-job-description', {
-      content: 'Analyze deeply [[jobDescription]]',
+      content: 'Analyze deeply [[jobFieldList]] [[industryList]] [[jobDescription]]',
       modelProvider: 'claude-cli',
       modelName: 'haiku',
     });
@@ -569,7 +567,7 @@ test('an override saved before the list stopped offering it survives edits that 
     await assert.rejects(
       () =>
         promptService.updatePrompt('analyze-job-description', {
-          content: 'Analyze [[jobDescription]]',
+          content: 'Analyze [[jobFieldList]] [[industryList]] [[jobDescription]]',
           modelProvider: 'gemini-cli',
           modelName: 'haiku',
         }),

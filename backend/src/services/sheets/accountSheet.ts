@@ -25,7 +25,6 @@ import {
 import {
   getUserById,
   getUserBySheetId,
-  listAccountsNeedingSheetLayout,
   listAccountsWithoutSheet,
   recordOwnerGrant,
   recordAccountSheet,
@@ -44,11 +43,10 @@ import { PublicError } from '../../middleware/publicError';
  * two callers arrive at once, when Google is down, or when the install has no
  * key at all.
  *
- * A sheet an older build made - one tab per day, in its sixteen columns - is
- * given the two tabs, All first and Temp For AI second, and its daily tabs are
- * left exactly as they are: this build neither reads nor writes them (they are
- * not job tabs, `isJobSheetTab`). A tab already called All or Temp For AI that
- * is not a job tab is left alone too, and reported (`conflict`).
+ * Every other tab in the spreadsheet is the person's, left exactly as it is:
+ * one that is not a job tab (`isJobSheetTab`) is neither read nor written. A
+ * tab already called All or Temp For AI that is not a job tab is left alone
+ * too, and reported (`conflict`).
  *
  * Nothing in this module may throw at a caller who is signing somebody in. A
  * spreadsheet is a convenience; being able to log in is not.
@@ -450,9 +448,9 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
       recordOwnerGrant(current.id, new Date().toISOString());
     }
   }
-  // An older build's sheet (or one whose two tabs never landed) is laid out
-  // now; a verifying call checks the two are still there. Anything else - a
-  // sign-in once layout 2 is recorded - asks Google nothing.
+  // A sheet whose two tabs never landed is laid out now; a verifying call
+  // checks the two are still there. Anything else - a sign-in once layout 2
+  // is recorded - asks Google nothing.
   if ((stored?.sheetLayout ?? 0) < SHEET_LAYOUT_VERSION || options.verifyTab) {
     await layOutTabs(current.id, spreadsheetId, stored);
   }
@@ -468,8 +466,7 @@ async function ensure(account: UserAccount, options: EnsureOptions = {}): Promis
  * tab) and reports one that is not a job tab, untouched. The result is
  * recorded as layout 2: a gid for each job tab, NULL for a name clash.
  *
- * Nothing else in the spreadsheet is looked at: an older build's daily tabs
- * stay as they are.
+ * Nothing else in the spreadsheet is looked at.
  */
 async function layOutTabs(accountId: string, spreadsheetId: string, stored: UserAccount | null): Promise<void> {
   const tabs = await client.listSheetTabs(spreadsheetId);
@@ -499,8 +496,8 @@ async function layOutTabs(accountId: string, spreadsheetId: string, stored: User
    * Temp For AI goes first when All could not be placed (a name clash), so
    * that the All added at index 0 once the name is free lands it second -
    * the order owner decision S2 asks for. At index 1 it would sit behind
-   * whatever tab was first (an older build's daily tab), and stay there:
-   * once laid out it is never moved.
+   * whatever tab was first (the clashing one), and stay there: once laid out
+   * it is never moved.
    */
   const tempGid = await place(TEMP_TAB, allGid === null ? 0 : 1, stored?.sheetTempGid);
   recordSheetLayout(accountId, SHEET_LAYOUT_VERSION, allGid, tempGid);
@@ -609,8 +606,8 @@ function sheetsNotConfigured(): SheetAccessError {
 }
 
 /**
- * Why a job route will not use a tab: it is not a job tab - an older build's
- * daily tab, a tab of the person's own, a tab with data under a blank row 1 -
+ * Why a job route will not use a tab: it is not a job tab - a tab of the
+ * person's own, a tab with data under a blank row 1 -
  * and the app neither reads its columns as a job sheet's nor writes into it.
  * `cannot` completes "so it cannot be ..." (`reported from`, `exported into`,
  * `filtered`). A 409, code `not-job-tab`.
@@ -739,8 +736,8 @@ export type AddressableSheetTabs = {
 /**
  * The tabs of the caller's own spreadsheet (`resolveAddressableSheet`, so any
  * other id is 404), each with its layout from ONE batched read of every tab's
- * row 1 - which a picker uses to offer only the job tabs, and to say why an
- * older build's daily tab is not offered.
+ * row 1 - which a picker uses to offer only the job tabs, and to say why the
+ * others are not offered.
  *
  * What the builder's sheet panel lists in its Tab select, and the reporter's.
  */
@@ -767,8 +764,8 @@ export function resolveAddressableTab(requested: unknown): string {
 }
 
 /**
- * Gives a spreadsheet to accounts that predate this feature, and the All and
- * Temp For AI tabs to sheets an older build laid out one tab per day.
+ * Gives a spreadsheet to every account that has none - made while Google
+ * Sheets was not set up here, or whose allocation at sign-in failed.
  *
  * Serial, with a pause, because an install with two hundred accounts would
  * otherwise open two hundred conversations with Drive the moment it booted and
@@ -785,9 +782,7 @@ export async function backfillAccountSheets(
   if (process.env.SHEET_BACKFILL === 'off') return { done: 0, failed: 0 };
   if (!(await client.isConfigured())) return { done: 0, failed: 0 };
 
-  // Accounts with no sheet yet, then sheets an older build laid out (daily
-  // tabs), which are given All and Temp For AI the same way a sign-in would.
-  const pending = [...listAccountsWithoutSheet(), ...listAccountsNeedingSheetLayout(SHEET_LAYOUT_VERSION)];
+  const pending = listAccountsWithoutSheet();
 
   /*
    * The credential is checked FIRST, and a refusal ends the backfill.
@@ -821,8 +816,7 @@ export async function backfillAccountSheets(
   if (pending.length === 0) return { done: 0, failed: 0 };
 
   console.log(
-    `[sheets] Preparing the job sheets of ${pending.length} account(s) from before this build (a spreadsheet, ` +
-      'or its All and Temp For AI tabs).'
+    `[sheets] Preparing a job sheet for ${pending.length} account(s) that have none.`
   );
   let done = 0;
   let failed = 0;

@@ -39,6 +39,9 @@ const generationStore = require('../dist/database/generationRepository');
 const queueModule = require('../dist/services/queue/index');
 const retention = require('../dist/services/orders/retention');
 const refunds = require('../dist/services/refunds');
+const refundDb = require('../dist/database/refundRequestRepository');
+const sqlite = require('../dist/database/sqlite');
+const { seedRefundRequest } = require('./refundSeed');
 const { LEASE_READER_LIFETIME_MS } = require('../dist/services/queue/tabLease');
 
 function profileInput(name) {
@@ -557,18 +560,20 @@ test('a delivered immediate resume is refundable by its order item', async () =>
     server.deliver(id, 0);
     await server.untilState(id, 'done');
 
-    const task = server.queue().getBatch(id).tasks[0];
-    // Named by its task, it is resolved to the order item - one name per resume,
-    // and one that outlives the batch.
-    const item = refunds.resolveRefundItem('task', task.id, server.alice.id);
+    // Every immediate run has an orders row, so its resume is an order item -
+    // one name per resume, and one that outlives the batch.
+    const found = orders.findOrderItemForBatch(id, 0);
+    assert.ok(found, 'the run\'s resume is an order item');
+    assert.equal(found.order.kind, 'immediate');
+    const item = refunds.resolveRefundItem('order-item', found.item.id, server.alice.id);
     assert.equal(item.itemType, 'order-item');
     assert.equal(item.refundableMilli, 10);
 
     // And a request made for it (before asking was removed, or seeded so) is
     // keyed on that order item, so the queue can still decide it.
-    const request = refunds.createRefundRequest(users.getUserById(server.alice.id), {
-      itemType: 'task',
-      itemId: task.id,
+    const request = seedRefundRequest({ refunds, refundDb, sqlite }, users.getUserById(server.alice.id), {
+      itemType: 'order-item',
+      itemId: found.item.id,
       reason: 'Wrong company.',
     });
     assert.equal(request.itemType, 'order-item');

@@ -24,7 +24,14 @@ import {
   PromptVariableDefinition,
 } from '@/lib/api';
 import { formatDate } from '@/lib/format';
-import { ANALYSIS_PROMPT_FEATURE, lacksIndustryList, lacksJobFieldList, lacksSectionSwitches } from '@/lib/promptNotes';
+import {
+  ANALYSIS_PROMPT_FEATURE,
+  missingRequiredVariables,
+  missingVariablesSentence,
+  needsUpdateNote,
+  requiredVariables,
+  variableList,
+} from '@/lib/promptRequirements';
 import { Field, Notice, Pill, Spinner, StaticValue } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 
@@ -87,16 +94,20 @@ function isSinglePromptFeature(featureKey?: PromptFeatureKey | null): boolean {
 }
 
 /*
- * A prompt written before a feature it now serves - the section switches, job
- * fields, industries - is flagged by the server once saved (`predates*`); the
- * editor reads the text as it is typed (lib/promptNotes.ts, which
- * backend/test/frontendAnalysis.test.js holds to the server's flags).
+ * Some variables are required: the analysis prompt's job field and industry
+ * lists, the tailoring prompt's three section words. A SAVED record without
+ * them is flagged by the server (`needsUpdate`) and never run - the
+ * feature's built-in prompt runs in its place - and a save without them is
+ * refused. The editor reads the text as it is typed (lib/promptRequirements.ts,
+ * which backend/test/frontendAnalysis.test.js holds to the server's rule and
+ * its sentence), so it says so before Save and refuses in the server's words.
  */
 
 function emptyValidation(): PromptValidation {
   return {
     usedVariables: [],
     unknownVariables: [],
+    missingVariables: [],
   };
 }
 
@@ -381,7 +392,7 @@ function PromptsPageBody() {
 
     const loadRuntimeConfig = async () => {
       try {
-        const settings = await adminApi.getAIModels();
+        const settings = await adminApi.getSettings();
 
         if (!isMounted) return;
 
@@ -513,6 +524,19 @@ function PromptsPageBody() {
 
   const handleSavePrompt = async () => {
     if (!draft) return;
+    // The server would refuse it; said here without sending anything, in its words.
+    const missing = missingRequiredVariables(draft.content, draft.allowedVariables);
+    if (missing.length > 0) {
+      setStatus('');
+      setError(
+        missingVariablesSentence(
+          draft.featureLabel || draft.featureKey || 'feature',
+          missing,
+          requiredVariables(draft.allowedVariables)
+        )
+      );
+      return;
+    }
     setIsSaving(true);
     setError('');
     setStatus('');
@@ -630,6 +654,11 @@ function PromptsPageBody() {
   /** How a stored override reads: "Claude (Subscription) / Sonnet". */
   const describeOverride = (provider: AIProvider, modelName: string) =>
     `${getAIProviderLabel(provider)} / ${describeProviderModel(providerModelOptions, provider, modelName)}`;
+
+  /** The saved record the editor holds, as the list has it - with the server's `needsUpdate`. */
+  const savedSummary = draft?.id ? prompts.find((prompt) => prompt.id === draft.id) ?? null : null;
+  /** The required variables the text as typed leaves out. */
+  const typedMissing = draft ? missingRequiredVariables(draft.content, draft.allowedVariables) : [];
 
   const selectedFeatureHasPendingChange =
     !!selectedFeatureGroup &&
@@ -764,12 +793,15 @@ function PromptsPageBody() {
                         {prompt.isActiveForFeature && !isProfileScopedFeature(prompt.featureKey) && (
                           <Pill tone="green">Live</Pill>
                         )}
-                        {prompt.predatesJobField && <Pill tone="amber">Predates job fields</Pill>}
-                        {prompt.predatesIndustry && <Pill tone="amber">Predates industries</Pill>}
-                        {prompt.predatesSectionSwitches && <Pill tone="amber">Predates section switches</Pill>}
+                        {prompt.needsUpdate && <Pill tone="amber">Needs update</Pill>}
                       </div>
                       {prompt.description && (
                         <div className="mt-1 text-sm text-muted">{prompt.description}</div>
+                      )}
+                      {prompt.needsUpdate && (
+                        <div className="mt-1 text-sm text-muted">
+                          Not run: it does not use {variableList(prompt.validation.missingVariables)}.
+                        </div>
                       )}
                       {prompt.modelProvider && prompt.modelName && (
                         <div className="mt-2 text-xs text-subtle">
@@ -867,49 +899,29 @@ function PromptsPageBody() {
                   </div>
 
                   {/*
-                    A resume prompt written before the profile's Strengths and
-                    Soft Skills switches never mentions them. Nothing breaks -
-                    the code appends the rules to every tailoring prompt - but an
-                    administrator reading this one would otherwise wonder why a
-                    switched-off section never appears.
+                    A required variable left out. The saved record, when it
+                    lacks one, is not what runs - the server runs the
+                    feature's built-in prompt instead - and the text as typed,
+                    when it lacks one, cannot be saved: both said here, before
+                    anybody presses Save and wonders.
                   */}
-                  {lacksSectionSwitches(draft.featureKey, draft.content) && (
-                    <Notice tone="info">
-                      This prompt predates the profile&apos;s Strengths and Soft Skills switches; the app
-                      still enforces them.
+                  {savedSummary?.needsUpdate && (
+                    <Notice tone="warn">
+                      {needsUpdateNote({
+                        featureLabel: draft.featureLabel || draft.featureKey || 'feature',
+                        isBuiltIn: draft.isBuiltIn,
+                        missing: savedSummary.validation.missingVariables,
+                      })}
                     </Notice>
                   )}
-
-                  {/*
-                    The analysis prompt written before postings had a job field.
-                    Nothing breaks - the server appends the seniority, job field,
-                    industry, salary and filter instructions to every analysis it
-                    runs - but they then sit outside the cached part of the prompt,
-                    so every analysis pays for them again.
-                  */}
-                  {lacksJobFieldList(draft.featureKey, draft.content) && (
-                    <Notice tone="warn">
-                      This prompt predates job fields: it never names <code>[[jobFieldList]]</code>. Postings are
-                      still classified - the app adds the seniority, job field, industry, salary and filter instructions
-                      to every analysis - but outside the part of the prompt the model can cache. Put{' '}
-                      <code>[[jobFieldList]]</code> before <code>[[jobDescription]]</code>, as the shipped prompt
-                      does.
-                    </Notice>
-                  )}
-
-                  {/*
-                    The analysis prompt written after job fields but before
-                    industries. Postings still get an industry - the server
-                    appends the industry list and its instruction to every
-                    analysis - again outside the cached part of the prompt.
-                  */}
-                  {lacksIndustryList(draft.featureKey, draft.content) && (
-                    <Notice tone="warn">
-                      This prompt predates industries: it names <code>[[jobFieldList]]</code> but never{' '}
-                      <code>[[industryList]]</code>. Postings still get an industry - the app adds the industry list
-                      and its instruction to every analysis - but outside the part of the prompt the model can cache.
-                      Put <code>[[industryList]]</code> after <code>[[jobFieldList]]</code> and{' '}
-                      <code>&quot;industry&quot;: &quot;&quot;</code> in its output, as the shipped prompt does.
+                  {typedMissing.length > 0 && (
+                    <Notice tone={savedSummary?.needsUpdate ? 'info' : 'warn'}>
+                      {missingVariablesSentence(
+                        draft.featureLabel || draft.featureKey || 'feature',
+                        typedMissing,
+                        requiredVariables(draft.allowedVariables)
+                      )}{' '}
+                      Add {typedMissing.length === 1 ? 'it' : 'them'} before saving.
                     </Notice>
                   )}
 
@@ -1059,7 +1071,10 @@ function PromptsPageBody() {
                           <div key={`${variable.name}-${index}`} className="p-4">
                             {draft.featureKey || draft.isBuiltIn ? (
                               <div className="space-y-2">
-                                <div className="font-mono text-sm font-medium text-ink">{variable.name}</div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-mono text-sm font-medium text-ink">{variable.name}</span>
+                                  {variable.required && <Pill tone="amber">Required</Pill>}
+                                </div>
                                 {variable.description && (
                                   <div className="text-sm text-muted">{variable.description}</div>
                                 )}
@@ -1138,6 +1153,18 @@ function PromptsPageBody() {
                           <span className="tl-status" data-tone="ok">None.</span>
                         ) : (
                           validation.unknownVariables.map((name) => (
+                            <Pill key={name} tone="red">{name}</Pill>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-subtle">Missing Required Variables</div>
+                      <div className="flex flex-wrap gap-2">
+                        {validation.missingVariables.length === 0 ? (
+                          <span className="tl-status" data-tone="ok">None.</span>
+                        ) : (
+                          validation.missingVariables.map((name) => (
                             <Pill key={name} tone="red">{name}</Pill>
                           ))
                         )}

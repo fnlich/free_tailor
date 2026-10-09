@@ -274,22 +274,19 @@ test('a task routes to a queue by the profile model, not by the request', async 
   assert.deepEqual(routeFor({ provider: 'gemini-cli' }), { queue: 'gemini-cli' });
 });
 
-test('a page loaded before the upgrade that still names the browser entry gets the default', async () => {
-  // The model picker used to offer a synthesized browser entry, labelled as the
-  // default. A tab opened before the upgrade still sends its id, and refusing it
-  // would break that tab on a change its user did not make - so the run goes
-  // ahead on the app default, in the Claude seat's lane.
+test('a model id no model has - a removed provider\'s included - is refused, and nothing is queued', async () => {
+  // Run on the default instead, it could cost another price than the page
+  // showed; so a request naming a model that cannot run is refused.
   const server = await serve();
   try {
-    const response = await server.post('/batches', {
-      jobs: jobsFor(2),
-      profileIds: ['p1'],
-      model: 'free-hybrid',
-    });
+    const refused = await server.post('/batches', { jobs: jobsFor(2), profileIds: ['p1'], model: 'free-hybrid' });
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json()).code, 'model-unavailable');
+
+    const response = await server.post('/batches', { jobs: jobsFor(2), profileIds: ['p1'] });
     assert.equal(response.status, 202);
     const body = await response.json();
-    assert.equal(body.total, 2);
-    assert.ok(!Object.keys(body.queues).some((lane) => /web|openai|deepseek/.test(lane)), 'no lane for the removed providers');
+    assert.equal(body.total, 2, 'only the second submission queued anything');
     const claude = body.queues['claude-cli'];
     assert.equal(claude.queued + claude.running, 2, 'both resumes are on the seat');
 

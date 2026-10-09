@@ -454,8 +454,8 @@ export default function LakeTab() {
       return adminJobLakeApi.list(lakeQueryString(applied, offset, limit)).then(
         (answer) => {
           setListError(null);
-          if (answer.options) setOptions(answer.options);
-          if (typeof answer.pushMaxRows === 'number') setPushMaxRows(answer.pushMaxRows);
+          setOptions(answer.options);
+          setPushMaxRows(answer.pushMaxRows);
           // Only the latest request's: a slower, older answer must not name its count for these filters.
           if (token === asked.current) setSearched({ query, total: answer.total });
           return answer;

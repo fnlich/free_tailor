@@ -13,15 +13,12 @@
     "sheets:login": "npm run build && node dist/scripts/googleLogin.js",
     "sheets:doctor": "npm run build && node dist/scripts/sheetsDoctor.js",
     "start": "node dist/index.js",
-    "migrate:legacy": "npm run build && node dist/scripts/migrateLegacyData.js",
-    "test": "tsc && node scripts/runTests.js",
-    "ai:rollback": "npm run build && node dist/scripts/rollbackProviderMigration.js"
+    "test": "tsc && node scripts/runTests.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "apify-client": "^2.23.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",

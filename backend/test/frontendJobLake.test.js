@@ -889,13 +889,12 @@ test('a push sends the filters Search applied: the same jobs in the same order, 
   );
 });
 
-test("a lake job's type, clearance and industry read in the server's words, and a row not filled in yet says so", async (t) => {
+test("a lake job's type, clearance and industry read in the server's words", async (t) => {
   const h = await serve('frontend-lake-facts');
   t.after(() => h.close());
   const lake = display();
   const lakeService = require('../dist/services/jobLake/index');
   const { getJobAnalysisById } = require('../dist/database/jobAnalysisRepository');
-  const { getDb } = require('../dist/database/sqlite');
 
   const merge = (company, analysis) => {
     const id = storeJobAnalysis({ jobField: 'backend', ...analysis });
@@ -918,27 +917,18 @@ test("a lake job's type, clearance and industry read in the server's words, and 
   const older = merge('Older Co', { filter: filter({ jobType: 'on_site', companyCategory: 'healthcare', clearanceRequired: 'none' }) });
   // A posting that says none of the three.
   const silent = merge('Silent Co', { industry: 'not_specified', filter: filter({}) });
-  // A row an older build wrote, not filled in yet.
-  const unfilled = merge('Unfilled Co', { industry: 'finance', filter: filter({ jobType: 'hybrid' }) });
-  getDb().prepare('UPDATE job_lake SET job_type = NULL, clearance = NULL, industry = NULL WHERE id = ?').run(unfilled.lakeId);
 
   const { rows } = (await h.call('owner', 'GET', '/admin/job-lake')).body;
   const byId = new Map(rows.map((row) => [row.id, row]));
   assert.deepEqual(lake.lakeFactCells(byId.get(stated.lakeId)), { jobType: 'Remote', clearance: 'Required', industry: 'Retail & E-commerce' });
   assert.deepEqual(lake.lakeFactCells(byId.get(older.lakeId)), { jobType: 'Onsite', clearance: 'Not required', industry: 'Healthcare' });
   assert.deepEqual(lake.lakeFactCells(byId.get(silent.lakeId)), { jobType: '', clearance: 'Not required', industry: '' });
-  assert.deepEqual(lake.lakeFactCells(byId.get(unfilled.lakeId)), { jobType: '', clearance: '', industry: '' });
 
-  // The details say a blank out loud: not stated, or not filled in yet.
+  // The details say a blank out loud.
   assert.deepEqual(lake.describeLakeFacts(byId.get(silent.lakeId)), {
     jobType: 'Not stated',
     clearance: 'Not required',
     industry: 'Not stated',
-  });
-  assert.deepEqual(lake.describeLakeFacts(byId.get(unfilled.lakeId)), {
-    jobType: lake.FACT_NOT_FILLED,
-    clearance: lake.FACT_NOT_FILLED,
-    industry: lake.FACT_NOT_FILLED,
   });
   const detail = (await h.call('owner', 'GET', `/admin/job-lake/${stated.lakeId}`)).body.entry;
   assert.deepEqual(lake.describeLakeFacts(detail), { jobType: 'Remote', clearance: 'Required', industry: 'Retail & E-commerce' });

@@ -360,17 +360,6 @@ export function getOrder(id: string): Order | null {
 }
 
 /**
- * Whether a generation batch was placed as an order.
- *
- * A batch says so itself (`shared.kind`) since batches carried a kind; this
- * is for one queued before that, restored from disk, which only the orders
- * table can still answer for. One indexed lookup (`idx_orders_batch`).
- */
-export function orderExistsForBatch(batchId: string): boolean {
-  return Boolean(getDb().prepare('SELECT 1 FROM orders WHERE batch_id = ? LIMIT 1').get(batchId));
-}
-
-/**
  * An account's ORDERS, newest first - what /orders lists. Never an immediate
  * run: those are followed on the page that started them, and their files are
  * gone minutes after they end (owner decision M4).
@@ -801,7 +790,3 @@ export function setOrderExpiryForTests(orderId: string, expiresAt: string): void
   getDb().prepare(`UPDATE orders SET expires_at = ? WHERE id = ?`).run(expiresAt, orderId);
 }
 
-/** Used by the retention tests, and by nothing else. */
-export function setOrderFinishedAtForTests(orderId: string, finishedAt: string): void {
-  getDb().prepare(`UPDATE orders SET finished_at = ? WHERE id = ?`).run(finishedAt, orderId);
-}

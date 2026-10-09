@@ -254,19 +254,14 @@ test('nothing in the request body but the amount asked for decides what is charg
   }
 });
 
-test('a buy page from before dollars, sending a count of credits, is told to reload', async () => {
+test('a purchase that names no amount in dollars is asked for one, and nothing is opened', async () => {
   const server = await serve();
   try {
-    // At 50c a credit, 10 credits was $5. Read as dollars it would be $10; read
-    // as nothing it would be "choose an amount". Neither is what was meant.
+    // A count of credits is not an amount: it is never read as dollars.
     const response = await server.checkout({ method: 'card', credits: 10 });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /older version of the app\. Reload it/);
+    assert.match((await response.json()).error, /Choose an amount in dollars/);
     assert.equal(server.created.length, 0, 'no checkout was opened');
-
-    const quote = await server.call(server.aliceToken, '/api/payments/quote?method=card&credits=10');
-    assert.equal(quote.status, 400);
-    assert.match((await quote.json()).error, /older version of the app/);
   } finally {
     server.close();
   }

@@ -310,8 +310,8 @@ export function adminLakeSyncStatus(): AdminLakeSyncStatus {
 
 /**
  * A lake row as one line of the admin sheet, in `ADMIN_LAKE_HEADERS` order.
- * Clearance is a real TRUE/FALSE, blank only for a row whose facts are not
- * filled in yet; a job type or industry the posting does not state is blank.
+ * Clearance is a real TRUE/FALSE; a job type or industry the posting does not
+ * state is blank.
  */
 export function adminSheetRow(entry: LakeEntry, requesterEmail: string): SheetCellValue[] {
   return [
@@ -324,7 +324,7 @@ export function adminSheetRow(entry: LakeEntry, requesterEmail: string): SheetCe
     entry.updatedAt,
     entry.jobHash,
     entry.jobTypeLabel,
-    entry.clearance === null ? '' : entry.clearance,
+    entry.clearance,
     entry.industryLabel,
   ];
 }

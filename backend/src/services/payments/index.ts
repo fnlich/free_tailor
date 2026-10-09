@@ -70,20 +70,7 @@ export function publishableKey(env: NodeJS.ProcessEnv = process.env): string {
 
 export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAvailability[] {
   const card = stripe.isStripeConfigured(env);
-  /*
-   * One way of taking crypto, where there were three.
-   *
-   * The on-chain watcher and Coinbase Commerce have been deleted, not merely
-   * stopped being offered: nothing was in flight through either, so there was
-   * nothing left for them to settle. What survives them is the ability to READ
-   * what they did - `PaymentProvider` still names both, an old row still
-   * renders, and refunding one still says where that money actually is.
-   *
-   * `CHAIN_ASSETS` and `COINBASE_COMMERCE_*` are inert now rather than a
-   * fallback. An installation that still has them in its `.env` takes no
-   * crypto until it sets `CRYPTOMUS_*`, and the reason below says so rather
-   * than leaving a Crypto button that nothing is behind.
-   */
+  // One way of taking crypto: Cryptomus's hosted invoice.
   const crypto = cryptomus.isCryptomusConfigured(env);
   return [
     {
@@ -107,16 +94,7 @@ export function describeMethods(env: NodeJS.ProcessEnv = process.env): MethodAva
       ...(crypto
         ? {}
         : {
-            /*
-             * The dead variables are named on purpose. An operator reading this
-             * still has `CHAIN_ASSETS` and a wallet address in `.env`, and needs
-             * telling they are inert rather than left hunting for what broke.
-             */
-            reason:
-              'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through ' +
-              'Cryptomus. The CHAIN_* and COINBASE_COMMERCE_* settings no longer do anything - ' +
-              'payments already made through them still read and still refund, but no new one ' +
-              'can be started.',
+            reason: 'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through Cryptomus.',
           }),
     },
   ];
@@ -477,12 +455,7 @@ export async function startCheckout(
 
       /*
        * The hosted invoice: a URL to send the buyer to, and a signed callback
-       * to settle on.
-       *
-       * The only crypto branch there is. It was one of three until the
-       * on-chain watcher and Coinbase Commerce were deleted, and the shape it
-       * returns is the one they both used - which is why the browser has
-       * needed no change through any of it.
+       * to settle on. The only crypto branch there is.
        */
       const invoice = await cryptomus.createInvoice({
         paymentId: payment.id,
@@ -955,31 +928,16 @@ export async function refundPayment(
       // what follows reverses the credit and records the refund.
     } else {
       /*
-       * Crypto cannot be pulled back, only sent back - and WHERE FROM depends on
-       * which kind it was. An on-chain payment is in the wallet whose address
-       * the operator configured, because no processor ever held it; sending them
-       * to a processor's dashboard sends them to an account the coin never
-       * passed through.
-       *
-       * One of exactly three places that says something different per provider,
-       * and `PaymentProvider` is switched on exhaustively nowhere - so **every
-       * member is named and the fallback names none of them**. A provider this
-       * build has not heard of gets "wherever this payment was taken", which is
-       * less helpful and cannot be wrong.
+       * Crypto cannot be pulled back, only sent back. A Cryptomus payment is
+       * in that merchant account; any other - a payment taken by a retired
+       * path - gets the sentence that cannot be wrong about where it is.
        */
       throw new PaymentError(
-        payment.provider === 'chain'
-          ? 'An on-chain payment cannot be refunded automatically - nobody is holding it to ' +
-              'send back. Return the coin from the wallet you configured in CHAIN_*_ADDRESS, ' +
-              'then adjust the balance from the accounts page.'
-          : payment.provider === 'cryptomus'
-            ? 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
-              'Cryptomus merchant dashboard, then adjust the balance from the accounts page.'
-            : payment.provider === 'coinbase'
-              ? 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
-                'Coinbase Commerce account, then adjust the balance from the accounts page.'
-              : 'Crypto payments cannot be refunded automatically. Send the funds back from ' +
-                'wherever this payment was taken, then adjust the balance from the accounts page.',
+        payment.provider === 'cryptomus'
+          ? 'Crypto payments cannot be refunded automatically. Send the funds back from your ' +
+            'Cryptomus merchant dashboard, then adjust the balance from the accounts page.'
+          : 'Crypto payments cannot be refunded automatically. Send the funds back from ' +
+            'wherever this payment was taken, then adjust the balance from the accounts page.',
         409
       );
     }

@@ -281,7 +281,7 @@ test('installedVersionProblem names an exact pin the install does not match, and
     installedVersionProblem('16.3.5', '16.3.8'),
     '[next] Next.js 16.3.5 is installed, but frontend/package.json pins 16.3.8. Run npm run install:all.'
   );
-  // The install README step 3 names: a machine still on the release before this one.
+  // A machine whose Next is a whole minor release behind the pin.
   assert.equal(
     installedVersionProblem('16.1.6', '16.3.8'),
     '[next] Next.js 16.1.6 is installed, but frontend/package.json pins 16.3.8. Run npm run install:all.'
@@ -328,9 +328,9 @@ test('the README quotes the launcher in its own words, for the pinned Next', asy
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').replace(/\s+/g, ' ');
   const pinnedNext = readJson('frontend/package.json').dependencies.next;
 
-  assert.ok(readme.includes(`**Next.js ${pinnedNext}**`), `"What is new" names the pinned Next, ${pinnedNext}`);
-  // The two drift lines it quotes: an older install before step 3's install, and the owner's.
-  for (const installed of ['16.1.6', '16.3.5']) {
+  assert.ok(readme.includes(`**Next.js ${pinnedNext}**`), `the Tech Stack names the pinned Next, ${pinnedNext}`);
+  // The drift line it quotes: the owner's, a Next moved by hand.
+  for (const installed of ['16.3.5']) {
     const warning = installedVersionProblem(installed, pinnedNext);
     // Checked first: String#includes(null) looks for the text "null", which
     // the README has, so a silenced warning would pass the search below.

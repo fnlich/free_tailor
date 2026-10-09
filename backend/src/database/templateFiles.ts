@@ -82,19 +82,6 @@ export function templateFileId(id: unknown): string | null {
   return stem;
 }
 
-/**
- * An id as a lookup, an import or the one-time move may meet it, in the form
- * its file carries - or null.
- *
- * Imports used to keep upper case and underscores (`My_Template`), and a
- * profile may still name one. Case and underscores are the only rewriting:
- * anything else outside the alphabet (a `/`, a `..`) is no template id at all.
- */
-export function canonicalTemplateId(id: unknown): string | null {
-  if (typeof id !== 'string') return null;
-  return templateFileId(id.trim().replace(/\.json$/i, '').toLowerCase().replace(/_/g, '-'));
-}
-
 function templatePath(fileId: string): string {
   return path.join(getStaticTemplatesDir(), `${fileId}.json`);
 }

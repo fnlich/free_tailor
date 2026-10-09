@@ -30,7 +30,6 @@ import {
   describeLane,
   describeSignIn,
   describeTypeHealth,
-  normalizeAdminProviders,
   PROVIDER_TYPE_NAMES,
   type AdminAIProvider,
 } from '@/lib/providerDisplay';
@@ -509,13 +508,8 @@ function AdminSettingsPageBody() {
      Claude sign-ins are two cards. Keyed on the LOCK, not on the enabled
      tick: a seat an admin has unticked is exactly the one whose readiness
      they want to read while deciding whether to tick it back on, and a locked
-     seat cannot run here however it is ticked. A server from before
-     providers sends none, so each type stands for its one built-in. */
-  const seatProviders: AdminAIProvider[] = (
-    settings.aiProviders.length > 0
-      ? settings.aiProviders
-      : normalizeAdminProviders(AI_PROVIDERS.map((type) => ({ id: type, type, label: getAIProviderLabel(type) })))
-  ).filter((entry) => !isProviderLocked(settings, entry.type));
+     seat cannot run here however it is ticked. */
+  const seatProviders: AdminAIProvider[] = settings.aiProviders.filter((entry) => !isProviderLocked(settings, entry.type));
   const providersOfType = (type: AIProvider) => seatProviders.filter((entry) => entry.type === type).length;
 
   return (

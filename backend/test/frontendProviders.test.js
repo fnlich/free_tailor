@@ -134,6 +134,49 @@ test("the page's copies of the server's provider tables agree with it", () => {
   assert.equal(display.PROVIDER_CONCURRENCY_MAX, server.PROVIDER_CONCURRENCY_MAX);
 });
 
+test('the page knows the three seats and nothing else: a retired id is no provider, and only the current payload fields are read', async () => {
+  for (const id of catalog.AI_PROVIDER_IDS) assert.equal(api.coerceProvider(` ${id} `), id);
+  // Ids an older release wrote - an alias, the browser-chat pair, the metered
+  // APIs - and Object.prototype's names: none of them is a seat, here or there.
+  for (const id of ['openrouter', 'claude-web', 'chatgpt-web', 'openai', 'claude', 'deepseek', 'constructor', '', null, 7]) {
+    assert.equal(api.coerceProvider(id), null, String(id));
+    assert.equal(catalog.coerceProviderId(id), null, String(id));
+  }
+
+  // The admin payload's enable flags are the `providersEnabled` record alone:
+  // the flat `claudeCliEnabled` / `openrouterEnabled` an older server sent
+  // are not read, and a seat the record leaves out is on.
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      providersEnabled: { 'codex-cli': false },
+      claudeCliEnabled: false,
+      openrouterEnabled: false,
+      aiModels: [{ id: 'm1', name: 'Old', provider: 'openrouter', modelName: 'x', pricePerResumeMilli: 5 }],
+    }),
+  });
+  try {
+    const settings = await api.adminApi.getSettings();
+    assert.deepEqual(settings.providersEnabled, { 'claude-cli': true, 'codex-cli': false, 'gemini-cli': true });
+    assert.deepEqual(settings.aiModels, [], 'a record naming a retired provider is dropped, not relabelled');
+    assert.deepEqual(settings.providerModelOptions, [], 'no lists invented for a payload that sent none');
+  } finally {
+    globalThis.fetch = saved;
+  }
+  // An ordinary account's list is `models`; the full records the admin payload
+  // calls `aiModels` are never read from it.
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ models: [{ id: 'm2', name: 'Sonnet' }], aiModels: [{ id: 'm1', name: 'Old' }] }),
+  });
+  try {
+    assert.deepEqual((await api.resumeApi.getModels()).models, [{ id: 'm2', name: 'Sonnet' }]);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
 test('every hold kind a seat records has a name on the page', () => {
   // Read off the unions in the sources: a kind added to a seat and not here
   // would read "Held (thatKind)" on the one card meant to say what is wrong.
@@ -540,7 +583,7 @@ test('the page offers a type exactly when the server can run it - a type whose e
   await agree('the built-in Claude provider off, the added one on');
   await config.updateAIProvider(provider.id, { enabled: false });
   await agree('every Claude provider off');
-  assert.equal(display.hasEnabledProviderOfType([], 'claude-cli'), true, 'an older server sent no list: nothing is concluded from it');
+  assert.equal(display.hasEnabledProviderOfType([], 'claude-cli'), true, 'no list read yet: nothing is concluded from it');
 });
 
 async function serveAdmin(name) {

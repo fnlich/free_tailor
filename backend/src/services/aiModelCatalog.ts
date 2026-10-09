@@ -1,13 +1,5 @@
 import type { AIProvider } from '../types/template';
-import {
-  AI_PROVIDER_IDS,
-  coerceProviderId,
-  getProviderLabel,
-  RETIRED_FAMILY_DESCRIPTION,
-  RETIRED_FAMILY_MIGRATION,
-  retiredModelFamily,
-  retiredProviderFamily,
-} from '../config/providerCatalog';
+import { AI_PROVIDER_IDS, coerceProviderId, getProviderLabel } from '../config/providerCatalog';
 import { describeProviderModelOptions, findProviderModelOption } from '../config/providerModels';
 
 /**
@@ -15,8 +7,6 @@ import { describeProviderModelOptions, findProviderModelOption } from '../config
  * An alias rather than a dated model name, so it follows the current release.
  */
 export const DEFAULT_CLAUDE_CLI_MODEL = process.env.AI_CLI_MODEL || 'sonnet';
-
-const warnedRetiredOverrides = new Set<string>();
 
 export function normalizePromptModelSelection(
   provider: unknown,
@@ -29,31 +19,6 @@ export function normalizePromptModelSelection(
     return null;
   }
 
-  // An override naming a removed provider is NO override: the prompt runs on
-  // whatever model the caller resolved, which is what clearing it would do.
-  // Never a throw, because this is also the READ path - listing prompts has no
-  // per-record catch, so one stored override pinned to a retired provider would
-  // take down Admin -> Prompts, and on a shipped prompt every generation that
-  // uses it. Migrations 006 and 007 clear these; this keeps a row neither has
-  // reached yet (or one a restored backup brought back) harmless. See
-  // RETIRED_PROVIDER_IDS.
-  const family = retiredProviderFamily(normalizedProvider) ?? retiredModelFamily(normalizedModelName);
-  if (family) {
-    const key = `${normalizedProvider}/${normalizedModelName}`;
-    if (!warnedRetiredOverrides.has(key)) {
-      warnedRetiredOverrides.add(key);
-      console.warn(
-        `[prompts] A prompt's model override names "${key}", on the ${RETIRED_FAMILY_DESCRIPTION[family]}, ` +
-          'which were removed; it is ignored and those prompts run on the model chosen for the run. Saving ' +
-          `the prompt under Admin -> Prompts clears it, as migration ${RETIRED_FAMILY_MIGRATION[family]} does.`
-      );
-    }
-    return null;
-  }
-
-  // Coerced rather than compared, because this runs on the prompt READ path:
-  // a stored record naming a provider that no longer exists must resolve, not
-  // make listing prompts throw.
   const resolvedProvider = coerceProviderId(normalizedProvider);
   if (!resolvedProvider) {
     throw new Error(`Prompt model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`);
@@ -67,6 +32,39 @@ export function normalizePromptModelSelection(
     provider: resolvedProvider,
     modelName: normalizedModelName,
   };
+}
+
+const warnedUnreadableOverrides = new Set<string>();
+
+/**
+ * A prompt's model override as a STORED record holds it - the read path.
+ *
+ * Never a throw: listing prompts has no per-record catch, so one stored
+ * override this build cannot read - a provider that no longer exists, written
+ * by hand or by a build long gone - would take down Admin -> Prompts, and on a
+ * shipped prompt every run that uses it. Such an override is NO override: the
+ * prompt runs on the model the caller resolved, which is what clearing it
+ * would do, and the log says so once. Saving the prompt clears it.
+ */
+export function readStoredPromptModelSelection(
+  provider: unknown,
+  modelName: unknown,
+  promptId: string
+): { provider: AIProvider; modelName: string } | null {
+  try {
+    return normalizePromptModelSelection(provider, modelName);
+  } catch (error) {
+    const key = `${promptId}:${String(provider)}/${String(modelName)}`;
+    if (!warnedUnreadableOverrides.has(key)) {
+      warnedUnreadableOverrides.add(key);
+      console.warn(
+        `[prompts] The prompt "${promptId}" has a model override this build cannot use ` +
+          `(${String(provider)}/${String(modelName)}: ${error instanceof Error ? error.message : String(error)}); ` +
+          'it runs on the model chosen for the run instead. Saving the prompt under Admin -> Prompts clears it.'
+      );
+    }
+    return null;
+  }
 }
 
 /**

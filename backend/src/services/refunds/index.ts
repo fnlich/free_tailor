@@ -8,13 +8,7 @@ import {
   type Payment,
 } from '../../database/paymentRepository';
 import { applyAdjustment } from '../../database/creditRepository';
-import {
-  findOrderForBatch,
-  findOrderItem,
-  findOrderItemForBatch,
-  type Order,
-  type OrderItem,
-} from '../../database/orderRepository';
+import { findOrderItem, type Order, type OrderItem } from '../../database/orderRepository';
 import {
   approveRefundRequest,
   clearRefundHold,
@@ -26,7 +20,6 @@ import {
   findRefundedRequestForItem,
   getRefundRequest,
   insertRefundRequest,
-  isRefundItemType,
   listOpenRequestsForPayment,
   listRefundRequests,
   listRefundRequestsForAccount,
@@ -50,7 +43,6 @@ import {
   type PayoutOutcome,
   type Reservation,
 } from '../credits';
-import { getGenerationQueue, isOrderBatch, taskCostMilli } from '../queue';
 import {
   isUnansweredRefund,
   PaymentError,
@@ -69,7 +61,6 @@ import {
   wholeCentsBelow,
 } from '../../utils/money';
 import type { UserAccount } from '../../types/account';
-import type { Batch, Task } from '../queue/taskQueue';
 
 /**
  * Asking for money back (owner decision M3), asking to be paid out (owner
@@ -77,10 +68,8 @@ import type { Batch, Task } from '../queue/taskQueue';
  *
  * WHO ASKS NOW. Only a REPORTER asks, and only for a PAYOUT of their earned
  * balance (`createPayoutRequest`): purchases and resumes are no longer asked
- * about by anybody (R1) - POST /api/refund-requests and its /options answer
- * 410 `refund-requests-closed` - but every request made before stays in the
- * queue and is decided exactly as below. `createRefundRequest` is kept, not
- * routed, so the tests can still make one.
+ * about by anybody (R1), but every request made before stays in the queue and
+ * is decided exactly as below.
  *
  * Three kinds of thing are in the one queue:
  *
@@ -110,17 +99,13 @@ import type { Batch, Task } from '../queue/taskQueue';
  *   same transaction as the request turning Refunded - shown as "Paid out".
  *
  * WHICH RESUME. Every charged resume has exactly one name here (the
- * `RefundItemType`s): an order's resume is its ORDER ITEM, which outlives its
- * batch and carries its charge (`order_items.cost_milli`); a resume built by
- * POST /api/resume/generate is its RESERVATION (`charge`), which is that one
- * resume; and a queued resume with no order row is its TASK, while the queue
- * holds the batch - after that it cannot be named, because nothing durable
- * records what it alone cost. Every run queued now has an order row - an
- * order's, or a Generate Immediately run's of kind `immediate` - so its
- * resumes are order items, durable and priced; `task` is left for a builder
- * run an older build queued. A task of a batch with an order row is always
- * resolved to its order item, so one resume never has two names and so can
- * never have two open requests.
+ * `RefundItemType`s): a queued resume - an order's, or a Generate Immediately
+ * run's (an order row of kind `immediate`) - is its ORDER ITEM, which outlives
+ * its batch and carries its charge (`order_items.cost_milli`); a resume built
+ * by POST /api/resume/generate is its RESERVATION (`charge`), which is that
+ * one resume. A request naming an item type this build does not serve - a
+ * `task:` an older build wrote - reads, and is never refundable (see
+ * `unrecognised`).
  *
  * WHO SEES WHAT. A requester's sentences are about their own purchase or
  * resume and say what they can do (PublicError, specific). The administrators'
@@ -138,20 +123,6 @@ const ADMIN_REFUND_QUEUE_PATH = '/admin/payments?tab=refunds';
 
 /** What one payout request is for, fixed when asked. */
 export const PAYOUT_LABEL = 'Payout of earnings';
-
-/**
- * The answer to a page still asking for a refund (POST /api/refund-requests,
- * GET /options) after asking was removed (owner decision R1): a stale tab, or
- * a bookmark. It ends in "contact your administrator", so every page draws its
- * Contact admin link after it.
- */
-export const REFUND_ASKING_CLOSED_MESSAGE =
-  'Refunds are no longer asked for in the app. If you think a purchase or a resume should be refunded, ' +
-  'contact your administrator.';
-
-export function refundAskingClosedError(): PublicError {
-  return new PublicError(REFUND_ASKING_CLOSED_MESSAGE, { status: 410, code: 'refund-requests-closed' });
-}
 
 /** A refund request refused, in words written for whoever asked. */
 export class RefundRequestError extends PublicError {
@@ -224,13 +195,12 @@ export function cleanReason(value: unknown): string | null {
   return text ? text : null;
 }
 
-function readReason(value: unknown, whose: 'requester' | 'admin'): string {
+/** An administrator's reason for declining: required, and at most MAX_REFUND_REASON characters. */
+function readDeclineReason(value: unknown): string {
   const reason = cleanReason(value);
   if (!reason) {
     throw new RefundRequestError(
-      whose === 'requester'
-        ? 'Say why you are asking for a refund.'
-        : 'Write the reason for declining - the person who asked will read it.',
+      'Write the reason for declining - the person who asked will read it.',
       400,
       'reason-required'
     );
@@ -243,24 +213,6 @@ function readReason(value: unknown, whose: 'requester' | 'admin'): string {
     );
   }
   return reason;
-}
-
-/* ------------------------------------------------------------ the queue */
-
-/** A task the queue still holds, by its id, with its batch. */
-function findLiveTask(taskId: string): { batch: Batch; task: Task } | null {
-  for (const batch of getGenerationQueue().listBatches(false)) {
-    const task = batch.tasks.find((candidate) => candidate.id === taskId);
-    if (task) return { batch, task };
-  }
-  return null;
-}
-
-/** A task's charge while the queue still holds it - for an order item from before items carried one. */
-function liveTaskCost(batchId: string, seq: number): number | null {
-  const batch = getGenerationQueue().getBatch(batchId);
-  const task = batch?.tasks.find((candidate) => candidate.seq === seq);
-  return task ? taskCostMilli(task.payload) : null;
 }
 
 /* ------------------------------------------------------ resolving items */
@@ -366,7 +318,7 @@ function resolveOrderItem(found: { order: Order; item: OrderItem }, ownerId: str
   if (ownerId !== null && order.userId !== ownerId) throw notFound('resume');
   const itemKey = refundItemKey('order-item', item.id);
   const reservation = order.batchId ? getReservation(order.batchId) : null;
-  const costMilli = item.costMilli ?? (order.batchId ? liveTaskCost(order.batchId, item.seq) : null);
+  const costMilli = item.costMilli;
   const { refundable, unavailable: reason } = resumeRefundable({
     itemKey,
     state: item.state,
@@ -388,44 +340,6 @@ function resolveOrderItem(found: { order: Order; item: OrderItem }, ownerId: str
     orderItemId: item.id,
     ...(item.taskId ? { taskId: item.taskId } : {}),
     ...(order.batchId ? { reservationId: order.batchId } : {}),
-  };
-}
-
-function resolveTask(batch: Batch, task: Task, ownerId: string | null): RefundItem {
-  const owner = typeof batch.shared.ownerId === 'string' ? batch.shared.ownerId : '';
-  if (!owner || (ownerId !== null && owner !== ownerId)) throw notFound('resume');
-
-  // A resume of a batch with an order row - an order, or a Generate
-  // Immediately run (kind `immediate`) - is named by its order item, always.
-  if (isOrderBatch(batch) || findOrderForBatch(batch.id)) {
-    const found = findOrderItemForBatch(batch.id, task.seq);
-    if (!found) throw notFound('resume');
-    return resolveOrderItem(found, ownerId);
-  }
-
-  const itemKey = refundItemKey('task', task.id);
-  const reservation = getReservation(batch.id);
-  const costMilli = taskCostMilli(task.payload);
-  const { refundable, unavailable: reason } = resumeRefundable({
-    itemKey,
-    state: task.state,
-    ownerId: owner,
-    reservation,
-    costMilli,
-    taskId: task.id,
-  });
-  return {
-    kind: 'resume',
-    itemType: 'task',
-    itemId: task.id,
-    itemKey,
-    accountId: owner,
-    label: `${task.label.profileName} / ${task.label.companyName}${task.label.role ? ` (${task.label.role})` : ''}`,
-    chargedMilli: reservation && reservation.unitsMilli > 0 ? costMilli : 0,
-    refundableMilli: refundable,
-    unavailable: reason,
-    taskId: task.id,
-    reservationId: batch.id,
   };
 }
 
@@ -492,17 +406,6 @@ export function resolveRefundItem(itemType: RefundItemType, itemId: string, owne
       if (!found) throw notFound('resume');
       return resolveOrderItem(found, ownerId);
     }
-    case 'task': {
-      const live = findLiveTask(itemId);
-      if (!live) {
-        throw new RefundRequestError(
-          'That resume is no longer listed. Ask your administrator for a refund instead.',
-          404,
-          'not-found'
-        );
-      }
-      return resolveTask(live.batch, live.task, ownerId);
-    }
     case 'charge': {
       const reservation = getReservation(itemId);
       if (!reservation) throw notFound('charge');
@@ -517,34 +420,12 @@ export function resolveRefundItem(itemType: RefundItemType, itemId: string, owne
   }
 }
 
-/**
- * What a resume REQUEST would credit back now, and against which reservation.
- *
- * Re-measured from the item, except for a queued resume not placed as an order
- * whose batch the queue has since evicted: that task cannot be looked up any
- * more, and does not need to be - it was delivered when the request was made
- * (only a delivered resume can be asked about), and delivered is final. What
- * still has to hold is checked against what the request recorded: the run's
- * reservation is this account's and has that much left to give back, the task
- * never refunded itself, and no earlier request for it was refunded.
- */
+/** What a resume REQUEST would credit back now, re-measured from the item, and against which reservation. */
 function resumeTarget(request: RefundRequest): {
   reservationId: string;
   refundable: number;
   unavailable: RefundUnavailable | null;
 } {
-  if (request.itemType === 'task' && !findLiveTask(request.itemId)) {
-    const reservation = request.reservationId ? getReservation(request.reservationId) : null;
-    const measured = resumeRefundable({
-      itemKey: request.itemKey,
-      state: 'done',
-      ownerId: request.accountId,
-      reservation,
-      costMilli: request.amountMilli,
-      ...(request.taskId ? { taskId: request.taskId } : {}),
-    });
-    return { reservationId: request.reservationId ?? '', refundable: measured.refundable, unavailable: measured.unavailable };
-  }
   const item = resolveRefundItem(request.itemType, request.itemId, request.accountId);
   return { reservationId: item.reservationId ?? '', refundable: item.refundableMilli, unavailable: item.unavailable };
 }
@@ -642,13 +523,14 @@ function refundableNow(request: RefundRequest): { milli: number; reason: string 
 }
 
 /**
- * Said of a request whose item type this build does not know (a newer build
- * wrote it, and this one was rolled back to): it can be declined, never
- * refunded, because what it names cannot be measured here.
+ * Said of a request whose item type this build does not serve - a queued
+ * resume's `task:` an older build wrote, or anything hand-edited: it can be
+ * declined, never refunded, because what it names cannot be measured here.
+ * Administrators only read it.
  */
 const UNRECOGNISED_REASON =
-  'This request was made by a newer version of the app, so it cannot be refunded here. Decline it, or ' +
-  'decide it after upgrading again.';
+  'This request names something this version of the app cannot measure, so it cannot be refunded here. ' +
+  'Decline it, and refund by hand from Accounts if it is owed.';
 
 /** Whether a payout can be recorded for this account now, and its balance. */
 function payoutTarget(accountId: string): { ok: true; balanceMilli: number } | { ok: false; reason: string } {
@@ -703,14 +585,12 @@ function notifyRequester(request: RefundRequest, title: string, body: string): v
   });
 }
 
-/** One notice per administrator who can act on it - written in the request's own transaction. */
+/** One notice per administrator who can act on a new payout request - written in the request's own transaction. */
 function notifyAdminsOfNewRequest(request: RefundRequest, requester: UserAccount): void {
   const who = requester.email || requester.name || 'An account';
   const body =
-    request.kind === 'payout'
-      ? `${who} asks to be paid out ${formatMoney(request.amountMilli)} of earnings` +
-        (request.reason ? `: "${request.reason}"` : '.')
-      : `${who} asks for ${formatMoney(request.amountMilli)} back for ${request.label}: "${request.reason}"`;
+    `${who} asks to be paid out ${formatMoney(request.amountMilli)} of earnings` +
+    (request.reason ? `: "${request.reason}"` : '.');
   for (const admin of listUsers()) {
     if (admin.role !== 'admin' || admin.disabled) continue;
     createNotification({
@@ -727,66 +607,6 @@ function refundedSentence(request: RefundRequest, refundedMilli: number, how: 'c
   if (how === 'credit') return `${lead} It is back on your balance.`;
   if (how === 'card') return `${lead} The money is on its way back to your card.`;
   return `${lead} Your administrator has sent it back to you.`;
-}
-
-/* --------------------------------------------------------------- asking */
-
-export type CreateRefundRequestInput = { itemType?: unknown; itemId?: unknown; reason?: unknown };
-
-/**
- * A person asks for a refund on one of their own purchases or resumes.
- *
- * Refused, in their words, when: the reason is missing or too long; the item
- * is not theirs (404); it is not refundable right now (409, `not-refundable`,
- * with `why` - still building, already refunded...); or it already has an open
- * request (409, `request-open`, with that request's id). Every administrator
- * gets a notice, in the same transaction as the request.
- */
-export function createRefundRequest(account: UserAccount, input: CreateRefundRequestInput): RefundRequestView {
-  const itemType = input.itemType;
-  const itemId = typeof input.itemId === 'string' ? input.itemId.trim() : '';
-  if (!isRefundItemType(itemType) || !itemId || itemId.length > 200) {
-    throw new RefundRequestError('Choose the purchase or resume to ask about.', 400, 'bad-item');
-  }
-  const reason = readReason(input.reason, 'requester');
-
-  const db = getDb();
-  return db.transaction((): RefundRequestView => {
-    const item = resolveRefundItem(itemType, itemId, account.id);
-    const open = findOpenRequestForItem(item.itemKey);
-    if (open) {
-      throw new RefundRequestError('A refund request for this is already open.', 409, 'request-open', {
-        requestId: open.id,
-      });
-    }
-    if (item.unavailable) {
-      throw new RefundRequestError(item.unavailable.message, 409, 'not-refundable', { why: item.unavailable.code });
-    }
-
-    let request: RefundRequest;
-    try {
-      request = insertRefundRequest({
-        accountId: account.id,
-        kind: item.kind,
-        itemType: item.itemType,
-        itemId: item.itemId,
-        ...(item.paymentId ? { paymentId: item.paymentId } : {}),
-        ...(item.orderItemId ? { orderItemId: item.orderItemId } : {}),
-        ...(item.taskId ? { taskId: item.taskId } : {}),
-        ...(item.reservationId ? { reservationId: item.reservationId } : {}),
-        label: item.label,
-        amountMilli: item.refundableMilli,
-        reason,
-      });
-    } catch (error) {
-      if (error instanceof OpenRefundRequestExists) {
-        throw new RefundRequestError('A refund request for this is already open.', 409, 'request-open');
-      }
-      throw error;
-    }
-    notifyAdminsOfNewRequest(request, account);
-    return toRefundRequestView(request);
-  }).immediate();
 }
 
 export function listMyRefundRequests(
@@ -1156,7 +976,7 @@ export function approveRefund(id: string, admin: UserAccount): DecisionResult {
  * nothing - the first reason stands.
  */
 export function declineRefund(id: string, admin: UserAccount, body: { reason?: unknown }): DecisionResult {
-  const reason = readReason(body.reason, 'admin');
+  const reason = readDeclineReason(body.reason);
   const db = getDb();
   const decided = db.transaction((): DecisionResult | { refundedPayment: Payment; request: RefundRequest } => {
     const request = loadRequest(id);

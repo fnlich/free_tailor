@@ -128,8 +128,8 @@ export const JOB_REPORT_OUTCOME_LABELS: Readonly<Record<JobReportOutcome, string
 
 /**
  * "Reported before (Added)" - or whichever outcome the posting had the first
- * time - as the run's own reason says it. Without an outcome (an answer
- * from before the server kept one) it is just "Reported before".
+ * time - as the run's own reason says it; just "Reported before" for an
+ * outcome this page has no word for.
  */
 export function describePriorOutcome(outcome: JobReportOutcome | null | undefined): string {
   const label = outcome ? JOB_REPORT_OUTCOME_LABELS[outcome] : undefined;
@@ -159,10 +159,9 @@ export function describePreviewRow(
 
 /**
  * The server's refusal of a tab that is not a job tab (a tab the reporter
- * keeps notes on, or a daily tab an older build made in other columns): the
- * run's words
- * (services/jobLake/reportRun.ts), said by the preview before a run is
- * started, so the two never disagree about the same tab.
+ * keeps notes on): the run's words (services/jobLake/reportRun.ts), said by
+ * the preview before a run is started, so the two never disagree about the
+ * same tab.
  */
 export function notJobTabMessage(tabName: string): string {
   return `"${tabName}" is not laid out as a job sheet tab, so it cannot be reported from. Choose All or Temp For AI, or an empty tab, which is laid out as one the first time it is used.`;
@@ -540,7 +539,8 @@ export function pushBlocker(input: { loaded: boolean; failed: boolean; pushing: 
  * found, the newest `maxRows` of it when it is more than a push takes - and
  * that they REPLACE what the Temp For AI tab of the administrator's own sheet
  * holds. A search that found nothing empties the tab, said as such.
- * `maxRows` is null while the server has not said its cap (an older server).
+ * `maxRows` is null until the lake's first page has answered with the cap
+ * (the confirm opens only after it has - `pushBlocker`).
  */
 export function describePushConfirm(input: { matched: number; maxRows: number | null }): string {
   const { matched, maxRows } = input;
@@ -863,31 +863,25 @@ export function linkHost(href: string): string {
 /**
  * A lake row's job type, clearance and industry as table cells: the server's
  * own words (`jobTypeLabel`, `industryLabel` - never a copied list), and ''
- * for a blank cell - a posting that does not say, or a row an older build
- * added that the server has not filled in yet.
+ * for a blank cell - a posting that does not say.
  */
-export function lakeFactCells(facts: LakeFacts): { jobType: string; clearance: string; industry: string } {
+export function lakeFactCells(
+  facts: Pick<LakeFacts, 'jobTypeLabel' | 'clearance' | 'industryLabel'>
+): { jobType: string; clearance: string; industry: string } {
   return {
     jobType: facts.jobTypeLabel,
-    clearance: facts.clearance === null ? '' : facts.clearance ? 'Required' : 'Not required',
+    clearance: facts.clearance ? 'Required' : 'Not required',
     industry: facts.industryLabel,
   };
 }
 
-/** Said for a fact of a row an older build added, until the server's next start fills it in. */
-export const FACT_NOT_FILLED = 'Not filled in yet';
-
-/**
- * The same three in a row's details, where a blank is said: what the posting
- * did not state, or a row not filled in yet (null), which the server fills in
- * from the row's analysis at its next start.
- */
+/** The same three in a row's details, where a blank is said: what the posting did not state. */
 export function describeLakeFacts(facts: LakeFacts): { jobType: string; clearance: string; industry: string } {
   const cells = lakeFactCells(facts);
   return {
-    jobType: facts.jobType === null ? FACT_NOT_FILLED : cells.jobType || 'Not stated',
-    clearance: facts.clearance === null ? FACT_NOT_FILLED : cells.clearance,
-    industry: facts.industry === null ? FACT_NOT_FILLED : cells.industry || 'Not stated',
+    jobType: cells.jobType || 'Not stated',
+    clearance: cells.clearance,
+    industry: cells.industry || 'Not stated',
   };
 }
 

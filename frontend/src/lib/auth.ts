@@ -80,11 +80,11 @@ export const authApi = {
   /**
    * Who is signed in, and the PDF upload cap (`uploadMaxMb`, UPLOAD_MAX_MB on
    * the server). The cap is beside the account rather than in it because it is
-   * the server's, not the account's, and is answered signed out too. Optional,
-   * because a backend that predates it does not send it - read it through
-   * `readUploadMaxMb` in lib/upload.ts.
+   * the server's, not the account's, and is answered signed out too. Read it
+   * through `readUploadMaxMb` in lib/upload.ts, which never lets a value that
+   * is not a positive whole number become the cap.
    */
-  me: () => apiFetch<{ account: Account | null; uploadMaxMb?: number }>('/auth/me'),
+  me: () => apiFetch<{ account: Account | null; uploadMaxMb: number }>('/auth/me'),
 
   google: (credential: string) =>
     apiFetch<SignInResponse>('/auth/google', {
@@ -142,10 +142,9 @@ export type ManagedAccount = Account & {
   configuredAdmin: boolean;
   /**
    * Which of the two names it, null when neither does; the row names it
-   * (lib/roles.ts `configuredAdminNotes`). Optional: a backend from before it
-   * sends only `configuredAdmin`, which then meant ADMIN_EMAILS.
+   * (lib/roles.ts `configuredAdminNotes`).
    */
-  configuredAdminSource?: ConfiguredAdminSource | null;
+  configuredAdminSource: ConfiguredAdminSource | null;
 };
 
 /** A role as the accounts list offers it: `{ id: 'reporter', label: 'Reporter' }`. */
@@ -167,9 +166,9 @@ export type PayoutResult = {
   /**
    * The reporter's open payout request this payout answered, closed as paid
    * in the same step - so the queue cannot pay it a second time. Null when
-   * none was open (absent from a server from before payout requests).
+   * none was open.
    */
-  closedRequestId?: string | null;
+  closedRequestId: string | null;
 };
 
 export const accountsApi = {
@@ -196,17 +195,16 @@ export const accountsApi = {
     ),
 
   /**
-   * `roles` is the server's catalog; optional only because a backend older
-   * than reporters sends none. `globalReportRateMilli` is the rate a reporter
-   * with no rate of their own is paid (Admin -> Job Lake), which the empty
-   * rate boxes name; optional for a backend from before the job lake.
+   * `roles` is the server's catalog. `globalReportRateMilli` is the rate a
+   * reporter with no rate of their own is paid (Admin -> Job Lake), which the
+   * empty rate boxes name.
    */
   list: () =>
     apiFetch<{
       accounts: ManagedAccount[];
       subscriptions: AccountSubscription[];
-      roles?: RoleOption[];
-      globalReportRateMilli?: number;
+      roles: RoleOption[];
+      globalReportRateMilli: number;
     }>('/admin/accounts'),
 
   create: (input: {

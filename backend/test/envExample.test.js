@@ -267,7 +267,7 @@ test("the README's Configuration table shows each setting's default, range and r
   // Rows combine several variables, so each is checked against its own row:
   // a whole-number setting's default and range must both be in it; a text
   // setting's default may instead be left to .env.example when the row says
-  // so (the actor ids, the User-Agent); and the row's tags must match the
+  // so (the User-Agent); and the row's tags must match the
   // read timings of the variables it holds.
   const { rows } = readmeConfiguration();
   const problems = [];

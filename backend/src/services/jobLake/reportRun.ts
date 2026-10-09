@@ -182,8 +182,8 @@ export function currentReportRun(accountId: string): ReportRunView | null {
 }
 
 /**
- * Why a tab cannot be reported from: it is not a job tab - an older build's
- * daily tab, a tab of the person's own, a tab with data under a blank row 1.
+ * Why a tab cannot be reported from: it is not a job tab - a tab of the
+ * person's own, a tab with data under a blank row 1.
  * The page shows the same sentence (frontend lib/jobLakeDisplay.ts).
  */
 export function notJobTabMessage(tabName: string): string {

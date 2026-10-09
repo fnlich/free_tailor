@@ -46,7 +46,6 @@ const INT_GETTERS = {
   SHEET_BACKFILL_PAUSE_MS: op.sheetBackfillPauseMs,
   JOB_PAGE_FETCH_TIMEOUT_MS: op.jobPageFetchTimeoutMs,
   JOB_PAGE_BROWSER_TIMEOUT_MS: op.jobPageBrowserTimeoutMs,
-  APIFY_RUN_TIMEOUT_S: op.apifyRunTimeoutS,
   CRYPTOMUS_INVOICE_LIFETIME_S: op.cryptomusInvoiceLifetimeS,
 };
 
@@ -68,7 +67,6 @@ const OLD_LITERALS = {
   SHEET_BACKFILL_PAUSE_MS: 250,
   JOB_PAGE_FETCH_TIMEOUT_MS: 20_000,
   JOB_PAGE_BROWSER_TIMEOUT_MS: 25_000,
-  APIFY_RUN_TIMEOUT_S: 300,
   CRYPTOMUS_INVOICE_LIFETIME_S: 3600,
 };
 
@@ -280,71 +278,6 @@ test('JOB_PAGE_USER_AGENT: a character fetch cannot send in a header warns and u
   assert.equal(op.jobPageUserAgent({ JOB_PAGE_USER_AGENT: 'Mozilla/5.0 (Custom; rv:1) Gecko/2' }), 'Mozilla/5.0 (Custom; rv:1) Gecko/2');
 });
 
-/* ================================================================ scrapers */
-
-test('SCRAPER_DEFAULT_LOCATION and SCRAPER_COUNTRY', () => {
-  assert.equal(op.scraperDefaultLocation({}), 'United States');
-  assert.equal(op.scraperDefaultLocation({ SCRAPER_DEFAULT_LOCATION: ' United Kingdom ' }), 'United Kingdom');
-  assert.equal(withWarnings(() => op.scraperDefaultLocation({ SCRAPER_DEFAULT_LOCATION: 'x'.repeat(101) })).value, 'United States');
-
-  assert.equal(op.scraperCountry({}), 'US');
-  assert.equal(op.scraperCountry({ SCRAPER_COUNTRY: 'gb' }), 'GB');
-  const junk = withWarnings(() => op.scraperCountry({ SCRAPER_COUNTRY: 'USA' }));
-  assert.equal(junk.value, 'US');
-  assert.equal(junk.warnings.length, 1);
-});
-
-test('APIFY_PROXY_GROUPS: empty is RESIDENTIAL, `auto` omits the groups, junk falls back', () => {
-  // EMPTY MEANS THE DEFAULT. A copied `APIFY_PROXY_GROUPS=` reading as "no
-  // group" would quietly move an install onto datacenter proxies.
-  assert.deepEqual(op.apifyProxyGroups({}), ['RESIDENTIAL']);
-  assert.deepEqual(op.apifyProxyGroups({ APIFY_PROXY_GROUPS: '' }), ['RESIDENTIAL']);
-  assert.deepEqual(op.apifyProxyGroups({ APIFY_PROXY_GROUPS: 'auto' }), []);
-  assert.deepEqual(op.apifyProxyGroups({ APIFY_PROXY_GROUPS: ' AUTO ' }), []);
-  assert.deepEqual(op.apifyProxyGroups({ APIFY_PROXY_GROUPS: 'residential, google_serp' }), ['RESIDENTIAL', 'GOOGLE_SERP']);
-  const junk = withWarnings(() => op.apifyProxyGroups({ APIFY_PROXY_GROUPS: 'RESIDENTIAL, two words!' }));
-  assert.deepEqual(junk.value, ['RESIDENTIAL']);
-  assert.equal(junk.warnings.length, 1);
-});
-
-test('SCRAPER_MAX_RESULTS: unset means no cap, and so does junk', () => {
-  assert.equal(op.scraperMaxResults({}), null);
-  assert.equal(op.scraperMaxResults({ SCRAPER_MAX_RESULTS: '' }), null);
-  assert.equal(op.scraperMaxResults({ SCRAPER_MAX_RESULTS: '250' }), 250);
-  const junk = withWarnings(() => op.scraperMaxResults({ SCRAPER_MAX_RESULTS: 'lots' }));
-  assert.equal(junk.value, null);
-  assert.equal(junk.warnings.length, 1);
-  const high = withWarnings(() => op.scraperMaxResults({ SCRAPER_MAX_RESULTS: '50000' }));
-  assert.equal(high.value, 10_000);
-  assert.equal(high.warnings.length, 1);
-  assert.equal(withWarnings(() => op.scraperMaxResults({ SCRAPER_MAX_RESULTS: '0' })).value, 1);
-});
-
-test('APIFY_ACTOR_*: the shipped actors by default, owner/name, owner~name or an id when set', () => {
-  // The literals the scrapers had, written out rather than read from the table.
-  const shipped = {
-    APIFY_ACTOR_INDEED: 'misceres/indeed-scraper',
-    APIFY_ACTOR_JOBBOARD: 'openclawai/job-board-scraper',
-    APIFY_ACTOR_WELLFOUND: 'blackfalcondata/wellfound-scraper',
-    APIFY_ACTOR_LEVER: 'deadlyaccurate/lever-jobs-scraper',
-    APIFY_ACTOR_HIRINGCAFE: 'manojachari/hiring-cafe-scraper',
-    APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS: 'crawlerbros/hiring-cafe-scraper',
-    APIFY_ACTOR_HIRINGCAFE_MEMO23: 'memo23/apify-hiring-cafe-scraper',
-  };
-  assert.deepEqual(Object.keys(op.APIFY_ACTOR_DEFAULTS).sort(), Object.keys(shipped).sort());
-  for (const [name, literal] of Object.entries(shipped)) {
-    const read = (env) => op.apifyActorId(name, env);
-    assert.equal(read({}), literal, `${name} default`);
-    assert.equal(op.APIFY_ACTOR_DEFAULTS[name], literal);
-    assert.equal(read({ [name]: 'me/my-fork' }), 'me/my-fork');
-    assert.equal(read({ [name]: 'me~my.fork_2' }), 'me~my.fork_2');
-    assert.equal(read({ [name]: 'aBcDeFgHiJkLmNoPq' }), 'aBcDeFgHiJkLmNoPq');
-    const junk = withWarnings(() => read({ [name]: 'https://apify.com/me/my-fork' }));
-    assert.equal(junk.value, literal, `${name} junk`);
-    assert.equal(junk.warnings.length, 1);
-  }
-});
-
 /* =================================================================== table */
 
 test('the table: unique names, units only in the suffixes already in use', () => {
@@ -404,9 +337,8 @@ test('the startup line names every non-default setting once, with its EFFECTIVE 
       SESSION_TTL_DAYS: '7',
       UPLOAD_MAX_MB: '500', // clamped to 100, and shown as 100
       PDF_RENDER_TIMEOUT_MS: 'slow', // junk: warned, back at its default, not listed
-      SCRAPER_DEFAULT_LOCATION: 'United Kingdom',
-      APIFY_PROXY_GROUPS: 'auto',
-      SCRAPER_MAX_RESULTS: '200',
+      JOB_PAGE_USER_AGENT: 'Mozilla/5.0 (Custom; rv:1) Gecko/2',
+      TAILOR_CACHE_DAYS: '90',
       CALENDAR_API_TIMEOUT_MS: '30000', // frontend: not this process's to report
     })
   );
@@ -414,16 +346,14 @@ test('the startup line names every non-default setting once, with its EFFECTIVE 
   assert.match(line, /SESSION_TTL_DAYS=7/);
   assert.match(line, /UPLOAD_MAX_MB=100/);
   assert.doesNotMatch(line, /PDF_RENDER_TIMEOUT_MS/);
-  assert.match(line, /SCRAPER_DEFAULT_LOCATION="United Kingdom"/, 'a value with a space is quoted');
-  assert.match(line, /APIFY_PROXY_GROUPS=auto/);
-  assert.match(line, /SCRAPER_MAX_RESULTS=200/);
+  assert.match(line, /JOB_PAGE_USER_AGENT="Mozilla\/5\.0 \(Custom; rv:1\) Gecko\/2"/, 'a value with a space is quoted');
+  assert.match(line, /TAILOR_CACHE_DAYS=90/);
   assert.doesNotMatch(line, /CALENDAR_API_TIMEOUT_MS/);
   assert.equal(line.split('\n').length, 1, 'one line');
 });
 
 test('the startup line knows nothing of the retired metered variables, and so never prints one', () => {
-  // They left the table with the metered providers; a leftover one is named -
-  // never with its value - by its own startup warning instead.
+  // They left the table with the metered providers, and nothing reads them.
   for (const name of ['CLAUDE_BASE_URL', 'OPENAI_BASE_URL', 'DEEPSEEK_BASE_URL', 'CLAUDE_MAX_ATTEMPTS']) {
     assert.equal(op.OPERATIONAL_VARIABLES.some((entry) => entry.name === name), false, name);
   }

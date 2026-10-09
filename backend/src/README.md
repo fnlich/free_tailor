@@ -1,13 +1,13 @@
 # Backend Source Layout
 
 - `config/`: application settings orchestration, the AI provider catalog, and static asset path resolution.
-- `database/`: SQLite connection, schema, and repository helpers for profiles, groups, templates, prompts, skills, and settings. `database/migrations/` holds one-time data migrations, applied on first database use.
+- `database/`: SQLite connection, schema, and repository helpers for profiles, groups, templates, prompts, skills, and settings. `upgradeGuard.ts` refuses, at startup, a database an older build never finished upgrading (start build ac3df79 on it once first); `openAtStartup.ts` opens the database before any route loads, so that refusal is one line and exit code 1. `database/migrations/` holds the runner for numbered one-time data migrations - there are none today - applied on first database use.
 - `extractors/`: modules that extract structured data from external inputs.
 - `generators/`: modules that generate output artifacts such as PDF, DOCX, and cover letters.
 - `integrations/`: external service clients and API adapters.
 - `middleware/`: Express middleware.
 - `routes/`: HTTP route handlers.
-- `scripts/`: one-off maintenance commands (legacy JSON data import, provider-migration rollback).
+- `scripts/`: operator tools, each behind an npm script: the mail and sheets doctors (`mail:doctor`, `sheets:doctor`) and the Google sign-in for job sheets (`sheets:login`).
 - `services/`: core domain services. `services/ai/` is the AI transport layer and the only place that knows how a model is reached; `services/resumeService.ts` is the resume and cover-letter domain logic that uses it.
 - `types/`: shared TypeScript types.
 - `utils/`: focused utility helpers with no route-level responsibilities.
@@ -42,9 +42,9 @@ ai/
 ```
 
 Every provider is a subscription seat signed in on the server; none holds an
-API key. The metered APIs (`claude`, `openai`, `deepseek`) are retired, not
-aliased - see `RETIRED_PROVIDER_IDS` in `config/providerCatalog.ts` and
-migration 007.
+API key. `config/providerCatalog.ts` names exactly the three seat types, and
+`coerceProviderId` answers null for any other id - the OpenRouter, browser-chat
+and metered-API providers of older builds are not mapped onto a seat.
 
 ### `providers/claudeCli/`
 

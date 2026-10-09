@@ -134,32 +134,6 @@ test('a subscription this build does not have is refused rather than stored', as
   }
 });
 
-test('a page still sending the retired `plan` field is told to reload, not silently ignored', async () => {
-  const server = await serve();
-  try {
-    // An Accounts page left open across the upgrade. Ignoring the field would
-    // answer "nothing to change" to a change, and create a Default account
-    // from an invite meant for Premium.
-    const patch = await server.request(server.adminToken, `/${server.alice.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ plan: 'premium' }),
-    });
-    assert.equal(patch.status, 400);
-    assert.equal((await patch.json()).code, 'stale-page');
-    assert.equal(server.users.getUserById(server.alice.id).subscription, 'default');
-
-    const invite = await server.request(server.adminToken, '/', {
-      method: 'POST',
-      body: JSON.stringify({ email: 'stale@example.com', plan: 'premium' }),
-    });
-    assert.equal(invite.status, 400);
-    assert.equal((await invite.json()).code, 'stale-page');
-    assert.equal(server.users.getUserByEmail('stale@example.com'), null);
-  } finally {
-    server.close();
-  }
-});
-
 test('an admin cannot disable, demote or delete their own account, even with another admin', async () => {
   const server = await serve();
   try {
@@ -381,7 +355,7 @@ test('deleting an account leaves its profiles behind, and says so', async () => 
   }
 });
 
-test('a balance is set and granted in dollars to $0.001, and anything finer, or a page still in credits, is refused', async () => {
+test('a balance is set and granted in dollars to $0.001, and anything finer is refused; no other field moves money', async () => {
   const server = await serve();
   try {
     const patch = (body) =>
@@ -419,22 +393,12 @@ test('a balance is set and granted in dollars to $0.001, and anything finer, or 
       assert.match((await refused.json()).error, why);
     }
 
-    // An Accounts page loaded before credits were dollars sends whole credits.
-    // Read as dollars, or quietly ignored, either would move somebody's money
-    // by a figure nobody meant; it is refused, and nothing moves.
-    for (const [request, body] of [
-      [patch, { credits: 40 }],
-      [grant, { amount: 5 }],
-    ]) {
-      const refused = await request(body);
-      assert.equal(refused.status, 400);
-      assert.equal((await refused.json()).code, 'stale-page');
-    }
-    const preCreate = await server.request(server.adminToken, '/', {
-      method: 'POST',
-      body: JSON.stringify({ email: 'stale@example.com', credits: 10 }),
-    });
-    assert.equal(preCreate.status, 400);
+    // An amount under any other name - the whole credits an older page sent -
+    // is not read: a grant without amountUsd is refused, and nothing moves.
+    const unnamed = await grant({ amount: 5 });
+    assert.equal(unnamed.status, 400);
+    assert.match((await unnamed.json()).error, /is required/);
+    await patch({ credits: 40 });
 
     const ledger = await (await server.request(server.adminToken, `/${server.alice.id}/credits`)).json();
     assert.equal(ledger.balanceMilli, 900, 'untouched by every refusal');
@@ -661,99 +625,6 @@ test('a row named by the SMTP_USER fallback says SMTP_USER, as the note does - n
   }
 });
 
-/**
- * `users` exactly as the build before reporters created it (ed39205): no
- * `report_rate_milli`. Frozen here on purpose - the point is a database this
- * build did not make, which only addMissingColumns brings up to date.
- */
-const PRE_REPORTER_USERS = `
-  CREATE TABLE users (
-    id            TEXT PRIMARY KEY,
-    email         TEXT NOT NULL UNIQUE,
-    name          TEXT NOT NULL DEFAULT '',
-    picture       TEXT NOT NULL DEFAULT '',
-    role          TEXT NOT NULL DEFAULT 'user',
-    subscription  TEXT NOT NULL DEFAULT 'default',
-    credits       INTEGER NOT NULL DEFAULT 0,
-    balance_milli INTEGER NOT NULL DEFAULT 0,
-    google_sub    TEXT,
-    disabled      INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL,
-    last_login_at TEXT,
-    sheet_id       TEXT,
-    sheet_url      TEXT,
-    sheet_tab_date TEXT,
-    sheet_tab_gid  TEXT,
-    sheet_shared_at TEXT,
-    notifications_seen_at TEXT,
-    stripe_customer_id TEXT
-  );
-`;
-
-test('a database from before reporters gains the rate column on boot, and Accounts lists and sets it', async () => {
-  // Every query of the rate names users.report_rate_milli, and a fresh
-  // database has it from CREATE TABLE - so without addMissingColumns' entry
-  // only an UPGRADED install would find out, as a 500 on every Accounts load.
-  const path = require('node:path');
-  const Database = require('better-sqlite3');
-  const { dbDir } = useTempStorage(`account-routes-upgrade-${Math.random().toString(36).slice(2)}`);
-  useAdminEmails('admin@example.com');
-  const old = new Database(path.join(dbDir, 'free_tailor.db'));
-  try {
-    old.exec(PRE_REPORTER_USERS);
-    const insert = old.prepare(
-      `INSERT INTO users (id, email, role, created_at, updated_at)
-       VALUES (?, ?, ?, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`
-    );
-    insert.run('u-admin', 'admin@example.com', 'admin');
-    insert.run('u-alice', 'alice@example.com', 'user');
-  } finally {
-    old.close();
-  }
-
-  const express = require('express');
-  const db = loadFresh('../dist/database/sqlite').getDb();
-  const columns = db.prepare('PRAGMA table_info(users)').all().map((column) => column.name);
-  assert.ok(columns.includes('report_rate_milli'), columns.join(', '));
-
-  const users = loadFresh('../dist/database/userRepository');
-  const { attachUser } = loadFresh('../dist/middleware/auth');
-  const routes = loadFresh('../dist/routes/accounts');
-  // Every account that was there reads as "the global rate".
-  assert.deepEqual([...users.listReportRates()].sort(), [['u-admin', null], ['u-alice', null]]);
-
-  const app = express();
-  app.use(express.json());
-  app.use(attachUser);
-  app.use('/api/admin/accounts', routes.default);
-  const server = app.listen(0);
-  const token = users.createSession('u-admin');
-  const call = (route, init = {}) =>
-    fetch(`http://127.0.0.1:${server.address().port}/api/admin/accounts${route}`, {
-      ...init,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    });
-  try {
-    const listed = await call('/');
-    assert.equal(listed.status, 200);
-    const { accounts } = await listed.json();
-    assert.deepEqual(
-      accounts.map((account) => [account.id, account.reportRateMilli]).sort(),
-      [['u-admin', null], ['u-alice', null]]
-    );
-
-    const made = await call('/u-alice', { method: 'PATCH', body: JSON.stringify({ role: 'reporter', reportRateUsd: '0.050' }) });
-    assert.equal(made.status, 200);
-    const { account } = await made.json();
-    assert.equal(account.role, 'reporter');
-    assert.equal(account.reportRateMilli, 50);
-    assert.equal(users.getReportRateMilli('u-alice'), 50);
-  } finally {
-    server.close();
-  }
-});
-
 test('a payout is recorded for a reporter as a deduction with a note, never above the balance', async () => {
   const server = await serve();
   try {
@@ -785,8 +656,8 @@ test('a payout is recorded for a reporter as a deduction with a note, never abov
       [{ amountUsd: '1', note: '   ' }, 400, 'note-required', /how it was paid/],
       [{ amountUsd: '1', note: 'x'.repeat(501) }, 400, 'note-too-long', /under 500/],
       [{ amountUsd: '1', note: 'ok', requestId: 'short' }, 400, 'bad-request-id', /request id/],
-      // A page still sending an amount in credits.
-      [{ amount: 1, note: 'Bank transfer' }, 400, 'stale-page', /older version/],
+      // An amount under any other name is not read.
+      [{ amount: 1, note: 'Bank transfer' }, 400, undefined, /The payout is required/],
       [{ amountUsd: '5.001', note: 'Bank transfer' }, 409, 'insufficient-balance', /more than this reporter's balance of \$5\. /],
     ]) {
       const refused = await payout(server.alice.id, body);

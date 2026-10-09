@@ -4,14 +4,16 @@ const test = require('node:test');
 const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
- * The job routes that read and write the account's own sheet in the new
- * layout (owner decisions S1-S3), over HTTP against a sheet held in memory:
+ * What reads and writes the account's own sheet in its layout (owner
+ * decisions S1-S3), against a sheet held in memory:
  *
- *  - the export appends A:F - Date as a real date, NO(DATE) continuing the
- *    day's numbers, the posting - RAW, after one read of A:E, with the rows'
- *    layout (21 px, clipped) sent first; never G:L; a row typed meanwhile is
- *    stepped over, never written over; a tab that is not a job tab is
- *    refused before anything is scraped;
+ *  - the export writer (services/sheets/jobExport.ts `appendJobRows`, what
+ *    the lake's Export into Sheet calls) appends A:F - Date as a real date,
+ *    NO(DATE) continuing the day's numbers, the posting - RAW, after one read
+ *    of A:E, with the rows' layout (21 px, clipped) sent first; G:L only for
+ *    a row that carries its analysis; a row typed meanwhile is stepped over,
+ *    never written over; a tab that is not a job tab is refused before
+ *    anything is read;
  *  - the Job Filter reads C:E, judges every row, answers each to the page and
  *    writes NOTHING into the sheet;
  *  - the range importer reads and writes only the administrator's own sheet,
@@ -222,19 +224,11 @@ async function serve(name, options = {}) {
     book.writeRange(input);
     return { spreadsheetId: input.sheetId, updatedRange: 'x' };
   });
-  let scraped = 0;
-  swap(require('../dist/services/scraperProviders'), 'resolveScraperProvider', () => ({
-    id: 'stub',
-    label: 'Stub',
-    async run() {
-      scraped += 1;
-      return options.jobs ?? [];
-    },
-  }));
   swap(require('../dist/services/jobPageContent'), 'extractJobPageContent', async () => {
     throw new Error('no page is fetched in these tests');
   });
 
+  const jobExport = loadFresh('../dist/services/sheets/jobExport');
   const { attachUser } = loadFresh('../dist/middleware/auth');
   const jobs = loadFresh('../dist/routes/jobs');
   const admin = loadFresh('../dist/routes/admin');
@@ -260,7 +254,8 @@ async function serve(name, options = {}) {
     ranges,
     sheets,
     accountSheet,
-    scraped: () => scraped,
+    /** The lake's export, as Alice: `appendJobRows` on her own sheet. */
+    exportRows: (tabName, rows, exportOptions) => jobExport.appendJobRows(users.getUserById(alice.id), tabName, rows, exportOptions),
     call: async (who, method, path, body) => {
       const response = await fetch(`http://127.0.0.1:${port}/api${path}`, {
         method,
@@ -279,13 +274,12 @@ async function serve(name, options = {}) {
 const job = (company, n) => ({
   company,
   title: `Engineer ${n}`,
-  apply_url: `https://jobs.example.com/${n}`,
+  link: `https://jobs.example.com/${n}`,
   description: `The posting for job ${n}.`,
-  raw: {},
 });
 
 test('the export appends A:F after the last used row: a real date, the day\'s numbers continued, RAW, laid out first', async (t) => {
-  const h = await serve('export', { jobs: [job('Acme', 1), job('Existing Co', 2), job('Beta', 3)] });
+  const h = await serve('export');
   t.after(() => h.close());
   const today = h.accountSheet.sheetDateText();
   const serial = h.accountSheet.sheetDateSerial(today);
@@ -296,20 +290,12 @@ test('the export appends A:F after the last used row: a real date, the day\'s nu
     4: { A: String(serial), B: '4', C: 'Gamma', D: 'Engineer', E: 'https://x.example/3', F: 'text' },
   });
 
-  const response = await h.call('alice', 'POST', '/jobs/scrapers/export', {
-    source: 'indeed',
-    startUrl: 'https://www.indeed.com/jobs?q=engineer',
-    // A stale page's column choices: not read.
-    companyNameCol: 'D',
-    jobLinkCol: 'F',
-    startRow: 2,
-  });
-  assert.equal(response.status, 200, JSON.stringify(response.body));
-  const exported = response.body.export;
-  assert.equal(exported.selectedTab, 'All');
+  const exported = await h.exportRows(undefined, [job('Acme', 1), job('Existing Co', 2), job('Beta', 3)]);
+  assert.equal(exported.tabName, 'All', 'All when no tab is named');
+  assert.equal(exported.spreadsheetId, h.sheets.alice);
   assert.equal(exported.date, today);
   assert.deepEqual([exported.rowsWritten, exported.startRow, exported.endRow, exported.firstNo, exported.lastNo], [2, 5, 6, 5, 6]);
-  assert.equal(exported.skippedCompanyDuplicates, 1, 'Existing Co is in the tab already');
+  assert.equal(exported.skippedDuplicates, 1, 'Existing Co is in the tab already');
   assert.deepEqual(exported.updatedRanges, ["'All'!A5:F6"]);
   assert.match(exported.tabUrl, /#gid=\d+$/);
 
@@ -333,26 +319,36 @@ test('the export appends A:F after the last used row: a real date, the day\'s nu
   assert.deepEqual(layout[2].repeatCell.cell.userEnteredFormat.numberFormat, { type: 'DATE', pattern: 'mm/dd/yyyy' });
 
   // A second export the same day: the numbers go on from 6.
-  const next = await serveAgain(h, [job('Delta', 4)]);
+  const next = await h.exportRows('All', [job('Delta', 4)]);
   assert.deepEqual([next.startRow, next.firstNo], [7, 7]);
 });
 
-/** Another export on the same server, with other results. */
-async function serveAgain(h, results) {
-  const scraperProviders = require('../dist/services/scraperProviders');
-  const current = scraperProviders.resolveScraperProvider;
-  scraperProviders.resolveScraperProvider = () => ({ id: 'stub', label: 'Stub', run: async () => results });
-  try {
-    const response = await h.call('alice', 'POST', '/jobs/scrapers/export', { source: 'indeed', startUrl: 'https://www.indeed.com/jobs?q=x' });
-    assert.equal(response.status, 200, JSON.stringify(response.body));
-    return response.body.export;
-  } finally {
-    scraperProviders.resolveScraperProvider = current;
-  }
-}
+test('a row that carries its analysis is written A:L in the same write; a long description is cut the way the push cuts it', async (t) => {
+  const h = await serve('export-analysis');
+  t.after(() => h.close());
+  const { ANALYSIS_TRUNCATED_MARKER } = require('../dist/services/sheets/analysisColumns');
+  const cells = ['Backend', '$100k - $120k a year', 'Remote', false, 'Technology', '{"v":1}'];
+  const exported = await h.exportRows('All', [
+    { ...job('Acme', 1), analysis: cells },
+    { ...job('Beta', 2), description: 'x'.repeat(60_000) },
+  ]);
+  assert.deepEqual(exported.updatedRanges, ["'All'!A2:L3"], 'A to L when any row carries its analysis');
+  const rows = h.book.tab('All').rows;
+  assert.deepEqual([rows[2].G, rows[2].H, rows[2].I, rows[2].J, rows[2].K, rows[2].L], cells);
+  assert.deepEqual([rows[3].G, rows[3].L], ['', ''], 'a row without one leaves G to L blank');
+  assert.equal(rows[3].F.length, 50_000);
+  assert.ok(rows[3].F.endsWith(ANALYSIS_TRUNCATED_MARKER));
+
+  // The duplicate rule is the caller's to give: here, the link.
+  const byLink = (row) => (row.link ? [`link:${row.link}`] : []);
+  const again = await h.exportRows('All', [job('Acme Renamed', 1), job('Gamma', 3)], { duplicateKeys: byLink });
+  assert.equal(again.skippedDuplicates, 1, 'the same link is in the tab already');
+  assert.equal(again.rowsWritten, 1);
+  assert.equal(h.book.tab('All').rows[4].C, 'Gamma');
+});
 
 test('a row typed after the read is stepped over, never written over; the grid grows to hold what is written', async (t) => {
-  const h = await serve('export-moved', { jobs: [job('Acme', 1), job('Beta', 2)] });
+  const h = await serve('export-moved');
   t.after(() => h.close());
   const all = h.book.tab('All');
   all.rowCount = 4;
@@ -361,31 +357,28 @@ test('a row typed after the read is stepped over, never written over; the grid g
   h.book.hooks.afterRead = () => {
     all.rows[3] = { F: 'a note somebody typed' };
   };
-  const response = await h.call('alice', 'POST', '/jobs/scrapers/export', { source: 'indeed', startUrl: 'https://www.indeed.com/jobs?q=x' });
-  assert.equal(response.status, 200, JSON.stringify(response.body));
-  assert.deepEqual([response.body.export.startRow, response.body.export.endRow, response.body.export.firstNo], [4, 5, 1]);
+  const exported = await h.exportRows(undefined, [job('Acme', 1), job('Beta', 2)]);
+  assert.deepEqual([exported.startRow, exported.endRow, exported.firstNo], [4, 5, 1]);
   assert.deepEqual(all.rows[3], { F: 'a note somebody typed' }, 'not written over');
   assert.equal(all.rows[4].C, 'Acme');
   const grown = h.book.calls.updates.flat().find((request) => request.appendDimension);
   assert.deepEqual(grown.appendDimension, { sheetId: all.gid, dimension: 'ROWS', length: 1 }, 'grown by the one row past the grid');
 });
 
-test('the export and the filter refuse a tab that is not a job tab - an older build\'s daily tab - before anything else', async (t) => {
-  const h = await serve('not-job-tab', { jobs: [job('Acme', 1)] });
+test('the export and the filter refuse a tab that is not a job tab before anything else', async (t) => {
+  const h = await serve('not-job-tab');
   t.after(() => h.close());
   const daily = h.book.tab('10/05/2026');
   daily.header = [...OLD_DAILY];
   daily.rows[2] = { B: 'Acme', D: 'https://x.example/1' };
 
-  const exported = await h.call('alice', 'POST', '/jobs/scrapers/export', {
-    source: 'indeed',
-    startUrl: 'https://www.indeed.com/jobs?q=x',
-    tabName: '10/05/2026',
-  });
-  assert.equal(exported.status, 409);
-  assert.equal(exported.body.code, 'not-job-tab');
-  assert.match(exported.body.error, /"10\/05\/2026" is not laid out as a job sheet tab, so it cannot be exported into/);
-  assert.equal(h.scraped(), 0, 'nothing scraped for a tab it would not write');
+  await assert.rejects(
+    () => h.exportRows('10/05/2026', [job('Acme', 1)]),
+    (error) =>
+      error.status === 409 &&
+      error.code === 'not-job-tab' &&
+      /"10\/05\/2026" is not laid out as a job sheet tab, so it cannot be exported into/.test(error.message)
+  );
 
   const filtered = await h.call('alice', 'POST', '/jobs/filter-google-sheet', { tabName: '10/05/2026' });
   assert.equal(filtered.status, 409);

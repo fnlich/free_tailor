@@ -11,18 +11,15 @@ export type SeatHold = { scope: string; reason: string; expiresAt: string };
  * themselves off after a sign-in failure or a spent quota, and a Gemini seat
  * held for 30 minutes with nothing on its card looked healthy while every call
  * was turned away. Two Claude providers are two sign-ins, so each card reads
- * its own. `subscription.outages` is the built-in Claude provider's alone, so
- * it stands in only for that one, and only when a server too old to send the
- * map answered. Codex holds itself only at a usage limit, on the whole seat.
+ * its own, and nothing else: `subscription.outages` is the built-in Claude
+ * provider's alone, and the map already carries it under `claude-cli`. Codex
+ * holds itself only at a usage limit, on the whole seat.
  *
  * Imports nothing at runtime, so the backend suite can load it.
  */
 export function seatHolds(
-  health: Pick<ProviderHealthReport, 'subscription' | 'outagesByProvider'> | null | undefined,
+  health: Pick<ProviderHealthReport, 'outagesByProvider'> | null | undefined,
   providerId: string
 ): SeatHold[] {
-  if (!health) return [];
-  const own = health.outagesByProvider?.[providerId];
-  if (own) return own;
-  return providerId === 'claude-cli' ? health.subscription?.outages ?? [] : [];
+  return health?.outagesByProvider[providerId] ?? [];
 }

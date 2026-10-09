@@ -82,11 +82,10 @@ function configFromRecord(
   }
 
   // An override naming a provider this installation cannot run is read as no
-  // override at all. It is a value STORED on the prompt record, possibly years
-  // ago and possibly by the provider migration itself, which repointed every
-  // custom prompt at the subscription seat - so honouring it here would mean a
-  // build that locks that seat cannot run any of those prompts, and the person
-  // hitting it has no way to see why from the prompt they are using.
+  // override at all. It is a value STORED on the prompt record, possibly long
+  // ago - so honouring it here would mean a build that locks that seat cannot
+  // run any of those prompts, and the person hitting it has no way to see why
+  // from the prompt they are using.
   if (isProviderLocked(provider)) {
     warnOnce(
       `lockedPromptOverride:${provider}`,

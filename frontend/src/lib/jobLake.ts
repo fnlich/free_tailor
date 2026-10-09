@@ -175,7 +175,6 @@ export const reportApi = {
   /** 202 with the run's first view; 409 `run-in-progress` (with `runId`) while one goes. */
   start: (range: { tabName: string; fromRow: number; toRow: number }) =>
     apiFetch<{ run: ReportRun }>('/report/runs', { method: 'POST', body: JSON.stringify(range) }),
-  current: () => apiFetch<{ run: ReportRun | null }>('/report/runs/current'),
   run: (id: string) => apiFetch<{ run: ReportRun }>(`/report/runs/${encodeURIComponent(id)}`),
 };
 
@@ -193,20 +192,18 @@ export type LakeReward = {
 
 /**
  * A lake row's job type, clearance and industry, taken from its posting's
- * analysis, with the words the server shows for them. Null (and '' for a
- * label) while a row an older build wrote is not filled in yet - the server
- * fills it at its next start.
+ * analysis, with the words the server shows for them.
  */
 export type LakeFacts = {
   /** 'remote' | 'hybrid' | 'on_site', or '' when the posting does not say. */
-  jobType: 'remote' | 'hybrid' | 'on_site' | '' | null;
+  jobType: 'remote' | 'hybrid' | 'on_site' | '';
   /** Remote, Hybrid, Onsite, or ''. */
   jobTypeLabel: string;
   /** Whether the posting requires a clearance. */
-  clearance: boolean | null;
+  clearance: boolean;
   /** An industry id, or `not_specified`. */
-  industry: string | null;
-  /** The industry's label; '' for `not_specified` (and for a row not filled in). */
+  industry: string;
+  /** The industry's label; '' for `not_specified`. */
   industryLabel: string;
 };
 
@@ -370,8 +367,8 @@ export type LakeFilterOption = { id: string; label: string };
  * so the push's confirm can say when only the newest of the matches would go.
  */
 export type LakePage = Paged<LakeEntry> & {
-  options?: { jobTypes: LakeFilterOption[]; industries: LakeFilterOption[] };
-  pushMaxRows?: number;
+  options: { jobTypes: LakeFilterOption[]; industries: LakeFilterOption[] };
+  pushMaxRows: number;
 };
 
 /**

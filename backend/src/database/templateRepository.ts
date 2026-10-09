@@ -1,10 +1,7 @@
 import { Template, type TemplateSource } from '../types/template';
 import type { TechnicalSkillsLayout } from '../types/profile';
 import { DocumentTable } from './documentTable';
-import { getDb } from './sqlite';
-import { renamedTemplateId } from './templateFileMove';
 import {
-  canonicalTemplateId,
   isTemplateSource,
   listSavedTemplateFiles,
   readSavedTemplateFile,
@@ -39,47 +36,19 @@ const overrides = new DocumentTable<TemplateOverride>('template_overrides', (ove
 }));
 
 /*
- * Saved templates - imported, extracted, manual - are FILES now, in
+ * Saved templates - imported, extracted, manual - are FILES, in
  * `static/templates` beside the built-ins (see templateFiles.ts). These four
- * keep the signatures they had when they read the `templates` table, so
- * nothing above this module had to learn where a template lives. The table is
- * no longer read: `getDb()` copied its rows out to files once, and left them
- * there as a backup.
+ * keep the signatures they had when they read a table, so nothing above this
+ * module has to know where a template lives.
  */
 
 export function listStoredTemplates(): Template[] {
   return listSavedTemplateFiles();
 }
 
-/**
- * The id a template reference is filed under now, or null for one no file
- * can have. What every lookup, and a profile's save, goes through.
- *
- * A file id as written is itself. Any other spelling is an older build's
- * (its importer kept upper case and underscores): first the id the one-time
- * move gave the row of EXACTLY that spelling - `Navy_Rule`, which folded is
- * the shipped `navy-rule`, was filed as a `u-` id so its profiles keep their
- * own design (templateFileMove.ts) - and only then the folded form, which
- * finds `my-template.json` for `My_Template`.
- */
-export function currentTemplateId(id: string): string | null {
-  if (typeof id !== 'string') return null;
-  // The move renamed only rows whose id was NOT a file id, so a file id needs
-  // no database at all - which keeps every ordinary lookup off it.
-  if (templateFileId(id) === id) return id;
-  let renamed: string | null = null;
-  try {
-    renamed = renamedTemplateId(getDb(), id);
-  } catch {
-    // No database to ask (a directory that cannot be opened): the folded form
-    // is still the best answer there is, and the lookup should not throw.
-  }
-  return renamed ?? canonicalTemplateId(id);
-}
-
-/** A saved template by id - one an older import spelled `My_Template` included. Never a built-in. */
+/** A saved template by id. Never a built-in. */
 export function getStoredTemplate(id: string): Template | null {
-  const fileId = currentTemplateId(id);
+  const fileId = templateFileId(id);
   return fileId ? readSavedTemplateFile(fileId) : null;
 }
 
@@ -89,7 +58,7 @@ export function getStoredTemplate(id: string): Template | null {
  * be handed one a save would then refuse.
  */
 export function hasStoredTemplate(id: string): boolean {
-  const fileId = currentTemplateId(id);
+  const fileId = templateFileId(id);
   return fileId ? templateFileExists(fileId) : false;
 }
 
@@ -123,7 +92,7 @@ export function saveStoredTemplate(template: Template): Template {
 
 /** Removes a saved template's file. False for an unknown id, and for a built-in, which stays. */
 export function deleteStoredTemplate(id: string): boolean {
-  const fileId = currentTemplateId(id);
+  const fileId = templateFileId(id);
   return fileId ? removeSavedTemplateFile(fileId) : false;
 }
 

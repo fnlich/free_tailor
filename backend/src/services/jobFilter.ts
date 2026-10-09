@@ -7,7 +7,6 @@ import { formatSalary } from './jobAnalysis/facts';
  * broke - decided in CODE from the facts its one job analysis read.
  */
 
-export const JOB_FILTER_MIN_CONTENT_LENGTH = 50;
 
 export type JobFilterAnalysis = {
   jobType: string;

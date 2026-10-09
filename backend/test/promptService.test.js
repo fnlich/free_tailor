@@ -1,7 +1,5 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const path = require('node:path');
-const Database = require('better-sqlite3');
 
 const { loadFresh, readDocument, readJson, readSettingRaw, useTempStorage, writeStaticJson } = require('./helpers');
 
@@ -17,22 +15,24 @@ function writeDefaultPrompt(staticDir, id, content, extra = {}) {
 
 test('prompt service lists and renders default prompts from static files', async () => {
   const { staticDir } = useTempStorage('prompts-built-in');
-  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
+  writeDefaultPrompt(staticDir, 'extract-profile-from-resume', 'Extract [[resumeText]]');
 
   const promptService = loadFresh('../dist/services/promptService');
   const prompts = await promptService.listPrompts();
 
   assert.equal(prompts.length, 1);
-  assert.equal(prompts[0].id, 'analyze-job-description');
+  assert.equal(prompts[0].id, 'extract-profile-from-resume');
   assert.equal(prompts[0].isBuiltIn, true);
   assert.deepEqual(prompts[0].validation, {
-    usedVariables: ['jobDescription'],
+    usedVariables: ['resumeText'],
     unknownVariables: [],
+    missingVariables: [],
   });
+  assert.equal(prompts[0].needsUpdate, undefined);
 
   assert.equal(
-    await promptService.renderPrompt('analyze-job-description', { jobDescription: 'Backend role' }),
-    'Analyze Backend role'
+    await promptService.renderPrompt('extract-profile-from-resume', { resumeText: 'Jane Doe' }),
+    'Extract Jane Doe'
   );
 });
 
@@ -55,7 +55,7 @@ test('prompt service creates, previews, updates, and deletes custom prompts in t
   assert.equal(created.content, 'Hello [[name]]');
   assert.equal(created.modelProvider, 'claude-cli');
   assert.equal(created.modelName, 'opus');
-  assert.deepEqual(created.validation, { usedVariables: ['name'], unknownVariables: [] });
+  assert.deepEqual(created.validation, { usedVariables: ['name'], unknownVariables: [], missingVariables: [] });
 
   const storedRecord = readDocument(dbDir, 'prompts', created.id);
   assert.equal(storedRecord.content, 'Hello [[name]]');
@@ -208,6 +208,7 @@ test('prompt validation rejects unknown variables', async () => {
   assert.deepEqual(validation, {
     usedVariables: ['missing'],
     unknownVariables: ['missing'],
+    missingVariables: [],
   });
 
   await assert.rejects(
@@ -225,7 +226,11 @@ test('feature-linked prompts may use only the variables their code supplies', as
   // its text named, so [[customNote]] validated clean - and then every
   // generation that used the record failed, because nothing supplies it.
   const { staticDir } = useTempStorage('prompts-feature-variables');
-  writeDefaultPrompt(staticDir, 'tailor-resume', 'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]]');
+  writeDefaultPrompt(
+    staticDir,
+    'tailor-resume',
+    'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]] [[includeStrengths]] [[includeSoftSkills]] [[technicalSkillsLayout]]'
+  );
 
   const promptService = loadFresh('../dist/services/promptService');
   const prompt = await promptService.getPromptById('tailor-resume');
@@ -236,8 +241,9 @@ test('feature-linked prompts may use only the variables their code supplies', as
     promptService.listPromptFeatureVariableNames('tailor-resume')
   );
   assert.deepEqual(prompt.validation, {
-    usedVariables: ['profileJson', 'jobAnalysisJson', 'customNote'],
+    usedVariables: ['profileJson', 'jobAnalysisJson', 'customNote', 'includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout'],
     unknownVariables: ['customNote'],
+    missingVariables: [],
   });
   // Refused before it reaches a model, naming the variable.
   await assert.rejects(
@@ -258,36 +264,38 @@ test('feature-linked prompts may use only the variables their code supplies', as
   const variant = await promptService.createPrompt({
     name: 'Tailor Variant',
     featureKey: 'tailor-resume',
-    content: 'Variant [[profileJson]] [[jobAnalysisJson]] [[includeStrengths]]',
+    content:
+      'Variant [[profileJson]] [[jobAnalysisJson]] [[includeStrengths]] [[includeSoftSkills]] [[technicalSkillsLayout]]',
   });
   assert.deepEqual(variant.validation.unknownVariables, []);
+  assert.deepEqual(variant.validation.missingVariables, []);
 });
 
 test('editing a built-in prompt stores the edit in the database and keeps the static default untouched', async () => {
   const { dbDir, staticDir } = useTempStorage('prompts-built-in-model');
-  const defaultPath = writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
+  const defaultPath = writeDefaultPrompt(staticDir, 'extract-profile-from-resume', 'Extract [[resumeText]]');
 
   const promptService = loadFresh('../dist/services/promptService');
-  const updated = await promptService.updatePrompt('analyze-job-description', {
-    content: 'Analyze deeply [[jobDescription]]',
+  const updated = await promptService.updatePrompt('extract-profile-from-resume', {
+    content: 'Extract deeply [[resumeText]]',
     modelProvider: 'claude-cli',
     modelName: 'haiku',
   });
 
-  assert.equal(updated.content, 'Analyze deeply [[jobDescription]]');
+  assert.equal(updated.content, 'Extract deeply [[resumeText]]');
   assert.equal(updated.modelProvider, 'claude-cli');
   assert.equal(updated.modelName, 'haiku');
   assert.equal(updated.isBuiltIn, true);
 
-  const stored = readDocument(dbDir, 'prompts', 'analyze-job-description');
+  const stored = readDocument(dbDir, 'prompts', 'extract-profile-from-resume');
   assert.equal(stored.isBuiltIn, true);
   assert.equal(stored.modelProvider, 'claude-cli');
   assert.equal(stored.modelName, 'haiku');
 
-  assert.equal(readJson(defaultPath).content, 'Analyze [[jobDescription]]');
+  assert.equal(readJson(defaultPath).content, 'Extract [[resumeText]]');
   assert.equal(
-    await promptService.renderPrompt('analyze-job-description', { jobDescription: 'Backend role' }),
-    'Analyze deeply Backend role'
+    await promptService.renderPrompt('extract-profile-from-resume', { resumeText: 'Jane Doe' }),
+    'Extract deeply Jane Doe'
   );
 });
 
@@ -305,39 +313,4 @@ test('prompt service renders prompt segments in template order', async () => {
     { text: 'Backend role', variableName: 'jobDescription' },
     { text: ' outro' },
   ]);
-});
-
-test('a prompt record naming the removed openrouter provider still loads', async () => {
-  const { dbDir, staticDir } = useTempStorage('prompts-legacy-provider');
-  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
-
-  const promptService = loadFresh('../dist/services/promptService');
-  const created = await promptService.createPrompt({
-    name: 'Legacy Provider Prompt',
-    content: 'Legacy [[name]]',
-    modelProvider: 'claude-cli',
-    modelName: 'sonnet',
-    allowedVariables: [{ name: 'name', description: 'Recipient name', sampleValue: 'Jane' }],
-  });
-
-  // Rewrite the stored record by hand to the shape an older release wrote.
-  // This is not a hypothetical: it is what a restored backup, a hand-edited
-  // row, or the legacy JSON importer produces.
-  const db = new Database(path.join(dbDir, 'free_tailor.db'));
-  try {
-    const row = db.prepare('SELECT data FROM prompts WHERE id = ?').get(created.id);
-    const record = JSON.parse(row.data);
-    record.modelProvider = 'openrouter';
-    record.modelName = 'openai/gpt-5.4-nano';
-    db.prepare('UPDATE prompts SET data = ? WHERE id = ?').run(JSON.stringify(record), created.id);
-  } finally {
-    db.close();
-  }
-
-  const reloaded = loadFresh('../dist/services/promptService');
-  const listed = await reloaded.listPrompts();
-  const legacy = listed.find((prompt) => prompt.id === created.id);
-
-  assert.ok(legacy, 'the legacy prompt must still be listed rather than throwing');
-  assert.equal(legacy.modelProvider, 'claude-cli');
 });

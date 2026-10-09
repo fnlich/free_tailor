@@ -20,18 +20,15 @@ export type PaymentMethod = 'card' | 'crypto';
 /**
  * Who took the money.
  *
- * `coinbase` and `chain` stay in the union although both paths are DELETED -
- * no code here can open one, and neither webhook is answered any more. Their
- * rows still exist, still have to read and render, and still have to refund
- * with the right advice about where that money actually is. Narrowing this
- * union is what misreads history: a row does not stop having been paid
- * on-chain because the code that watched the chain was deleted.
+ * `coinbase` and `chain` are names only: both paths were retired, nothing
+ * here can open one and neither webhook is answered, but rows they took
+ * still exist and still have to read and render as what they were.
  *
  * Nothing in this codebase switches exhaustively on this type, so ADDING a
  * member is not a compile error. A new provider has to be carried by hand to
  * every place that says something different per provider - in practice the
- * refund advice in `services/payments`, the same sentence on the admin page,
- * and the precedence in `describeMethods`.
+ * refund advice in `services/payments` and the precedence in
+ * `describeMethods`.
  */
 export type PaymentProvider = 'stripe' | 'coinbase' | 'chain' | 'cryptomus';
 
@@ -56,7 +53,7 @@ export type PaymentState = 'pending' | 'paid' | 'failed' | 'expired' | 'refundin
  * a count of credits at a price per credit, possibly less a fee. Kept so its
  * receipt still says "200 credits at $0.50" - a receipt has to say what was
  * sold - and never converted into dollars: those credits were reset to $0
- * with every balance (database/dollarSwitch.ts).
+ * with every balance when credits became dollars.
  */
 export type LegacyPaymentCredits = {
   /** Credits quoted. */
@@ -242,8 +239,7 @@ export function createPayment(input: NewPayment, at: Date = new Date()): Payment
     const id = `pay_${crypto.randomUUID()}`;
     db.prepare(
       // The whole-credit columns get 0: they describe payments from before
-      // credits were dollars, and an older build rolled back to reads a 0 as
-      // "credits nothing" rather than as a count to grant.
+      // credits were dollars, and a payment made since is in dollars alone.
       `INSERT INTO payments (id, reference, user_id, method, provider, credits, amount_cents,
                              currency, unit_price_cents, fee_cents, credit_milli, state, created_at, updated_at)
        VALUES (@id, @reference, @userId, @method, @provider, 0, @amountCents,

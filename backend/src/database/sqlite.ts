@@ -2,10 +2,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
-import { switchCreditsToDollars } from './dollarSwitch';
-import { fillLakeFacts } from './jobLakeFacts';
-import { moveTemplateRowsToFiles } from './templateFileMove';
 import { runDataMigrations } from './migrations';
+import { assertUpgradeFinished, stampCurrentDatabase, tableExists } from './upgradeGuard';
 
 const POSIX_DEFAULT_DATABASE_DIR = '/data/db';
 
@@ -41,6 +39,17 @@ export function getDefaultDatabaseDir(
 
 const DATABASE_FILE_NAME = 'free_tailor.db';
 
+/*
+ * The schema a database this build CREATES gets. An existing database already
+ * has every table and column here - the startup guard (upgradeGuard.ts)
+ * refuses one that has not finished upgrading - so a CREATE TABLE below that
+ * gains a column needs the same column in addMissingColumns, or it reaches
+ * fresh installs only.
+ *
+ * Saved templates are files (templateFiles.ts), not a table; an upgraded
+ * database may still hold the old templates table, unread, as it may the
+ * retired chain_* tables below and users.sheet_tab_date / sheet_tab_gid.
+ */
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS profiles (
     id         TEXT PRIMARY KEY,
@@ -48,7 +57,8 @@ const SCHEMA = `
     disabled   INTEGER NOT NULL DEFAULT 0,
     data       TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    owner_id   TEXT
   );
 
   CREATE TABLE IF NOT EXISTS profile_groups (
@@ -56,16 +66,8 @@ const SCHEMA = `
     name       TEXT NOT NULL,
     data       TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS templates (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    disabled   INTEGER NOT NULL DEFAULT 0,
-    data       TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    owner_id   TEXT
   );
 
   CREATE TABLE IF NOT EXISTS template_overrides (
@@ -157,8 +159,7 @@ const SCHEMA = `
    * kind is 'order' (the Order button) or 'immediate' (a Generate Immediately
    * run, filed here so its files are owner-checked and swept like an order's,
    * and never listed on /orders). An immediate run's files go
-   * IMMEDIATE_FILE_RETENTION_MS after finished_at, not at expires_at. Also in
-   * addMissingColumns, for an orders table made before it.
+   * IMMEDIATE_FILE_RETENTION_MS after finished_at, not at expires_at.
    */
   CREATE TABLE IF NOT EXISTS orders (
     id         TEXT PRIMARY KEY,
@@ -190,8 +191,8 @@ const SCHEMA = `
    * copied from its task when the order is placed. The task and its batch are
    * evicted an hour after the run settles, or sooner once twenty newer batches
    * have finished, and a refund request for the resume
-   * can come days later; NULL on an item placed before the column existed,
-   * which is then priced from its task only while the queue still holds it.
+   * can come days later. NULL reads as "not on record": an item placed before
+   * the column existed is priced from its task only while the queue holds it.
    *
    * seq is the position in the batch's task list, and it is how a finished
    * task finds its row: the queue hands back (batchId, seq) and nothing else
@@ -262,10 +263,9 @@ const SCHEMA = `
      *
      * credits_granted is distinct from credits because they answer different
      * questions - credits is what was QUOTED, credits_granted is what the
-     * ledger actually received. They differ when a fee is taken - and they
-     * could differ more widely on the retired on-chain path, where a transfer
-     * could arrive for something other than the quoted amount. Measured, not
-     * assumed, exactly as refunded_credits is.
+     * ledger actually received. Measured, not assumed, exactly as
+     * refunded_credits is. All four whole-credit columns are history, from
+     * before credits were dollars; every payment since writes 0 into them.
      */
     fee_cents        INTEGER NOT NULL DEFAULT 0,
     credits_granted  INTEGER NOT NULL DEFAULT 0,
@@ -277,10 +277,8 @@ const SCHEMA = `
      *
      * NEW columns rather than the old ones reinterpreted. credits,
      * credits_granted, refunded_credits and unit_price_cents still say what a
-     * payment made before the switch bought - N credits at 50c - which is what
-     * its receipt has to keep saying; a payment made since writes 0 into all
-     * four, so an older build that is rolled back to reads it as crediting
-     * nothing rather than as a thousand times what was paid.
+     * payment made before credits were dollars bought - N credits at 50c -
+     * which is what its receipt has to keep saying.
      */
     credit_milli     INTEGER NOT NULL DEFAULT 0,
     credited_milli   INTEGER NOT NULL DEFAULT 0,
@@ -354,8 +352,8 @@ const SCHEMA = `
    *   SELECT * FROM chain_orphans WHERE resolved_at IS NULL;
    *   SELECT * FROM chain_invoices WHERE state = 'held';
    *
-   * An operator with rows in either had money to account for before this
-   * shipped. The README says the same thing where they would go looking.
+   * An operator with rows in either had money to account for before they
+   * were retired.
    *
    * (NO BACKTICKS ANYWHERE IN THIS FILE - the whole schema below is one
    * template literal, and a backtick in a comment ends it. The warning lived
@@ -398,8 +396,9 @@ const SCHEMA = `
    * switch has its amount in delta and 0 in delta_milli, one written since has
    * it in delta_milli and 0 in delta - so a row's own columns say which it is,
    * and the history keeps reading as what happened at the time. The switch's
-   * reset row (reason reset) is the last row in credits: it takes the old
+   * reset row (reason reset) is the last row in credits: it took the old
    * balance to zero, and the dollar figures start from nothing after it.
+   * Every row this build writes is in dollars.
    */
   CREATE TABLE IF NOT EXISTS credit_ledger (
     seq             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -425,17 +424,14 @@ const SCHEMA = `
    * What an administrator has announced to everybody on this installation -
    * and, since refund requests, what the app has to tell ONE account.
    *
-   * recipient_id NULL is an announcement: every signed-in account reads it,
-   * exactly as before the column existed, and every row an older build wrote
-   * reads that way. A recipient_id is a notice for that account alone - a
+   * recipient_id NULL is an announcement: every signed-in account reads it. A
+   * recipient_id is a notice for that account alone - a
    * refund request decided, or (to each administrator) a new one asked for.
    * Still not a mailbox: "have I seen these" stays one timestamp on users
    * rather than a row per account per notice, which would be a table that
    * grows with the product of the two and answers no question this app asks.
    * The feed and its unread count read recipient_id IS NULL OR recipient_id =
-   * the reader, through idx_notifications_recipient - created in getDb()
-   * after addMissingColumns, because on an upgraded database the column does
-   * not exist until then.
+   * the reader, through idx_notifications_recipient (INDEXES_AFTER_COLUMNS).
    *
    * link is an app path the notice is about ('' for none), so the panel can
    * take somebody to their refund requests rather than describe where they are.
@@ -510,9 +506,11 @@ const SCHEMA = `
    * refunded, and the last two are final.
    *
    * item_key names WHAT is being refunded in one string, so one rule can
-   * cover it: payment:<id>, order-item:<id>, task:<id> (a queued resume not
-   * placed as an order, while its batch is held) or charge:<reservation id>
-   * (one synchronously built resume). idx_refund_requests_open_item is the
+   * cover it: payment:<id>, order-item:<id>, charge:<reservation id> (one
+   * synchronously built resume) or payout:<account id> (a reporter's payout
+   * request). A task:<id> key (a queued resume with no order row) may be on
+   * an older request; it still reads, and is no longer refundable.
+   * idx_refund_requests_open_item is the
    * rule "one open request per item": a partial UNIQUE index over the open
    * states, so a second request for the same item is refused by the database
    * however the two arrive, and a declined one does not stop the next.
@@ -585,8 +583,8 @@ const SCHEMA = `
     refunded   INTEGER NOT NULL DEFAULT 0,
     /*
      * What the run holds and has given back, in thousandths of a dollar. units
-     * and refunded are the same in whole credits, written 0 since the switch;
-     * the switch closed every reservation that was still open in them.
+     * and refunded are the same in whole credits, from before credits were
+     * dollars, and written 0 since.
      */
     units_milli    INTEGER NOT NULL DEFAULT 0,
     refunded_milli INTEGER NOT NULL DEFAULT 0,
@@ -607,14 +605,13 @@ const SCHEMA = `
     role          TEXT NOT NULL DEFAULT 'user',
     /*
      * The account's tier: default, premium, premium-plus or premium-max
-     * (config/accountSubscriptions.ts). Earlier builds called it plan;
-     * renameColumns below renames it in place on a database they made.
+     * (config/accountSubscriptions.ts).
      */
     subscription  TEXT NOT NULL DEFAULT 'default',
     /*
      * credits is the balance in whole credits, from before credits became
-     * dollars; the switch reset it to 0 and nothing writes it since.
-     * balance_milli is the balance now, in thousandths of a dollar - a cache of
+     * dollars, reset to 0 then and written by nothing since. balance_milli is
+     * the balance, in thousandths of a dollar - a cache of
      * SUM(credit_ledger.delta_milli), written only by creditRepository.
      */
     credits       INTEGER NOT NULL DEFAULT 0,
@@ -629,23 +626,15 @@ const SCHEMA = `
      * - Drive owns that, and a copy here would go stale the first time
      * somebody changed the sharing in Google's own UI.
      *
-     * sheet_tab_date / sheet_tab_gid are an older build's: the last daily
-     * MM/DD/YYYY tab it prepared. This build never writes them, so an older
-     * build rolled back to finds its own cache as it left it and carries on
-     * with its daily tabs.
-     *
-     * sheet_layout is how far this build has laid the sheet out: NULL (an
-     * older build's sheet, or one whose tabs were never finished) or 2 - its
-     * All and Temp For AI tabs are there, their gids beside it. A gid left
-     * NULL at layout 2 means a tab of that name was already in the sheet and
-     * is not a job tab, so it was left alone (the name clash the Job Sheet
-     * page reports). These are a cache, not a record, like the date was: they
-     * let a sign-in decide it has nothing to do without asking Google.
+     * sheet_layout is how far the sheet is laid out: NULL (its tabs were never
+     * finished) or 2 - its All and Temp For AI tabs are there, their gids
+     * beside it. A gid left NULL at layout 2 means a tab of that name was
+     * already in the sheet and is not a job tab, so it was left alone (the
+     * name clash the Job Sheet page reports). These are a cache, not a record:
+     * they let a sign-in decide it has nothing to do without asking Google.
      */
     sheet_id       TEXT,
     sheet_url      TEXT,
-    sheet_tab_date TEXT,
-    sheet_tab_gid  TEXT,
     sheet_shared_at TEXT,
     sheet_layout   INTEGER,
     sheet_all_gid  TEXT,
@@ -736,10 +725,10 @@ const SCHEMA = `
    * id or 'unclassified'; the salary columns are only what the posting
    * stated (NULL otherwise). model_id and prompt_hash record which model and
    * which prompt text produced it - an audit, never part of its identity.
-   * source is 'ai' (one model call), or 'sheet' on a row an older build
-   * registered from a sheet's Analysis cell with no call - nothing writes
-   * one now: a cell is trusted only for the stored row it names. merged_at is the Job Data
-   * Lake's (Phase 7): NULL until an administrator merges the row.
+   * source is 'ai' (one model call); 'sheet' is on rows an older build
+   * registered from a sheet's Analysis cell, and is never written now - a
+   * cell is trusted only for the stored row it names. merged_at is the Job
+   * Data Lake's (Phase 7): NULL until an administrator merges the row.
    *
    * The indexes are created after addMissingColumns (INDEXES_AFTER_COLUMNS),
    * like every index over a table a later build may add a column to.
@@ -786,27 +775,24 @@ const SCHEMA = `
    * current version was appended there, and NULL again after a replacement.
    *
    * reward_milli is what the current version paid its reporter (0: a merge,
-   * an administrator's report, a rate of $0.000, or the daily cap), at
+   * an administrator's report, a rate of $0, or the daily cap), at
    * reward_rate_milli - the rate in effect then, snapshotted (J7) - and
    * reward_revoked_milli what an administrator took back (reward_revoked_at
    * set even when the balance had nothing left to take). The ledger row is
    * keyed job-lake:<id>:<updated_at>, so a replacement can pay again and the
    * same version never twice.
    *
-   * report_ref names the sheet row a reporter's run reported the current
-   * version from (spreadsheet, row and tab; NULL for a merge). It is written
-   * still, because an older build rolled back to decides its "already" on it,
-   * but it decides nothing here: whether an account reported a posting before
-   * is job_reports' (below), by the posting's analysis, wherever the row has
-   * moved to since.
+   * Whether an account reported a posting before is job_reports' (below), by
+   * the posting's analysis, wherever its sheet row has moved to since. An
+   * upgraded database may still have a report_ref column here, which nothing
+   * reads or writes.
    *
    * job_type, clearance and industry are the facts the lake shows and filters
    * on beside the job field (v6), derived from the row's analysis
-   * (services/jobAnalysis/facts.ts): job_type 'remote' | 'hybrid' | 'on_site'
-   * or '' when the posting does not say, clearance 1 when the posting requires
-   * one, industry a config/industries.ts id or 'not_specified'. NULL is "not
-   * filled yet" - a row an older build wrote - which database/jobLakeFacts.ts
-   * fills at the next start, from the analysis, never from a model.
+   * (services/jobAnalysis/facts.ts) and written with every version:
+   * job_type 'remote' | 'hybrid' | 'on_site' or '' when the posting does not
+   * say, clearance 1 when the posting requires one, industry a
+   * config/industries.ts id or 'not_specified'.
    *
    * INTEGER ids rather than the UUIDs elsewhere: the full-text index below
    * points at rows by rowid, which VACUUM may renumber on a table without an
@@ -840,7 +826,6 @@ const SCHEMA = `
     reward_rate_milli    INTEGER,
     reward_revoked_milli INTEGER NOT NULL DEFAULT 0,
     reward_revoked_at    TEXT,
-    report_ref           TEXT,
     job_type             TEXT,
     clearance            INTEGER,
     industry             TEXT
@@ -977,77 +962,6 @@ export function getDatabasePath(): string {
 }
 
 /**
- * Columns renamed in place on a database an older build made.
- *
- * `CREATE TABLE IF NOT EXISTS` writes the new name on a fresh database and does
- * nothing to an old one, so without this an upgraded install would keep the
- * old column and every query naming the new one would fail. SQLite renames a
- * column without copying a row, and carries its values, its DEFAULT and any
- * index or trigger naming it along.
- *
- * Guarded by the table's own columns rather than a `schema_meta` marker, and
- * deliberately: the column IS the state. A marker would say "done" after an
- * operator rolled back to an older build and renamed the column back for it -
- * the documented way down - and the next upgrade would then skip the rename
- * and fail on every account read. Asking PRAGMA table_info costs nothing and is
- * right every time. Not a numbered migration either: those wait in a chain
- * behind 003, which waits for an administrator, and nobody can sign in to
- * become one while `users` names a column this build does not read.
- *
- * Fatal, unlike `addMissingColumns`: a column this build failed to ADD leaves
- * the app reading the table as the previous build did, but one it failed to
- * RENAME leaves nothing able to read an account at all, and the reason belongs
- * at startup rather than on every request.
- */
-const COLUMN_RENAMES: ReadonlyArray<{ table: string; from: string; to: string; why: string }> = [
-  // The account tier is a subscription everywhere - UI, API and here.
-  { table: 'users', from: 'plan', to: 'subscription', why: 'the account tier is called a subscription' },
-];
-
-function renameColumns(db: Database.Database): void {
-  for (const rename of COLUMN_RENAMES) {
-    let renamed = false;
-    try {
-      // The check and the rename are ONE write transaction, taken before the
-      // check reads anything. Two openers of the same file are expected - a
-      // second server on the same DB_DIR, or `migrate:legacy` started beside
-      // the backend - and read outside a transaction both see the old column,
-      // the first renames it, and the second's ALTER dies with "no such
-      // column" on a rename that already happened. Holding the write lock
-      // first, the second waits out busy_timeout and then reads the new name.
-      db.transaction(() => {
-        const columns = db.prepare(`PRAGMA table_info(${rename.table})`).all() as Array<{ name: string }>;
-        const names = new Set(columns.map((column) => column.name));
-        // No table yet (a fresh database: SCHEMA is about to create it with
-        // the new name), or one already renamed.
-        if (!names.has(rename.from)) return;
-        if (names.has(rename.to)) {
-          // Both: somebody ADDED the old column back by hand to roll back,
-          // rather than renaming it. The new one is what this build reads; the
-          // old one is left for whoever added it, never merged into the new on
-          // a guess.
-          console.warn(
-            `[db] ${rename.table} has both "${rename.from}" and "${rename.to}"; reading "${rename.to}" and ` +
-              `leaving "${rename.from}" alone.`
-          );
-          return;
-        }
-        db.exec(`ALTER TABLE ${rename.table} RENAME COLUMN ${rename.from} TO ${rename.to}`);
-        renamed = true;
-      }).immediate();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Could not rename ${rename.table}.${rename.from} to ${rename.to} in ${getDatabasePath()}: ${reason}. ` +
-          'This build reads the new name; check that the database file is writable and not open in another ' +
-          'program, then start the server again.'
-      );
-    }
-    if (renamed) console.log(`[db] Renamed ${rename.table}.${rename.from} to ${rename.to}: ${rename.why}.`);
-  }
-}
-
-/**
  * Columns added to tables that already exist.
  *
  * `CREATE TABLE IF NOT EXISTS` is a no-op against a database that has the
@@ -1056,107 +970,16 @@ function renameColumns(db: Database.Database): void {
  * difference that only shows up in production. `ALTER TABLE ADD COLUMN` is what
  * reaches both, and SQLite makes it cheap: it rewrites no rows.
  *
- * Run before any migration and before any query, since a data migration that
- * writes one of these columns needs it to exist first.
+ * Empty: every column an older build added this way is on every database the
+ * startup guard lets through, and in SCHEMA for a fresh one. A column added to
+ * SCHEMA from here on gets an entry here as well. Run before any migration and
+ * before any query, since a data migration that writes one of these columns
+ * needs it to exist first.
  */
-function addMissingColumns(db: Database.Database): void {
-  const additions: Array<{ table: string; column: string; definition: string }> = [
-    // Ownership. NULL means "from before accounts existed", which migration 003
-    // then hands to the first admin - it is not a valid state to stay in, but it
-    // is the state every upgraded row starts in and the column has to allow it.
-    { table: 'profiles', column: 'owner_id', definition: "TEXT" },
-    { table: 'profile_groups', column: 'owner_id', definition: 'TEXT' },
-    // The per-account spreadsheet. NULL means "not allocated yet", which is
-    // every row on an install that upgrades into this build; the sheets service
-    // fills them in on sign-in, and the boot backfill catches the rest.
-    { table: 'users', column: 'sheet_id', definition: 'TEXT' },
-    { table: 'users', column: 'sheet_url', definition: 'TEXT' },
-    { table: 'users', column: 'sheet_tab_date', definition: 'TEXT' },
-    // The gid of that tab, so the account page can link straight to the day
-    // rather than to whichever tab Google decides to open first.
-    { table: 'users', column: 'sheet_tab_gid', definition: 'TEXT' },
-    // When the owner's own Drive grant was confirmed. NULL means "not yet", and
-    // that is what makes sign-in retry it; once set, sign-in stops asking Drive
-    // about it at all.
-    { table: 'users', column: 'sheet_shared_at', definition: 'TEXT' },
-    // The fee taken and the credits actually granted. Zero on every row
-    // written before they existed, which reads correctly: those payments took
-    // no fee, and `credits_granted || credits` covers the granted count.
-    // The Stripe customer this account's saved cards hang off. NULL until the
-    // first card is kept, which is also the only time one is created.
-    { table: 'users', column: 'stripe_customer_id', definition: 'TEXT' },
-    { table: 'payments', column: 'fee_cents', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'payments', column: 'credits_granted', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    // When this account last opened the notifications panel. NULL means never,
-    // which is what every upgraded row starts as and is also correct: an
-    // account that has never looked has not seen anything.
-    { table: 'users', column: 'notifications_seen_at', definition: 'TEXT' },
-    // Credits are dollars, counted in thousandths. New columns beside the old
-    // whole-credit ones, never the old ones reinterpreted: an older build
-    // rolled back to keeps reading its own columns, and reads a balance of 0
-    // rather than a thousand times what somebody holds. Zero on every
-    // upgraded row, which is what the switch below makes true anyway - it
-    // resets every balance to $0 (database/dollarSwitch.ts).
-    { table: 'users', column: 'balance_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'credit_ledger', column: 'delta_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'credit_ledger', column: 'balance_after_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'credit_reservations', column: 'units_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'credit_reservations', column: 'refunded_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'payments', column: 'credit_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'payments', column: 'credited_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'payments', column: 'refunded_milli', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    // Refund requests. A notice for one account (NULL, every upgraded row, is
-    // an announcement to all of them, which is what they all were), the app
-    // path it is about, a partial refund's amount, and what an order's resume
-    // was charged - NULL on an older item, which reads as "not on record".
-    { table: 'notifications', column: 'recipient_id', definition: 'TEXT' },
-    { table: 'notifications', column: 'link', definition: "TEXT NOT NULL DEFAULT ''" },
-    { table: 'payments', column: 'refund_cents', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { table: 'order_items', column: 'cost_milli', definition: 'INTEGER' },
-    // The credit a card refund holds off the balance until Stripe answers.
-    // In the CREATE TABLE too; here for a refund_requests table made before it.
-    { table: 'refund_requests', column: 'hold_key', definition: 'TEXT' },
-    // Which kind of run an order row records: every upgraded row was placed
-    // with the Order button, which is what the default says. `immediate` rows
-    // (Generate Immediately) are never listed on /orders.
-    { table: 'orders', column: 'kind', definition: "TEXT NOT NULL DEFAULT 'order'" },
-    // How far this build has laid out the account's sheet (All and Temp For
-    // AI) and their gids. In the CREATE TABLE too; NULL on every upgraded
-    // row, which is what makes the next sign-in, or the boot backfill, add
-    // the two tabs to a sheet an older build made.
-    { table: 'users', column: 'sheet_layout', definition: 'INTEGER' },
-    { table: 'users', column: 'sheet_all_gid', definition: 'TEXT' },
-    { table: 'users', column: 'sheet_temp_gid', definition: 'TEXT' },
-    // A reporter's own rate per accepted job. NULL, every upgraded row, is
-    // "the global rate", which is what every account was paid before there
-    // was a per-account one - there was no reporter before it either.
-    { table: 'users', column: 'report_rate_milli', definition: 'INTEGER' },
-    // The company a posting was built or reported for, which the analysis
-    // itself never reads off the posting - and the lake's merge needs, to
-    // hash the job. '' on every row stored before it, which the merge tab
-    // does not offer until a build or a report of the posting names one.
-    { table: 'job_analyses', column: 'company_name', definition: "TEXT NOT NULL DEFAULT ''" },
-    // The sheet row a lake row's current version was reported from. In the
-    // CREATE TABLE too; here for a job_lake table made before it. NULL reads
-    // as "no row": such a job found again is a duplicate, never `already`.
-    { table: 'job_lake', column: 'report_ref', definition: 'TEXT' },
-    // The provider an order's resume was last built on (Phase 9: providers of
-    // one type at several sign-ins). NULL on every upgraded row, which reads
-    // as "not recorded" - they all ran on the one provider each type had.
-    { table: 'order_items', column: 'provider_id', definition: 'TEXT' },
-    // A lake row's job type, clearance and industry (v6). In the CREATE TABLE
-    // too; here for lake tables made before them. NULL - every upgraded row -
-    // is "not filled yet", which database/jobLakeFacts.ts fills from the row's
-    // analysis at this same start.
-    { table: 'job_lake', column: 'job_type', definition: 'TEXT' },
-    { table: 'job_lake', column: 'clearance', definition: 'INTEGER' },
-    { table: 'job_lake', column: 'industry', definition: 'TEXT' },
-    { table: 'job_lake_history', column: 'job_type', definition: 'TEXT' },
-    { table: 'job_lake_history', column: 'clearance', definition: 'INTEGER' },
-    { table: 'job_lake_history', column: 'industry', definition: 'TEXT' },
-  ];
+const ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; definition: string }> = [];
 
-  for (const addition of additions) {
+function addMissingColumns(db: Database.Database): void {
+  for (const addition of ADDED_COLUMNS) {
     try {
       const columns = db.prepare(`PRAGMA table_info(${addition.table})`).all() as Array<{ name: string }>;
       if (columns.length === 0) continue;
@@ -1175,12 +998,14 @@ function addMissingColumns(db: Database.Database): void {
 }
 
 /**
- * Indexes over columns `addMissingColumns` may have just added.
+ * Indexes over columns `addMissingColumns` may add.
  *
- * Not in SCHEMA: on an upgraded database SCHEMA runs while the column does not
- * exist yet, and an index naming it there fails every boot of that install
- * while passing on every fresh one. Never fatal, like the columns themselves -
- * a missing index is a slower query, not a wrong one.
+ * Not in SCHEMA: on a database made before such a column, SCHEMA runs while
+ * the column does not exist yet, and an index naming it there would fail every
+ * boot of that install while passing on every fresh one. Every index here was
+ * added that way once; a new index over a new column belongs here too. Never
+ * fatal, like the columns themselves - a missing index is a slower query, not
+ * a wrong one.
  */
 const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; columns: string[]; sql: string }> = [
   // The feed and its unread count: recipient_id IS NULL OR recipient_id = me.
@@ -1285,22 +1110,6 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     columns: ['lake_id'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_history_lake ON job_lake_history (lake_id)',
   },
-  // The rows whose facts are still to be filled - an older build's - for the
-  // boot step's batches: partial, so it holds none of them once they are.
-  {
-    name: 'idx_job_lake_facts_missing',
-    table: 'job_lake',
-    columns: ['id', 'job_type'],
-    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_facts_missing ON job_lake (id) WHERE job_type IS NULL',
-  },
-  // And the earlier versions still to fill: without it every start walked the
-  // whole history - the lake's widest table, which only grows - to find none.
-  {
-    name: 'idx_job_lake_history_facts_missing',
-    table: 'job_lake_history',
-    columns: ['id', 'job_type'],
-    sql: 'CREATE INDEX IF NOT EXISTS idx_job_lake_history_facts_missing ON job_lake_history (id) WHERE job_type IS NULL',
-  },
   // One record per account and posting: the "reported before" seek, and
   // what makes a second record for the same report impossible.
   {
@@ -1378,37 +1187,33 @@ export function getDb(): Database.Database {
   // Without a timeout the loser of a write race throws SQLITE_BUSY immediately,
   // which would surface as a flaky test rather than as the refusal being tested.
   db.pragma('busy_timeout = 5000');
-  // Renamed BEFORE the schema runs, so SCHEMA may index or otherwise name a
-  // column by its new name: on an old database the CREATE TABLE beside it is a
-  // no-op, and an index naming the new column would otherwise fail every boot
-  // of an upgraded install while passing on every fresh one.
   try {
-    renameColumns(db);
+    // The guard, the schema and a fresh database's stamp in ONE write
+    // transaction, taken before anything is read. Two openers of one new file
+    // are expected - a second server on the same DB_DIR, every test that
+    // loads this module afresh - and outside a lock the second could see the
+    // first's users table before its stamp, and refuse a database that is
+    // only seconds old.
+    db.transaction(() => {
+      if (tableExists(db, 'users')) {
+        // An existing database: refused unless every upgrade an older build
+        // made to it finished (upgradeGuard.ts) - before SCHEMA, so not even
+        // a CREATE TABLE touches one this build cannot read correctly.
+        assertUpgradeFinished(db, filePath);
+        db.exec(SCHEMA);
+      } else {
+        db.exec(SCHEMA);
+        stampCurrentDatabase(db);
+      }
+    }).immediate();
   } catch (error) {
-    // Not registered, so the next getDb() tries again rather than handing out
-    // a connection nothing can read an account through.
+    // Not registered, so the next getDb() asks again rather than handing out
+    // a connection nothing should read through.
     db.close();
     throw error;
   }
-  db.exec(SCHEMA);
   addMissingColumns(db);
   addIndexesAfterColumns(db);
-  // Saved templates are files now; an older build's rows are written out
-  // once, here rather than in the numbered chain, which can wait for an
-  // administrator for as long as nobody signs in. Never fatal.
-  moveTemplateRowsToFiles(db);
-  // Credits became dollars: every balance and every model price reset to $0,
-  // once, with a row in each account's history saying so. Here and not in the
-  // numbered chain for the same reason: the chain can wait at 003 for an
-  // administrator indefinitely, while this build already reads the dollar
-  // columns. Never fatal, and safe to have not run - see the module.
-  switchCreditsToDollars(db);
-  // The lake's job type, clearance and industry for rows an older build wrote,
-  // derived from their analyses (no model is asked), and the record of who
-  // reported what seeded from them. Every start, by condition rather than a
-  // marker - the rows whose facts are NULL - so a rollback and a second
-  // upgrade heal themselves. Never fatal.
-  fillLakeFacts(db);
   // The connection is registered BEFORE the migrations run. That ordering is
   // load-bearing: a migration (or anything it logs through) that reaches for
   // getDb() would otherwise recurse into opening a second connection to the

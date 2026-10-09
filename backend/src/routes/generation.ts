@@ -830,9 +830,8 @@ router.post('/quote', async (req: Request, res: Response) => {
  * Whether this account may see a batch at all.
  *
  * The owner is recorded on `shared` at submit, which `restore` reads back, so it
- * survives a restart for free. A batch with NO owner predates this check or was
- * written by an older build; it reads as admin-only rather than public, the same
- * safe direction an unowned profile takes.
+ * survives a restart for free. A batch naming no owner is an administrator's
+ * to read and nobody else's - the safe direction.
  *
  * This matters more than it looks. A snapshot carries the task labels AND the
  * generated file paths, and `/api/generated/:filename` only asks for a session -

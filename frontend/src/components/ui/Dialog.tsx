@@ -53,7 +53,10 @@ export function useDialogLayer(open: boolean, onEscape: () => void): void {
  * `dark:` variants anywhere - the html.dark shim at the end of globals.css is
  * unlayered and beats them (see components/credits/chrome.ts).
  *
- * The purchase wizard's PayDialog is this, under its old name.
+ * It began as the purchase wizard's own (components/credits/BuyCreditsDialog),
+ * which is why it has `width="wide"` - the two-column order summary - and
+ * `footer`, so every step's Back/Continue pair sits at the bottom of the
+ * panel rather than at the bottom of whichever step is mounted.
  *
  * Dialogs stack: a refund dialog's error notice offers "Contact admin", which
  * opens a second dialog over the first. Escape closes only the top one, and

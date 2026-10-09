@@ -243,13 +243,12 @@ test('and the deleted paths cannot be brought back by their old variables', asyn
     assert.equal(crypto.available, false, 'an old variable revived a deleted path');
     assert.equal((await server.checkout({ method: 'crypto', amountUsd: '50' })).status, 503);
 
-    // And the operator is told which variables are dead rather than being left
-    // to work out what broke the ones they had configured. Only the operator:
-    // a buyer is told it is not available, and nothing about the server.
+    // The operator is told the one thing that turns crypto on; a buyer is told
+    // it is not available, and nothing about the server.
     assert.equal(crypto.reason, 'Not available right now.');
     const operatorView = (await server.adminMethods()).methods.find((entry) => entry.method === 'crypto');
-    assert.match(operatorView.reason, /^Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY/);
-    assert.match(operatorView.reason, /CHAIN_\* and COINBASE_COMMERCE_\* settings no longer do anything/);
+    assert.equal(operatorView.reason, 'Set CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY to take crypto through Cryptomus.');
+    assert.doesNotMatch(operatorView.reason, /CHAIN_|COINBASE/, 'a variable nothing reads is not named');
 
     // Cards are untouched by any of this.
     assert.equal(methods.methods.find((entry) => entry.method === 'card').available, true);

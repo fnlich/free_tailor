@@ -33,16 +33,9 @@ export type RefundRequestState = 'requested' | 'approved' | 'declined' | 'refund
  * What a request names, as the API spells it. One per way a charge can exist:
  *
  * - `payment`: a purchase. Refundable: its unspent part.
- * - `order-item`: one resume of an order - durable, priced from the item.
- * - `task`: one resume of a queued run with NO order row, while the queue
- *   still holds its batch (up to an hour after it settles, sooner once twenty
- *   newer batches have finished). Since Generate Immediately runs are filed
- *   with an order row of their own (kind `immediate`), every run queued now
- *   has one, so this names only a builder run queued by an older build and
- *   restored - kept so a request made before the upgrade still reads, and
- *   gone in practice once those batches are evicted. A task of a batch WITH
- *   an order row is always named by its order item instead, so one resume
- *   never has two names and so never two open requests.
+ * - `order-item`: one resume of a queued run - an order, or a Generate
+ *   Immediately run (an order row of kind `immediate`) - durable, priced from
+ *   the item.
  * - `charge`: one resume built synchronously by POST /api/resume/generate,
  *   named by its reservation - which is that resume alone.
  * - `payout`: a REPORTER's earned balance, named by the account itself
@@ -52,9 +45,10 @@ export type RefundRequestState = 'requested' | 'approved' | 'declined' | 'refund
  *
  * Only `payout` is still ASKED for. Purchases and resumes are no longer asked
  * about (owner decision R1); requests for them made before stay readable and
- * decidable in the administrators' queue.
+ * decidable in the administrators' queue. A request an older build made for a
+ * `task:` - a queued resume with no order row - reads as `unrecognised`.
  */
-export const REFUND_ITEM_TYPES = ['payment', 'order-item', 'task', 'charge', 'payout'] as const;
+export const REFUND_ITEM_TYPES = ['payment', 'order-item', 'charge', 'payout'] as const;
 export type RefundItemType = (typeof REFUND_ITEM_TYPES)[number];
 
 export const REFUND_REQUEST_STATES: readonly RefundRequestState[] = ['requested', 'approved', 'declined', 'refunded'];
@@ -129,10 +123,10 @@ export type RefundRequest = {
   createdAt: string;
   updatedAt: string;
   /**
-   * True for a row whose item type this build does not know - written by a
-   * newer build and read after a rollback. It reads, and it can be approved or
-   * declined, but nothing ever moves money for it: guessing what it names is
-   * how an account id gets looked up as a payment.
+   * True for a row whose item type this build does not serve - a `task:` an
+   * older build wrote, or anything hand-edited. It reads, and it can be
+   * approved or declined, but nothing ever moves money for it: guessing what
+   * it names is how an account id gets looked up as a payment.
    */
   unrecognised?: true;
 };
@@ -527,18 +521,3 @@ export function clearRefundHold(id: string, holdKey: string): boolean {
   );
 }
 
-/**
- * The open request holding a card refund for this payment that Stripe has not
- * confirmed, if any. While one does, the payments list's whole refund is
- * refused: it would take back the credit the request already holds a second
- * time.
- */
-export function findUnconfirmedRefundForPayment(paymentId: string): RefundRequest | null {
-  const row = getDb()
-    .prepare(
-      `SELECT ${COLUMNS} FROM refund_requests
-        WHERE payment_id = ? AND state IN ${OPEN_SQL} AND hold_key IS NOT NULL LIMIT 1`
-    )
-    .get(paymentId) as RefundRequestRow | undefined;
-  return row ? toRequest(row) : null;
-}

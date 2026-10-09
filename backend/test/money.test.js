@@ -136,7 +136,6 @@ const MONEY_SOURCES = [
   'config/pricePerResume.ts',
   'database/creditRepository.ts',
   'database/paymentRepository.ts',
-  'database/dollarSwitch.ts',
   'services/credits/index.ts',
   'services/credits/errors.ts',
   'services/credits/reconcile.ts',
@@ -183,11 +182,10 @@ test('no money path floors, truncates or float-parses an amount', () => {
  * The docs describe what a person sees, so an amount in them is spelled the
  * way formatMoney spells it: `$50` and `$0.05`, never `$50.000` or `$0.050`,
  * which is the padding the formatter dropped (and `$1.000` read as a
- * thousand). Not read: the release history - "What changed in this release",
- * the numbered upgrade notes from the first "Upgrading ..." on, "Rolling back
- * this release" - which records each upgrade in the words of its day and is
- * rewritten per release; and a line that quotes the old spelling on purpose to
- * explain it (QUOTES_THE_OLD_SPELLING).
+ * thousand). Not read: the release notes, "What changed in this release",
+ * which record a release in the words of its day and are rewritten for each
+ * one; and a line that quotes the old spelling on purpose to explain it
+ * (QUOTES_THE_OLD_SPELLING).
  */
 const DOCS = ['README.md', 'CLAUDE.md', '.env.example', 'backend/src/README.md', 'backend/test/README.md', 'backend/test/e2e/README.md'];
 const PADDED_AMOUNT = /\$\d[\d,]*\.\d\d0(?!\d)/g;
@@ -199,8 +197,7 @@ function currentDocLines(text) {
   let history = false;
   text.split('\n').forEach((line, index) => {
     if (/^\s*```/.test(line)) fenced = !fenced;
-    if (!fenced && /^## /.test(line)) history = /What changed in this release|Rolling back this release/.test(line);
-    if (!fenced && /^### \d+\. Upgrading/.test(line)) history = true;
+    if (!fenced && /^## /.test(line)) history = /What changed in this release/.test(line);
     if (!history) lines.push({ number: index + 1, line });
   });
   return lines;

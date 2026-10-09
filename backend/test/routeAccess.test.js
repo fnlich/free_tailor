@@ -12,7 +12,7 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  * There are three roles (config/accountRoles.ts). A `reporter` adds jobs to the
  * lake and is paid per job (owner decisions A3, A4): their own account, credits,
  * notifications, job sheet, refund history and Contact admin - nothing for
- * building resumes, no scrapers, no buying. `requireUser` is the builder check
+ * building resumes, no Job Filter, no buying. `requireUser` is the builder check
  * (user or admin) and `requireAccount` any signed-in role, so a router nobody
  * thought about is closed to reporters by default. This file is where "nobody
  * thought about it" becomes a failing test instead:
@@ -115,10 +115,8 @@ const MOUNTS = [
     mount: '/api/refund-requests',
     module: 'refundRequests',
     access: 'account',
-    why:
-      "reading your own requests is anybody's; a payout is asked for by a reporter (R1); the retired refund " +
-      'asks keep the builder guard and answer 410',
-    except: { 'GET /options': 'builder', 'POST /': 'builder', 'GET /payout': 'reporter', 'POST /payout': 'reporter' },
+    why: "reading your own requests is anybody's; a payout is asked for by a reporter (R1)",
+    except: { 'GET /payout': 'reporter', 'POST /payout': 'reporter' },
   },
   { mount: '/api/admin/refund-requests', module: 'refundRequests', exportName: 'adminRefundRequestsRouter', access: 'admin' },
   {
@@ -126,9 +124,6 @@ const MOUNTS = [
     module: 'admin',
     access: 'admin',
     why: 'guarded per route, so every route is listed by this check',
-    // The retired shared-password login answers 410, and the old logout
-    // redirects to /api/auth/logout: neither does anything.
-    except: { 'ALL /login|/verify': 'public', 'POST /logout': 'public' },
   },
   { mount: '/api/groups', module: 'groups', access: 'builder' },
   { mount: '/api/import', module: 'import', access: 'builder' },
@@ -145,7 +140,7 @@ const MOUNTS = [
       'DELETE /:id': 'admin',
     },
   },
-  { mount: '/api/jobs', module: 'jobs', access: 'builder', why: 'the scrapers and the Job Filter: no scrapers for a reporter (A3)' },
+  { mount: '/api/jobs', module: 'jobs', access: 'builder', why: 'the Job Filter judges postings for a resume, a builder\'s (A3)' },
   {
     mount: '/api/bid-assistant',
     module: 'bidAssistant',
@@ -416,10 +411,8 @@ test("a reporter reaches their own account, balance, ledger, bell, sheet, refund
     const ledger = await server.call('reporter', 'GET', '/api/credits/ledger');
     assert.equal(ledger.body.balanceMilli, 0);
 
-    // Asking for a refund of a purchase or a resume, and buying, are not theirs.
+    // Buying is not theirs.
     for (const [method, url] of [
-      ['GET', '/api/refund-requests/options?paymentId=probe'],
-      ['POST', '/api/refund-requests'],
       ['POST', '/api/payments/checkout'],
       ['GET', '/api/payments/quote'],
       ['GET', '/api/payments'],
@@ -482,10 +475,8 @@ test('a user and an administrator are refused none of the builder by role', asyn
         '/api/payments',
         '/api/prompts',
         '/api/prompts/categories',
-        '/api/jobs/scrapers/providers',
         '/api/bid-assistant/jobs',
         '/api/groups',
-        '/api/refund-requests/options?paymentId=probe',
         '/api/credits',
         '/api/sheet',
       ]) {

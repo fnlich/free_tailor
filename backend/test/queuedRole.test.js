@@ -29,7 +29,7 @@ const coverLetters = require('../dist/generators/coverLetterGenerator');
 const pdfGenerator = require('../dist/generators/pdfGenerator');
 const docxGenerator = require('../dist/generators/docxGenerator');
 const gate = require('../dist/services/jobAnalysis/gate');
-const { runResumeTask, resolveTaskRole, resetResumeTaskStateForTests } = require('../dist/services/queue/resumeTask');
+const { runResumeTask, resolveTaskRole } = require('../dist/services/queue/resumeTask');
 
 const ANALYSIS = {
   jobMeta: { title: '  Staff Platform Engineer ', seniority: 'staff', industry: '', department: '' },
@@ -101,7 +101,6 @@ function stubOutputs() {
 }
 
 function run(job, format = 'both', analysisId) {
-  resetResumeTaskStateForTests();
   return runResumeTask(
     {
       profile: PROFILE,

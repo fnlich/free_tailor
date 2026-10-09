@@ -112,72 +112,36 @@ test('the analysis prompt keeps the field and industry lists and every unchangin
   assert.notEqual(first.userBody, second.userBody);
 });
 
-test("an administrator's analysis prompt from before job fields still gets them asked for, every turn", async () => {
-  const { staticDir } = freshInstall('predates');
-  writeStaticJson(staticDir, 'prompts/analyze-job-description.json', {
-    id: 'analyze-job-description',
-    content: 'My own analysis.\nJob Description:\n[[jobDescription]]',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-  });
-  config.invalidateSettingsCache();
-  gate.resetAnalysisGateForTests();
-  const seats = countingSeats(ai);
-  const row = await gate.getOrCreateAnalysis({ jd: posting(5) });
-  const [turn] = seats.analyses();
-  assert.match(turn.stableSystem, /^My own analysis\./);
-  assert.match(turn.userBody, /ALSO RETURN, in the same JSON object, these four keys/);
-  assert.match(turn.userBody, /- backend: Backend/);
-  // Such a record predates the industry too: asked for in the same addendum, with the list.
-  assert.match(turn.userBody, /"industry": exactly ONE id from the INDUSTRIES list/);
-  assert.match(turn.userBody, /INDUSTRIES \(id: label\):\n- healthcare: Healthcare/);
-  // The seniority words the Job Filter judges, which an older record's own list lacks.
-  const seniorityLine = /"jobMeta\.seniority": exactly one of ([^\n]+)/.exec(turn.userBody)?.[1] ?? '';
-  for (const word of ['intern', 'director', 'vp', 'junior', 'senior', 'not_specified']) {
-    assert.ok(seniorityLine.includes(`"${word}"`), `seniority "${word}" is asked for`);
+test("an administrator's analysis prompt that never names the lists is not run: the built-in is, and no turn carries an addendum", async () => {
+  freshInstall('needs-update');
+  const { saveStoredPrompt } = require('../dist/database/promptRepository');
+  const at = '2026-01-01T00:00:00.000Z';
+  // An edit an older build saved before the lists were required: one with
+  // neither list, then one with the job fields but not the industries.
+  for (const [n, content] of [
+    [5, 'My own analysis.\nJob Description:\n[[jobDescription]]'],
+    [7, 'My own analysis.\nJOB FIELDS:\n[[jobFieldList]]\nJob link: [[jobLink]]\nJob Description:\n[[jobDescription]]'],
+  ]) {
+    saveStoredPrompt({
+      id: 'analyze-job-description',
+      featureKey: 'analyze-job-description',
+      content,
+      isBuiltIn: true,
+      createdAt: at,
+      updatedAt: `2026-01-0${n}T00:00:00.000Z`,
+    });
+    config.invalidateSettingsCache();
+    gate.resetAnalysisGateForTests();
+    const seats = countingSeats(ai);
+    const row = await gate.getOrCreateAnalysis({ jd: posting(n) });
+    const [turn] = seats.analyses();
+    assert.doesNotMatch(turn.stableSystem, /My own analysis/, 'the edit is not what runs');
+    // The shipped prompt carries both lists in its cached part, and is sent no addendum.
+    assert.match(turn.stableSystem, /- backend: Backend/);
+    assert.match(turn.stableSystem, /- healthcare: Healthcare/);
+    assert.doesNotMatch(turn.userBody, /ALSO RETURN/);
+    assert.equal(row.jobFieldId, 'backend', 'and the posting is classified');
   }
-  assert.match(turn.userBody, /"VP" or "Vice President" -> "vp"/);
-  assert.equal(row.jobFieldId, 'backend', 'and the posting is classified');
-  assert.equal(row.analysis.industry, undefined, "the stub's answer has no industry key, so the analysis has none");
-
-  // The shipped prompt carries all of it in its cached part, and is sent no addendum.
-  const shipped = freshInstall('predates-shipped');
-  void shipped;
-  config.invalidateSettingsCache();
-  gate.resetAnalysisGateForTests();
-  const fresh = countingSeats(ai);
-  await gate.getOrCreateAnalysis({ jd: posting(6) });
-  assert.doesNotMatch(fresh.analyses()[0].userBody, /ALSO RETURN/);
-});
-
-test("an administrator's analysis prompt from after job fields but before industries gets the industry asked for, and only that", async () => {
-  const { staticDir } = freshInstall('predates-industry');
-  writeStaticJson(staticDir, 'prompts/analyze-job-description.json', {
-    id: 'analyze-job-description',
-    content: 'My own analysis.\nJOB FIELDS:\n[[jobFieldList]]\nJob link: [[jobLink]]\nJob Description:\n[[jobDescription]]',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-  });
-  config.invalidateSettingsCache();
-  gate.resetAnalysisGateForTests();
-  const { analysisAnswer } = require('./analysisHarness');
-  const seats = countingSeats(ai, { answer: () => analysisAnswer({ industry: 'Healthcare' }) });
-  const row = await gate.getOrCreateAnalysis({ jd: posting(7) });
-  const [turn] = seats.analyses();
-  assert.match(turn.stableSystem, /^My own analysis\./);
-  assert.match(turn.stableSystem, /- backend: Backend/, 'its own job field list, in its cached part');
-  assert.equal(turn.userBody.split('ALSO RETURN').length, 2, 'one addendum');
-  assert.match(turn.userBody, /ALSO RETURN, in the same JSON object, this key/);
-  assert.match(turn.userBody, /"industry": exactly ONE id from the INDUSTRIES list/);
-  for (const industry of INDUSTRIES) assert.ok(turn.userBody.includes(`- ${industry.id}: ${industry.label}`), industry.id);
-  assert.doesNotMatch(turn.userBody, /"jobField": exactly ONE id|"salary":|JOB FIELDS \(id: label\)/, 'nothing it already asks for');
-  assert.equal(row.analysis.industry, 'healthcare', 'the label it answered is stored as the id');
-
-  // The two addenda, decided from the record's text alone.
-  assert.equal(gate.analysisOverrideFor('[[jobFieldList]] [[industryList]] [[jobDescription]]'), null);
-  assert.equal(gate.analysisOverrideFor('[[ jobFieldList ]] [[jobDescription]]'), gate.buildIndustryOverride());
-  assert.equal(gate.analysisOverrideFor('[[jobDescription]]'), gate.buildAnalysisFactsOverride());
-  assert.equal(gate.analysisOverrideFor(undefined), null);
 });
 
 test("a sheet row's cell is worth only the stored analysis it names, for this posting - and nothing in a sheet is ever stored", async () => {

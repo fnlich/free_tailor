@@ -165,7 +165,6 @@ export function geminiInstallAction(signInAction: string = GEMINI_SIGN_IN_ACTION
   );
 }
 
-export const GEMINI_INSTALL_ACTION = geminiInstallAction();
 
 export async function checkGeminiCliHealth(options: {
   binary: string;

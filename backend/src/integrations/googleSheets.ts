@@ -1718,11 +1718,6 @@ export function getCredentialEmail(): Promise<string> {
   return cachedCredentialEmail;
 }
 
-/** Forgets the identity, for a test that swaps the credential file. */
-export function resetCredentialEmailForTests(): void {
-  cachedCredentialEmail = null;
-}
-
 /**
  * The protection over the analysis columns, as an add request: the six whole
  * columns, header row included (no row bounds), refusing every editor but the

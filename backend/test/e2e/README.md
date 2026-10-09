@@ -23,8 +23,8 @@ A credit is a dollar. Every script here buys an amount of money (`amountUsd`),
 expects exactly that much credit back, and reads every amount the API answers
 with as thousandths of a dollar in a field ending `Milli` - `$20` on the
 page, `20000` in the body (every significant decimal, no trailing zero:
-`$0.023`, `$4.1`). A request in the old unit (a count of `credits`) is
-expected to be refused as a stale page.
+`$0.023`, `$4.1`). A request without an amount in dollars is expected to be
+refused, whatever else it names.
 
 These files prove the purchase is joined up: a real server on a real port,
 the real routers, the real database, the real webhook mount, and a browser
@@ -502,7 +502,7 @@ Credits and no order or refund tabs, but *Ask for Refund* - a payout request -
 in Purchase Credits' place and style, and their *Payout requests* listed; the
 account menu has
 no subscription; and every other address - every route the other two roles
-walk, plus /admin, an order, an invoice and /account - lands on Report Jobs.
+walk, plus /admin, an order and an invoice - lands on Report Jobs.
 Every API answer the reporter's page gets is watched, and the walk fails on a
 single 403: a page of theirs that asked a builder route, or a bounced page
 that mounted before it was sent away, would show here. A user made a reporter
@@ -595,16 +595,16 @@ could not; the return page waiting for the webhook rather than congratulating
 on arrival; the balance and the ledger afterwards; backing out of a payment;
 and an admin refunding from the UI.
 
-`refunds.js` — 62 claims over a reporter's payout request, the refund requests
+`refunds.js` — 61 claims over a reporter's payout request, the refund requests
 left from before asking was removed, and Contact admin, with no provider at all
 (step 5 above - against step 2's server, whose fake Stripe accepts every
 refund, the card checks fail, and the first of them says why): its purchases,
 run charge and order are written straight into the database the server reads
 (so `DB_DIR` must name the backend's), paid the way a webhook pays them, and
-the four older requests are made through the service the routes used to call
-(`createRefundRequest`, kept unrouted). Nobody but a reporter asks (owner
-decision R1): a stale page's ask is answered 410 in the sentence that says to
-contact the administrator; a user's paid purchase offers Invoice and Help and
+the four older requests are seeded the way the app made them then
+(test/refundSeed.js). Nobody but a reporter asks (owner decision R1): the
+server has no route to ask one - both asking routes answer 404 and no request
+is made; a user's paid purchase offers Invoice and Help and
 no *Ask for refund*, Credit History has no Action column, an order's page has
 no Refund column (the resume that did not build still offers Contact admin),
 and the Refund Requests tab lists the older request read-only, saying to

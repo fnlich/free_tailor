@@ -53,25 +53,14 @@ export type LakeJob = {
   industry: string;
   /**
    * The sheet row a reporter's run read the job from, or null - a merge has
-   * none. Kept on the report's record and, as `report_ref`, on the lake row;
-   * it decides nothing: a posting this account reported before is `already`
-   * from whichever row it is reported again.
+   * none. Kept on the report's record; it decides nothing: a posting this
+   * account reported before is `already` from whichever row it is reported
+   * again.
    */
   reportedFrom?: SheetRowRef | null;
 };
 
 export type SheetRowRef = { spreadsheetId: string; tabName: string; row: number };
-
-/**
- * The reference a lake row stores for the sheet row its current version was
- * reported from: the spreadsheet, the row and the tab. The spreadsheet id has
- * no `:` and the row is digits, so the tab goes last, whatever it contains.
- * An older build rolled back to compares it whole, to tell a re-run of the
- * same row from the same posting reported elsewhere; this build only writes it.
- */
-export function reportRefOf(spreadsheetId: string, tabName: string, row: number): string {
-  return `${spreadsheetId}:${row}:${tabName}`;
-}
 
 /* ------------------------------------------------------- the report record -- */
 
@@ -221,33 +210,27 @@ type LakeRow = {
   reward_rate_milli: number | null;
   reward_revoked_milli: number;
   reward_revoked_at: string | null;
-  report_ref?: string | null;
-  /** NULL until filled: a row an older build wrote (database/jobLakeFacts.ts). */
   job_type: string | null;
   clearance: number | null;
   industry: string | null;
 };
 
-type HistoryRow = Omit<LakeRow, 'company_key' | 'created_at' | 'updated_at' | 'last_seen_at' | 'sheet_synced_at' | 'report_ref'> & {
+type HistoryRow = Omit<LakeRow, 'company_key' | 'created_at' | 'updated_at' | 'last_seen_at' | 'sheet_synced_at'> & {
   lake_id: number;
   version_at: string;
   replaced_at: string;
 };
 
-/**
- * A row's job type, clearance and industry, with the words a page shows for
- * them. Null (and '' for a label) while a row an older build wrote is not
- * filled yet - database/jobLakeFacts.ts fills it at the next start.
- */
+/** A row's job type, clearance and industry, with the words a page shows for them. */
 export type LakeFacts = {
   /** 'remote' | 'hybrid' | 'on_site', or '' when the posting does not say. */
-  jobType: JobTypeId | null;
+  jobType: JobTypeId;
   /** Remote, Hybrid, Onsite, or ''. */
   jobTypeLabel: string;
   /** Whether the posting requires a clearance. */
-  clearance: boolean | null;
+  clearance: boolean;
   /** A config/industries.ts id, or `not_specified`. */
-  industry: string | null;
+  industry: string;
   /** The industry's label; '' for `not_specified`. */
   industryLabel: string;
 };
@@ -319,13 +302,17 @@ function salaryOf(row: Pick<LakeRow, 'salary_min' | 'salary_max' | 'salary_curre
 
 const JOB_TYPES = new Set(['remote', 'hybrid', 'on_site', '']);
 
+/**
+ * Every row is written with all three (`mergeIntoLake`), so a value that is
+ * not one of them - a hand-edited row - reads as the posting saying nothing.
+ */
 function factsOf(row: Pick<LakeRow, 'job_type' | 'clearance' | 'industry'>): LakeFacts {
-  const jobType = typeof row.job_type === 'string' && JOB_TYPES.has(row.job_type) ? (row.job_type as JobTypeId) : null;
-  const industry = isIndustryId(row.industry) ? row.industry : null;
+  const jobType = typeof row.job_type === 'string' && JOB_TYPES.has(row.job_type) ? (row.job_type as JobTypeId) : '';
+  const industry = isIndustryId(row.industry) ? row.industry : NOT_SPECIFIED_INDUSTRY_ID;
   return {
     jobType,
     jobTypeLabel: jobTypeLabel(jobType),
-    clearance: row.clearance === null || row.clearance === undefined ? null : row.clearance !== 0,
+    clearance: typeof row.clearance === 'number' && row.clearance !== 0,
     industry,
     industryLabel: industryLabel(industry),
   };
@@ -497,7 +484,6 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
         analysis_id: job.analysisId,
         requested_by: requestedBy,
         source: job.source,
-        report_ref: from ? reportRefOf(from.spreadsheetId, from.tabName, from.row) : null,
         // The analysis's facts, never the caller's; a caller that has none
         // stores those of an analysis that says nothing.
         job_type: typeof job.jobType === 'string' && JOB_TYPES.has(job.jobType) ? job.jobType : '',
@@ -547,20 +533,10 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
     return outcome;
   }).immediate();
 
-  /**
-   * This account's earlier report of the posting, when there is one still
-   * standing. A record whose lake row is gone - deleted by an older build
-   * rolled back to, which knew nothing of the records - is dropped here, so
-   * a deleted job can be reported again whichever build deleted it.
-   */
+  /** This account's earlier report of the posting, if any. Deleting a lake row deletes the reports that reached it. */
   function reportedBefore(accountId: string, analysisId: string): JobReport | null {
     const row = db.prepare(FIND_JOB_REPORT_SQL).get(accountId, analysisId) as JobReportRow | undefined;
-    if (!row) return null;
-    if (row.lake_id !== null && !db.prepare('SELECT 1 FROM job_lake WHERE id = ?').get(row.lake_id)) {
-      db.prepare('DELETE FROM job_reports WHERE id = ?').run(row.id);
-      return null;
-    }
-    return toJobReport(row);
+    return row ? toJobReport(row) : null;
   }
 
   function decide(row: NonNullable<typeof values>): MergeOutcome {
@@ -575,13 +551,13 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
           `INSERT INTO job_lake (
              job_hash, hash_version, company, company_key, job_field_id, title,
              salary_min, salary_max, salary_currency, salary_period, salary_raw,
-             job_url, job_description, analysis_id, requested_by, source, report_ref,
+             job_url, job_description, analysis_id, requested_by, source,
              job_type, clearance, industry,
              created_at, updated_at, seen_count, last_seen_at
            ) VALUES (
              @job_hash, @hash_version, @company, @company_key, @job_field_id, @title,
              @salary_min, @salary_max, @salary_currency, @salary_period, @salary_raw,
-             @job_url, @job_description, @analysis_id, @requested_by, @source, @report_ref,
+             @job_url, @job_description, @analysis_id, @requested_by, @source,
              @job_type, @clearance, @industry,
              @now, @now, 1, @now
            ) ON CONFLICT (job_hash) DO NOTHING`
@@ -627,7 +603,7 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
          salary_min = @salary_min, salary_max = @salary_max, salary_currency = @salary_currency,
          salary_period = @salary_period, salary_raw = @salary_raw,
          job_url = @job_url, job_description = @job_description, analysis_id = @analysis_id,
-         requested_by = @requested_by, source = @source, report_ref = @report_ref,
+         requested_by = @requested_by, source = @source,
          job_type = @job_type, clearance = @clearance, industry = @industry,
          updated_at = @now, seen_count = 1, last_seen_at = @now, sheet_synced_at = NULL,
          reward_milli = 0, reward_rate_milli = NULL, reward_revoked_milli = 0, reward_revoked_at = NULL
@@ -683,25 +659,15 @@ export function mergeIntoLake(job: LakeJob, requestedBy: string | null, policy: 
   }
 }
 
-/**
- * `findJobReports`' read of `count` postings: seeks on
- * idx_job_reports_account_analysis, and a record whose lake row is gone - an
- * older build, rolled back to, deleted the row and knew nothing of the
- * records - is not counted, as `mergeIntoLake` does not count it. Without
- * that, the run would skip such a posting as reported before, never reaching
- * the merge that drops the record, and the preview would say so - for good.
- */
+/** `findJobReports`' read of `count` postings: seeks on idx_job_reports_account_analysis. */
 export function findJobReportsSql(count: number): string {
-  return (
-    `SELECT r.* FROM job_reports r WHERE r.account_id = ? AND r.analysis_id IN (${Array.from({ length: count }, () => '?').join(', ')}) ` +
-    'AND (r.lake_id IS NULL OR EXISTS (SELECT 1 FROM job_lake l WHERE l.id = r.lake_id))'
-  );
+  return `SELECT * FROM job_reports WHERE account_id = ? AND analysis_id IN (${Array.from({ length: count }, () => '?').join(', ')})`;
 }
 
 /**
- * The reports an account made of these postings (by analysis id), one each,
- * still standing (see findJobReportsSql). Store only: what the reporter run
- * skips as reported before, and what Report Jobs' preview says of a row.
+ * The reports an account made of these postings (by analysis id), one each.
+ * Store only: what the reporter run skips as reported before, and what Report
+ * Jobs' preview says of a row.
  */
 export function findJobReports(accountId: string, analysisIds: readonly string[]): Map<string, JobReport> {
   const found = new Map<string, JobReport>();

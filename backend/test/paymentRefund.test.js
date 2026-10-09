@@ -194,21 +194,15 @@ test('a provider that refuses the refund changes nothing locally', async () => {
 
 /*
  * Crypto cannot be pulled back, only sent back - and the message has to say
- * WHERE FROM, which is different for each of the three providers that have
- * taken crypto here.
- *
- * All three are tested because `PaymentProvider` is not switched on
- * exhaustively anywhere in this codebase: a new member does not fail to
- * compile, it falls into whichever branch happens to be last. That is how this
- * message once told every on-chain payment to look in a Coinbase Commerce
- * account the coin had never passed through, and it is why the retired rows -
- * which still exist, and still get refunded - are pinned here rather than
- * assumed to have gone away with the code that created them.
+ * WHERE FROM. A Cryptomus payment is in that merchant account. A payment a
+ * retired path took (`coinbase`, `chain` - the rows still exist, and still get
+ * refunded by hand) is told the one sentence that cannot be wrong about where
+ * it is: this build no longer knows those paths, so it names none of them.
  */
 const CRYPTO_REFUND_ADVICE = [
   ['cryptomus', 'inv-uuid-1', /Cryptomus merchant dashboard/],
-  ['coinbase', 'CODE1', /Coinbase Commerce account/],
-  ['chain', 'cinv_1', /wallet you configured in CHAIN_\*_ADDRESS/],
+  ['coinbase', 'CODE1', /wherever this payment was taken/],
+  ['chain', 'cinv_1', /wherever this payment was taken/],
 ];
 
 for (const [provider, providerRef, advice] of CRYPTO_REFUND_ADVICE) {

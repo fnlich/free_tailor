@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /** One page as a list endpoint answers it, whatever it calls its rows. */
-export type PageAnswer<Row> = { rows: Row[]; total?: number; offset?: number };
+export type PageAnswer<Row> = { rows: Row[]; total: number; offset: number };
 
 /**
  * One server-paged table: what was asked for, what is on screen, and the race
@@ -53,10 +53,8 @@ export function usePagedList<Row>(
       (answer) => {
         if (token !== latest.current) return;
         setRows(answer.rows);
-        setShown(typeof answer.offset === 'number' ? answer.offset : offset);
-        // Guarded, so an older server that does not send it cannot zero the
-        // count and take the pager's controls away.
-        if (typeof answer.total === 'number') setTotal(answer.total);
+        setShown(answer.offset);
+        setTotal(answer.total);
         setLoaded(true);
         setFailed(false);
       },

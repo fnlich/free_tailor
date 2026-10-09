@@ -25,7 +25,7 @@ import {
   PromptValidation,
   PromptVariableDefinition,
 } from '../types/prompt';
-import { normalizePromptModelOverride, normalizePromptModelSelection } from './aiModelCatalog';
+import { normalizePromptModelOverride, readStoredPromptModelSelection } from './aiModelCatalog';
 import { renderIndustryListForPrompt } from '../config/industries';
 import { renderJobFieldListForPrompt } from '../config/jobFields';
 import type { AIProvider } from '../types/template';
@@ -76,6 +76,16 @@ type PromptFeatureDefinition = {
   modelProvider?: AIProvider;
   modelName?: string;
   allowedVariables: PromptVariableDefinition[];
+  /**
+   * Variables every record of this feature must use, by name - each one of
+   * `allowedVariables`. A prompt without them would run and quietly do the
+   * wrong thing (an analysis that files no posting under a job field or an
+   * industry, a tailoring that ignores the profile's section switches), so a
+   * save without them is refused (`assertValidPromptDraft`), and a stored
+   * record without them is marked `needsUpdate` and never run: the
+   * feature's built-in prompt runs in its place (`usableAtRuntime`).
+   */
+  requiredVariables?: readonly string[];
 };
 
 type StoredPromptMeta = {
@@ -122,6 +132,7 @@ const PROMPT_FEATURES: PromptFeatureDefinition[] = [
       'The one job analysis. Every posting is analysed once, ever, on the analysis model chosen under ' +
       'Admin -> Settings; an edit here reaches only postings never analysed before.',
     responseFormat: 'json',
+    requiredVariables: ['jobFieldList', 'industryList'],
     allowedVariables: [
       {
         name: 'jobFieldList',
@@ -170,6 +181,7 @@ Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced s
     description: 'Rewrites a profile against structured job analysis data and returns tailored resume content.',
     usage: 'Prompt variant available for profile-specific resume generation.',
     responseFormat: 'json',
+    requiredVariables: ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout'],
     allowedVariables: [
       {
         name: 'profileJson',
@@ -443,6 +455,11 @@ export function extractPromptVariables(content: string): string[] {
   return found;
 }
 
+/**
+ * What a prompt's text uses, what it uses that it may not (`unknownVariables`)
+ * and which of the variables marked `required` it leaves out
+ * (`missingVariables`) - for a feature prompt, its feature's required ones.
+ */
 export function validatePromptContent(
   content: string,
   allowedVariables: PromptVariableDefinition[]
@@ -450,10 +467,15 @@ export function validatePromptContent(
   const usedVariables = extractPromptVariables(content);
   const allowed = new Set(allowedVariables.map((variable) => variable.name));
   const unknownVariables = usedVariables.filter((name) => !allowed.has(name));
+  const used = new Set(usedVariables);
+  const missingVariables = allowedVariables
+    .filter((variable) => variable.required && !used.has(variable.name))
+    .map((variable) => variable.name);
 
   return {
     usedVariables,
     unknownVariables,
+    missingVariables,
   };
 }
 
@@ -475,7 +497,11 @@ export function validatePromptContent(
  * use, is also what shows an administrator what a prompt CAN use.
  */
 function featureAllowedVariables(featureKey: PromptFeatureKey): PromptVariableDefinition[] {
-  return cloneAllowedVariables(getPromptFeatureDefinition(featureKey).allowedVariables);
+  const definition = getPromptFeatureDefinition(featureKey);
+  const required = new Set(definition.requiredVariables ?? []);
+  return cloneAllowedVariables(definition.allowedVariables).map((variable) =>
+    required.has(variable.name) ? { ...variable, required: true as const } : variable
+  );
 }
 
 /** The names a feature's code supplies to its prompt, for the drift test and the docs. */
@@ -483,60 +509,32 @@ export function listPromptFeatureVariableNames(featureKey: PromptFeatureKey): st
   return getPromptFeatureDefinition(featureKey).allowedVariables.map((variable) => variable.name);
 }
 
-/**
- * True for a tailor-resume record written before the section switches: one
- * whose text never mentions `[[includeStrengths]]`, so it still asks for
- * strengths whatever the profile says.
- *
- * Shown on Admin -> Prompts as a note and nothing more. The record keeps
- * working - the appended override and the post-processing enforce the
- * switches for it - and its text is the administrator's, which no migration
- * rewrites.
- */
-function predatesSectionSwitches(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
-  return featureKey === 'tailor-resume' && !validation.usedVariables.includes('includeStrengths');
+/** The variables every record of a feature must use (`PromptFeatureDefinition.requiredVariables`). */
+export function listRequiredPromptVariables(featureKey: PromptFeatureKey): string[] {
+  return [...(getPromptFeatureDefinition(featureKey).requiredVariables ?? [])];
+}
+
+/** `[[a]]`, `[[a]] and [[b]]`, `[[a]], [[b]] and [[c]]`: names as a sentence writes them. */
+function variableList(names: readonly string[]): string {
+  const wrapped = names.map((name) => `[[${name}]]`);
+  return wrapped.length <= 1 ? wrapped.join('') : `${wrapped.slice(0, -1).join(', ')} and ${wrapped[wrapped.length - 1]}`;
 }
 
 /**
- * True for an analysis record written before a posting had a job field: one
- * whose text never mentions `[[jobFieldList]]`, so it cannot ask for one from
- * the list.
- *
- * Shown on Admin -> Prompts as a note. The record keeps working: the gate
- * appends the job field, salary and filter instructions to every turn it runs
- * (`buildAnalysisFactsOverride`), so its postings are still classified - but
- * outside the cached part of the prompt, which the shipped text keeps them in.
+ * The refusal of a save that leaves out required variables, naming them and
+ * the whole rule - written for the administrator saving it.
  */
-function predatesJobField(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
-  return featureKey === ANALYSIS_PROMPT_FEATURE && !validation.usedVariables.includes('jobFieldList');
-}
-
-/**
- * True for an analysis record written after postings had a job field but
- * before they had an industry: it names `[[jobFieldList]]` and never
- * `[[industryList]]`, so its postings would never be filed under one.
- *
- * A note on Admin -> Prompts, like the job-field one, and never both: a record
- * that predates the job field predates the industry too, and the job-field
- * instructions the gate appends for it ask for the industry as well. For
- * this one the gate appends the industry instructions alone
- * (`buildIndustryOverride`).
- */
-function predatesIndustry(featureKey: PromptFeatureKey | undefined, validation: PromptValidation): boolean {
+function missingVariablesSentence(featureKey: PromptFeatureKey, missing: readonly string[]): string {
+  const definition = getPromptFeatureDefinition(featureKey);
   return (
-    featureKey === ANALYSIS_PROMPT_FEATURE &&
-    validation.usedVariables.includes('jobFieldList') &&
-    !validation.usedVariables.includes('industryList')
+    `Missing required prompt variables: ${missing.join(', ')}. Every ${definition.label} prompt must use ` +
+    `${variableList(definition.requiredVariables ?? [])}.`
   );
 }
 
-/** The prompt flags Admin -> Prompts shows, spread onto a record. */
-function promptFlags(featureKey: PromptFeatureKey | undefined, validation: PromptValidation) {
-  return {
-    ...(predatesSectionSwitches(featureKey, validation) ? { predatesSectionSwitches: true } : {}),
-    ...(predatesJobField(featureKey, validation) ? { predatesJobField: true } : {}),
-    ...(predatesIndustry(featureKey, validation) ? { predatesIndustry: true } : {}),
-  };
+/** `needsUpdate` for a stored record missing a required variable, spread onto it. */
+function promptFlags(validation: PromptValidation) {
+  return validation.missingVariables.length > 0 ? { needsUpdate: true as const } : {};
 }
 
 function buildSampleValue(variableName: string): string {
@@ -680,13 +678,21 @@ function renderPromptSegmentsFromText(
   };
 }
 
+/**
+ * The checks every save makes: no variable the code does not supply and, for
+ * a feature prompt, every one its feature requires - refused by name.
+ */
 function assertValidPromptDraft(
   content: string,
-  allowedVariables: PromptVariableDefinition[]
+  allowedVariables: PromptVariableDefinition[],
+  featureKey?: PromptFeatureKey
 ): PromptValidation {
   const validation = validatePromptContent(content, allowedVariables);
   if (validation.unknownVariables.length > 0) {
     throw new Error(`Unknown prompt variables: ${validation.unknownVariables.join(', ')}`);
+  }
+  if (featureKey && validation.missingVariables.length > 0) {
+    throw new Error(missingVariablesSentence(featureKey, validation.missingVariables));
   }
   return validation;
 }
@@ -826,9 +832,7 @@ function toPromptSummary(record: PromptRecord): PromptSummary {
     modelName: record.modelName,
     allowedVariables: record.allowedVariables,
     validation: record.validation,
-    ...(record.predatesSectionSwitches ? { predatesSectionSwitches: true } : {}),
-    ...(record.predatesJobField ? { predatesJobField: true } : {}),
-    ...(record.predatesIndustry ? { predatesIndustry: true } : {}),
+    ...(record.needsUpdate ? { needsUpdate: true as const } : {}),
     isBuiltIn: record.isBuiltIn,
     isActiveForFeature: record.isActiveForFeature,
     usage: record.usage,
@@ -843,10 +847,24 @@ async function readBuiltInPromptRecord(definition: PromptFeatureDefinition): Pro
     console.warn(`Default prompt file missing: ${getDefaultPromptPath(definition.id)}`);
     return null;
   }
+  return builtInRecordFrom(definition, stored);
+}
 
-  const modelSelection = normalizePromptModelSelection(
+/** The built-in prompt as it SHIPPED, ignoring an administrator's edit: what runs in place of a record that needs updating. */
+async function readShippedPromptRecord(definition: PromptFeatureDefinition): Promise<PromptRecord | null> {
+  const shipped = await readDefaultPromptFile(definition.id);
+  if (!shipped) {
+    console.warn(`Default prompt file missing: ${getDefaultPromptPath(definition.id)}`);
+    return null;
+  }
+  return builtInRecordFrom(definition, shipped);
+}
+
+function builtInRecordFrom(definition: PromptFeatureDefinition, stored: StoredPromptSource): PromptRecord {
+  const modelSelection = readStoredPromptModelSelection(
     stored.parsed.modelProvider ?? definition.modelProvider,
-    stored.parsed.modelName ?? definition.modelName
+    stored.parsed.modelName ?? definition.modelName,
+    definition.id
   );
   const allowedVariables = featureAllowedVariables(definition.key);
   const validation = validatePromptContent(stored.content, allowedVariables);
@@ -864,7 +882,7 @@ async function readBuiltInPromptRecord(definition: PromptFeatureDefinition): Pro
     modelName: modelSelection?.modelName,
     allowedVariables,
     validation,
-    ...promptFlags(definition.key, validation),
+    ...promptFlags(validation),
     isBuiltIn: true,
     isActiveForFeature: false,
     usage: definition.usage,
@@ -885,7 +903,7 @@ function readCustomPromptFile(id: string): (StoredPromptMeta & { content: string
   const parsed = stored.parsed;
   const featureKey = normalizeFeatureKey(parsed.featureKey);
   const feature = featureKey ? getPromptFeatureDefinition(featureKey) : null;
-  const modelSelection = normalizePromptModelSelection(parsed.modelProvider, parsed.modelName);
+  const modelSelection = readStoredPromptModelSelection(parsed.modelProvider, parsed.modelName, id);
   const allowedVariables = feature
     ? featureAllowedVariables(feature.key)
     : normalizeAllowedVariables(Array.isArray(parsed.allowedVariables) ? parsed.allowedVariables : []);
@@ -927,7 +945,7 @@ function readCustomPromptRecord(id: string): PromptRecord | null {
     modelName: prompt.modelName,
     allowedVariables: prompt.allowedVariables,
     validation,
-    ...promptFlags(prompt.featureKey, validation),
+    ...promptFlags(validation),
     isBuiltIn: false,
     isActiveForFeature: false,
     usage: prompt.featureKey ? getPromptFeatureDefinition(prompt.featureKey).usage : undefined,
@@ -1102,7 +1120,7 @@ export async function createPrompt(input: PromptCreateInput): Promise<PromptReco
   // `featureAllowedVariables`); otherwise the ones the author declared.
   const allowedVariables = draftContext.allowedVariables;
 
-  assertValidPromptDraft(content, allowedVariables);
+  assertValidPromptDraft(content, allowedVariables, draftContext.featureKey);
 
   const id = generateCustomPromptId(name, draftContext.featureKey);
   const now = new Date().toISOString();
@@ -1170,7 +1188,7 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
       provider: existing?.parsed.modelProvider ?? feature.modelProvider,
       modelName: existing?.parsed.modelName ?? feature.modelName,
     });
-    assertValidPromptDraft(content, featureAllowedVariables(feature.key));
+    assertValidPromptDraft(content, featureAllowedVariables(feature.key), feature.key);
     writeStoredPrompt(id, {
       id,
       featureKey: feature.key,
@@ -1206,7 +1224,7 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
 
   const allowedVariables = draftContext.allowedVariables;
 
-  assertValidPromptDraft(content, allowedVariables);
+  assertValidPromptDraft(content, allowedVariables, draftContext.featureKey);
 
   const nextPrompt: StoredPromptMeta & { content: string } = {
     ...current,
@@ -1343,19 +1361,50 @@ export async function validatePromptDraft(input: PromptPreviewInput): Promise<Pr
   return validatePromptContent(content, allowedVariables);
 }
 
-async function resolvePromptForRuntime(id: string): Promise<PromptRecord | null> {
-  if (isPromptFeatureKey(id)) {
-    return getRuntimePromptByFeature(id);
+const warnedNeedsUpdate = new Set<string>();
+
+/**
+ * The record a run uses in place of `record`: itself, unless it lacks one of
+ * its feature's required variables (`needsUpdate`) - then the feature's
+ * built-in prompt, as an administrator edited it when that edit is complete,
+ * else as it shipped. Said once per record and text, naming what is missing,
+ * so the administrator knows their edit is not what runs.
+ *
+ * Only the runtime asks this; Admin -> Prompts lists and edits the stored
+ * record as it is, flagged.
+ */
+async function usableAtRuntime(record: PromptRecord | null): Promise<PromptRecord | null> {
+  if (!record?.needsUpdate || !record.featureKey) return record;
+  const definition = getPromptFeatureDefinition(record.featureKey);
+  let replacement = record.id === definition.id ? null : await readBuiltInPromptRecord(definition);
+  if (!replacement || replacement.needsUpdate) replacement = await readShippedPromptRecord(definition);
+  const key = `${record.id}:${record.updatedAt}`;
+  if (!warnedNeedsUpdate.has(key)) {
+    warnedNeedsUpdate.add(key);
+    console.warn(
+      `[prompts] The prompt "${record.name}" (${record.id}) does not use ` +
+        `${variableList(record.validation.missingVariables)}, which every ${definition.label} prompt must; ` +
+        `the built-in ${definition.label} prompt runs instead until it is updated under Admin -> Prompts.`
+    );
   }
-  return getPromptById(id);
+  return replacement;
 }
 
+async function resolvePromptForRuntime(id: string): Promise<PromptRecord | null> {
+  if (isPromptFeatureKey(id)) {
+    return usableAtRuntime(await getRuntimePromptByFeature(id));
+  }
+  return usableAtRuntime(await getPromptById(id));
+}
+
+/** The record a run by feature or id uses - never one that needs updating (see `usableAtRuntime`). */
 export async function resolvePromptByRuntimeId(id: string): Promise<PromptRecord | null> {
   return resolvePromptForRuntime(id);
 }
 
+/** The record a run by exact id uses - never one that needs updating (see `usableAtRuntime`). */
 export async function resolvePromptByExactId(id: string): Promise<PromptRecord | null> {
-  return getPromptRecordByIdExact(id);
+  return usableAtRuntime(await getPromptRecordByIdExact(id));
 }
 
 export async function renderPrompt(
@@ -1412,7 +1461,7 @@ export async function renderPromptSegmentsByExactId(
   id: string,
   values: Record<string, string>
 ): Promise<RenderedPromptSegment[]> {
-  const prompt = await getPromptRecordByIdExact(id);
+  const prompt = await resolvePromptByExactId(id);
   if (!prompt) {
     throw new Error(`Prompt "${id}" not found`);
   }

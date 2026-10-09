@@ -1,10 +1,5 @@
-import { resolveAiChoice, type AiChoice } from '../../config/aiPreferences';
+import type { AiChoice } from '../../config/aiPreferences';
 import { PublicError } from '../../middleware/publicError';
-import {
-  isRetiredProviderId,
-  RETIRED_FAMILY_DESCRIPTION,
-  retiredProviderFamily,
-} from '../../config/providerCatalog';
 import { generationRenderConcurrency } from '../../config/operational';
 import { resolveTemplateForProfile } from '../templateChoice';
 import { profileForTemplate } from '../profileService';
@@ -75,20 +70,12 @@ export type ResumeTaskPayload = {
   /**
    * What this resume was charged, in thousandths of a dollar: the
    * `pricePerResumeMilli` of the model `choice` resolved to at submit.
-   * Snapshotted, and outside `choice`, because a choice can be resolved again
-   * after a restart and a refund must give back what was TAKEN, not what the
-   * model costs by then. Every task queued since credits became dollars has
-   * one (`buildTasks`); read through `taskCostMilli`, which says what one
-   * without it means.
+   * Snapshotted, and outside `choice`, because a refund must give back what
+   * was TAKEN, not what the model costs by then - an administrator can
+   * reprice it while the batch runs. Every task the routes queue has one
+   * (`buildTasks`); read through `taskCostMilli`.
    */
   costMilli?: number;
-  /**
-   * What a task queued BEFORE credits became dollars was charged, in whole
-   * credits - never written now, and never read as money. Kept on the stored
-   * payload as the record of what that resume cost then; the switch gave such
-   * a task `costMilli: 0` (database/dollarSwitch.ts).
-   */
-  creditCost?: number;
   /** Tailored content a preview already produced, so the model is not re-asked. */
   tailoredContent?: import('../../types/template').TailoredContent;
   /**
@@ -171,61 +158,6 @@ const RENDER_CONCURRENCY = generationRenderConcurrency();
 export function resumeRenderConcurrency(): number {
   return RENDER_CONCURRENCY;
 }
-
-/** Kept for the tests that reset per-task state; the analysis gate keeps its own (resetAnalysisGateForTests). */
-export function resetResumeTaskStateForTests(): void {
-  // Nothing of its own any more: the in-flight analyses moved to the gate,
-  // where every caller - not only the queue - shares them.
-}
-
-/**
- * True for a stored choice that names a removed provider, or the "either site"
- * route they offered - the choices `currentChoice` resolves again.
- */
-export function namesRetiredProvider(choice: unknown): choice is AiChoice {
-  const stored = choice as { provider?: unknown; route?: unknown } | null | undefined;
-  return Boolean(stored) && (isRetiredProviderId(stored?.provider) || stored?.route === 'hybrid');
-}
-
-/**
- * The task's choice, or a fresh one when it names a retired provider.
- *
- * A choice is resolved when the batch is submitted and written to disk with
- * the task, so a task queued before the browser chat providers or the metered
- * APIs were removed can come back from a restart still naming one - or the
- * "either site" route the browsers offered. Run as stored, it would fail every attempt against a provider nothing
- * serves and then be refunded, and the person who queued it would get nothing.
- * So the choice is resolved again from the profile exactly as a new submission
- * would resolve it: the profile's own model, or the app default. The PRICE is
- * not: what the task was charged is snapshotted on its payload (`costMilli`)
- * and is what a failure refunds, whichever model it ends up running on.
- *
- * The restore does this first, so such a task is placed in the lane of the
- * provider it will actually run on (see `restoreGenerationQueue`); asking again
- * here covers a task whose profile could not be read at that moment.
- */
-export async function currentChoice(choice: AiChoice, profile: Profile): Promise<AiChoice> {
-  const stored = choice as (AiChoice & { route?: unknown }) | undefined;
-  if (!namesRetiredProvider(stored)) return choice;
-
-  const fresh = await resolveAiChoice(undefined, profile);
-  const family = retiredProviderFamily(stored.provider) ?? 'browser-chat';
-  warnOnce(
-    `retiredQueuedChoice:${stored.provider}->${fresh.provider}/${fresh.modelName}`,
-    `A queued resume was set to run on "${stored.provider}", one of the removed ` +
-      `${RETIRED_FAMILY_DESCRIPTION[family]}; it runs on ${fresh.provider}/${fresh.modelName} instead, ` +
-      'resolved from its profile.'
-  );
-  return fresh;
-}
-
-/**
- * The re-resolution on its own, for the tests that pin what a restored task
- * naming a retired provider runs on. Marked rather than made public, as
- * `__analyseOnceForTests` below is: a whole task would also drag in a template,
- * a profile on disk and a PDF render.
- */
-export const __currentChoiceForTests = currentChoice;
 
 /**
  * The job's analysis, as this task needs it.
@@ -340,8 +272,7 @@ export async function runResumeTask(
   input: ResumeTaskInput,
   assignment: Assignment
 ): Promise<ResumeTaskResult> {
-  const { profile, job } = input;
-  const choice = await currentChoice(input.choice, profile);
+  const { profile, job, choice } = input;
 
   // The same choice the preview and /resume/generate make, against the profile
   // as it is NOW: a task queued before its profile changed layout is drawn

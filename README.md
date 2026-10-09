@@ -26,7 +26,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
 | **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets each account's subscription; there is no checkout for one |
 | **Credits** | A credit is a dollar, to the thousandth (`$0.023`), shown without trailing zeros (`$1`, `$4.1`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
-| **Roles** | User, Reporter and Administrator. Users build resumes. Reporters add job postings to the installation's job lake and are paid per job accepted, with no resume builder and no job scrapers. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody. See [Roles](#roles) |
+| **Roles** | User, Reporter and Administrator. Users build resumes. Reporters add job postings to the installation's job lake and are paid per job accepted, with no resume builder. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody. See [Roles](#roles) |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
 | **Order & Download** | Two ways to build. **Generate Immediately** follows the run on the page and downloads each resume as it lands; closing the tab stops it and refunds what had not started. **Order** answers with an order number instead of making you wait: track it under **Orders**, download one file or the whole order as a zip, and the files are deleted automatically after five days |
 | **Payouts, refunds and Contact admin** | A reporter can **ask for a payout** of their earned balance (*Ask for Refund*), and an administrator records what they sent, approves or declines it from one queue - where refund requests made before asking was removed are still decided; every step reaches the person's bell. Users and administrators no longer ask for refunds in the app. **Contact admin** lists how to reach the administrator, on every page and on the sign-in screen |
@@ -47,223 +47,10 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 
 ## 🆕 What changed in this release
 
-For an operator upgrading an install from the release before this one - commit
-`5177fc3`, the one that made credits dollars and added refund requests,
-reporters, the once-per-posting job analysis and the Job Data Lake. The first
-start does everything that needs doing to the data, once, and logs it; what it
-cannot decide for you is in the steps below. Each change is described in full
-in the section it links to, and everything about going back is in one place:
-[Rolling back this release](#-rolling-back-this-release).
-
-An install still on the release before that (commit `90adbaf`) upgrades
-straight to this one: its first start runs both releases' one-time steps, in
-order. The steps marked **From `90adbaf`** are for such an install alone, and
-[Coming from 90adbaf](#coming-from-90adbaf) sums up what that release changed.
-
-### Upgrading, step by step
-
-1. **From `90adbaf`: before stopping the old build, let the queue drain** - or
-   cancel what is left on **Orders**. A run carried across that upgrade still
-   finishes, on the credits it was paid with, but a resume of it that fails
-   gives nothing back: the credits it would have refunded are reset with every
-   balance (see [Credits are dollars](#10-credits-are-dollars)). From `5177fc3`
-   a queued run carries across as it is.
-2. **Stop the backend and back up** the database file in `DB_DIR` *and*
-   `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), which holds
-   the templates administrators save.
-3. **Pull, install and build**: `npm run install:all`, from the repository
-   root - the one install that also puts back the root's own `concurrently`,
-   which `npm run dev` starts with - then
-   `npm run build --prefix backend` and `npm run build --prefix frontend`. The
-   two halves ship together - the job sheet's state, its tab listing and the
-   Job Filter's answer changed shape in this release, with no alias. The
-   install is also what brings **Next.js 16.3.8**, which this release pins in
-   place of 16.1.6 (see the table below); until it has run, the frontend says
-   which Next it found before starting it - `[next] Next.js 16.1.6 is
-   installed, but frontend/package.json pins 16.3.8. Run npm run install:all.`
-   If `git pull` refuses to overwrite `frontend/package.json` or
-   `frontend/package-lock.json`, the usual reason is Next moved by hand on
-   this machine (`npm i next@...`, `npm audit fix --force`): put the two back with
-   `git checkout -- frontend/package.json frontend/package-lock.json`, then
-   pull and install.
-4. **From `90adbaf`: let the server write templates.** The user the backend
-   runs as must be able to write `backend/static/templates`: the first start
-   moves every saved template out of the database into a file there. Startup
-   says which: `Templates: <dir> (built-in and saved templates; writable).` or
-   `... is NOT writable (...)`.
-5. **Check `.env`.** One setting is new: `JOB_LAKE_PUSH_MAX_ROWS`, the most
-   jobs one **Push to Google Sheet** writes (default `1000`). `SHEET_BACKFILL`
-   now also covers adding the All and Temp For AI tabs at startup - `off`
-   leaves that to each account's next sign-in. **From `90adbaf`:**
-   `CREDIT_SIGNUP_GRANT` is read in **dollars** - an old `5`, five credits,
-   grants `$5`; `AI_CLI_TIMEOUT_MS_FILTER`, `AI_CODEX_TIMEOUT_MS_FILTER` and
-   `AI_GEMINI_TIMEOUT_MS_FILTER` are read by nothing, so delete them; and
-   `IMMEDIATE_TAB_GRACE_MS`, `IMMEDIATE_FILE_RETENTION_MS`,
-   `JOB_LAKE_DUPLICATE_WINDOW_DAYS` and `TAILOR_CACHE_DAYS` are new, with
-   defaults meant to be left alone (see [Configuration](#-configuration)).
-6. **Start the backend and read its log.** With Google Sheets set up, the
-   startup backfill adds the two new tabs to every sheet an older build made:
-   `[sheets] Preparing the job sheets of N account(s) from before this build (a
-   spreadsheet, or its All and Temp For AI tabs).`, then `[sheets] Backfill
-   finished: N prepared, M left for next time.` - those left get them at their
-   next sign-in. A sheet that already has a tab of its own called All or Temp
-   For AI says so (`[sheets] <spreadsheet> already has a tab named "All" that
-   is not a job tab; ...`; see step 13). If the lake holds jobs, `[lake] Filled
-   in job type, clearance and industry for N lake row(s) ... - no model was
-   asked - and recorded N report(s) of them.` **From `90adbaf`**, each one-time
-   step of that release says what it did, once, as well: `[db] Renamed
-   users.plan to subscription: ...`, `[templates] Moved N saved template(s)
-   from the database to files ...` (and a line for each one it had to rename),
-   `[credits] Credits are dollars now: ...`.
-7. **From `90adbaf`: before anybody else signs in, price every model** under
-   **Admin → Models**. Every balance was reset to `$0` and every model to a
-   price of `$0` - free - and until a model has a price, every resume on it is
-   built for nothing. The page lists each free enabled model in red until none
-   is left (and startup says `[credits] Every model is FREE until it is priced`
-   when it reset stored prices). Prices are dollars, in steps of `$0.001`
-   (`0.023`).
-8. **From `90adbaf`: choose the analysis model** under **Admin → Settings →
-   General** - the one model every job posting is read on, once. Left empty it
-   is the default model.
-9. **Check the Contact list** on **Admin → Settings → General** (**from
-   `90adbaf`**, fill it in): how people reach you. Nobody asks for a refund in the app any more -
-   every place that offered one, and a page left open from before, now tells
-   them to contact the administrator, and that sentence links to this list,
-   which everybody sees, signed in or not.
-10. **Payouts.** A reporter now asks to be paid out with **Ask for Refund** on
-    their Credits page; each request arrives in **Admin → Payments → Refund
-    requests**, marked *Payout*, and every administrator is told. **Record
-    payout** there records what you actually sent (see [Refund and payout
-    requests](#refund-and-payout-requests)). **From `90adbaf`**, if you will
-    have reporters: set the global rate per job on **Admin → Job Lake →
-    Settings** (nobody is paid until it is set), then make each reporter on
-    **Admin → Accounts** - by changing a user's role, or adding the address as
-    a Reporter before they first sign in.
-11. **An analysis prompt you edited** is marked *Predates industries* under
-    **Admin → Prompts** (see [Industries, and the lake's new
-    facts](#15-industries-and-the-lakes-new-facts)). It keeps working: the
-    industry list is sent beside it on every call. Adding `[[industryList]]`
-    under its own heading after `[[jobFieldList]]`, and `"industry": ""` to
-    its output - or pasting the shipped text from
-    `backend/static/prompts/analyze-job-description.json` over it - puts the
-    list in the cached part. Mind that the older build
-    refuses a prompt naming it ([Rolling back this
-    release](#-rolling-back-this-release), step 2). **From `90adbaf`**, one
-    edited before job fields is marked as predating job fields instead (see
-    [Job analysis runs once](#11-job-analysis-runs-once)).
-12. **Check the job sheets' Google identity**: `cd backend && npm run
-    sheets:doctor`. The analysis columns - G to L now - are protected so that
-    only the server can write them, the moment a tab is laid out, and the
-    server has to learn which Google account it is to do that - for a
-    `sheets:login` credential, that needs the Drive API.
-13. **Tell people about their job sheets** (see [Own job sheets: All and Temp
-    For AI](#14-own-job-sheets-all-and-temp-for-ai)). Every sheet now has an
-    **All** tab, which every job page uses unless another job tab is picked,
-    and a **Temp For AI** tab, both in the new twelve-column layout. The daily
-    `MM/DD/YYYY` tabs are kept as they are but **no longer read or written**:
-    to use their rows, copy them into All - Company, Job Title, Job Link and
-    Job Description, columns B to E there, go into C to F. The saved shared
-    sheets (*Bid History* and the like) are gone from every page; copy their
-    rows into your own All the same way. The Job Filter shows its verdicts on
-    the page and writes nothing into the sheet. Anybody whose **Settings → Job
-    Sheet** says a tab named All or Temp For AI is in the way renames or
-    deletes that tab, then reloads the page.
-14. **Reload every page left open.** One loaded before the upgrade reads the
-    job sheet, its tabs and the Job Filter's answer in shapes the server no
-    longer sends, and asking for a refund from one is answered *Refunds are no
-    longer asked for in the app. If you think a purchase or a resume should be
-    refunded, contact your administrator.* **From `90adbaf`**, such a page is
-    also refused wherever it would send money in the old unit (*This page is
-    from an older version of the app. Reload it and try again.*), and an
-    Accounts page left open breaks on its first subscription change.
-15. **From `90adbaf`: tell people** that their balance starts again at `$0`
-    (their Credit History ends with a *reset* row saying what it was), and that
-    **Generate Immediately** stops when its tab is closed and downloads each
-    resume by itself - the browser may ask once to allow several downloads.
-
-### What is new, and what it asks of you
-
-| Change | What it means | What to do |
-|---|---|---|
-| **Payout requests** | A reporter asks to be paid out with **Ask for Refund** - the whole earned balance, one request at a time, never at `$0`. An administrator records what they actually sent, up to the balance at that moment, with **Record payout** in the refund queue, which turns the request *Paid out* in the same step; a payout recorded on **Admin → Accounts** closes the open request too, so nothing is paid twice | Step 10. See [Refund and payout requests](#refund-and-payout-requests) |
-| **No more refund asks** | Users and administrators no longer ask for refunds in the app: the buttons on purchases, Credit History and an order's resumes are gone, and `POST /api/refund-requests` answers 410. Requests already open stay in the queue and are decided as before, and an administrator can still refund a payment or adjust a balance directly | Step 9 |
-| **Money without trailing zeros** | Amounts read `$1`, `$4.1`, `$0.023`, `$0` rather than `$1.000` - every digit that matters, never rounded. Notes already stored in a history keep the text they were written with | Nothing. See [Credits](#credits) |
-| **Your own job sheet, and only it** | Build Resumes, the Job Filter, the export, Report Jobs and **Admin → Google Sheets** read and write the signed-in account's own sheet and no other - an administrator's saved Google Sheets are gone, and any other spreadsheet id is a 404, an administrator's included | Step 13. See [The job sheet](#the-job-sheet) |
-| **All, Temp For AI and twelve columns** | Every sheet has an **All** tab, the default everywhere, and **Temp For AI**, laid out Date, NO(DATE), Company, Job Title, Job Link, Job Description - yours, A to F - then Job Field, Salary, Job Type, Clearance, Industry and Analysis - the program's, G to L, protected. Every row is 21 px high, long text clipped. The old daily tabs are kept and never read or written again | Steps 6, 12 and 13. See [Own job sheets](#14-own-job-sheets-all-and-temp-for-ai) |
-| **The Job Filter writes nothing** | Each row's Pass or Fail and its reason are shown on the page; no verdict is written into the sheet | Nothing |
-| **Industry, job type and clearance** | The analysis names the posting's **industry** from a closed list, and its job type and clearance come from facts it already held - in the sheet's G to L, on every lake job, as the lake's filters and in the admin sheet. A posting analysed before is never asked again: its industry is worked out from its analysis | Step 11. See [Job analysis: once per posting](#job-analysis-once-per-posting) and [15](#15-industries-and-the-lakes-new-facts) |
-| **Reported before, by the database** | Whether a reporter reported a posting before is the database's record (`job_reports`), by the posting, wherever its row has been moved, sorted or copied to - the sheet's *Lake Status* column is gone. The same posting twice in one run is a duplicate the second time | Nothing. See [The Job Data Lake](#the-job-data-lake) |
-| **Push to Google Sheet** | **Admin → Job Lake**'s Lake tab - its filters now in a fixed order, Job type, Clearance and Industry among them - writes the jobs of a search into the *Temp For AI* tab of the pushing administrator's own sheet, replacing what that tab held, each row with its analysis cells, so building from it analyses nothing again | Optional: `JOB_LAKE_PUSH_MAX_ROWS` (step 5). See [The Job Data Lake](#the-job-data-lake) |
-| **Analysis cells point at the database** | A sheet's Analysis cell is used only for the stored analysis it names, and only when that is the row's posting. One naming an analysis this database does not have - another install's, an older backup's, or text that only looks like the program's - is ignored: the posting is found in the database or analysed once, and the cell rewritten | Nothing |
-| **Next.js 16.3.8** | The frontend pins Next.js and `eslint-config-next` to exactly `16.3.8`, up from `16.1.6`. `npm audit` lists critical advisories against every Next up to `16.3.2` - among them [GHSA-p293-qw3h-jr36](https://github.com/advisories/GHSA-p293-qw3h-jr36), remote code execution on a server hosted on Windows, fixed in `16.3.3` - and `16.1.6` also brought a `postcss` (`8.4.31`) with an advisory of its own. With `16.3.8`, `npm audit --omit=dev` in `frontend/` lists nothing against `next` or `postcss`. No page changed for it | Step 3: `npm run install:all` installs it. Never go back to `16.1.6` to work around anything |
-| **`npm run dev` on Windows** | On Windows, Turbopack's dev server can die a moment after *Ready* with exit code `3221225477` - `0xC0000005`, a native crash in Next ([vercel/next.js#95015](https://github.com/vercel/next.js/issues/95015)) - which left `npm run dev` with no frontend and nothing said why. The launcher now says what happened, once, and starts the production-style server in its place on the same port (a webpack build, then `next start`): the app stays up, but the page no longer hot-reloads. Every other way a frontend ends is passed on as before | Nothing. See Troubleshooting, *`npm run dev` ... exited with code 3221225477* |
-| **The installed Next is checked** | Every start of the frontend compares the Next it is about to run with the one `frontend/package.json` pins, and says so, before Next starts, when they differ - `[next] Next.js 16.3.5 is installed, but frontend/package.json pins 16.3.8. Run npm run install:all.` It warns and never refuses | Run `npm run install:all` when it says so |
-| **The install is checked too** | `npm run dev` (and `dev:live`, `dev:poll`) first checks that every package the root, backend and frontend `package.json` files name is installed. When one is not, it names what is missing in which package and says to run `npm run install:all` from the repository root, and stops - where Windows used to say only *'concurrently' is not recognized as an internal or external command*. `npm run install:all` passes `--include=dev` to all three installs, so an npm set to leave devDependencies out (`NODE_ENV=production`, `omit=dev`) no longer strips `concurrently`, `typescript`, `ts-node-dev` or `tailwindcss` | Step 3, from the repository root. See Troubleshooting, *`npm run dev` stops at once ...* |
-| **The Claude sign-in** | The Claude seat accepts the sign-in `claude auth login` saves. `claude auth status` reports it as `authMethod: "claude.ai"` (every Claude Code since `2.1.40`, the first with the command); this app took only `oauth_token` - what a CLI handed a token prints - so an ordinary sign-in drew `This may not be a subscription sign-in` at every start, and **Admin → Settings** never lifted its sign-in hold. Both now count, unless `claude auth status` names an `apiKeySource` beside them (a Console login billed per token read `claude.ai` up to Claude Code `2.1.285`). The startup line reads `[ai] claude-cli: Signed in on a Claude subscription (claude.ai sign-in).` | Nothing |
-| **Smaller things** | Switching off Strengths or Soft Skills removes the whole section, its heading included, in an uploaded template as well. The range importer refuses writes into G to L of a job tab. The root `npm run dev` runs the frontend on Turbopack - webpack's dev server reloaded every open tab when another connected, which stopped a Generate Immediately run - and `npm run dev:live` keeps webpack | Nothing |
-
-**For a script that calls the API**: `GET /api/sheet` answers `defaultTab` /
-`defaultTabUrl` (All) and `tempTab` / `tempTabUrl` - plus `conflict` while a
-tab of the person's own holds one of those names - instead of `todayTab` /
-`todayTabUrl`. `GET /api/import/tabs` lists the caller's own sheet only, each
-tab with its `layout` (`job`, `blank` or `other`), and any other sheet id
-sent to a job route - import and its tabs, the job export and filter, a sheet
-run's submission (`sheet.spreadsheetId`) and Admin → Google Sheets' range
-reads and writes - is a 404 (`GET /api/sheet`, Report Jobs and Push to Google
-Sheet read none from a request); the Bid Assistant's own saved sheet sources
-are unchanged. `googleSheetsSources` is gone from the admin settings.
-`POST /api/jobs/filter-google-sheet` takes `{ tabName, startRow, endRow? }` and
-answers each row's verdict in `rows`, writing nothing; the export ignores
-column numbers. `POST /api/refund-requests` and `GET
-/api/refund-requests/options` answer 410 `refund-requests-closed`, and a
-reporter's `GET` and `POST /api/refund-requests/payout` are new. Report Jobs'
-rows carry `reported` and `priorOutcome` instead of `lakeStatus`. An analysis
-may carry `industry`. `GET /api/admin/job-lake` also filters on `jobType`,
-`clearance` and `industry` and answers `options` and `pushMaxRows`, and `POST
-/api/admin/job-lake/push` is new.
-
-### Coming from 90adbaf
-
-The release before this one changed more, and everything it changed is still
-true. For an install coming from `90adbaf` - the one that rebuilt Edit Profile
-around a live preview - the steps above marked **From `90adbaf`** are that
-release's; what it changed, briefly, and where each is described:
-
-- **Plans are subscriptions** - the account tier is called a subscription on
-  every page, in the API and in the database (`users.plan` became
-  `users.subscription`; [8](#8-plans-are-now-subscriptions)).
-- **Credits are dollars**, counted to `$0.001`. Balances and model prices were
-  **reset** to `$0`, not converted; history keeps its old figures, and
-  purchases credit exactly what they charge ([10](#10-credits-are-dollars),
-  [Credits](#credits)).
-- **Saved templates are files** beside the built-ins, not database rows
-  ([9](#9-saved-templates-are-files)).
-- **Refund requests and Contact admin** - the queue an administrator decides
-  in (asking was closed in this release) and the administrator's
-  contact channels, shown to everybody ([Contacting the
-  administrator](#contacting-the-administrator)).
-- **Generate Immediately and Order** - every build is queued; an immediate run
-  is tied to its tab, downloads each resume as it lands, and stops when the
-  tab closes ([Order & Download](#order--download)).
-- **Reporters**, a third role, paid per job the lake accepts
-  ([Roles](#roles)), and **the Job Data Lake** itself
-  ([12](#12-the-job-data-lake)).
-- **Job analysis runs once**, on one analysis model
-  ([11](#11-job-analysis-runs-once)).
-- **Several providers of one type** and **the tailoring cache**
-  ([13](#13-providers-of-one-type-and-the-tailoring-cache)).
-
-For a script, that release changed four things. An account's `plan`,
-`planLabel` and `planSummary` are `subscription...`, and `/api/auth/plans` is
-`/api/auth/subscriptions`. Every amount is answered in an integer field ending
-`Milli` and sent as dollars in one ending `Usd`; a request that still carries
-`credits`, `amount`, `creditsPerResume` or `minCents` is refused.
-`POST /api/generation/batches` queues a **Generate Immediately** run unless the
-body says `"mode": "order"` (or `"asOrder": true`) - and an immediate run is
-cancelled `IMMEDIATE_TAB_GRACE_MS` after nobody follows its progress stream, so
-a script that does not read the stream must order. And a `jobAnalysis` object
-in a body is no longer read: send the `analysisId` that `/api/resume/analyze`
-answers, or the job description and link.
+Support for older builds - upgrading their databases, reading their data,
+rolling back to them - and the Apify Job Search are removed, and the server now
+refuses at startup a database an older build never finished upgrading (see
+[Upgrading](#4-upgrading)).
 
 ---
 
@@ -451,24 +238,13 @@ is locked is served as the first model that can run. With **all three** locked
 nothing can run: settings still read, users are told *AI generation isn't
 available right now*, and the admin pages name the locks.
 
-The `openrouter` provider was **replaced** by `claude-cli`. An existing database
-is migrated on the next boot (its settings row is backed up first, and
-`npm run ai:rollback` restores it); records that still name `openrouter` are
-read as `claude-cli` whether or not that migration has run.
-
-The two providers that drove claude.ai and chatgpt.com in a debug Chrome you
-started yourself were **removed**, and nothing maps them onto another provider:
-their records name a model called `chat`, which no seat has. An existing
-database is migrated on the next boot, and anything that still names them is
-read as the default whether or not that migration has run - see [Upgrading an
-install that used browser chat](#5-upgrading-an-install-that-used-browser-chat).
-
-The three metered providers - `claude` (the Anthropic API), `openai` and
-`deepseek` - were **removed** the same way, with every API key, their
-`*_BASE_URL` gateways and the switches that let a seat use a key. Nothing maps
-them onto a seat either: an API model name is not a seat's, and moving a model
-would change what a run costs behind its owner's back. See [Upgrading an
-install that used the metered APIs](#6-upgrading-an-install-that-used-the-metered-apis).
+Older builds also had an OpenRouter provider, two that drove claude.ai and
+chatgpt.com in a browser, and three billed per token (the Anthropic API,
+OpenAI and DeepSeek). None of them is mapped onto a seat - their model names
+are not a seat's, and moving a model would change what a run costs behind its
+owner's back. A request naming one of their models is refused with *That model
+isn't available*, and a prompt's model override naming one of them is ignored,
+with one line in the log.
 
 ### Credits
 
@@ -490,9 +266,9 @@ A resume - one profile against one job - costs **the price of the model it is
 built with**, however many files that produces. Every model has a *price per
 resume* in dollars, set under **Admin → Models** in steps of `$0.001`, from
 `$0` (free) to `$1,000`. A new model is priced by whoever adds it - there
-is no default - and a model with no price (one a migration seeds, or one priced
-before credits were dollars) reads as `$0`, which **Admin → Models lists in
-red** for as long as any enabled model is free. A run asking for PDF and DOCX
+is no default - and a model with no price (a shipped one nobody has priced
+yet) reads as `$0`, which **Admin → Models lists in red** for as long as any
+enabled model is free. A run asking for PDF and DOCX
 plus a cover letter writes four files and costs one resume's price, because what
 was asked for is one tailored resume.
 
@@ -549,12 +325,11 @@ being refused on the thirtieth after twenty-nine resumes already exist.
   *held*, rather than hiding it and having the number appear to come back from
   nowhere.
 - **History from before dollars reads as it happened.** Credits were once whole
-  units bought at a price (50c by default), and the upgrade reset every balance
-  to `$0` rather than pick a rate - see [Credits are
-  dollars](#10-credits-are-dollars). Rows and payments from then are shown in the
-  credits they were written in (`legacyCredits` in the API), never converted,
-  and each account that held any - in its balance, or in a run still going -
-  has a `reset` row explaining the jump.
+  units bought at a price (50c by default), and the switch to dollars reset
+  every balance to `$0` rather than pick a rate. Rows and payments from then are
+  shown in the credits they were written in (`legacyCredits` in the API), never
+  converted, and each account that held any - in its balance, or in a run still
+  going - has a `reset` row explaining the jump.
 
 A brand-new account starts at **$0**. Set `CREDIT_SIGNUP_GRANT` - in
 **dollars**, e.g. `5` or `0.25` - to give an open installation a self-serve
@@ -607,13 +382,11 @@ settlement arriving later cannot bring it back.
 | Card | Stripe, embedded | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | Crypto | **Cryptomus**, hosted invoice page | `CRYPTOMUS_MERCHANT_ID`, `CRYPTOMUS_PAYMENT_API_KEY` |
 
-Crypto was taken two other ways before this one: into a wallet you held the
-keys to, watched by this server across four blockchains, and through Coinbase
-Commerce. Both have been **deleted**. Payments already made through either
-still read, still render and still refund - `chain` and `coinbase` remain in
-the provider union and an old row does not stop having been paid because the
-code that took it is gone - but `CHAIN_*` and `COINBASE_COMMERCE_*` no longer
-do anything, and no new payment can be started through either.
+Crypto was once taken two other ways: into a wallet watched by this server, and
+through Coinbase Commerce. Both are gone, and no payment can be started through
+either; one already made through them still reads and renders under its own
+name (`chain`, `coinbase`), and refunding it says to send the funds back from
+wherever it was taken, then adjust the balance on Admin → Accounts.
 
 A method is offered **only when every one of its keys is set**. A secret key
 without a webhook secret is an install that can take money and never hear that
@@ -838,18 +611,15 @@ the app says so rather than pretending.
 
 ### Refund and payout requests
 
-**Only a reporter asks, and only to be paid out.** Users and administrators no
-longer ask for refunds of purchases or resumes in the app (the owner's
-decision): *Ask for refund* is gone from purchases, Credit History and orders,
-and a page left open from before is answered *Refunds are no longer asked for
-in the app. If you think a purchase or a resume should be refunded, contact
-your administrator.* (`POST /api/refund-requests` and `GET
-/api/refund-requests/options` answer 410 `refund-requests-closed`). An
-administrator can still give money or credit back directly - the payments
-list's Refund, or the **+/-** beside a balance on Admin → Accounts. **Credits →
-Refund Requests** still lists what an account asked before, read-only, and
-every request still open from before stays in the administrators' queue and is
-decided exactly as below.
+**Only a reporter asks, and only to be paid out.** Users and administrators do
+not ask for refunds of purchases or resumes in the app (the owner's decision):
+there is no *Ask for refund* on purchases, Credit History or orders, and no
+route to ask through - somebody who thinks they are owed one contacts the
+administrator. An administrator can still give money or credit back directly -
+the payments list's Refund, or the **+/-** beside a balance on Admin → Accounts.
+**Credits → Refund Requests** still lists what an account asked before,
+read-only, and every request still open from before stays in the administrators'
+queue and is decided exactly as below.
 
 **A payout request.** A reporter's **Credits** page has **Ask for Refund**
 where a user's has *Purchase Credits*. It asks an administrator to pay out the
@@ -949,12 +719,11 @@ run's, which is filed with an order record of its own that **Orders** never
 lists - is named by its order item, which keeps what it was charged after its
 batch is gone and after the run's files are deleted; a resume built by the older
 synchronous `POST /api/resume/generate` by its charge, which was that resume's
-alone. Only a builder run queued by a release from before Generate Immediately
-is named by its task, for as long as the queue still holds its run (up to an
-hour after it finishes - sooner on a busy install, since the queue keeps only
-the twenty most recently finished runs of any account). After that is gone it
-cannot be measured any more - *That resume is no longer listed* - and an
-administrator can grant credit from **Admin → Accounts** instead.
+alone. A request an older build made for a builder run's resume named its
+queued task instead (`task:`), which this build cannot measure, so the queue
+says so and offers only Decline: *This request names something this version of
+the app cannot measure, so it cannot be refunded here. Decline it, and refund
+by hand from Accounts if it is owed.*
 
 **Everybody concerned is told.** A new request puts a notice in every
 administrator's bell; every change of state puts one in the bell of the person
@@ -962,12 +731,6 @@ who asked - and nobody else's: *Your refund request for … was approved*,
 *… was declined: <the administrator's reason>*, *… was refunded ($0.161)*; for
 a payout, *Your payout request FT-RF-… was approved* or *… was declined: …*,
 and *Payout recorded: $X*.
-
-**Rolling back past this** - to `90adbaf` - needs these notices deleted
-first: that build reads every row of `notifications` as an announcement for
-everybody, so it would show every bell the notices written for one account -
-step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf).
-`5177fc3` reads them as this build does.
 
 ### Contacting the administrator
 
@@ -1020,8 +783,8 @@ then, under an *Assistant* divider, **Job Filter**, **Bid Assistant** and
 Settings is your account's own tabs - Profile, Job Sheet, Payment Methods,
 Subscription - and for an administrator one more, **Administration**, whose
 ten shared-configuration pages appear as a second row once you are in it.
-Groups (`/admin/groups`, Premium and above) and Job Search (`/jobs`) have no
-entry of their own; they are reached by their address.
+Groups (`/admin/groups`, Premium and above) has no entry of its own; it is
+reached by its address.
 
 **A reporter's** shell is three rows: **Report Jobs** (their home), **Credits**
 (what they have earned and the payouts recorded against it) and **Settings**,
@@ -1041,7 +804,7 @@ Every account holds exactly one role, and an administrator changes it on
 | Role | Who | What they reach |
 |---|---|---|
 | **User** | every new sign-in | the resume builder and everything around it: profiles, templates, Build Resumes, Orders, groups (by subscription), the job pages and buying credits |
-| **Reporter** | made by an administrator - by changing a user's role, or by adding the account as a Reporter before its first sign-in | **Report Jobs**, **Credits** (their earnings, payouts and **Ask for Refund** - a payout request), a link to their own job sheet, **Settings → Profile** and **Job Sheet**, notifications and **Contact admin**. No resume builder, no job scrapers, no buying credits |
+| **Reporter** | made by an administrator - by changing a user's role, or by adding the account as a Reporter before its first sign-in | **Report Jobs**, **Credits** (their earnings, payouts and **Ask for Refund** - a payout request), a link to their own job sheet, **Settings → Profile** and **Job Sheet**, notifications and **Contact admin**. No resume builder, no buying credits |
 | **Administrator** | the addresses in `ADMIN_EMAILS` (else `SMTP_USER`), and anybody an administrator promotes | everything, including what the whole installation shares |
 
 A reporter adds job postings to the installation's job lake from their own
@@ -1076,13 +839,6 @@ operator out. Take it out of `ADMIN_EMAILS` (and restart) to make the change
 last; for `SMTP_USER`'s address, set `ADMIN_EMAILS` to the administrators you
 do mean.
 
-**Rolling back to a build without reporters would hand every reporter the
-full app** - `90adbaf` reads a role it does not know as *user* - so they are
-disabled first, and enabled again after upgrading back: step 4 of [Going back
-further, to 90adbaf](#going-back-further-to-90adbaf). `5177fc3` has reporters,
-but no **Ask for Refund** (see [Rolling back this
-release](#-rolling-back-this-release)).
-
 ### What each account can reach
 
 Not everything is for everybody, and the rule differs by section because the
@@ -1094,7 +850,7 @@ everybody but a reporter.
 
 | Section | Who | Why |
 |---|---|---|
-| Build Resumes, Calendar, Job Search, Job Filter, Bid Assistant, Profile | users | their own work. A reporter is refused every one, with 403 `role-not-allowed` |
+| Build Resumes, Calendar, Job Filter, Bid Assistant, Profile | users | their own work. A reporter is refused every one, with 403 `role-not-allowed` |
 | **Orders** | users | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
 | **Buy credits** (and saved cards, purchase history) | users | their own payments only, by the same 404 rule. Never a reporter: their balance is earnings, paid out by hand |
 | **Credits** (balance and history) | anybody signed in, reporters included | their own. A reporter's history is their earnings and payouts |
@@ -1104,7 +860,7 @@ everybody but a reporter.
 | **Payout requests** (asking) | **reporters** | for their own earned balance (`GET`/`POST /api/refund-requests/payout`). An administrator is refused (409 `not-a-reporter`): their balance is not earnings |
 | **Job Lake** (the lake, its merge, Push to Google Sheet, the global rate and duplicate window, the admin sheet) | **administrators** | the lake is shared, and what a job pays is the installation's decision - see [The Job Data Lake](#the-job-data-lake) |
 | **Payments** (the list, refunds and the refund-request queue) | **administrators** | reconciliation against the provider's dashboard, and the only buttons in the product that move money outward |
-| **Refund requests** (asking) | nobody | removed: a user or administrator is answered 410 `refund-requests-closed` with a sentence asking them to contact the administrator, a reporter 403 `role-not-allowed` as before |
+| **Refund requests** (asking) | nobody | removed: there is no route to ask through any more. Somebody who thinks they are owed a refund contacts the administrator |
 | **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
 | **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
 | **Find Jobs** | anybody signed in | opens the All tab of their own job sheet in a new tab: from the sidebar for users and administrators, from the account menu and Report Jobs for a reporter |
@@ -1404,16 +1160,21 @@ profile's strengths are not sent to the model at all** - not in
 profile, unsent, until the box is ticked. The profile's own soft skills are
 never in it either way; the code lists them after the model has answered.
 
-**A prompt edited before the switches existed still obeys them.** The code
-appends a *FINAL SKILL OVERRIDE* to every tailoring turn, whichever prompt
-record rendered it, and it states the same three facts - so an administrator's
-edited copy, or a per-profile custom prompt that never heard of
-`[[includeStrengths]]`, is told the switches all the same, and the
-post-processing above enforces them again whatever the model returns. No
-migration rewrites an administrator's text. **Admin → Prompts** marks such a
-tailoring prompt: *This prompt predates the profile's Strengths and Soft Skills
-switches; the app still enforces them.* Nothing needs fixing; referencing
-`[[includeStrengths]]` in it clears the note.
+**Every tailoring prompt must use all three.** They are the feature's
+*required* variables: saving a tailoring prompt - the built-in edited, or a
+variant a profile picks - that leaves one out is refused, *Missing required
+prompt variables: includeSoftSkills. Every Tailor Resume prompt must use
+[[includeStrengths]], [[includeSoftSkills]] and [[technicalSkillsLayout]].*
+A record stored without them (written before the rule, or by hand) is never
+run: **Admin → Prompts** marks it *Needs update*, names what it lacks, and the
+built-in tailoring prompt runs in its place - the administrator's edit of it
+when that is complete, else the shipped text - until it is updated; the
+backend log says so once (*[prompts] The prompt "..." (...) does not use
+[[includeStrengths]], which every Tailor Resume prompt must; the built-in
+Tailor Resume prompt runs instead until it is updated under Admin ->
+Prompts.*). Whichever record runs, the code also appends a *FINAL SKILL
+OVERRIDE* to every tailoring turn stating the same three facts, and the
+post-processing above enforces them again whatever the model returns.
 
 **A feature's prompt may use only the variables its code supplies.** Admin →
 Prompts lists every one a feature offers, and saving text that names any other
@@ -1523,9 +1284,9 @@ cells, and because a cell is only ever a pointer into the database:
 Only the app's own job sheets get the columns, and in them only **job tabs** -
 a tab whose first row starts with Date, NO(DATE), Company, Job Title, Job Link,
 Job Description, or a tab with nothing in it at all (see [The job
-sheet](#the-job-sheet)). Any other tab - one you made yourself, or a daily tab
-an older build laid out - keeps its own header and its own columns: the app
-never re-heads, protects or writes it, and the job pages do not offer it.
+sheet](#the-job-sheet)). Any other tab - one you made yourself, say - keeps
+its own header and its own columns: the app never re-heads, protects or writes
+it, and the job pages do not offer it.
 
 ### The job sheet
 
@@ -1542,35 +1303,32 @@ rather than wrapped:
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | | Date | NO(DATE) | Company | Job Title | Job Link | Job Description | Job Field | Salary | Job Type | Clearance | Industry | Analysis |
 
-**A to F are yours** to fill in (an export fills them too). **G to L are the job
-analysis's, and protected**: only the server's own Google identity can edit
-them, and the app fills all six from a posting's one analysis - Job Type is
-Remote, Hybrid or Onsite (empty when the posting does not say), Clearance a
-real TRUE/FALSE, and the Analysis cell the whole analysis, which is what lets a
-later build skip analysing the row (see [Job analysis: once per
-posting](#job-analysis-once-per-posting)).
+**A to F are yours** to fill in (Push to Google Sheet fills them in Temp For
+AI). **G to L are the job analysis's, and protected**: only the server's own
+Google identity can edit them, and the app fills all six from a posting's one
+analysis - Job Type is Remote, Hybrid or Onsite (empty when the posting does not
+say), Clearance a real TRUE/FALSE, and the Analysis cell the whole analysis,
+which is what lets a later build skip analysing the row (see [Job analysis: once
+per posting](#job-analysis-once-per-posting)).
 
 A **job tab** is a tab whose row 1 starts with those six user headers - or a
 tab with **nothing in it at all**, under any name, which is laid out as one the
 first time the app uses it. Every other tab is left exactly as it is: the app
 never re-heads, protects, clears, reads or writes it. That includes a tab with
-data under an empty row 1, and every **daily `MM/DD/YYYY` tab an older build
-made**: those keep their rows and their old sixteen columns, and the app no
-longer reads them (copy rows into All by hand to use them - their B to E go
-into C to F; see [Own job sheets](#14-own-job-sheets-all-and-temp-for-ai)). A sheet an older build made is given All and Temp For AI in front
-of its daily tabs the next time its owner signs in, or at the startup backfill.
+data under an empty row 1. To use a job listed in such a tab, copy its
+Company, Job Title, Job Link and Job Description into C to F of All.
 If the sheet already has a tab called All or Temp For AI that is not a job tab,
 that tab is left alone and Settings > Job Sheet says so; rename it and reload the
 page, and the app adds its own. The same page puts back an All or Temp For AI
 deleted or renamed in Google Sheets: it is the one page that looks at the
-sheet's tabs again each time it loads (so do an export and Push to Google
-Sheet), while every other page links to the tabs as they were recorded.
+sheet's tabs again each time it loads (so does Push to Google Sheet), while
+every other page links to the tabs as they were recorded.
 
 Allocation is **fire-and-forget at sign-in**: a spreadsheet is a convenience and
 being able to log in is not, so a Google outage must not become an outage of
 logging in. Settings > Job Sheet ensures the same thing when it loads, which is what
-covers an account whose sign-in ran while Google was down, and accounts created
-before this feature existed - a paced backfill at startup takes care of the rest.
+covers an account whose sign-in ran while Google was down - and a paced
+backfill at startup allocates one for every account still without a sheet.
 
 **Who owns them, and who can open them.** Every sheet is created in the Drive of
 whichever Google account signed in with `npm run sheets:login` - the operator's,
@@ -1671,7 +1429,7 @@ not got.
 **Copy the database too, with the backend stopped**, and this is the part that
 does damage if it is missed. An account's row is the *only* record of which
 spreadsheet is its own. Start a new server on an empty database and every
-account looks like an account from before the feature existed, so the startup
+account has no spreadsheet on record, so the startup
 backfill allocates each one a **brand-new spreadsheet** and the real ones are
 left orphaned in the Drive that owns them - with a log line that reads like a
 success. The file is `free_tailor.db` in `DB_DIR`, and the default differs by
@@ -1697,39 +1455,27 @@ One thing to check that is neither the old server's nor the new one's: an OAuth
 consent screen still in **Testing** expires its refresh tokens after seven days,
 on every machine equally. Publish it.
 
-**The job pages use it, and only it.** The saved "shared" Google Sheets an
-administrator could once add (Bid History and the like) are gone: Build
-Resumes, the Job Filter, the export and the range importer read and write the
-signed-in account's own sheet and nothing else - an administrator's included.
+**The job pages use it, and only it.** Build Resumes, the Job Filter, Report
+Jobs and the range importer read and write the signed-in account's own sheet
+and nothing else - an administrator's included.
 A spreadsheet id a request names is checked rather than trusted, and any id
 but your own is a 404, decided before Google is asked. This matters more than
 it looks - the server's Google identity *owns* every account's spreadsheet, so
 a route that took an id on trust would read and overwrite anybody's for anyone
-who knew it, and a link-shared sheet hands that id out in its URL. (The saved
-list itself stays in the settings, untouched, for a rollback.)
+who knew it, and a link-shared sheet hands that id out in its URL.
 
-- **Find Jobs -> export** appends the jobs it found to All (or the tab you
-  pick, if it is a job tab), after the last row used: **Date** (today, in
-  `SHEET_TIMEZONE`, as a real date you can sort by), **NO(DATE)** (1 + the
-  highest number already on today's rows, so a second export the same day
-  carries on the count), Company, Job Title, Job Link and Job Description - A
-  to F only. A company already in the tab is skipped. Each batch of rows is
-  read again just before it is written, so a row somebody typed meanwhile is
-  stepped over, never written over.
 - **The Job Filter** reads Company, Job Title and Job Link (C to E) of the tab,
   judges every row that has a link on its posting's one analysis - a posting
   already analysed costs no page fetch and no AI call - and shows each row's
   Pass or Fail and the reason **on the page**. It writes nothing into the
   sheet.
 - **Build Resumes** offers your own sheet's tabs, All selected; a tab that is
-  not a job tab is listed greyed out with why - *(old layout, not read)* for
-  an older build's daily tab, *(not a job tab)* for one of your own - and
-  cannot be picked. Find Jobs' export, the Job Filter and Report Jobs list the
-  tabs the same way. There is no sheet to choose and no column mapping: the
-  rows' C to F are read, and G to L beside them to show which rows already
-  hold their analysis. Each row's role is its own `Job Title`; a row with none
-  is built with the title the posting's analysis reads from its description,
-  as a manual build is.
+  not a job tab is listed greyed out as *(not a job tab)* and cannot be picked.
+  The Job Filter and Report Jobs list the tabs the same way. There is no sheet
+  to choose and no column mapping: the rows' C to F are read, and G to L beside
+  them to show which rows already hold their analysis. Each row's role is its
+  own `Job Title`; a row with none is built with the title the posting's
+  analysis reads from its description, as a manual build is.
 - **Admin -> Google Sheets** (the range importer) reads and writes a range of
   the administrator's own sheet, and refuses a write into **G to L of a job
   tab** - those cells are the program's, and the server's identity is the only
@@ -1737,10 +1483,12 @@ list itself stays in the settings, untouched, for a rollback.)
   way past it. (Even an Analysis cell written past it could not change an
   analysis: a build uses only the stored analysis a cell names.)
 
-`SHEET_TIMEZONE` decides which day an exported row is dated, and so numbered. A
-server running in UTC rolls the day over at midnight UTC, which for a user in
-New York is seven in the evening - so an evening's rows would be dated, and
-counted, as the next day's. Set it to the zone the users actually live in.
+`SHEET_TIMEZONE` decides which day a row the app writes is dated, and so
+numbered - Push to Google Sheet dates each row by the day its job was last
+updated, in that zone. A server running in UTC rolls the day over at midnight
+UTC, which for a user in New York is seven in the evening - so an evening's rows
+would be dated, and counted, as the next day's. Set it to the zone the users
+actually live in.
 
 ### The Job Data Lake
 
@@ -1768,11 +1516,7 @@ never paid for.
 **What a job records.** Its company, job field, title, salary and link as
 reported, who reported it and when - and its **job type**, **clearance** and
 **industry**, taken from the posting's [analysis](#job-analysis-once-per-posting)
-and never from what anybody typed. Jobs added before these existed are filled
-in at the first start of this release, from their stored analyses (no model is
-asked; the log says *[lake] Filled in job type, clearance and industry for N
-lake row(s)...*), and so is any job an older build adds after a rollback, at
-the next start.
+and never from what anybody typed.
 
 **Duplicates and the window.** When a job comes in whose hash the lake
 already holds:
@@ -1804,15 +1548,6 @@ the reports that reached it, so it can be reported again; an *Unclassified*
 report reached no job, so no delete forgets it - its analysis is final, and it
 would come out unclassified again.
 
-Of the reports made **before this release**, only those that added or
-replaced a job are remembered - they are read back from the lake's rows at the
-first start. One an earlier build called *Duplicate* or *Unclassified* left
-nothing in the lake to read, so the first run over that posting after the
-upgrade merges it again: *Unclassified* again, unpaid; a *Duplicate* again
-while the job is inside the window (its *seen* count goes up once more), or,
-once the job is older than the window, a replacement - paid like any other.
-From then on it is *Reported before*.
-
 **Reporting (Report Jobs).** A reporter picks a job tab of their own job
 sheet - All is chosen for them - and a range of rows (up to 500 at a time),
 presses **Preview rows** to see the rows that hold a job and which of them a
@@ -1825,9 +1560,7 @@ for an hour after it ends; for each row:
 
 1. a row whose posting this reporter **reported before** is skipped - *Reported
    before (Added)*, or whichever outcome it had - so running the same rows
-   again pays nothing and analyses nothing - bar a row an earlier build marked
-   *Duplicate* or *Unclassified*, which is merged once more after the upgrade
-   (above), still with no model call. The database decides it, by the
+   again pays nothing and analyses nothing. The database decides it, by the
    posting - nothing in the row says it: a row moved or copied elsewhere is
    still skipped, and a new posting pasted over an old row's is reported like
    any other;
@@ -2072,13 +1805,13 @@ For a page or a script, the queue's contract is:
 |------|---------|
 | Profiles, groups, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | Accounts, live sessions, unused sign-in codes | The same database. Session tokens and codes are stored **hashed**, so a copy of the database yields no usable session |
-| Which spreadsheet belongs to an account, and how far it is laid out | The same database, on the account's row: `sheet_layout` (2 once its All and Temp For AI tabs are there) with their gids, `sheet_all_gid` and `sheet_temp_gid` (NULL at layout 2 = a tab of that name was already there and is not a job tab, so it was left alone). `sheet_tab_date` and `sheet_tab_gid` are an older build's daily tab and are no longer written. Along with them, `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
-| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir`. A Generate Immediately run has a row there too, `kind = 'immediate'`, which **Orders** never lists - it is what files its resumes per account, checks who downloads them, keeps what each was charged for a refund, and tells the sweep when its files are due (`finished_at` + `IMMEDIATE_FILE_RETENTION_MS`). `90adbaf` reads those rows as ordinary orders, so after a rollback that far they show up on its Orders page |
+| Which spreadsheet belongs to an account, and how far it is laid out | The same database, on the account's row: `sheet_layout` (2 once its All and Temp For AI tabs are there) with their gids, `sheet_all_gid` and `sheet_temp_gid` (NULL at layout 2 = a tab of that name was already there and is not a job tab, so it was left alone). Along with them, `sheet_shared_at`, the moment the owner's invitation to their own sheet was confirmed. Recorded once, so sign-in retries the invitation until it works and then stops asking Drive at all; going private still asks live, because that is the one moment a grant revoked in Google's own UI would lock somebody out |
+| Orders and what each one built | The same database, in `orders` and `order_items`, deliberately NOT in the generation batch that produced them: a batch is evicted an hour after it settles, so an order built on one would go blank exactly when somebody came back for their files. The file paths live on the item row; the files themselves are on disk under `outputBaseDir`. A Generate Immediately run has a row there too, `kind = 'immediate'`, which **Orders** never lists - it is what files its resumes per account, checks who downloads them, keeps what each was charged for a refund, and tells the sweep when its files are due (`finished_at` + `IMMEDIATE_FILE_RETENTION_MS`) |
 | Payments, and every webhook that decided one | The same database, in `payments` and `payment_events`. Separate from the ledger because a ledger row is an accounting fact that is never rewritten, while a payment has a lifecycle. The event payload is kept, redacted: ids, amounts, currencies and statuses survive because a dispute months later is argued from them, while the customer's name, email, address and card details are replaced with `[redacted]` - this application never reads them, and a copy kept for ever in a plain file is a liability rather than evidence |
 | Payment provider keys | `.env` only, like every other key in this project |
 | Credit ledger and open reservations | The same database, in thousandths of a dollar. The ledger is append-only and `users.balance_milli` is a cache of the sum of its `delta_milli`; a disagreement between the two is reported at startup rather than silently repaired. The whole-credit columns beside them (`users.credits`, `credit_ledger.delta`, `credit_reservations.units`, `payments.credits`...) hold the history from before credits were dollars, and every row written since puts `0` in them |
 | AI models and their prices | The same database, in the app settings row: each model's display name, seat, model name, price per resume (`pricePerResumeMilli`, thousandths of a dollar) and description. A run's price is copied onto each of its queued tasks (`costMilli`) when it is submitted |
-| API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory. A settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log; migration 007 deletes them from the oldest settings snapshot too |
+| API keys | None, anywhere - every AI provider is a subscription seat signed in on the server, in that CLI's own home directory |
 | Providers, the analysis model and the contact list | The same database, in app settings: the providers an administrator added or changed (`aiProviders`) and the analysis model (`analysisModelId`) in the settings row beside the models, the contact channels under their own key (`contact`). A built-in provider nobody changed is not stored - it is `.env` |
 | Job analyses | The same database, in `job_analyses`: one row per posting, ever, found by its normalised link or its text's hash. Never expired and never overwritten - it is what stops a posting being analysed twice. An account's own job sheet holds a copy in its protected columns, whose Analysis cell is used only as a pointer back to this row |
 | Refund requests and personal notices | The same database: `refund_requests` (each request, its state, reason and what moved), and `notifications` - an announcement has no `recipient_id`, a notice for one account names it |
@@ -2091,7 +1824,7 @@ For a page or a script, the queue's contract is:
 
 Nothing under `backend/static` is written to at runtime **except `static/templates`**, which also holds the templates administrators save (`TAILOR_STATIC_DIR` moves the whole directory, seeds and saved templates together). Every other edit made in the admin panel goes to the database. The backend prints the templates directory under `Database:` at startup, and says so if this user cannot write to it.
 
-**Backing up** means two things now: the database file in `DB_DIR`, and `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), which holds the saved templates. Copy them together - a profile names its template by id, and a database restored without the template files falls back to `default` for those profiles. An install upgraded from a release that kept templates in the database moved them to files on its first start, once (`schema_meta` key `templates_moved_to_files`), and left the old `templates` rows in the database as a backup it no longer reads - see [Saved templates are files](#9-saved-templates-are-files) for what that changed, and [Rolling back this release](#-rolling-back-this-release) for going back.
+**Backing up** means two things now: the database file in `DB_DIR`, and `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), which holds the saved templates. Copy them together - a profile names its template by id, and a database restored without the template files falls back to `default` for those profiles. A database from a release that kept templates in it still holds its old `templates` rows, which nothing reads.
 
 ---
 
@@ -2245,10 +1978,6 @@ on a server anybody can reach, "the first account" is whoever is quickest. Set
 it before anybody signs in, or the install has no administrator and says so at
 startup.
 
-Upgrading an install that has profiles already? They have no owner, so they are
-invisible to ordinary accounts and visible to administrators until the first
-administrator signs in, at which point they are adopted automatically.
-
 `DB_DIR` is commented out in `.env.example` on purpose, so a fresh checkout
 picks the writable default for the platform it is on. Set it when you want the
 data somewhere specific - `DB_DIR=./data/db` works on both Windows and Ubuntu
@@ -2289,7 +2018,7 @@ reloads the first one*). `backend/test/e2e/dev-reload.js` reproduces that in a
 browser. Against Next 16.1.6 it failed on `dev:live` (the first tab reloaded
 both times a second tab opened, and its run was cancelled) and passed on
 `dev:turbo` - twice, waiting 10 and then 15 seconds - and on the
-production-style `dev`. Against 16.3.8, the Next this release pins, it gave the
+production-style `dev`. Against 16.3.8, the Next the frontend pins, it gave the
 same answers - `dev:live` failed 4 of its 8 checks the same way, `dev:turbo`
 and `dev` passed all 8 - and passed all 8 on the Windows fallback's server
 below as well (`next build --webpack`, then `next start`). Every one of those
@@ -2334,717 +2063,52 @@ Windows that path means `C:\data\db` and needs an administrator, so leave
 `DB_DIR` unset or point it at something local. A directory the backend cannot
 create is the most common first-run failure, and it says exactly that.
 
-### 4. Import data from the old JSON layout (optional)
+### 4. Upgrading
 
-If you are upgrading from a version that stored data as JSON files under `backend/data`, import it once:
+1. **Stop** the backend and the frontend.
+2. **Back up** the database file in `DB_DIR` *and* `backend/static/templates`
+   (or `$TAILOR_STATIC_DIR/templates`), which holds the templates
+   administrators save - see [Where data lives](#where-data-lives).
+3. **Pull**: `git pull`. If it refuses to overwrite `frontend/package.json` or
+   `frontend/package-lock.json`, Next was moved by hand on this machine
+   (`npm i next@...`, `npm audit fix --force`): put the two back with
+   `git checkout -- frontend/package.json frontend/package-lock.json`, then
+   pull again.
+4. **Install**: `npm run install:all`, from the repository root - after every
+   pull, since a pull brings `package.json` entries but not the packages.
+5. **Build**: `npm run build --prefix backend` and
+   `npm run build --prefix frontend`. The two halves ship together.
+6. **Start** the backend and read its log.
+
+**The database must have finished upgrading under build `ac3df79`.** This build
+carries none of the code that upgraded an older build's database, so before
+anything else it checks that every one of those upgrades finished - the data
+migrations, the switch of credits to dollars, the move of saved templates into
+files, the rename of `users.plan`, the Job Data Lake's job type, clearance and
+industry - and refuses a database where one did not, with one line naming each
+step that is missing, and exit code 1:
+
+```
+[db] The database at /data/db/free_tailor.db has not finished upgrading: its credits were never switched to dollars (schema_meta.credit_unit). Start build ac3df79 once on this database to finish its upgrade, then start this build.
+```
+
+Do what it says: start build `ac3df79` once on the same `DB_DIR`, let it finish
+starting - it makes those upgrades and logs each one - stop it, and start this
+build again.
 
 ```bash
-cd backend
-npm run migrate:legacy -- /path/to/old/backend/data
+git checkout ac3df79
+npm run install:all && npm run build --prefix backend
+npm start --prefix backend    # once it has started, stop it with Ctrl+C
+git checkout -                # back to this build, then install, build and start it
 ```
 
-Existing database records are never overwritten.
-
-### 5. Upgrading an install that used browser chat
-
-The `claude-web` and `chatgpt-web` providers - **Claude (browser)**,
-**ChatGPT (browser)**, and the **Default (browser)** entry that spread a run over
-both - are gone, and nothing in the app drives a debug Chrome any more. On the
-first start after upgrading, migration 006 tidies the database once:
-
-- It removes their model records, their enable switches, and the browser-chat
-  settings (the master switch and the registered debug ports).
-- It repoints whatever named them. The stored default moves to the Claude
-  seat's Sonnet - or, when that seat is locked on this machine
-  (`AI_LOCKED_PROVIDERS`), to the Codex seat. That follows the locks as they
-  are when the migration runs: lifting one later does not move the default
-  back, so pick it again under Admin -> Settings if you want it. A profile's
-  model choice and a prompt's model override are cleared, which means "use the
-  default".
-- An install that ran only on the browsers - every other provider unticked or
-  locked here, or every other model switched off - gets one back: a seat this
-  machine can run, switched on with its models. The backend log says which;
-  review it under Admin -> Settings and Admin -> Models.
-- 006 was written while the metered APIs were still here, and on a database
-  that skipped straight to this release it can still land the default, or the
-  model it switches back on, on a metered API model. Migration 007 runs right
-  after it in the same start and moves anything like that onto a seat - see
-  section 6.
-- It keeps a copy of the settings row first, in `app_settings` under
-  `app-settings.backup.pre-browser-chat-removal` - verbatim, except that an API
-  key store an older release left in the row is not copied - and the prompt
-  rows it changed in a side table,
-  `prompts_backup_pre_browser_chat_removal`. The profile choices it cleared are
-  listed in `migration-log.provider-schema-6`. Nothing restores these
-  automatically - `npm run ai:rollback` is for the older provider migration -
-  they are there to read.
-
-Nothing depends on that migration having run, which matters because it can be
-held back: it comes after the one that waits for the first administrator (an
-account that `ADMIN_EMAILS` promotes at start-up lets it run at once), and it
-waits as well while the settings row is not valid JSON. A record that still
-names a browser provider - from a restored backup, a hand-edited row, or a page
-left open from before the upgrade - is read as the default, never as an error,
-and the backend log says so once per name. That includes an administrator's
-own browser model, whose id the migration logs, so a page that still names it
-works after a restart too.
-
-An install left with nothing it can run is repaired the same way in memory,
-until an administrator saves Settings: one seat this machine can run is read as
-switched on and given its models - the seat migration 007 would pick, rank for
-rank (section 6), so nothing changes seat when the migrations catch up. Saving
-Settings keeps it. With every seat locked there is nothing to repair onto:
-nothing can run until a seat is unlocked, ordinary accounts are told AI
-generation is not available, and the admin pages name the locks. The same
-repair covers a lock added after the upgrade, but only while the settings are
-still what the latest removal migration left: once an administrator has changed
-which providers or models are switched on, an install a later lock leaves with
-nothing fails by name, pointing at the lock (an administrator sees that
-sentence; anybody else, a generic one with a reference), as it does on an
-install that never used browser chat.
-
-A run that was queued across the upgrade still finishes: a resume that was
-waiting for a browser is built on whatever its profile resolves to now - the
-profile's own model, or the app default - and is not charged again.
-
-`npm run browser:debug`, `npm run browser:doctor` and every `AI_WEB_*` variable
-no longer exist. A leftover `AI_WEB_*` line in `.env` is ignored and can be
-deleted. The Chrome that prints PDFs is a different thing and is unaffected -
-see **A Chrome to print with** under Prerequisites.
-
-Debug browsers you started with `npm run browser:debug` are still running, and
-nothing uses them any more. Close those Chrome windows: each one listens on a
-loopback remote-debugging port (9222 by default; the ports you registered are
-in `browserChatEndpoints` in the settings snapshot above). Their profiles,
-`~/.free-tailor-chrome-<port>` or the directory you gave `--profile`, are still
-signed in to claude.ai and chatgpt.com - delete them.
-
-### 6. Upgrading an install that used the metered APIs
-
-The `claude` (Anthropic API), `openai` and `deepseek` providers are gone, and
-with them every API key the app ever read. On the first start after upgrading,
-migration 007 tidies the database once, the way 006 did for browser chat:
-
-- It removes their model records and enable switches, the flat
-  `claudeEnabled` / `openaiEnabled` / `deepseekEnabled` flags an older row
-  carries, and any API key store still in the row.
-- It repoints whatever named them. A default that named a removed model moves
-  to the Claude seat's Sonnet when that can run, otherwise to the first model
-  that can, in seat order. A profile's model choice and a prompt's model
-  override that named one are cleared, which means "use the default" - an API
-  model name is not a seat's, so nothing is mapped across.
-- An install left with no seat switched on, or no model that can run, gets one
-  back - never anything billed per token. The seat is one not locked here:
-  first one the row explicitly switched on, then one it records nothing about
-  (the Gemini seat, on any row older than this release), then one switched off;
-  one with a model already switched on before one without; Claude, Codex,
-  Gemini after that. It gets its missing shipped models, and failing that one
-  of its own switched back on. With every seat locked the row is left as it is,
-  and the log says nothing can run until a seat is unlocked.
-- It keeps a copy of the settings row first, in `app_settings` under
-  `app-settings.backup.pre-metered-removal` - verbatim except for the API key
-  store, which is not copied - and the prompt rows it changed in a side table,
-  `prompts_backup_pre_metered_removal`. What it removed and the profile choices
-  it cleared are in `migration-log.provider-schema-7`; a later run adds to that
-  log rather than replacing it.
-- It deletes the API keys from `app-settings.backup.pre-claude-cli`, the
-  snapshot the oldest provider migration took verbatim - the last plaintext
-  copy of keys nothing can use. The rest of that snapshot is kept, so
-  `npm run ai:rollback` still restores it, and 007 cleans what it brings back
-  on the next start.
-
-Like 006, it can be held back - it waits behind the migration that waits for the
-first administrator, and while the settings row is not valid JSON - and nothing
-depends on it having run. A record, profile, prompt or open page that still
-names a metered provider or one of its shipped models is read as the default,
-never as an error, and the backend log says so once per name. That includes an
-administrator's own metered model, whose id 007 logs, and the model an older
-release named after `OPENAI_MODEL`, `CLAUDE_MODEL` or `DEEPSEEK_MODEL` for as
-long as that variable is still set. An install left with nothing it can run is
-repaired in memory by the same rule as above until an administrator saves
-Settings, exactly as in section 5.
-
-A run queued across the upgrade still finishes: a resume that was waiting for a
-metered provider is built on whatever its profile resolves to now, and is not
-charged again.
-
-An install that skips releases runs 006 and 007 in the same start. 006 is kept
-as it was written, so on such an install it can still switch a metered API on,
-or ask for its key - and 007 removes that provider in the next lines. Every such
-note of 006's ends *(This release has no metered providers: migration 007, which
-runs after this one, removes them ...)*: follow 007's note, not 006's.
-
-**Delete the old variables from `.env`.** `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `CLAUDE_MODEL`, `OPENAI_MODEL`,
-`DEEPSEEK_MODEL`, `CLAUDE_BASE_URL`, `OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`,
-`CLAUDE_MAX_ATTEMPTS`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
-`AI_CLI_ALLOW_API_KEY` and `AI_CODEX_ALLOW_API_KEY` are read by nothing. The
-backend names whichever is still set, once, at startup - never its value:
-
-```
-[ai] OPENAI_API_KEY, AI_CLI_ALLOW_API_KEY are still set, and nothing reads them: ...
-```
-
-The seats strip any key from their CLI's environment either way, and the two
-`*_ALLOW_API_KEY` switches no longer turn that off.
-
-### 7. The Gemini model and the new model names
-
-Migration 008 runs once on an install that has its own model list - a fresh
-install, and a row that never saved one, read the shipped models and need
-nothing:
-
-- It adds the shipped Gemini model, **Gemini** (`gemini-cli-auto`, the `auto`
-  model), unless the list already has a Gemini model. The
-  Gemini seat has no switch in an older row and so reads as switched on; without
-  this it would be on with nothing to pick. Its log line says whether users can
-  pick it now: not while the seat is locked here (`AI_LOCKED_PROVIDERS`) or
-  switched off under **Admin → Settings**.
-- It drops "(subscription)" from the shipped display names nobody changed:
-  *Claude Sonnet (subscription)* becomes *Claude Sonnet*, and so on for Opus,
-  Haiku and *Codex (subscription)*. Only a name exactly as a release shipped it,
-  on the model it was shipped for, is renamed; a name an administrator typed is
-  theirs. A rename onto a name another model already has is skipped and logged
-  (*Left "Claude Opus (subscription)" as it is ...*), since users would see two
-  identical choices; rename one of the two under **Admin → Models**.
-
-It leaves the default and the switches alone, and logs what it did in
-`migration-log.provider-schema-8`. A model it adds has no price, and reads as
-**free** (`$0.000`) until an administrator sets one - Admin → Models lists it in
-red until then (see [Credits are dollars](#10-credits-are-dollars)).
-
-### 8. Plans are now subscriptions
-
-What used to be an account's **plan** - Default, Premium, Premium+, Premium
-Max - is its **subscription** everywhere: on the pages, in the API and in the
-database. What each one allows is unchanged.
-
-- On the first start the backend renames the column `users.plan` to
-  `users.subscription` in place, keeping every account's value, and logs
-  `[db] Renamed users.plan to subscription: ...` once. It decides from the
-  table itself rather than from a marker, so a second start does nothing, and a
-  database renamed back for an older build (below) is renamed forward again.
-- **Settings → Plan** is **Settings → Subscription** (`/settings/subscription`).
-  `/settings/plan` still opens it, so a bookmark keeps working.
-- In the API, an account's `plan`, `planLabel` and `planSummary` are
-  `subscription`, `subscriptionLabel` and `subscriptionSummary`; the admin
-  account list's `plans` is `subscriptions`; `GET /api/auth/plans` is
-  `GET /api/auth/subscriptions`; `POST` and `PATCH /api/admin/accounts` take
-  `subscription`; and a section the account's tier does not include answers 403
-  `subscription-too-low` with `requiredSubscription`. There are no aliases,
-  because the frontend ships with the backend. An Accounts page left open from
-  before the upgrade has its subscription changes and invites refused rather
-  than ignored, and must be reloaded: until then a subscription change breaks
-  the page (so do a delete and any refused change, which reload a list the old
-  page no longer reads), and an invite says to reload.
-
-`90adbaf` reads `users.plan`, and against an upgraded database every account
-read fails with `no such column: plan`: renaming the column back is step 4 of
-[Going back further, to 90adbaf](#going-back-further-to-90adbaf), and
-upgrading again renames it forward.
-
-### 9. Saved templates are files
-
-The templates an administrator imports, extracts from a PDF or builds in the
-manual editor used to be rows in the database's `templates` table. They are
-files now: `<id>.json` in `backend/static/templates` (or
-`$TAILOR_STATIC_DIR/templates`) beside the built-ins, with a `"source"` field
-(see [Where data lives](#where-data-lives)). Back that directory up with the
-database from now on.
-
-- On its first start the backend writes every `templates` row out as a file,
-  records what it did under the `schema_meta` key `templates_moved_to_files`,
-  and leaves the rows in the database as a backup it no longer reads.
-- Ids are lower-case letters, digits and hyphens now, and an older import kept
-  upper case and underscores (`My_Template`, `Navy_Rule`, `_draft`). Such a row
-  is filed under its folded id (`my-template`) when that is free, and under a
-  fresh `u-` id when it is not - when it is a built-in's (`Navy_Rule` folds to
-  the shipped `navy-rule`) or another template's, or no id at all (`_draft`).
-  A row whose id already was a valid one always keeps it. The profiles naming
-  a renamed row are changed to name the new id in the same step, and anything
-  else still naming the old one - a queued resume, a page left open, a profile
-  file exported earlier - finds the same template, so every profile is drawn
-  with the design it was drawn with before. The log says
-  `[templates] Template "<old>" is now <new>.json` for each.
-- A row is left in the database only when a file of exactly its id is
-  already there - a built-in, which hid that row from the older build too, or
-  a different saved template - or its data cannot be read (see
-  Troubleshooting).
-- A row that could not be written - the directory is not writable, or a file
-  in the way cannot be read - is tried again at each start until it is, and
-  only it: a template that was moved and then deleted or edited stays as the
-  administrator left it.
-- A template file copied into the directory by hand is offered only under a
-  name an id can have; the startup line names any that is not (see
-  Troubleshooting).
-
-**Rolling back**: `90adbaf` reads every saved template as a read-only
-built-in, and a renamed one twice. Step 5 of [Going back further, to
-90adbaf](#going-back-further-to-90adbaf) says which files to move aside, and
-its *Upgrading again* how to bring forward what was created or changed under
-the older build.
-
-### 10. Credits are dollars
-
-A credit was a whole unit bought at a price - 50c by default, so `$1` bought
-two - and a model cost a whole number of them. **A credit is a dollar now**,
-counted to the thousandth: balances, prices, charges and refunds are integer
-thousandths of a dollar in **new columns** (`users.balance_milli`,
-`credit_ledger.delta_milli`, `credit_reservations.units_milli`,
-`payments.credit_milli`...), never the old ones reinterpreted. Purchases credit
-exactly what they charge, with no price per credit and no crypto fee.
-
-What was already there is **reset, not converted** - the owner's decision, since
-credits bought at different prices have no one fair rate. On its first start
-the backend, once:
-
-- writes a `reset` row in each account's history taking its old balance to
-  zero, in credits (an account whose balance predates the ledger gets the
-  opening row migration 004 would have written first), and zeroes
-  `users.credits`. Every balance starts at `$0.000`. An account whose credits
-  were all held by a run in progress gets a `reset` row too, moving `0
-  credits` and naming what was held, because that run stops refunding (below).
-- closes every reservation still open in credits. A run in progress finishes
-  on the credits it was paid with: its tasks are priced at `$0.000`
-  (`payload.costMilli: 0`, the old `creditCost` kept beside it), so it is not
-  charged again in dollars, and a resume of it that fails gives back nothing -
-  the credits it would have given back were reset with the balance.
-- stamps every **pending** payment with what it will credit: a checkout opened
-  before the upgrade and paid after gets exactly what it charged, in dollars.
-  Paid payments are history and keep their credit figures.
-- leaves the model prices where they are in the settings row - they are in
-  credits, and nothing reads them as a price any more. Every model reads as
-  `$0.000` until it is priced under **Admin → Models**, which lists every free
-  enabled model in red. Startup says *Every model is FREE until it is priced*.
-  `creditPriceCents`, `creditMinCredits`, `creditMaxCredits` and the crypto
-  `feeBps` are no longer read either. They stay in the row only until the
-  first settings save of any kind - a price under Admin → Models, a payment
-  limit, a General setting - which rewrites the whole row without them, every
-  model's `creditsPerResume` included. The old figures are kept in the
-  snapshot below (`models`, `pricing`).
-
-It logs what it did - `[credits] Credits are dollars now: ...` - and keeps
-everything it changed, as it was, in `app_settings["migration-log.credits-to-dollars"]`
-(balances and held credits per account, the reservations, the queued tasks, the
-pending payments, the old model prices and pricing settings). It runs in
-`getDb()`, not in the numbered chain, so an install waiting for its first
-administrator switches too; `schema_meta.credit_unit = 'usd-milli'` records that
-it ran, and a second start does nothing.
-
-`CREDIT_SIGNUP_GRANT` is read as **dollars** now: an old `5`, five credits
-(about `$2.50` of resumes), grants `$5.000`. Check it.
-
-Pages loaded before the upgrade are refused rather than misread wherever they
-would send money in the old unit - a price in credits, a balance or grant in
-credits, payment limits in cents, a purchase as a count of credits - with
-*This page is from an older version of the app. Reload it and try again.*
-
-**Rolling back** across this switch - to `90adbaf` - is not lossless: dollars
-held by a run in flight are lost for good, model prices go back to 1 credit
-once this build has saved the settings row, and credits the older build sells
-are not carried forward. [Going back further, to
-90adbaf](#going-back-further-to-90adbaf) says what to do about each, starting
-with letting the queue drain.
-
-### 11. Job analysis runs once
-
-For an install coming from `90adbaf`, nothing has to be done - choosing an
-analysis model is optional (step 8 of [Upgrading, step by
-step](#upgrading-step-by-step)); what changes on the first start:
-
-- A new table, `job_analyses`, holds every posting's analysis from now on.
-  The in-memory cache it replaces is gone. Postings analysed before the upgrade
-  are analysed once more, the first time they are needed - then never again.
-- **The job filter's own prompt is retired** (`filter-google-sheet-job`): the
-  filter judges the posting's job analysis, whose prompt asks for the same
-  facts. An edited copy of it stays in the database, unlisted and unused. The
-  `AI_CLI_TIMEOUT_MS_FILTER`, `AI_CODEX_TIMEOUT_MS_FILTER` and
-  `AI_GEMINI_TIMEOUT_MS_FILTER` budgets went with it; a value still set in
-  `.env` is ignored.
-- **A profile's own analysis prompt is no longer read** (its Extracting prompt
-  setting), and is dropped the next time the profile is saved. An analysis
-  prompt variant you added stays listed but never runs.
-- **An analysis prompt you edited** is flagged under Admin → Prompts as
-  predating job fields. It keeps working; adding `[[jobFieldList]]` (before the
-  posting) and the new keys - or pasting the shipped text from
-  `backend/static/prompts/analyze-job-description.json` over it - puts the
-  field list back in the cached part of the prompt (and see
-  [15](#15-industries-and-the-lakes-new-facts) for the industry list).
-- **Job sheets** get the six analysis columns in the All and Temp For AI tabs
-  this release adds (see [14](#14-own-job-sheets-all-and-temp-for-ai)); a
-  daily tab an older build made is left exactly as it is.
-
-**Rolling back**: `90adbaf` does not read `job_analyses` and analyses again,
-as it always did - see [Going back further, to
-90adbaf](#going-back-further-to-90adbaf).
-
-### 12. The Job Data Lake
-
-For an install coming from `90adbaf`, nothing has to be done unless reporters
-are to be paid (step 10 of [Upgrading, step by
-step](#upgrading-step-by-step)); what changes on the first start:
-
-- New tables, `job_lake` and `job_lake_history`, and a full-text index over
-  the lake. They start empty: the lake holds what reporters add and
-  administrators merge from now on.
-- **Nobody is paid until an administrator sets the global rate** on Admin →
-  Job Lake (or a reporter's own rate on Admin → Accounts): the rate starts at
-  `$0`. The duplicate window is 60 days unless `.env` or that page says
-  otherwise.
-- The admin sheet is created the first time the lake has a job to send, not
-  at startup.
-
-**Rolling back**: `90adbaf` reads none of the lake's tables and leaves them
-alone - see [Going back further, to 90adbaf](#going-back-further-to-90adbaf).
-`5177fc3` reads and writes the lake, but none of what this release added to it
-(see [15](#15-industries-and-the-lakes-new-facts)).
-
-### 13. Providers of one type, and the tailoring cache
-
-Nothing to do on upgrade: an install with no provider added behaves as before.
-Each type's built-in provider reads the same `.env` variables, and every stored
-model, prompt override, profile and queued resume still names a type, which is
-still a provider. A resume queued before the upgrade comes back in its type's
-lane (`cli`, `codex` and `gemini` are read as the three types).
-
-Going back to `90adbaf` loses the added providers - see [Going back further,
-to 90adbaf](#going-back-further-to-90adbaf).
-
-### 14. Own job sheets: All and Temp For AI
-
-Nothing has to be done for the app to work; what changes, at the first start
-and at each account's next sign-in, and what the people using it may want to
-do about it:
-
-- **Two tabs are added to every sheet an older build made**: **All** at the
-  front and **Temp For AI** second, each with the twelve-column header (see
-  [The job sheet](#the-job-sheet)), frozen and filtered, every row 21 px high,
-  and G to L protected. The startup backfill does it for every account at once
-  unless `SHEET_BACKFILL=off`, and a sign-in does it for one; once both tabs
-  are there (`users.sheet_layout` is 2) a sign-in asks Google nothing. A new
-  sheet is created with them.
-- **Nothing else in the sheet is touched.** The daily `MM/DD/YYYY` tabs keep
-  their rows, their sixteen columns and their protection, and no page reads
-  or writes them again - not Build Resumes, the export, the Job Filter or
-  Report Jobs, which list them greyed out as *old layout, not read*. **To use
-  their rows, copy them into All**: Company, Job Title, Job Link and Job
-  Description - columns B to E of a daily tab - into C to F of All, below its
-  last row. Date and NO(DATE) may stay empty, and G to L are the program's: a
-  posting analysed before is found in the database by its link or text when
-  its row is first built or reported, so the copy costs no analysis, and its
-  cells are written then. The old Filter Result and Filter Reason, Job Hash,
-  Analyzed At and Lake Status columns stay as they were written: the Job
-  Filter answers on the page now, and the lake remembers reports in the
-  database.
-- **A tab already called All or Temp For AI** that is not laid out as a job
-  tab is left exactly as it is, and **Settings → Job Sheet** says so. Rename
-  or delete it in Google Sheets and reload that page, and the app adds its
-  own.
-- **The saved shared sheets are gone** from Admin → Google Sheets, the builder
-  and the job pages. Their list is kept, unchanged, in the stored settings, for
-  a rollback; copy the rows you still need from one into your own All the same
-  way, from whatever columns that sheet used.
-
-**Rolling back**: the older build carries on with its daily tabs, and treats
-All and Temp For AI as tabs of the person's own - see [Rolling back this
-release](#-rolling-back-this-release).
-
-### 15. Industries, and the lake's new facts
-
-Nothing has to be done, bar the edited prompt below:
-
-- **Postings analysed from now on are also filed under an industry**, from a
-  closed list. Nothing analysed before is analysed again for one: its
-  industry - and every posting's job type and clearance - is worked out from
-  what its analysis already holds, every time it is read.
-- **An analysis prompt you edited** after job fields but before industries is
-  flagged *Predates industries* under Admin → Prompts. It keeps working: the
-  industry list is sent beside it on every call. Adding `[[industryList]]`
-  after `[[jobFieldList]]` (under its own `INDUSTRIES (id: label):` heading)
-  and `"industry": ""` to its output puts the list in the cached part too -
-  but the older build refuses a prompt naming it, so a rollback takes it out
-  first.
-- **Job type, clearance and industry are filled in for every job already in
-  the lake** at the first start, from their analyses - no model is asked - and
-  the reports those jobs hold are remembered (`job_reports`), so their
-  reporters' rows read *Reported before*. Only a report that added or replaced
-  a job left a lake row to read it from: a row an earlier build marked
-  *Duplicate* or *Unclassified* is not remembered, and the first run over it
-  merges it again (no model call) - unclassified again, unpaid; a duplicate
-  again while the job is inside the window, its *seen* count going up once
-  more; or, once the job is older than the window, a replacement, paid. It is
-  remembered from then on.
-- **An admin sheet made earlier** gets the three new columns' header (Job
-  Type, Clearance, Industry, I to K) just before its next line; the lines
-  already there keep them blank.
-
-**Rolling back**: the older build reads and writes the lake as it did, and
-none of this - see [Rolling back this release](#-rolling-back-this-release).
-
----
-
-## ⏪ Rolling back this release
-
-Going back to the release before this one (commit `5177fc3`) needs no change
-to the database: this release renamed nothing that build reads, and what it
-added - three columns on `users`, three on `job_lake` and `job_lake_history`,
-the `job_reports` table, payout requests in `refund_requests` - the older build
-either never looks at or reads as something it knows. What it cannot do is
-finish what only this release understands, so that is done first. Every step
-below was checked against the older build's own code, and the check in step 3
-was run against a database this build made. Do them in this order. An install
-that came to this release straight from `90adbaf` goes back with [Going back
-further, to 90adbaf](#going-back-further-to-90adbaf) instead.
-
-**Before stopping this build**
-
-1. **Decide every open payout request** in **Admin → Payments → Refund
-   requests** - **Record payout**, or **Decline**. The older build reads a
-   payout request as a request to refund a resume: its queue says *That
-   purchase was not found.* beside it, **Mark refunded** fails with the same
-   sentence, and a payout recorded on its **Admin → Accounts** does not close
-   the request - so one left open there is still open, and payable again, when
-   you upgrade. (It can still decline one, in refund words.)
-2. **Take `[[industryList]]` out of an edited analysis prompt.** The older
-   build refuses an **Analyze Job Description** that names it - *Prompt
-   "analyze-job-description" contains unknown variables: industryList* - and
-   every new posting's analysis fails. Delete the variable and its
-   `INDUSTRIES (id: label):` heading from the text under **Admin → Prompts**
-   (`"industry": ""` in its output may stay), or paste the older release's
-   shipped text over it: `git show
-   5177fc3:backend/static/prompts/analyze-job-description.json`.
-3. **Check that nothing is left.** This lists every payout request still open
-   and every prompt whose text still names `industryList` - the older build
-   reads `[[ industryList ]]`, spaces and all, as the same variable - and
-   prints nothing once steps 1 and 2 are done:
-
-   ```sh
-   sqlite3 "$DB_DIR/free_tailor.db" "SELECT 'Open payout request ' || reference FROM refund_requests WHERE kind = 'payout' AND state IN ('requested', 'approved') UNION ALL SELECT 'Prompt naming [[industryList]]: ' || id FROM prompts WHERE json_extract(data, '$.content') LIKE '%industryList%'"
-   # or, without the sqlite3 shell, from the repository root:
-   node -e "const db = new (require('./backend/node_modules/better-sqlite3'))(process.argv[1], { readonly: true }); console.log(db.prepare(\"SELECT 'Open payout request ' || reference FROM refund_requests WHERE kind = 'payout' AND state IN ('requested', 'approved') UNION ALL SELECT 'Prompt naming [[industryList]]: ' || id FROM prompts WHERE json_extract(data, '$.content') LIKE '%industryList%'\").pluck().all().join('\n'))" "$DB_DIR/free_tailor.db"
-   ```
-
-4. **Stop the backend and back up** `free_tailor.db` in `DB_DIR` and
-   `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), together.
-   A run in the queue carries across: it is in the same unit and shape as the
-   older build's, and a sheet run's rows of All get no analysis written back
-   there.
-5. **Check out `5177fc3`, then `npm run install:all` and build both halves** -
-   the frontend has to be the older one too: this build's pages read the job
-   sheet, its tabs and the refund queue in shapes the older server does not
-   send. `JOB_LAKE_PUSH_MAX_ROWS` in `.env` is ignored by it. The older build
-   pins Next.js **16.1.6**, and that install puts it back - and with it the
-   critical advisories this release left behind (*Next.js 16.3.8* under
-   [What is new](#what-is-new-and-what-it-asks-of-you)), remote code
-   execution on a Windows-hosted server among them, so stay rolled back no
-   longer than you must. It has neither the Windows fallback nor the check of
-   the installed Next.
-
-**While the older build runs**, it reads what it always read:
-
-- **Job sheets.** It goes back to one tab a day: each account's next sign-in
-  adds that day's `MM/DD/YYYY` tab in its own sixteen-column layout (this
-  build never moved `users.sheet_tab_date`, and the older build never reads
-  `sheet_layout`), and its export, Job Filter and Report Jobs use that tab
-  unless told otherwise. To it, **All** and **Temp For AI** are tabs of the
-  person's own: it never re-heads, protects, clears or writes them, reads no
-  analysis cell in them, and Report Jobs refuses them (*is not laid out as a
-  job sheet tab*). Build Resumes still lists them, but reads its own columns,
-  B to E - to build from All there, open its **Advanced columns** and set
-  From column C and To column F, then Company C, Job Title D, Job Link E and
-  Job Description F. Its **Admin →
-  Google Sheets** writes any range, G to L of All included; nothing written
-  there is trusted when you upgrade again, since an Analysis cell counts only
-  for the stored analysis it names.
-- **Saved Google Sheets** come back on every page that had them: the list was
-  kept in the settings as it stood at the upgrade.
-- **Refunds** can be asked for again - the buttons are back on purchases,
-  Credit History and an order's resumes - and a reporter has no Ask for
-  Refund. A payout request decided here is listed in its queue as a resume's,
-  *Payout of earnings*, with its outcome.
-- **Money** is shown with three decimals again (`$1.000`); every amount is
-  the same.
-- **Analysis.** It reads `job_analyses` as before. A posting analysed here
-  carries its `industry`, which the older build passes to the tailoring model
-  with the rest of the analysis - nothing else comes of it.
-- **The lake** works on its own columns. It does not read or write job type,
-  clearance, industry or `job_reports`: a job it adds shows them blank, its
-  Lake tab has neither the new filters nor Push to Google Sheet, and it
-  decides *reported before* by the sheet row alone, as it always did - this
-  build kept writing the row's reference (`job_lake.report_ref`) for it. The
-  lines it appends to the admin sheet leave Job Type, Clearance and Industry
-  blank.
-- **`npm run dev`** runs the frontend on webpack's dev server again, which
-  reloads every open tab of the app when another tab connects (Troubleshooting,
-  *Opening a second tab of the app reloads the first one*).
-
-**Upgrading again** is the ordinary upgrade, with the following on top:
-
-- **Lake jobs** the older build added or replaced get their job type,
-  clearance and industry at the first start, from their analyses (`[lake]
-  Filled in ...`), and the reports they hold are recorded. A duplicate or
-  unclassified report it made is not remembered, and the first run over that
-  posting merges it again - as at the first upgrade (see
-  [15](#15-industries-and-the-lakes-new-facts)).
-- **Its daily tabs** are not read: copy the rows wanted into All as at the
-  first upgrade ([step 13](#upgrading-step-by-step)). The sheets keep their
-  All and Temp For AI. One deleted meanwhile is put back the next time its
-  owner opens **Settings → Job Sheet** - the way back for a reporter, who has
-  no export - or by a builder's next export. Until then the other pages link
-  to the tab as it was recorded, and the tab selects start on the job tab
-  that is left (Temp For AI).
-- **Refund requests** asked for meanwhile stay in the queue and are decided as
-  usual; asking is closed again.
-- **The admin sheet's header** is written once more if the older build
-  stored the sheet's record without its header version - which it does
-  whenever it shares the sheet with another administrator or makes a new one.
-- **Saved Google Sheets** changed meanwhile stay in the settings, unused.
-
-### Going back further, to 90adbaf
-
-For an install that upgraded to this release straight from `90adbaf` - the
-release that rebuilt Edit Profile around a live preview. Going back there
-works, but not by checking it out alone: since then a column the older build
-reads was renamed, notices and a role it does not understand were written,
-and money and saved templates were moved where it does not look. Every step
-below was checked against the older build's own code, and the database steps
-were run against it. Do steps 1 to 3 above first - in step 2, take
-`[[jobFieldList]]` out of an edited analysis prompt as well, since `90adbaf`
-refuses it too - and then these, in place of steps 4 and 5.
-
-**Before stopping this build**
-
-1. **Let the queue drain, or cancel what is left** (**Cancel** on **Orders**;
-   **Admin → Settings → General** shows each provider's queued and running
-   resumes). A run carried across this rollback is the one thing that loses
-   money for good. The older build reads only the whole-credit columns, which
-   are `0` on everything written since the switch to dollars, so it sees a run
-   started here as holding nothing: a resume of it that fails gives nothing
-   back, and the run's settle - or that build's 6-hour startup sweep - closes
-   its reservation, which upgrading again cannot reopen. The older build also
-   has no tab lease, so a Generate Immediately run would build to the end
-   whether or not its tab was still open.
-2. **Finish every card refund Stripe has not confirmed.** A refund request
-   whose row says *A $X card refund was sent and not confirmed* holds that
-   credit off the balance until Stripe answers: press **Mark refunded** again
-   until it ends one way or the other. And while the older build runs, refund
-   nothing it lists that was bought since the switch to dollars: it measures
-   what to take back in whole credits, finds none, and returns the money while
-   the dollars stay on the balance - to reappear when you upgrade again.
-3. **Stop the backend and back up** `free_tailor.db` in `DB_DIR` and
-   `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), together.
-
-**With the backend stopped, make the database one the older build can read**
-
-4. Run these three statements, in this order, against the database:
-
-   ```sh
-   sqlite3 "$DB_DIR/free_tailor.db" "ALTER TABLE users RENAME COLUMN subscription TO plan; DELETE FROM notifications WHERE recipient_id IS NOT NULL; UPDATE users SET disabled = 1 WHERE role = 'reporter';"
-   # or, without the sqlite3 shell, from the repository root:
-   node -e "new (require('./backend/node_modules/better-sqlite3'))(process.argv[1]).exec(\"ALTER TABLE users RENAME COLUMN subscription TO plan; DELETE FROM notifications WHERE recipient_id IS NOT NULL; UPDATE users SET disabled = 1 WHERE role = 'reporter'\")" "$DB_DIR/free_tailor.db"
-   ```
-
-   - **The rename** is the one the older build cannot start without: it reads
-     `users.plan`, and against this release's database every sign-in and every
-     account read fails with `no such column: plan`. Rename the column back -
-     never add a `plan` column beside it: with both present this release reads
-     `subscription` and leaves `plan` alone when you upgrade again, so the two
-     drift apart.
-   - **The notices**: the older build has no idea a notice can be addressed to
-     one account, and reads every row of `notifications` as an announcement
-     for everybody - each administrator's *New refund request* or *New payout
-     request* (which names the requester's email, the amount and their reason)
-     and each person's *approved*, *declined*, *refunded* and *Payout
-     recorded* notice would show in every bell. The requests themselves stay
-     in `refund_requests`, and announcements are untouched.
-   - **The reporters**: the older build reads a role it does not know as
-     *user*, which hands a reporter the whole app - the builder, the job
-     scrapers, buying credits. Disabled, they cannot sign in until you upgrade
-     again and enable them.
-5. **Saved templates.** The older build reads every file in
-   `static/templates` as a built-in: saved templates still render there, but
-   read-only - no edit or delete, an edit to a manual template goes to its
-   database row, which the file hides - and a template the move renamed is
-   listed twice, under its old id as well. To have them editable, move the
-   files that carry a `"source"` (`grep -l '"source"'
-   backend/static/templates/*.json`) out of the directory, and the older build
-   serves the database rows the move left behind - **except** the files of
-   renamed rows, which stay: their profiles name the new id now, and would be
-   drawn with `default` without the file. The renames are the `renamed` list in
-   `SELECT value FROM schema_meta WHERE key = 'templates_moved_to_files'`.
-   Templates created or edited since that upgrade exist only as files.
-6. **`.env`**: the older build reads `CREDIT_SIGNUP_GRANT` as whole credits
-   (`5` is five credits again, `0.25` is nothing). The settings only later
-   releases read are ignored by it.
-7. **Check out `90adbaf`, then `npm run install:all` and build both halves** -
-   the frontend has to be the older one too. It pins Next.js 16.1.6 as well,
-   with the same advisories (step 5 above).
-
-**While the older build runs**, it reads what it always read, and nothing
-added since:
-
-- **Money.** Every balance reads `0` credits - the reset - plus what it credits
-  itself; the dollars bought, granted and earned since are in
-  `users.balance_milli`, out of its sight. A checkout opened since the switch
-  carries `0` credits, so if it is paid meanwhile the older build holds it for
-  a person instead of crediting a guess. Credits it sells or grants are in the
-  old unit, and are **not** carried forward when you upgrade again - the switch
-  to dollars ran once and does not run again - so take no payments while rolled
-  back, or grant them again in dollars afterwards.
-- **Prices.** It prices a model from `creditsPerResume`. That is still the old
-  figure as long as the settings row was never saved since the switch; after
-  any settings save - a price, a payment limit, a General setting - every
-  model costs its default of 1 credit, and a credit its default price. The old
-  figures are in `app_settings["migration-log.credits-to-dollars"]` (`models`,
-  `pricing`), to put back by hand.
-- **Its own first settings save** rewrites the row without everything only
-  later releases know: every model's dollar price, the providers added under
-  **Admin → Models → Providers**, and the analysis model. Everything runs on the
-  built-in seats meanwhile, whatever was saved.
-- **Orders.** A Generate Immediately run is an `orders` row it reads as an
-  ordinary order, so each one shows on its Orders page as `FT-RUN-...`. Its
-  files are gone if it ended more than ten minutes before this build stopped;
-  otherwise the older build's own sweep deletes them at its next pass, since
-  such a row is stamped to expire the moment it is placed.
-- **Job sheets.** Like `5177fc3` (above), it adds a daily tab at each sign-in
-  and uses it, and All and Temp For AI are tabs it does not know.
-- **Job analysis.** It analyses postings as it always did, again, without
-  reading `job_analyses`; its job filter reads its own prompt file, which the
-  older checkout brings back. The analysis columns of the job sheets stay
-  protected, so nobody but the server can clear them, and it writes none of
-  them.
-- **The lake** - `job_lake`, its history and index, `job_reports`, the
-  settings and the admin sheet - is not read or touched. The ledger rows of
-  rewards and payouts show in its credit history with a change of `0` and their
-  raw reasons (`job-report-reward`, `reporter-payout`).
-- `tailor_cache`, `refund_requests`, `order_items.provider_id`,
-  `users.report_rate_milli`, the contact list and the `orders.kind` column are
-  left as they are, unread.
-
-**Upgrading again** is the ordinary upgrade, with the following on top:
-
-- `users.plan` is renamed forward by itself on the first start.
-- **Enable the reporters** on **Admin → Accounts** (**Enable** on each row).
-- **If the older build saved its settings**: price every model again - each
-  reads `$0` and is listed in red - add the providers again, and choose the
-  analysis model again.
-- **Credits** the older build sold or granted are history in the old unit;
-  grant them in dollars on **Admin → Accounts** if they are owed.
-- **Templates**: put back the files you moved aside. The move does not run
-  again on its own, because it is recorded as done; to bring forward templates
-  created or changed under the older build, delete the record before starting:
-
-  ```sh
-  sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM schema_meta WHERE key = 'templates_moved_to_files'"
-  ```
-
-  The move then runs over every row again. A row whose file is still there is
-  recognised - a renamed one is given the same new id as the first time - and
-  left as it is, unless the row was changed after the file was, in which case
-  it replaces the file; a row created under the older build is written out.
-- Postings the older build analysed are not in the store: each is analysed
-  once more the first time it is needed, then never again. The daily tabs it
-  made are not read - copy their rows into All, as at the first upgrade.
+When the line says the migrations *wait for an administrator*, the database has
+nobody to adopt the profiles made before accounts existed: sign in to
+`ac3df79` as an administrator (an address in `ADMIN_EMAILS`) before stopping
+it. A database that passes is stamped once (`schema_meta.baseline_build`) and
+later starts read only that stamp; one this build creates is stamped as it is
+made.
 
 ---
 
@@ -3092,8 +2156,7 @@ analysis, then the tailoring, then the PDF and DOCX rendering, against budgets o
 `AI_CLI_TIMEOUT_MS=180000` and `AI_CLI_TIMEOUT_MS_TAILOR=300000` — three to five
 minutes per call, deliberately, because a subscription seat is not fast. Each of
 those requests is a guaranteed **error 524** behind the proxy, on a server that is
-working perfectly. A Job Search run is the same: the request waits for the Apify
-run, for up to `APIFY_RUN_TIMEOUT_S` (300 seconds by default).
+working perfectly.
 
 So set the `A` records to **DNS only** (grey cloud). Two consequences: the origin
 IP is public, so the firewall above is doing real work; and Cloudflare's
@@ -3339,8 +2402,9 @@ free_tailor/
 │   ├── src/
 │   │   ├── config/         # .env loading, operational settings table, provider catalog,
 │   │   │                   #   each seat's model-name list, static asset paths
-│   │   ├── database/       # SQLite connection, schema, repositories, the one-time startup steps
-│   │   │   └── migrations/ # Numbered data migrations, run on first DB use
+│   │   ├── database/       # SQLite connection, schema, repositories, and upgradeGuard.ts - the
+│   │   │   │               #   startup check that refuses a database an older build never finished
+│   │   │   └── migrations/ # The runner for numbered data migrations (none today)
 │   │   ├── routes/         # API routes
 │   │   ├── services/
 │   │   │   ├── ai/         # Provider-agnostic AI transport
@@ -3352,12 +2416,13 @@ free_tailor/
 │   │   │   ├── jobAnalysis/              # The one gate to a job analysis, and the posting identity
 │   │   │   ├── jobLake/                  # The Job Data Lake: identity, merge, reporter runs, admin sheet
 │   │   │   ├── queue/                    # The generation queue: one lane per provider, tab leases
+│   │   │   ├── sheets/                   # Each account's own job sheet, its analysis columns, the job export
 │   │   │   ├── resumeService.ts          # Resume/cover-letter domain logic
 │   │   │   ├── tailorCache.ts            # Tailorings reused for an unchanged profile, posting and model
 │   │   │   └── templateChoice.ts         # The one rule for which template a resume is drawn with
 │   │   ├── generators/     # PDF, DOCX, cover letter generation
 │   │   ├── middleware/     # Auth, uploads, and publicError.ts - what a failure may tell whom
-│   │   ├── scripts/        # Legacy data import, provider-migration rollback, the mail and sheets doctors
+│   │   ├── scripts/        # The mail and sheets doctors, and the Google sign-in for job sheets
 │   │   └── types/          # TypeScript types
 │   ├── static/
 │   │   ├── prompts/        # Default prompt per feature
@@ -3369,8 +2434,8 @@ free_tailor/
 │   ├── scripts/            # next.mjs, which every npm script that runs Next goes through (the root
 │   │                       #   .env, the port, the Windows fallback), and nextLaunch.mjs, its decisions
 │   └── src/
-│       ├── app/            # Pages (/, /orders, /credits, /report, /settings/*, /admin/*, /jobs,
-│       │                   #   /bid-assistant, /calendar)
+│       ├── app/            # Pages (/, /orders, /credits, /report, /settings/*, /admin/*,
+│       │                   #   /jobs/filter, /bid-assistant, /calendar)
 │       ├── components/     # Reusable UI components
 │       │   ├── profile/    # The profile editor and its live preview, one file per group of sections
 │       │   ├── shell/      # The app shell: top bar, sidebar, settings sub-nav
@@ -3439,11 +2504,11 @@ unique across the install, which settles all of it in one segment.
 | **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0` to `$1,000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
 | **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
-| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants - and one flagged *predates job fields* was written before postings had a job field: it still works, with the field list sent beside it on every call, but outside the cached part of the prompt. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants. Some variables are **required**: `[[jobFieldList]]` and `[[industryList]]` in the analysis prompt, `[[includeStrengths]]`, `[[includeSoftSkills]]` and `[[technicalSkillsLayout]]` in a tailoring prompt. A save that leaves one out is refused in so many words, and a stored prompt without one is marked *Needs update* and never runs - the built-in prompt of its feature runs in its place until it is updated. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
 | **Job Lake** | The [Job Data Lake](#the-job-data-lake): search it (when it was updated, who reported it, job field, job type, clearance, industry, company, salary, free text), open a job and its history, delete one with or without taking its reward back; **Push to Google Sheet** - the jobs of a search into the *Temp For AI* tab of your own job sheet; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
-| **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only - the saved shared sheets of older builds are gone - and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
+| **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only, and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
 | **Skills** | Maintain the hard/soft skill library |
 | **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
 
@@ -3489,8 +2554,8 @@ to "what is this install really running with":
 [env] Non-default settings: SESSION_TTL_DAYS=7, UPLOAD_MAX_MB=25
 ```
 
-Those settings - the timeouts, size caps, pool widths, model lists and actor ids
-that used to be literals in the code - are defined in one table,
+Those settings - the timeouts, size caps, pool widths and model lists that used
+to be literals in the code - are defined in one table,
 `backend/src/config/operational.ts`, with their defaults and ranges.
 `backend/test/envExample.test.js` fails if `.env.example` or this table stops
 matching it.
@@ -3513,7 +2578,7 @@ matching it.
 | `NEXT_PUBLIC_CALENDAR_DEFAULT_TIMEZONE` | The calendar page's starting time zone, an IANA name (default `America/Los_Angeles`). A zone outside the five the page lists is added to its menu under its city's name; an unknown one falls back with a console warning. *Rebuild* |
 | `CALENDAR_API_TIMEOUT_MS` / `CALENDAR_DETAIL_CONCURRENCY` | The calendar's own API routes, which run in the Next.js server: the timeout of each calendar.online request (default `12000`, range 1000-120000) and how many event-detail requests the link scan runs at once (default `12`, range 1-32). Server-only, not `NEXT_PUBLIC_`: restart the frontend, no rebuild |
 | `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave it empty and the `SMTP_USER` address is used instead; with neither set the install has **no administrator at all** and says so at startup. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
-| `CREDIT_SIGNUP_GRANT` | What a brand-new account starts with, **in dollars**, to `$0.001`: `5` is `$5`, `0.25` is `$0.25`. `0` by default; above `1000` clamps. It was a count of credits before credits became dollars, so an old `5` (about `$2.50` of resumes at 50c a credit) now grants `$5` - check it when upgrading. A value with more than three decimals warns once and grants nothing |
+| `CREDIT_SIGNUP_GRANT` | What a brand-new account starts with, **in dollars**, to `$0.001`: `5` is `$5`, `0.25` is `$0.25`. `0` by default; above `1000` clamps. A value with more than three decimals warns once and grants nothing |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_MAX_CONNECTIONS` | The pooled SMTP connection: connect and greeting timeout (default `10000`), idle socket timeout (default `20000`) - both range 1000-300000, never 0, because an unbounded wait is a sign-in that never returns - and the pool's width (default `2`, range 1-20). *Startup* |
@@ -3545,18 +2610,12 @@ matching it.
 | `GENERATION_MAX_ATTEMPTS` | How many times one resume may be built before it is given up on (default `3`, counting the first go; `1` switches retrying off). A retry costs no extra credit. *Startup* |
 | `GENERATION_RENDER_CONCURRENCY` | How many resumes the generation queue renders through Chrome at once, across every lane (default `4`, range 1-32). Sized by the machine's memory, one Chrome tab per render. *Startup* |
 | `PDF_RENDER_TIMEOUT_MS` | How long one PDF render step, or starting Chrome for it, may take (default `30000`, puppeteer's own; range 5000-300000) |
-| `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the scrapers, the sheet filter, the range import and the bid assistant |
+| `GOOGLE_CREDENTIALS_PATH` | Where to look for Google credentials, overriding the search. Either `google-oauth-credentials.json` (from `npm run sheets:login`) or a service account key. **One set serves everything** - per-account sheets, the Job Filter, Report Jobs, the lake's admin sheet and Push to Google Sheet, the range import and the bid assistant |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | The older name for the same thing, still honoured. Whichever credential is used, **both** the Sheets API and the Drive API must be enabled for its Cloud project |
-| `SHEET_TIMEZONE` | IANA zone deciding which day an exported job row is dated - and so its NO(DATE) - (e.g. `America/New_York`). Defaults to the server's own |
+| `SHEET_TIMEZONE` | IANA zone deciding which day a job row the app writes is dated - and so its NO(DATE) - (e.g. `America/New_York`). Defaults to the server's own |
 | `SHEET_DEFAULT_VISIBILITY` | Whether a newly allocated spreadsheet is link-shared: `private` (default) or `public`. `public` means **anyone with the link may edit**. Only that exact string opens a sheet up - anything else resolves to `private` with a warning, because the unsafe value cannot be taken back once a link is out. The account holder's own access comes from a writer grant made at allocation either way, and each account can flip its own sheet under Settings > Job Sheet |
-| `SHEET_BACKFILL` | Set to `off` to skip, at startup, allocating spreadsheets for pre-existing accounts and adding the All and Temp For AI tabs to sheets an older build made |
+| `SHEET_BACKFILL` | Set to `off` to skip, at startup, allocating a spreadsheet for every account that has none yet; each gets one at its next sign-in instead |
 | `SHEET_BACKFILL_PAUSE_MS` | Pause between two accounts in that startup backfill (default `250`, range 0-60000; `0` is no pause) - a throttle against your Cloud project's Drive and Sheets quota |
-| `APIFY_API_TOKEN` | Required for every job scraper run, which bills your Apify account; without it a run fails naming this variable. `APIFY_API_KEY` is the older name, still read when this one is empty |
-| `SCRAPER_DEFAULT_LOCATION` / `SCRAPER_COUNTRY` | The job market searched: the location used when the form's is empty, memo23's fixed location and the form's starting value (default `United States`, served to the page by the API), and the Indeed actor's country and memo23's proxy country (default `US`, a two-letter ISO code). Keep the two in agreement |
-| `SCRAPER_MAX_RESULTS` | Most results one scraper run may return - the only bound on the Apify bill the browser cannot get round. Unset (the default) is no cap beyond each actor's own; set (range 1-10000), larger requests are clamped, the Results menu stops there, and Indeed's and memo23's fixed counts are held to it. Lever's results are trimmed after a run billed in full |
-| `APIFY_PROXY_GROUPS` | Proxy group for the Job Board, Hiring Cafe and memo23 runs (default `RESIDENTIAL`, a paid Apify add-on). `auto` leaves the group out and lets Apify choose; empty means `RESIDENTIAL`, not none |
-| `APIFY_RUN_TIMEOUT_S` | How long one Apify run may take, and so how long the Job Search request waits (default `300`, range 30-3600; the page shows it). A reverse proxy must let a response take this long - Cloudflare's proxy cannot |
-| `APIFY_ACTOR_INDEED`, `APIFY_ACTOR_JOBBOARD`, `APIFY_ACTOR_WELLFOUND`, `APIFY_ACTOR_LEVER`, `APIFY_ACTOR_HIRINGCAFE`, `APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS`, `APIFY_ACTOR_HIRINGCAFE_MEMO23` | Which Apify actor each scraper runs; defaults in `.env.example`. Only a drop-in fork with the **same input and output schema** works, because the filters and the result parsing are written per actor |
 | `JOB_PAGE_FETCH_TIMEOUT_MS` / `JOB_PAGE_BROWSER_TIMEOUT_MS` / `JOB_PAGE_USER_AGENT` | The Job Filter reading each row's posting: the plain fetch's timeout (default `20000`, range 1000-120000), headless Chrome's page-load timeout for pages that need JavaScript (default `25000`, range 1000-180000), and the User-Agent both send (default in `.env.example`; one line of printable ASCII) - pinned to one Chrome release, so replace it when sites start refusing it |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Card payments through Stripe, with the form embedded in the buy page. All three are needed or the method is not offered: the publishable key is what the form mounts with, and the API serves it to the page so no frontend rebuild is needed to change it. The secret and publishable keys are on the dashboard's API keys page; the webhook secret is not - it comes from the webhook endpoint, or from `stripe listen`. The endpoint is `/api/payments/webhook/stripe` |
 | `CRYPTOMUS_MERCHANT_ID` / `CRYPTOMUS_PAYMENT_API_KEY` | Crypto through Cryptomus, on its hosted invoice page. Both are needed or the method is not offered. The payment API key does double duty: it signs outgoing requests **and** is what every incoming callback is verified against, so there is no separate webhook secret. The endpoint is `/api/payments/webhook/cryptomus` |
@@ -3575,14 +2634,6 @@ matching it.
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
 
 See `.env.example` for the full `AI_CLI_*` and `AI_CODEX_*` lists.
-
-**Removed, and read by nothing:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`DEEPSEEK_API_KEY`, `CLAUDE_MODEL`, `OPENAI_MODEL`, `DEEPSEEK_MODEL`,
-`CLAUDE_BASE_URL`, `OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`,
-`CLAUDE_MAX_ATTEMPTS`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`,
-`AI_CLI_ALLOW_API_KEY` and `AI_CODEX_ALLOW_API_KEY` - the metered providers and
-the switches that let a seat use a key. Startup names any of them that is still
-set, never its value; delete them.
 
 **Two settings are not read from `.env` at all**, because they steer the Chrome
 download that `npm install --prefix backend` runs before anything loads that
@@ -3615,25 +2666,22 @@ file. Export them in the shell, for the install and the server alike:
 | The log says `[sheets] Google answered 429 (quota) to ...; retry n of 5 in ...ms`, or a page says *Google Sheets is busy right now* | Google's per-minute Sheets quota is per project and per user, and every account of this install is the same user - the server's one credential - so a big filter run, a few sheet orders and their write-backs share one budget. A 429 is waited out with growing, randomised delays (and Google's own `Retry-After`), up to five times and 32 s a wait; only then is it reported. If it keeps reaching people, raise the Sheets quota in the credential's Cloud project, or run fewer sheet jobs at once. |
 | **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 12` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a job tab somebody headed by hand narrower than twelve columns is widened to twelve the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
 | The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
-| Every new posting comes back **Unclassified**, or Admin → Prompts flags the analysis prompt as predating job fields (or industries) | The Analyze Job Description prompt was edited before postings had a job field, so its text never asks for one. The field list is sent beside it on every call anyway, so postings should still be classified - when they are not, the edited text is fighting it (an instruction to return exactly some other JSON shape, say). Paste the shipped text (`backend/static/prompts/analyze-job-description.json` - there is no reset button) over it, or add `[[jobFieldList]]` before the posting and the `jobField`, `salary` and `filter` keys to its output. Only postings analysed from then on are affected: a stored analysis is never redone. A prompt flagged as predating **industries** names the field list but not the industry list: the list and the instruction are sent beside it on every call, so postings still get an industry; add `[[industryList]]` (after `[[jobFieldList]]`) and `"industry": ""` to its output to move them into the cached part, which clears the flag. |
+| Every new posting comes back **Unclassified** | A posting that fits none of the job fields is Unclassified by design; when every one is, the Analyze Job Description prompt's text is fighting the list - an instruction to return exactly some other JSON shape, say. Compare it with the shipped text, `backend/static/prompts/analyze-job-description.json` (there is no reset button), and paste that over it. A prompt that does not use `[[jobFieldList]]` and `[[industryList]]` at all is not the cause: it is marked *Needs update* and never runs, and the shipped prompt runs in its place (see *Needs update* below). Only postings analysed from then on are affected: a stored analysis is never redone. |
 | The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A Job Description that ends *...[cut at 50,000 characters]* (Push to Google Sheet writes a longer one so) is read as its posting only exactly as it was cut: edit it and it is another posting, analysed once (the same line, saying *its Job Description, cut at 50,000 characters, is not that analysis's posting as it was cut (edited since)*). A row moved or sorted since loading (`no longer matches`) is neither read nor written. |
 | A row's Analysis cell is filled, yet its posting was found in the database or analysed again and the cell rewritten, and the log says `[analysis] Sheet row N's Analysis cell names an analysis this store does not have (<id>); it is ignored, the posting is found in the store or analysed once, and the cell is replaced.` | The cell names a stored analysis this database does not hold - copied from another install's sheet, left from a database restored from an older backup, or never written by the program. A cell is only ever a pointer into the database, never an analysis in itself, so the row is treated as if it were empty: its posting is found in the database (by link or text) or analysed once, and its six cells are written again. The Build Resumes table reads only the cell's shape and cannot tell; it says *Skips analysis* for such a row. |
 | The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
-| The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab (a tab of the person's own, or an older build's daily tab); its columns are left as they are` | A build ran on a tab that is not a job tab: its first row does not start with *Date, NO(DATE), Company, Job Title, Job Link, Job Description*, and it is not empty. Nothing in it is re-headered, protected, read as an analysis or written, and its postings are found in the database or analysed once. The builder offers only job tabs, so this is a page from before the upgrade or a request made by hand. Build from **All** or **Temp For AI**. |
-| After upgrading, the job pages no longer show the daily `MM/DD/YYYY` tabs' rows - Build Resumes, Find Jobs, the Job Filter and Report Jobs list those tabs greyed out as *(old layout, not read)* | Expected (owner decision S2): every account's sheet now has two tabs of the app's, **All** and **Temp For AI**, in a new twelve-column layout (*Date, NO(DATE), Company, Job Title, Job Link, Job Description*, then the six analysis columns G to L), and the daily tabs an older build made are left exactly as they were - never read, written, re-headed, protected or cleared, since their columns are in other places. Their rows are not lost: copy the ones you still want into **All** by hand (Company, Job Title, Job Link and Job Description go into C to F). The two new tabs are added in front of the old ones at the account's next sign-in, or by the startup backfill. |
+| The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab (a tab of the person's own); its columns are left as they are` | A build ran on a tab that is not a job tab: its first row does not start with *Date, NO(DATE), Company, Job Title, Job Link, Job Description*, and it is not empty. Nothing in it is re-headered, protected, read as an analysis or written, and its postings are found in the database or analysed once. The builder offers only job tabs, so this is a tab whose first row changed after the page listed the tabs, or a request made by hand. Build from **All** or **Temp For AI**. |
 | **Settings → Job Sheet** says *Your job sheet already has a tab named "All" that is not laid out as a job tab, so it was left exactly as it is.* (or *"Temp For AI"*, or both) | The sheet already had a tab of that name - one of the person's own, or a tab with data under an empty first row - so the app did not take it over and has no **All** (or **Temp For AI**) of its own: the job pages list that tab greyed out as *All (not a job tab)* and start on the first job tab instead, the note under their tab select says to rename or delete it before copying old jobs into All (rather than to copy them into it, where nothing would read them), and the log says `[sheets] <spreadsheet> already has a tab named "All" that is not a job tab`. Rename or delete that tab in Google Sheets, then reload **Settings → Job Sheet**: that page - and only that page, so the clash costs no Google reads on every other page load - looks again and the app adds its own tab, first (**All**) or second (**Temp For AI**). Until then the other pages go on saying what was recorded. An EMPTY tab of that name is simply taken over. |
-| The **Tab** select on Build Resumes says *No job tab to read* (Find Jobs: *No job tab to write to*, the Job Filter: *No job tab to filter*, Report Jobs: *No job tab to report from*), with every tab of the sheet listed greyed out | No tab of the sheet is a job tab: the app's **All** and **Temp For AI** are not there - their names are taken by tabs of the person's own (Settings → Job Sheet says so, see the row above), they were deleted or renamed in Google Sheets, or the sheet has not been laid out yet - and every other tab is an older build's daily tab or one of the person's own. Open **Settings → Job Sheet**: it lays the sheet out and puts back a deleted tab (or says which name to free), then reload the page. An empty tab added in Google Sheets also works: it is offered, and laid out the first time it is used. |
-| **Your job sheet** (the account menu, Report Jobs, Find Jobs, the Job Filter) opens the spreadsheet but not on **All**, and the tab selects start on **Temp For AI** with no All listed - a page left open from before says *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.* when it reads All | **All** was deleted or renamed in Google Sheets - by hand, or while an older build ran (see [Rolling back this release](#-rolling-back-this-release)). Every page but one links to the tabs as they were recorded, so they point at the tab that is gone; only **Settings → Job Sheet** looks at the tabs again each time it loads (an export and Push to Google Sheet do too). Open **Settings → Job Sheet**: it puts All back, first, and every link follows from then on. That is the way back for a reporter, who has no export. The same goes for **Temp For AI**. A renamed All keeps its rows and stays a job tab under its new name; the new All starts empty. |
+| The **Tab** select on Build Resumes says *No job tab to read* (the Job Filter: *No job tab to filter*, Report Jobs: *No job tab to report from*), with every tab of the sheet listed greyed out | No tab of the sheet is a job tab: the app's **All** and **Temp For AI** are not there - their names are taken by tabs of the person's own (Settings → Job Sheet says so, see the row above), they were deleted or renamed in Google Sheets, or the sheet has not been laid out yet - and every other tab is one of the person's own. Open **Settings → Job Sheet**: it lays the sheet out and puts back a deleted tab (or says which name to free), then reload the page. An empty tab added in Google Sheets also works: it is offered, and laid out the first time it is used. |
+| **Your job sheet** (the account menu, Report Jobs, Find Jobs, the Job Filter) opens the spreadsheet but not on **All**, and the tab selects start on **Temp For AI** with no All listed - a page left open from before says *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.* when it reads All | **All** was deleted or renamed in Google Sheets. Every page but one links to the tabs as they were recorded, so they point at the tab that is gone; only **Settings → Job Sheet** looks at the tabs again each time it loads (Push to Google Sheet does too). Open **Settings → Job Sheet**: it puts All back, first, and every link follows from then on - the way back for anybody, a reporter included. The same goes for **Temp For AI**. A renamed All keeps its rows and stays a job tab under its new name; the new All starts empty. |
 | **Admin → Google Sheets** refuses a write: *Columns G to L of a job tab are written by the app only (Job Field, Salary, Job Type, Clearance, Industry, Analysis). Choose a range within columns A to F.* - or *Columns K to P of "<tab>" are the app's protected analysis columns, written by the app only. Choose a range outside them.* (409 `protected-columns`) | The range reaches into the protected analysis columns of a job tab, or into any columns the app's own protection covers on that tab - an older build's daily tab keeps its **K to P**, and a tab whose first row was changed (so it no longer reads as a job tab) keeps its **G to L**. The server's Google identity is the only editor the protection lets through, so a write from the range importer is the one write a person could make into those cells. Those six cells are the program's: an **Analysis** cell written there could at most name a stored analysis, which a build uses only when it is that row's posting, and Job Field to Industry would just show something false. It is decided on the protection, not on the first row, which anybody may change and change back. Write A to F (or columns past the protected ones, or a tab the app never protected); the analysis columns fill themselves from each row's analysis. The importer also reads and writes only the administrator's own sheet now: any other spreadsheet id - another account's, or a sheet saved under an older build - is *That spreadsheet was not found.* |
-| An administrator's saved Google Sheets ("Bid History" or the like) are gone from **Admin → Google Sheets**, the builder and the job pages | Removed (owner decision S1): every sheet route uses the signed-in account's own sheet only, and naming any other spreadsheet id is *That spreadsheet was not found.* (404). The saved list is still in the settings row, untouched by every save, so rolling back to an older build brings it back. To work with jobs from such a sheet, copy them into **All**. (The Bid Assistant's own saved sources are a separate list and unchanged.) |
-| **Find Jobs** says *Your job sheet kept changing while the jobs were being written, so the rest were not exported. Try again.* (409 `sheet-changed`) | Before each batch of rows an export reads the rows it is about to fill again, and moves below anything that appeared there - somebody typing into the tab, or another export into the same tab from another server process. Five moves in a row and it stops rather than chase the sheet; the rows already written stay. Run the export again when nobody else is writing to the tab. |
 | A reporter's run says *the sheet was not updated*, or a duplicate's row is not red, or a row's analysis columns stay empty after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the sheet could not be written: the log has `[lake] Report run rep_...: the duplicates of "<tab>" could not be painted` or `[sheets] Could not write the analysis of N row(s) back` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since); it is not painted`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds the posting reported before - no model call, no second reward - fills its analysis columns and paints it if it was a duplicate. The run no longer writes a *Lake Status* or *Job Hash* into the row: there are no such columns now - each row's outcome is on the page. |
 | **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: every row the lost run reported is *Reported before* - skipped, no model call, no second reward, painted red again if it was a duplicate - and the rest are reported. |
-| **Report Jobs** says *"My notes" is not laid out as a job sheet tab, so it cannot be reported from. Choose All or Temp For AI, or an empty tab, which is laid out as one the first time it is used.* (with the tab's own name); **Find Jobs** says the same with *cannot be exported into*, the **Job Filter** with *cannot be filtered* (409 `not-job-tab`) | The tab chosen is not a job tab: one the person made for themselves (notes, a list of their own), a tab with data under an empty first row, or a daily `MM/DD/YYYY` tab an older build made - its first row is not *Date, NO(DATE), Company, Job Title, Job Link, Job Description*. The program will not read it, protect it or write into it. The pages list such a tab greyed out and will not pick it - except a tab with data under an empty first row, which only the server can tell from an empty one - so this is said for that tab, for a tab whose first row changed after the page listed the tabs (reload it), or for a request made by hand. Choose **All** or **Temp For AI**; a job listed elsewhere has to be copied into one first. |
-| A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting twice in one run is a duplicate the second time, and another reporter's copy of a posting is a duplicate too. A row whose posting was a duplicate the first time is painted red again by every later run over it (*Reported before (Duplicate)*) - except a row an earlier build marked *Duplicate*, which this release does not remember: the first run over it after the upgrade merges it again, a duplicate again while the job is inside the window (seen once more) and a paid replacement once it is not, and remembers that. After the window, the same job reported again - another posting of it, or by somebody else - **replaces** the old one and is paid. |
+| **Report Jobs** says *"My notes" is not laid out as a job sheet tab, so it cannot be reported from. Choose All or Temp For AI, or an empty tab, which is laid out as one the first time it is used.* (with the tab's own name); the **Job Filter** says the same with *cannot be filtered* (409 `not-job-tab`) | The tab chosen is not a job tab: one the person made for themselves (notes, a list of their own) or a tab with data under an empty first row - its first row is not *Date, NO(DATE), Company, Job Title, Job Link, Job Description*. The program will not read it, protect it or write into it. The pages list such a tab greyed out and will not pick it - except a tab with data under an empty first row, which only the server can tell from an empty one - so this is said for that tab, for a tab whose first row changed after the page listed the tabs (reload it), or for a request made by hand. Choose **All** or **Temp For AI**; a job listed elsewhere has to be copied into one first. |
+| A reported row is painted red and says *Duplicate* | The job lake already had that job - the same company (compared without case, punctuation, spaces or a legal suffix) in the same job field - added or last replaced within the duplicate window (60 days unless Admin → Job Lake or `JOB_LAKE_DUPLICATE_WINDOW_DAYS` says otherwise). That is the rule, not a fault: a duplicate is not paid. The same posting twice in one run is a duplicate the second time, and another reporter's copy of a posting is a duplicate too. A row whose posting was a duplicate the first time is painted red again by every later run over it (*Reported before (Duplicate)*). After the window, the same job reported again - another posting of it, or by somebody else - **replaces** the old one and is paid. |
 | A row a new posting was pasted into still shows the old posting's **Job Field**, **Salary** or **Analysis** | The six analysis columns are protected - only the program writes them - so pasting a new job over Company to Job Description leaves the old job's cells beside it. That is expected, and nothing is lost: **Preview rows** shows such a row as *To add*, and the next report run (or a build from the row) sees the **Analysis** cell is not the new posting's, reports the new one and rewrites all six cells. Whether a row was reported is never read from the sheet: it is the database's record of the posting. |
-| A reporter's row says *Reported before (Added)* - or *(Duplicate)*, *(Replaced)*, *(Unclassified)* - and is skipped, though it was never reported from that row or tab | The same reporter reported the same posting before - same link (tracking and `#fragment` aside) or same text - from another row, another tab, or this row before it was sorted or moved; in brackets is what became of it then. A posting is reported, paid and counted once per reporter, wherever it is pasted. For *(Added)*, *(Replaced)* or *(Duplicate)*, to have it reported again an administrator deletes the job on **Admin → Job Lake** (Details, Delete), which forgets every report that reached it - a job deleted while an older build was rolled back to is forgotten too, and one that build then took again is remembered against its new line, which Delete forgets. An *(Unclassified)* posting reached no job in the lake, so there is nothing to delete and it stays *Reported before*: its analysis is final, and reported again it would be unclassified again. A row whose company was missing is not remembered, and is reported once the company is filled in. |
-| On **Admin → Job Lake** a job's **Job Type**, **Clearance** or **Industry** is blank (a dash in the table; **Details** says *Not stated* or *Not filled in yet*) | Blank Job Type or Industry - *Not stated* - is what the posting gave: no remote, hybrid or on-site arrangement stated, nothing to tell its industry by (a posting analysed before industries existed gets one from its company category or its own industry word when it has one; it is never sent to a model again for it). All three blank, Clearance included - *Not filled in yet* - means the job was added by an older build (before this release, or while rolled back) and is not filled in yet: every start fills such jobs from their analyses - the log says *[lake] Filled in job type, clearance and industry for N lake row(s)...* - and *[lake] Could not fill in the lake's job type, clearance and industry* with the cause when it could not, in which case the next start tries again. |
+| A reporter's row says *Reported before (Added)* - or *(Duplicate)*, *(Replaced)*, *(Unclassified)* - and is skipped, though it was never reported from that row or tab | The same reporter reported the same posting before - same link (tracking and `#fragment` aside) or same text - from another row, another tab, or this row before it was sorted or moved; in brackets is what became of it then. A posting is reported, paid and counted once per reporter, wherever it is pasted. For *(Added)*, *(Replaced)* or *(Duplicate)*, to have it reported again an administrator deletes the job on **Admin → Job Lake** (Details, Delete), which forgets every report that reached it. An *(Unclassified)* posting reached no job in the lake, so there is nothing to delete and it stays *Reported before*: its analysis is final, and reported again it would be unclassified again. A row whose company was missing is not remembered, and is reported once the company is filled in. |
+| On **Admin → Job Lake** a job's **Job Type** or **Industry** is blank (a dash in the table; **Details** says *Not stated*) | That is what the posting gave: no remote, hybrid or on-site arrangement stated, or nothing to tell its industry by. A posting analysed before industries existed gets one from its company category or its own industry word when it has one, worked out each time it is read; it is never sent to a model again for it. **Clearance** is never blank: *Not required* unless the posting asks for one - an unfamiliar clearance word included. |
 | A reported row says *Skipped* | It could not be reported this time: the row has no company, or no job description long enough to read a job field from. Fill it in and run the rows again - *Skipped* rows are tried again, unlike *Added*, *Replaced*, *Duplicate* and *Unclassified* ones. |
 | A reporter added jobs but earned `$0` | The global rate is still `$0` (Admin → Job Lake shows *not set*) and the reporter has no rate of their own, or the **daily cap** was reached (the job is added, the reward stops at the cap until the next UTC day), or the account is not a Reporter - an administrator reporting is never paid. Each lake row records the rate in effect when it was added. |
 | **Admin → Job Lake** says jobs are waiting for the admin sheet, or the log says `[lake] Could not append to the admin sheet` | The jobs are in the database - the sheet is a copy appended after them, and a failed append never undoes one. Under *Why the last attempt failed* the page shows the sentence and, on the line under it, Google's own reason: *Google Sheets is not configured on this server* means the server has no Google credential (see [The job sheet](#the-job-sheet)); *Google Sheets is busy right now*, over a Google 429, means the shared Sheets quota ran out even after backing off - **Retry now** later; *That spreadsheet or tab could not be found*, over a Google 404, means the spreadsheet was deleted in Google - use **Create a new admin sheet**, which sends it the whole lake (pressed while a sync is sending, that sync stops and starts again on the new sheet). Each sync also runs after the next report run or merge, and at startup. An administrator who cannot open the sheet was disabled when it was shared, or was appointed after the last sync - **Retry now** shares it with them. |
@@ -3645,17 +2693,15 @@ file. Export them in the shell, for the install and the server alike:
 | A push says *Pushed the newest N of the M jobs these filters match ... the older K were left out* (or *the oldest was left out*) | A push writes at most `JOB_LAKE_PUSH_MAX_ROWS` jobs (1000 by default, 5000 at most), newest first, and its confirm says so before it starts. Narrow the filters - **Updated from** and **Updated to**, for one - and push again, or raise the setting in `.env` and restart. |
 | Rows or notes typed into **Temp For AI** are gone after a push | By design: a push replaces the tab - every row under its header is emptied in columns A to L, a duplicate's red paint included, before the jobs are written, and the confirm says so. Columns past L and every other tab are left alone. Keep rows of your own in All, or in a tab of your own. |
 | A build fails with *That job analysis was not found. Analyse the job description again.* | The page sent the id of an analysis this server has not stored - a page left open across a database restore, or a request made by hand. Analyse the description again (the builder does it when you press Generate), which finds the posting if it is stored or analyses it once. |
-| Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates, job scrapers or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
+| Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
 | A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before jobs can be reported.* (or that their job sheet could not be reached, with a `Ref:`); **Settings → Job Sheet** ends the same sentence *...before this page can show you one.* | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
 | An administrator made somebody a User or Reporter, and they are an administrator again | Their address is in `ADMIN_EMAILS` (or, with that unset, it is the `SMTP_USER` address). Those are promoted at every sign-in and every start, and never demoted, so a slip on the Accounts page cannot lock the operator out - the row and the change's own message say so. Take the address out of `ADMIN_EMAILS`, restart the backend, then change the role. |
 | **Record payout** (on Admin → Accounts, or on a payout request in the refund queue) answers *That is more than this reporter's balance of $X. Record what was actually paid, up to the balance.* | A payout records money already paid outside the app, and is never more than the balance: it is refused rather than cut down, because a record saying less was paid than was is wrong. If more really was paid, the balance was short first - read the reporter's **History** on Admin → Accounts, and add the missing earnings with the **+/-** button beside the balance (add or take away credit, with a note) before recording the payout. *Only a reporter is paid out* means the account is not a Reporter; use the **+/-** button for anybody else. |
 | **Record payout** on a payout request answers *That account is no longer a reporter, so no payout can be recorded against its balance. Decline the request instead.* (or *That account no longer exists ...*) | The reporter was made a user or an administrator, or deleted, after asking. Nothing was recorded and the request is still open: decline it with a reason. If they are to be paid anyway, make them a Reporter again first. |
 | A reporter's **Ask for Refund** is greyed out | It asks for the whole earned balance, so it is offered only with something on the balance (`$0` has nothing to pay out) and only while no payout request of theirs is open - one at a time. The button's tooltip, and the line under it, say which; the open request is listed under it, and an administrator answers it in **Admin → Payments → Refund requests**. |
-| A page answers *Refunds are no longer asked for in the app. If you think a purchase or a resume should be refunded, contact your administrator.* | Users and administrators no longer ask for refunds in the app - a tab left open from before still had the old **Ask for refund** button (410 `refund-requests-closed`). Reload the page. An administrator refunds a purchase from the payments list, or adds credit back with the **+/-** beside a balance on Admin → Accounts; requests made before are still in the queue. |
 | Credit History shows `$0.050` on an older row and `$0.05` on a newer one | Amounts are shown without trailing zeros now (`$1`, not `$1.000`). A note written into a history row is stored as text and keeps the figure it was written with; the amount column beside it is always the new format. |
 | An uploaded template still prints a **Strengths** or **Soft Skills** heading with the section switched off | The section is found by the `section-strengths` / `section-soft-skills` class, a `data-section="strengths"` / `"softSkills"` attribute, or - for markup with neither - from where the list is printed (`{{#each strengths}}`, `{{join softSkills ", "}}`): an element around it that holds the section and nothing else - no other data, no text, no picture - or the heading element before the list's container, past a divider (`<hr>`, an empty box) or a line break. A heading that is bare text beside other data, sits inside a `{{#if}}` of its own before the list, or has a picture or a line of text between it and the list is not found, and one in an element that also holds a photo or static text is taken without that element. Put the class or the attribute on the element that holds the heading and the list (not on the list alone), and the section goes whole. |
 | The backend logs `[templates] Template "<id>" does not compile with its Strengths / Soft Skills section found from the list, ...` or `... section removed, so it is drawn with both sections in place ...` | Finding the section would have cut through a Handlebars block - typically an `{{#if}}` or `{{#each}}` that opens inside the section's element and closes after it (`<div class="section-strengths">{{#if summary}}...</div>{{/if}}`), which Handlebars accepts and the cut cannot. Rather than fail every resume on the template, it is drawn with less found: only the class- or `data-section`-marked section, or none - a switched-off list still prints empty, but its heading may stay. Move the block wholly inside or wholly outside the section's element (and mark the element with `section-strengths` / `section-soft-skills`), save the template, and the section goes whole again. Logged once per template while the server runs. |
-| Coin arrived on the retired on-chain path and was never credited | The watcher and the admin queue that showed these are gone, but the records are not. An unattributable transfer, or one that arrived against an order it could not be credited to, is still in the database: `SELECT * FROM chain_orphans WHERE resolved_at IS NULL;` and `SELECT * FROM chain_invoices WHERE state = 'held';` against your `DB_DIR`. Each row carries the transaction id, the amount and why it was held. Settle it by hand and adjust the balance from the accounts page - nothing in the app will surface it for you any more. |
 | The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and, signed in as an administrator, read the buy page's own reason under the greyed-out button: it names which key is missing. Anybody else is told only *Not available right now*. |
 | Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
 | A Cryptomus invoice was paid but nothing was credited | Read the backend log for that payment's reference. *"the provider reported N against M"* means the amount did not match what was quoted - the payment is deliberately left pending for a person rather than credited to a guess. *"a paid event arrived with no amount on it"* means the callback carried nothing comparable to what was quoted, and a signature alone is not evidence of how much arrived - so that one is held for a person too. *"already handled"* on every attempt means the callback was recorded before; the credits either landed or the row is not pending. Nothing at all means the callback never arrived: check the address set in the Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL`, points at **this server's API** - `/api/payments/webhook/cryptomus` - and not at the frontend. |
@@ -3669,12 +2715,9 @@ file. Export them in the shell, for the install and the server alike:
 | **Mark refunded** on a card purchase's refund request answers *Could not confirm the refund with Stripe. Its credit stays off the balance until it is…*, and the row then says *A $X card refund was sent and not confirmed* | Stripe did not answer - a dropped connection, a timeout - so the refund may or may not have been made. The credit it was for stays held off the buyer's balance (so it cannot be spent while the money may be on its way back), and the amount sent is written down. Press **Mark refunded** again: it sends the same amount under the same `Idempotency-Key: refund:<payment>`, so Stripe answers with the refund it made, if it made one, and never makes a second; the request then turns *Refunded*, or - if Stripe refuses - the credit goes back. Or check the payment in the Stripe dashboard first. Until it is settled the request cannot be declined and the payment cannot be refunded from the payments list (see the next row). |
 | **Decline** on a purchase's refund request says *That purchase is being refunded right now*, or *A $X card refund was sent to Stripe for this request and never confirmed…*; or the payments list's **Refund** says *A refund request for this payment has a card refund that Stripe has not confirmed yet* | Expected: *Declined* tells the person no money moved, so it is refused while money is moving or may have moved. *Being refunded right now*: another administrator (or another tab) pressed **Mark refunded**, or **Refund** on the payments list, and Stripe has not answered yet - wait a moment and reload the queue; if the refund went through, the request is already *Refunded*. *Never confirmed*: see the row above - press **Mark refunded** again first, and decline only if Stripe refuses it. The payments list refuses its whole refund for the same reason: the request already holds that credit, and a whole refund on top would take it twice. A decline of a purchase that HAS been refunded closes the request as *Refunded* instead and tells the person. |
 | **Mark refunded** on a crypto purchase's refund request says *Crypto cannot be refunded automatically. Send $X back from your Cryptomus merchant dashboard first, then confirm here that you have.* | Expected: nothing can pull crypto back. Send that amount to the buyer from the Cryptomus dashboard, then confirm - the dialog sends `paidByHand: true` with the amount it named, or what you typed in *Amount actually sent* (whole cents, no more than was asked); the server refuses a confirmation that names no amount (*Say how much you sent back*). Only then is the request set *Refunded*, recorded at what you sent, and that much credit reversed. If the buyer spent some between the request and the confirmation, the reversal takes what is left and the answer reports the rest as a shortfall. |
-| A person's refund request is refused with *What this resume was charged is not on record*, or the resumes of a run show *This run's resumes are no longer listed* | The resume is from an order placed before refund requests existed (its item carries no charge) and its batch is gone, or it is from a builder run queued before Generate Immediately runs were filed with a record of their own, and the queue has since forgotten its run (an hour after it finished at most, or sooner once twenty newer runs on the install had finished). Nothing records what that one resume alone cost, so it cannot be named. Grant the amount by hand under **Admin → Accounts** - the run's reserve row in the account's Credit History says what each resume was charged. |
+| A person's refund request is refused with *What this resume was charged is not on record, so it cannot be refunded here.* | The resume is from an order placed before refund requests existed: its item carries no charge, and nothing else records what that one resume alone cost. Grant the amount by hand under **Admin → Accounts** - the run's reserve row in the account's Credit History says what each resume was charged - and decline the request. |
+| A refund request offers only Decline, and says *This request names something this version of the app cannot measure, so it cannot be refunded here. Decline it, and refund by hand from Accounts if it is owed.* | An older build recorded the request against a queued resume's task (`task:`) - a builder run from before Generate Immediately runs were filed with a record of their own - or the row was edited by hand. This build cannot tell what it names or what it cost. Decline it, and if a refund is owed, grant it by hand under **Admin → Accounts**. |
 | **Mark refunded** on a resume's request says *That account no longer exists, so nothing can be credited back* | The account was deleted after asking. There is no balance left to credit: decline the request with the reason instead. |
-| After rolling back to `5177fc3`, a refund request labelled *Payout of earnings* says *That purchase was not found.*, and **Mark refunded** on it fails the same way | It is a reporter's payout request, which that build reads as a resume's refund and can neither pay nor close. Decline it there (the reason reaches the reporter) and record what you pay on **Admin → Accounts** - or upgrade again and record it from the queue. Next time, decide payout requests before rolling back - step 1 of [Rolling back this release](#-rolling-back-this-release). |
-| After rolling back to `5177fc3`, every new posting's analysis fails, and the log says *Prompt "analyze-job-description" contains unknown variables: industryList* | The edited Analyze Job Description names `[[industryList]]`, which that build does not know. Take the variable and its `INDUSTRIES (id: label):` heading out under **Admin → Prompts**, or paste that build's shipped text over it - step 2 of [Rolling back this release](#-rolling-back-this-release). |
-| After rolling back to `5177fc3`, the job pages work on a new `MM/DD/YYYY` tab, and Report Jobs refuses All (*is not laid out as a job sheet tab*) | That build lays a sheet out one tab a day, and reads All and Temp For AI as tabs of the person's own. Use the day's tab while it runs (to build from All there, set From column C and To column F under **Advanced columns**, and the columns to Company C, Job Title D, Job Link E, Job Description F); after upgrading again, copy that tab's rows into All - see [Rolling back this release](#-rolling-back-this-release). |
-| After rolling back to `90adbaf`, every account's bell shows other people's notices - *New refund request FT-RF-…* with somebody's email, amount and reason, *Refund request declined*, *Refund made* | This build writes notices for ONE account (`notifications.recipient_id` set), and `90adbaf` has no recipient filter: it reads every row as an announcement for everybody (`5177fc3` filters, as this build does). Stop the backend and run `sqlite3 "$DB_DIR/free_tailor.db" "DELETE FROM notifications WHERE recipient_id IS NOT NULL;"` - announcements are untouched, and the requests themselves stay in `refund_requests`, which that build ignores. Do it before starting it - step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf). |
 | The contact dialog lists fewer channels than were saved, or none, and the backend log says `[contact] A stored contact channel no longer passes its check and is not shown.` (or *not valid JSON*) | The `contact` row in `app_settings` was edited outside the app, or holds a value a rule written since now refuses. Every read re-checks every channel and leaves out the ones that fail - a link on the sign-in page is never shown unchecked. Open **Admin → Settings → General**, fix or re-enter the channel, and save. |
 | A refund says *Could not confirm the refund with Stripe* | The call went out and no answer came back, so this server does not know whether the refund exists - and it deliberately reversed no credits rather than guessing. Press **Refund** again: the request carries `Idempotency-Key: refund:<payment id>`, so Stripe cannot create a second refund for that payment, and the second attempt finishes the reversal. If you would rather look first, the payment in the Stripe dashboard shows whether a refund is there. |
 | A payment closed with *This server could not start that payment* | Not the provider - this end. The settings row would not load, or the database refused a write, before anything was sent anywhere. Nothing was charged. Read the backend log for the reference: the real error is there, and it is usually `DB_DIR` becoming unwritable or a settings row saved as something that will not parse. |
@@ -3688,23 +2731,18 @@ file. Export them in the shell, for the install and the server alike:
 | `Type '() => Promise<string> \| null' is not assignable to type '() => string \| null'` in `config/browser.ts` | The installed puppeteer is a major ahead of the one this project pins: `executablePath()` returns a string in puppeteer 24 and a promise in 25. The code now handles both, so this should not recur - but an install that far out of step with `package-lock.json` is worth correcting anyway with `npm ci --prefix backend`, which installs exactly the locked versions instead of re-resolving them. |
 | `npm run dev` stops at once with `'concurrently' is not recognized as an internal or external command, operable program or batch file.` (Windows), `sh: 1: concurrently: not found` (Ubuntu) or `concurrently: command not found` (bash's wording, which macOS's `sh` uses by default) - or, from this release, `[install] npm run dev cannot start: packages this repository needs are not installed.` `[install]   In the repository root: concurrently` `[install] Run npm run install:all from the repository root, F:\Develop\free_tailor, then npm run dev again.` (`dev:live` and `dev:poll` the same) | The repository root's own packages are not installed. `npm run dev`, `dev:live` and `dev:poll` start both halves with `concurrently`, the root package's one package - a devDependency, kept in the root's own `node_modules`, not the backend's or the frontend's. It goes missing in three ways, which look the same: the root `node_modules` was deleted (by hand, or `git clean -xdf` while sorting out a pull) and only `npm install --prefix backend` and `--prefix frontend` were run again; npm leaves devDependencies out on that machine - `NODE_ENV=production` in the environment, or `omit=dev` in npm's configuration - so every plain `npm install` *removes* `concurrently`, and with it the backend's `ts-node-dev` and `typescript` and the frontend's `tailwindcss` and `typescript`, which this repository needs to build and run; or an install failed part-way - an `EPERM` or `EBUSY` on Windows, say, where a running dev server can hold files open. **Fix:** stop any `npm run dev`, then from the repository root run `npm run install:all`. It passes `--include=dev` to all three installs, which installs devDependencies whatever `NODE_ENV` or `omit` says. `npm config get omit` shows what npm will do - `dev` in its answer means it leaves devDependencies out, whichever setting says so - and `$env:NODE_ENV` in PowerShell (`echo %NODE_ENV%` in cmd, `echo $NODE_ENV` in sh) whether `NODE_ENV` is one of them; with `NODE_ENV` cleared, `npm config get omit` still saying `dev` means an `omit=dev` (or a `production=true`) in npm's configuration as well - `npm config ls` names the `.npmrc` it comes from, and `npm config delete omit` takes it out of your user one. **What happens now:** each of the three first runs `scripts/checkInstall.mjs` (npm's `predev`, `predev:live` and `predev:poll` hooks), which checks that every package the root, backend and frontend `package.json` files name is in that package's `node_modules`. When one is not, it prints the lines above - what is missing in each package, five names at most and how many more, and the repository root by its path - and stops before `concurrently`; when npm's settings, as far as a script can see them, leave devDependencies out it adds a line saying which and pointing to `npm config get omit` (`[install] npm looks set to leave devDependencies out of installs here: ...`) - a hint, because npm does not pass every setting on to a script: with `NODE_ENV=production` in the environment an `omit=dev` never reaches it, nor does an `.npmrc`'s deprecated `production=false`, which makes npm install them after all. With everything installed it prints nothing. npm skips a `pre` hook while its `ignore-scripts` setting is on (`npm config get ignore-scripts`), and then the shell's sentence is all there is - that setting also skips the backend's Chrome download. |
 | `Cannot find module '<name>'` or `TS2307` right after pulling | A pull brings source, never packages - a commit that adds a dependency leaves `node_modules` a version behind, and the backend then fails to compile naming a module that is correctly listed in `package.json`. Run `npm run install:all`, or `npm install --include=dev --prefix backend` for the backend alone. |
+| `npm run build --prefix frontend` (or the frontend's production-style `npm run dev`) fails with `Failed to type check.` after `.next/dev/types/validator.ts(53,39): error TS2307: Cannot find module '../../../src/app/account/page.js' or its corresponding type declarations.` (and the same for `app/jobs/page.js` and `app/settings/plan/page.js`) | A Turbopack dev server - the root `npm run dev` - ran on this checkout before a pull that deleted those pages. Next writes `frontend/.next/dev/types` only when `next dev` runs, and the frontend's `tsconfig.json` includes it, so it still names the pages that are gone. Delete `frontend/.next/dev` (or run `npm run dev` once, which writes it afresh) and build again. |
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm run install:all` from the repository root, or `npm install --include=dev --prefix backend` (never `--omit=dev`) - `--include=dev` installs them even where `NODE_ENV=production` or npm's `omit=dev` would leave them out (the `concurrently` row above). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
-| Startup fails with *Could not rename users.plan to subscription in ...* | The first start after the plan-to-subscription rename could not change the database file: the file or its directory is read-only to this user, the disk is full, or another program - a `sqlite3` shell, a backup tool - holds a write lock on it past the five-second wait. The reason SQLite gave is at the end of the line. Nothing was changed; fix that and start again. This build cannot run on the old column name, which is why it stops here instead of failing on every sign-in. |
 | On **Admin → Templates**, importing, extracting, building or editing a template answers *Template could not be saved. Please try again, or contact your administrator.* with a `Ref:` (or deleting one, *Template could not be deleted.*) | Saved templates are files in `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), and the server could not write there: the directory is read-only to the user the backend runs as - a checkout owned by somebody else, a read-only container layer - or the disk is full. The startup line under `Database:` says so as `Templates: <dir> is NOT writable (<reason>)`; the backend log line carrying the same `Ref` names the file and the error, and an administrator sees it under the message. Give that user write access to the directory (or point `TAILOR_STATIC_DIR` at a writable copy of `backend/static`) and try again. A failed save leaves the template as it was and no temporary file behind. Renaming, disabling or reclassifying a **built-in** still works meanwhile, because those go to the database. |
-| After upgrading, a template that was there before is missing from **Admin → Templates**, and the backend log says `[templates] Template "<id>" was left in the database and is not offered: ...` or `... could not be written to a file and is not offered until it is` | This release keeps saved templates as files, and the first start moved every template out of the database (see [Saved templates are files](#9-saved-templates-are-files)). *Could not be written* means the templates directory was not writable at that start, or a file in the way could not be read: fix it as in the row above and restart - that template, and only it, is tried again. *Left in the database* is for good, and happens only when a file of exactly that id was already there - a built-in, which hid the row before the upgrade too, or a different saved template, which a profile naming that id is drawn with - or when the row's data cannot be read. The row is still in the database: `sqlite3 "$DB_DIR/free_tailor.db" "SELECT data FROM templates WHERE id = '<id>'" > template.json`, then import `template.json` under **Admin → Templates**, which gives it a new id if its own is taken, and pick it again on the profiles that should use it. A log line *Template "Navy_Rule" is now u-1a2b3c4d.json* (or *... is now my-template.json*) is not a problem: ids are lower case with hyphens now, so a row whose id was not one got a new id - its folded one when that was free, else a fresh `u-` one, never a built-in's or another template's - and the profiles naming it were changed to name it. |
 | A template file copied into `backend/static/templates` by hand is not offered any more, a profile that used it is drawn with `default`, and the startup line under `Database:` ends *Not offered, because a template file is named <id>.json with an id of lower-case letters, digits and hyphens: Company_Brand.json* | A template's id is its file name, and ids are lower-case letters, digits and hyphens now; an older release offered a file under any name. Rename the file to its id - `Company_Brand.json` to `company-brand.json` - and it is offered at the next request, with no restart; a profile naming `Company_Brand` finds it again, because a lookup folds case and `_`. What an administrator had changed about it as a built-in on **Admin → Templates** - its name, description, disabled flag and layouts - was recorded under the old id, so set those again there. |
-| After rolling back to `90adbaf`, the saved templates show as built-ins that cannot be edited or deleted, or one is listed twice; or, after upgrading again, a template created or changed under the older build is missing | That build reads every file in `static/templates` as a built-in, and this build moves the database's templates to files only once. [Going back further, to 90adbaf](#going-back-further-to-90adbaf) says which files to move aside before rolling back (step 5), and how to have the move run again - put the files back and delete the `templates_moved_to_files` record from `schema_meta` - before upgrading again. |
-| Startup warns *users has both "plan" and "subscription"; reading "subscription" and leaving "plan" alone* | A `plan` column was ADDED back by hand - usually to roll back to an older build - instead of renaming `subscription` back (step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf)). This build reads `subscription`; anything an older build wrote to `plan` since is not read. To keep those values, stop the backend and run `UPDATE users SET subscription = plan; ALTER TABLE users DROP COLUMN plan;` against `free_tailor.db` in your `DB_DIR`; to keep this build's, just drop `plan`. |
-| After rolling back to `90adbaf`, every sign-in fails and its log shows `no such column: plan` | The database was upgraded: `5177fc3` renamed `users.plan` to `users.subscription`, and `90adbaf` only knows the old name. Rename it back before starting it - the command is step 4 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf), with the two other statements that build needs. (`5177fc3` reads `subscription` and needs none of them.) |
-| After rolling back to `90adbaf` and upgrading again, an account is short the dollars a run had taken, and that run's failed resumes gave nothing back; or, while rolled back, every model costs 1 credit | Credits became dollars, and `90adbaf` reads only the whole-credit columns. A run started under this build holds `0` credits as far as the older build can see, so a resume of it that fails there refunds nothing, and its settle - or that build's 6-hour startup sweep - closes the reservation; this build never refunds against a closed one. And once this build has saved the settings row at all, no model carries its old `creditsPerResume`, so the older build prices every one at 1 credit. Grant back what the failed resumes cost under Admin → Accounts - the run's reserve row in the account's Credit History says what each resume was charged - and put the old prices back by hand from `app_settings["migration-log.credits-to-dollars"]` (`models`). Next time, let the queue drain before rolling back - step 1 of [Going back further, to 90adbaf](#going-back-further-to-90adbaf). |
-| On **Admin → Accounts** after an upgrade, changing a row's subscription, deleting an account, or any change the server refuses (demoting the last administrator, say) turns the page into *Application error: a client-side exception has occurred*; or **Add an account** answers *This page is from an older version of the app. Reload it and try again.* | The page was loaded before the upgrade that renamed plans to subscriptions. It sends the tier as `plan`, which this build refuses rather than ignores, and it reloads the account list expecting the old `plans` field, which is now `subscriptions` - so anything in the table that reloads the list breaks the page, and only the invite form, which does not reload after a refusal, gets as far as the sentence. Reload the page. A subscription change or invite was refused, not half-made: an invite meant for Premium would otherwise have created a Default account. A delete names no tier, so it did go through; the reloaded page shows it. |
+| The backend stops at once with `[db] The database at <path> has not finished upgrading: <what is missing>. Start build ac3df79 once on this database to finish its upgrade, then start this build.` (exit code 1) | The database was last opened by a build older than `ac3df79`, or `ac3df79` never finished its upgrades on it - and this build carries none of the code that made them, so read as it is it would read wrongly: balances in the old unit, saved templates missing, providers that no longer exist. The line names each step that is missing. Start build `ac3df79` once on the same `DB_DIR`, let it finish starting, stop it, then start this build again (see [Upgrading](#4-upgrading)). Where the line says the migrations *wait for an administrator*, sign in to `ac3df79` as one (an address in `ADMIN_EMAILS`) before stopping it; where it says *some saved templates could not be written*, make `backend/static/templates` writable for the user the server runs as first. A copied or restored database is checked the same way, so a backup from before that build needs the same. A database that passed once is never checked again. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first - except that a Generate Immediately run's resumes wait ahead of every Order's on the same seat (somebody is watching one; nobody is waiting on the other), first come, first served within each. There is a lane per real resource - one per PROVIDER (the three built-in seats, and any an administrator added), each at its own limit - so no provider can hold up another, and a model's resumes are spread over every provider of its type that can take work (see [Several providers of one type](#several-providers-of-one-type)). |
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released $X from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
 | A run keeps going after the page is closed - or stops when it is | Which one depends on how it was started. An **Order** belongs to the queue, not to the page: closing or reloading the page does not stop it, and its files keep landing on **Orders**; to stop it, press **Cancel** there. A **Generate Immediately** run is tied to the tab that started it: a dropped connection inside `IMMEDIATE_TAB_GRACE_MS` (30 s) picks it back up without downloading anything twice, but a tab that is closed or reloaded - or a page left inside the app after confirming - stops it, and the log says which: `[queue] Immediate run bat_... stopped by its page` (the page said it was leaving) or `[queue] Immediate run bat_... stopped: no page has followed it for 30000 ms` (the tab went away without saying so and did not come back). Either way the resumes that had not started are refunded and the run's finished files stay downloadable for `IMMEDIATE_FILE_RETENTION_MS`. For a run nobody will sit through, use **Order**. |
 | A Generate Immediately run stopped part way though the tab was still open | The page lost its connection to the server for longer than the grace (plus up to 20 s: the server ends the run's progress stream every 20 s, and a page that does not attach again by then is counted gone) - a laptop that slept, a network that dropped for a minute, a proxy that cut the progress stream and did not let it reconnect. The person sees the remaining resumes as *Cancelled* and the unstarted ones refunded. Raise `IMMEDIATE_TAB_GRACE_MS` (up to ten minutes) if your users' connections are like that, or have them **Order** long runs. |
-| `npm run dev` serves the frontend for a moment after *✓ Ready*, then the log's last frontend line is `[frontend] npm run dev:turbo --prefix frontend exited with code 3221225477` and the page no longer loads (Windows; printed as a signed number - PowerShell's `$LASTEXITCODE`, say - the same code is `-1073741819`) - or, from this release, the frontend prints `[next] Turbopack's dev server stopped with exit code 3221225477, 0xC0000005 STATUS_ACCESS_VIOLATION.` and goes on to a webpack build | `3221225477` is `0xC0000005`, Windows' *STATUS_ACCESS_VIOLATION*: native code - Turbopack, the Rust part of Next's dev server - touched memory it may not, and Windows ended the process before Node could print anything. It is Next's bug, [vercel/next.js#95015](https://github.com/vercel/next.js/issues/95015), reported from 16.3.0-canary.49 on; the log that brought it here ran Next.js 16.3.5. The backend is not involved and keeps running. **What happens now:** when Turbopack's dev server - `dev:turbo`, which the root `npm run dev` runs - ends that way on Windows, `frontend/scripts/next.mjs` explains it once and runs the production-style server in its place, on the same host and port: `next build --webpack` (webpack, since Turbopack has just crashed natively on this machine), then `next start`. The page works but does **not** hot-reload: stop `npm run dev` and start it again to see a change to the frontend (the backend still restarts on its own). If that build fails, the frontend ends with the build's exit code and a line saying the server was not started. It happens once, only in that mode and only on Windows; every other ending is passed on as before. **To pick a mode yourself,** from the repository root (the fallback fires the same way under `cd frontend && npm run dev:turbo`, and its advice names the root's commands): `npm run dev:live` - the backend with webpack's dev server, which hot-reloads but reloads other open tabs of the app (the next row) - or `npm run dev:backend` in one terminal and `npm run dev --prefix frontend` in another (`npm run dev:poll` runs the same two in one, its backend watching by polling): the production-style server, built by **Turbopack** - whether Turbopack's build crashes the same way on a given machine has not been tried. **Check which Next runs:** this release pins 16.3.8, and the frontend names any other it finds before starting - `[next] Next.js 16.3.5 is installed, but frontend/package.json pins 16.3.8. Run npm run install:all.` - which `npm run install:all` puts right (see [step 3](#upgrading-step-by-step) if `git pull` refuses to). Whether 16.3.8 itself still crashes on Windows is not known: the issue names no fixed release, and every measurement here was on Linux. Do not go back to 16.1.6 to avoid it: `npm audit` lists critical advisories against it, remote code execution on Windows-hosted servers among them. |
+| `npm run dev` serves the frontend for a moment after *✓ Ready*, then the log's last frontend line is `[frontend] npm run dev:turbo --prefix frontend exited with code 3221225477` and the page no longer loads (Windows; printed as a signed number - PowerShell's `$LASTEXITCODE`, say - the same code is `-1073741819`) - or the frontend prints `[next] Turbopack's dev server stopped with exit code 3221225477, 0xC0000005 STATUS_ACCESS_VIOLATION.` and goes on to a webpack build | `3221225477` is `0xC0000005`, Windows' *STATUS_ACCESS_VIOLATION*: native code - Turbopack, the Rust part of Next's dev server - touched memory it may not, and Windows ended the process before Node could print anything. It is Next's bug, [vercel/next.js#95015](https://github.com/vercel/next.js/issues/95015), reported from 16.3.0-canary.49 on; the log that brought it here ran Next.js 16.3.5. The backend is not involved and keeps running. **What happens now:** when Turbopack's dev server - `dev:turbo`, which the root `npm run dev` runs - ends that way on Windows, `frontend/scripts/next.mjs` explains it once and runs the production-style server in its place, on the same host and port: `next build --webpack` (webpack, since Turbopack has just crashed natively on this machine), then `next start`. The page works but does **not** hot-reload: stop `npm run dev` and start it again to see a change to the frontend (the backend still restarts on its own). If that build fails, the frontend ends with the build's exit code and a line saying the server was not started. It happens once, only in that mode and only on Windows; every other ending is passed on as before. **To pick a mode yourself,** from the repository root (the fallback fires the same way under `cd frontend && npm run dev:turbo`, and its advice names the root's commands): `npm run dev:live` - the backend with webpack's dev server, which hot-reloads but reloads other open tabs of the app (the next row) - or `npm run dev:backend` in one terminal and `npm run dev --prefix frontend` in another (`npm run dev:poll` runs the same two in one, its backend watching by polling): the production-style server, built by **Turbopack** - whether Turbopack's build crashes the same way on a given machine has not been tried. **Check which Next runs:** the frontend pins 16.3.8, and names any other it finds before starting - `[next] Next.js 16.3.5 is installed, but frontend/package.json pins 16.3.8. Run npm run install:all.` - which `npm run install:all` puts right (see [Upgrading](#4-upgrading) if `git pull` refuses to). Whether 16.3.8 itself still crashes on Windows is not known: the issue names no fixed release, and every measurement here was on Linux. Do not go back to 16.1.6 to avoid it: `npm audit` lists critical advisories against it, remote code execution on Windows-hosted servers among them. |
 | Opening a second tab of the app reloads the first one, and a Generate Immediately run going there stops (*Your last run ended while this page was away ... Stopped after building 0 of 1 resume*) | The frontend is on **webpack's** dev server - `npm run dev:live`, or the root `npm run dev` of a release before this one. In Next 16.1 that server sends every open tab a "sync" when a new tab connects, and a tab that has not seen the latest compile (the page the new tab opened is one) takes it for a restarted server and reloads itself - and 16.3.8's reloads it just the same; a reloaded Build Resumes tab releases its run as it goes, which the server then stops and refunds. Nothing in the app reloads a tab. Run `npm run dev` (Turbopack) or the production-style `npm run dev --prefix frontend` instead - neither reloads, and a production `next start` has no such server at all. `cd backend && DB_DIR=... E2E_MODE=dev:live node test/e2e/dev-reload.js` shows which a given setup does (backend/test/e2e/README.md). |
 | Only the first resume of a Generate Immediately run downloaded, or the browser asks *This site is trying to download multiple files* | The browser blocks a page from starting several downloads on its own until it is allowed to. Choose **Allow** in that prompt (in Chrome: the icon at the end of the address bar, or *Site settings → Automatic downloads → Allow* for this site). The files are on the server for `IMMEDIATE_FILE_RETENTION_MS` after the run ends (ten minutes by default), and the page lists each one under the progress (*This run's files*) to download again while it is open; after that they are deleted, downloaded or not - an **Order** keeps them for days instead. |
 | Downloading a Generate Immediately resume answers *That file has been deleted from the server* | Its run ended more than `IMMEDIATE_FILE_RETENTION_MS` ago, and the files went with it (owner decision: an immediate run's files are only kept long enough to download). The resume stays charged; if it never reached the person, an administrator can add the credit back with the **+/-** beside their balance on Admin → Accounts. Raise the setting, or use **Order**, when files are needed for longer. |
@@ -3730,14 +2768,12 @@ file. Export them in the shell, for the install and the server alike:
 | A Plain Technical Skills list is shorter than the Grouped one for the same job | By design. Plain lists the posting's skills the library knows plus your own related skills, and pads nothing. Grouped fills the library's headings out from the library for the job, as it always has. |
 | Saving a prompt under **Admin → Prompts** says *Unknown prompt variables: ...* | The text names a `[[variable]]` the feature's code never supplies - often a typo. The variables it can use are listed beside the prompt; correct the name. This used to save, and then fail every resume that used the prompt. |
 | Every resume built with one prompt fails with a `Ref:`, and the backend log under it says *Prompt "..." contains unknown variables: ...* | The stored prompt names a variable nothing supplies - written straight into the database, or saved before saves were checked. Open it under **Admin → Prompts**, where the name is reported, and correct or remove it. |
-| **Admin → Prompts** says *This prompt predates the profile's Strengths and Soft Skills switches; the app still enforces them.* | The tailoring prompt's text never mentions `[[includeStrengths]]` - it was edited before the switches existed. Nothing is broken: the code appends the switches to every tailoring turn and enforces them after the model. To make the text say so too, add the shipped prompt's *RESUME SECTIONS* block (`[[includeStrengths]]`, `[[includeSoftSkills]]`, `[[technicalSkillsLayout]]`); the note then goes. |
+| **Admin → Prompts** marks a prompt *Needs update* (*Not run: it does not use [[...]].*), or saving one says *Missing required prompt variables: ...* | Some variables are required: `[[jobFieldList]]` and `[[industryList]]` in the Analyze Job Description prompt, so every posting is filed under a job field and an industry from the lists, and `[[includeStrengths]]`, `[[includeSoftSkills]]` and `[[technicalSkillsLayout]]` in every Tailor Resume prompt, so the profile's section switches reach the model. A save without them is refused. A stored prompt without them - edited before the rule, or written by hand - never runs: the built-in prompt of its feature runs in its place (an administrator's edit of it when that is complete, else the shipped text), and the backend log says so once: `[prompts] The prompt "..." (...) does not use [[industryList]], which every Analyze Job Description prompt must; the built-in Analyze Job Description prompt runs instead until it is updated under Admin -> Prompts.` Add the variables where the shipped prompt (`backend/static/prompts/<feature>.json`) has them - the analysis prompt names both lists under their own headings before `[[jobLink]]` and asks for `jobField` and `industry`; the tailoring prompt's *RESUME SECTIONS* block follows `[[profileJson]]` - and save; the mark goes. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
 | A model is missing from the model menus | The menus list only models that can run right now. Under **Admin → Models**, it is either *Disabled*, on a provider switched off under Admin → Settings (*Provider off*) - or on a type whose every provider is switched off under **Admin → Models → Providers**, which reads the same - or on a seat locked in this installation (*🔒 Locked*, with the reason). Nothing is locked by default, so a lock means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart. |
 | *That model isn't available. Choose another, or contact your administrator.* | A run, or a profile save, named a model that cannot run: switched off, deleted, on a locked seat or on a provider switched off. It is refused rather than replaced, because another model could cost a different price. An administrator's response carries the reason underneath. A profile that already stored such a model is not refused - it shows *Unavailable model* and runs on the default, and the server log says so once. |
 | *AI generation isn't available right now. Please contact your administrator.* | What anybody but an administrator is told when the seat a run needs cannot answer: its CLI is signed out or not installed, the account cannot use that model, the provider is locked or switched off - or every seat is locked, so nothing can run at all. An administrator sees the cause under the same sentence; the startup `[ai]` lines and the seat cards on Admin → Settings say which seat and why. The other three AI sentences are for the person to act on: *busy* (a usage limit - wait), *took too long* (ask for less) and *failed* (try again). |
-| **Claude (browser)**, **ChatGPT (browser)** or **Default (browser)** is missing from the model menus | Removed, along with the debug Chrome they drove - see [Upgrading an install that used browser chat](#5-upgrading-an-install-that-used-browser-chat). A stored default, profile or prompt that named one now runs on the default model, which is the Claude seat unless that is locked here, and the backend log says so once per name. Debug Chrome windows started for them are still running on a remote-debugging port, and their `~/.free-tailor-chrome-<port>` profiles are still signed in: close the windows and delete the profiles. `npm run browser:debug`, `npm run browser:doctor` and the `AI_WEB_*` variables no longer exist; a leftover `AI_WEB_*` line in `.env` is ignored. |
-| The Anthropic API, OpenAI or DeepSeek models are gone from every menu | Removed, with every API key - see [Upgrading an install that used the metered APIs](#6-upgrading-an-install-that-used-the-metered-apis). A stored default, profile or prompt that named one now runs on the default model, and the backend log says so once per name. Startup warns `[ai] OPENAI_API_KEY, ... are still set, and nothing reads them` for any of the old variables left in `.env`: delete them. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |
 | `The Claude CLI is not installed or is not on the server PATH` (an administrator's detail, or the startup line) | Either it genuinely is not installed, or the server process has a different PATH than your shell - common under systemd and Docker, which get a minimal one. Set `AI_CLI_BIN` to the full path from `which claude` (`where claude` on Windows). On Windows npm installs the CLI as `claude.cmd`, a shim wrapping `node_modules\@anthropic-ai\claude-code\bin\claude.exe`; the server follows the shim to that binary on its own, so `AI_CLI_BIN` is only needed if that fails, and then it should name the `.exe`, not the `.cmd`. |
@@ -3754,7 +2790,7 @@ file. Export them in the shell, for the install and the server alike:
 | `[ai] gemini-cli: ... GEMINI.md is not empty, and the CLI appends it to every prompt this seat runs` | The service user's personal `~/.gemini/GEMINI.md` - notes the CLI adds to every prompt, whatever the app sends, with no way to turn it off. Empty it, or give the server a home of its own with `AI_GEMINI_HOME` and sign in there. |
 | A Gemini model fails with *The signed-in Google account cannot use model "..."* | The account's plan does not offer that model (a preview, or Pro on a plan without it), and that model is left alone for 10 minutes. Pick another model name for that record under **Admin → Models** - `auto` lets the CLI choose one the account can use. |
 | A resume built on Gemini comes back cut short, or a Gemini build is retried with *the answer opened @@BEGIN_JSON@@ and never closed it* in its log (an administrator's detail; users see *The AI request failed*) | A known limit of the Gemini CLI's stream format: an answer cut off at the model's output limit arrives marked as a success, and the CLI names no finish reason once any text was written. A structured answer - the analysis, the tailored resume - gives itself away: this seat has no JSON mode, so it is asked to wrap the document in `@@BEGIN_JSON@@` / `@@END_JSON@@`, and one that opened the first and never wrote the second was cut off. That is refused as truncated, without holding the seat, and built again (`GENERATION_MAX_ATTEMPTS`). It used NOT to fail: the JSON reader found the first complete object inside the cut-off document - one experience entry, say - and took it for the whole answer. A prose answer, such as a cover letter, has no such marker and can still arrive short. If it recurs on long resumes, use another model or seat for them. |
-| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. A Job Search run hits the same wall: its request waits for the Apify run, up to `APIFY_RUN_TIMEOUT_S` (300 seconds by default). |
+| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs nothing extra - the resume's price is taken once at submission and returned only if the resume never delivers. A cancelled batch and a task kind this build does not know are **not** retried. |
 | One seat's work queues while another sits idle | Each provider has its own queue lane, sized by its own limit - `AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY` and `AI_GEMINI_CONCURRENCY` for the built-in seats unless **Admin → Models → Providers** sets one, an added provider's own `concurrency_max_requests`. Types are deliberately not pooled with each other: one shared lane across independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots another seat needs, and a Claude model's resume cannot run on a Codex seat. Providers of ONE type are pooled. Raise the limit of a provider of the type that is waiting - on that page it applies at once, in `.env` after a restart - or add another provider of that type. |
 | Somebody opened their sheet link and Google said they need access | Expected since sheets became private by default: the link alone no longer works, and the person it belongs to opens it through the grant their own Google account holds. If they want a link others can use, Settings > Job Sheet has a sharing toggle - or set `SHEET_DEFAULT_VISIBILITY=public` to go back to link-shared for new sheets, knowing that means anyone with the URL may edit. If the OWNER cannot open their own sheet, that is different: the writer grant failed, almost always because the Drive API is not enabled for the server's Google project. It is retried on their next sign-in, and `npm run sheets:doctor` names the cause. |
@@ -3772,9 +2808,7 @@ file. Export them in the shell, for the install and the server alike:
 | A model shows *Not in model list* | Its model name is not in its seat's list any more - the list was overridden in `.env` since it was saved. It keeps running exactly as before; the flag only says the form cannot offer that name again. Editing its name or price keeps it, while changing its model means picking one from the list. |
 | *Set Default* is refused with *"..." cannot be the default* or *is switched off* | The model cannot run, and a default nobody can run would only fail every run that names no model: switch it on under Admin → Models, switch its provider on under Admin → Settings, or unlock its seat (`AI_LOCKED_PROVIDERS`). Nothing is quietly substituted. |
 | *This needs $0.161 of credit and the account has $0.023* | The run costs the sum of each resume's model price, and the balance is short. Buy credit, generate fewer at once, or pick a model with a lower price per resume - the builder's cost line shows the total before the run starts. An administrator can grant credit under Accounts, and is never charged. |
-| Every balance is `$0` after upgrading, and Credit History ends with a *reset* row | Credits became dollars, and the owner's decision was to reset rather than convert: a credit was bought at a price (50c by default), so no one rate would be right for every balance. The `reset` row shows the old balance in credits; the old rows and payments are kept as they were, read-only. What every account held is in `app_settings["migration-log.credits-to-dollars"]` if you want to grant some of it back - in dollars, under Accounts. See [Credits are dollars](#10-credits-are-dollars). |
-| Admin → Models lists models in red as *free*, and runs on them cost nothing | Every enabled model priced `$0` is listed: after the upgrade that is all of them, since their old prices were in credits and were reset, and a model a migration adds arrives unpriced. Set a price per resume on each. `0` is a valid price - a deliberately free model stays listed, so nobody gives resumes away without seeing it. Startup says *Every model is FREE until it is priced* once, on the upgrade. |
-| Admin → Models, Accounts or Payments refuses a save with *This page is from an older version of the app. Reload it and try again.* | The page was loaded before credits became dollars and sent an amount in the old unit - a price in credits (`creditsPerResume`), a balance or grant in credits (`credits`, `amount`), payment limits in cents, or a purchase as a count of credits. Read as dollars it would have moved money by the wrong amount, so nothing was saved. Reload the page. |
+| Admin → Models lists models in red as *free*, and runs on them cost nothing | Every enabled model priced `$0` is listed: a shipped model arrives unpriced, and a model nobody has given a price reads as `$0`. Set a price per resume on each. `0` is a valid price - a deliberately free model stays listed, so nobody gives resumes away without seeing it. |
 | A price, balance or grant is refused: *... can have at most three decimal places: $0.001 is the smallest step* | Amounts are exact to a thousandth of a dollar, and anything finer is refused rather than rounded either way - `0.023` is fine, `0.0235` is not. A purchase must be a whole number of cents (`12.50`, not `12.505`), because that is all a card or an invoice can charge. |
 | Startup logs `[sheets] Could not load the Google credentials` / `invalid_grant: Token has been expired or revoked` | The saved Google consent is dead. **Not fatal** - the server starts and serves; what stops working is per-account sheet allocation, the job export and filter pages, the builder's sheet mode and the bid assistant's sheet reads. If you did not revoke it yourself, the cause is an OAuth consent screen still in **Testing**, where Google expires every refresh token after seven days. Fix: `cd backend && npm run sheets:login`, which re-consents and rewrites `google-oauth-credentials.json` - it re-uses the client id and secret already in that file, so the originally-downloaded `client_secret*.json` does not have to still be around. Then `npm run sheets:doctor` to confirm the whole chain. To stop it recurring, publish the consent screen **before** signing in again - a consent given while it is in Testing keeps the seven-day limit: Cloud console -> Google Auth Platform -> Audience -> Publish app (older consoles: APIs \& Services -> OAuth consent screen -> PUBLISH APP). With the restricted Drive scope Google then shows a "Google hasn't verified this app" screen at sign-in; for your own install that is expected - Advanced -> Go to the app. A Google Workspace project can choose user type Internal instead, which has neither the expiry nor the warning. `deleted_client`, `disabled_client` or `invalid_client` instead of `invalid_grant` means the OAuth client itself is gone, and signing in again would re-use it: a deleted one can be restored for 30 days under Google Auth Platform -> Clients; otherwise make a new Desktop app client, download it into `backend/` and run `npm run sheets:login -- --client <that file>` - naming it, because an older `client_secret*.json` left there can otherwise be picked. If `GOOGLE_CREDENTIALS_PATH` names the credential, `sheets:login` re-uses the client from that file and says so if the app will keep reading a different one from the file it just saved. `SHEET_BACKFILL=off` in `.env` silences the startup attempt meanwhile, at the cost of not allocating sheets for older accounts until each next signs in. |
 | A script ends with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c` (Windows) | A Node.js bug, not this app's: calling `process.exit()` just after network I/O races Node's own teardown on Windows ([nodejs/node#56645](https://github.com/nodejs/node/issues/56645)). Everything printed above it is complete and correct - read the report, not the crash; the only casualty was the exit code. The doctors and `sheets:login` now let the process end on its own, which avoids it on every Node version. Node itself fixed it in 24.20.0 and 26.7.0 ([nodejs/node#61999](https://github.com/nodejs/node/pull/61999)), and 22.x never got the fix, so a current 24 LTS is worth having anyway. |
@@ -3785,7 +2819,6 @@ file. Export them in the shell, for the install and the server alike:
 | A PDF upload is refused with *... is N MB or larger; this server accepts PDFs under N MB* (the page's check names the file, the server's 413 says *That PDF*) | The file is at or over `UPLOAD_MAX_MB` (10 by default) - a file of exactly N MB is refused too. Raise it in `.env` and restart the backend - the upload pages read the new number from the API, so the frontend needs no rebuild, and a page left open re-checks it before refusing. A big file over a slow link may also need `HTTP_REQUEST_TIMEOUT_MS` raised, and a reverse proxy in front has a body limit of its own (nginx's is 1 MB unless `client_max_body_size` says otherwise). |
 | A large batch or profile import fails with `request entity too large` | The JSON body is over `JSON_BODY_MAX_MB` (10 by default). Raise it and restart the backend. A reverse proxy's body limit applies on top. |
 | A template JSON import fails with *File too large* | The template import is a file upload with its own fixed 2 MB cap - `JSON_BODY_MAX_MB` does not raise it. Split a file of several templates into smaller ones. |
-| Job Search fails with *The job search could not run right now* - for an administrator, with `APIFY_API_TOKEN is required to run the ...` under it | The scrapers run on your Apify account and there is no token. Set `APIFY_API_TOKEN` in `.env` (Apify Console -> Settings -> API & Integrations) and restart the backend. The same sentence covers any other scraper failure; the reference in it finds the cause in the backend log. |
 | The calendar page works locally but answers 404 on the domain | The reverse proxy sends `/api/calendars/*` to Express, which has no such route: the calendar's API is made of Next.js route handlers in the frontend. Add the `handle /api/calendars/*` block from the Caddyfile under [Serving it on your own domain](#-serving-it-on-your-own-domain), above `handle /api/*`, and reload Caddy. |
 | A changed `NEXT_PUBLIC_*` value - the calendar's time zone, the API URL - has no effect after a restart | `NEXT_PUBLIC_` values are compiled into the frontend bundle by `next build`. Run `npm run build --prefix frontend`, then restart the frontend. The calendar's `CALENDAR_API_TIMEOUT_MS` and `CALENDAR_DETAIL_CONCURRENCY` are not `NEXT_PUBLIC_` and need only the restart. |
 | Shortening `SESSION_TTL_DAYS` did not sign anybody out | Expected: a session's expiry is stamped when it is created and never extended, so a change applies to new sign-ins only. To end an account's sessions now, press **Sign out** on its row under Admin -> Accounts. |
@@ -3798,9 +2831,20 @@ npm test
 
 Runs the backend `node:test` suite against temporary SQLite databases and static directories.
 The run gets a temporary directory of its own (`backend/scripts/runTests.js` points
-`TMPDIR`/`TEMP`/`TMP` at it) and deletes it when the suite ends, so the system
-temp directory gains nothing from a run; `TAILOR_KEEP_TEST_TMP=1` keeps it for
-looking at what a failing test left behind.
+`TMPDIR`/`TEMP`/`TMP` at it, and `DB_DIR` at a directory inside it whatever the
+environment says, so no test can open the real database) and deletes it when
+the suite ends, so the system temp directory gains nothing from a run;
+`TAILOR_KEEP_TEST_TMP=1` keeps it for looking at what a failing test left
+behind.
+
+The startup guard is pinned in `upgradeGuard.test.js`: a database this build
+creates is stamped and opens again; one that build `ac3df79` finished upgrading
+opens and is stamped, so later starts read only the stamp; a database missing
+any one of the upgrades - its migrations, the dollar switch, the template move,
+the `users.plan` rename, the lake's facts - is refused by name with nothing
+written, all of them in one refusal; the real server, started on such a
+database, prints that one line and exits 1 before it listens; and this README
+quotes that line in the guard's own words.
 
 Generate Immediately and Order are pinned in `immediateRuns.test.js` (kinds,
 the tab lease through the stream, the release, the owner-checked per-file
@@ -3829,11 +2873,11 @@ backoff - in `analysisSheets.test.js`.
 The Job Data Lake is pinned in `jobLakeIdentity.test.js` (the company
 normalisation and the versioned hash), `jobLakeStore.test.js` (the tables, the
 indexes and their query plans, the duplicate window on a fake clock, rewards,
-revokes, four threads adding one job, the job type, clearance and industry, the
-record of who reported what, and the start-up fill of an older build's rows),
+revokes, four threads adding one job, the job type, clearance and industry, and
+the record of who reported what),
 `jobLakeSync.test.js` (the admin sheet's outbox and its header) and
 `jobLakeReport.test.js` (a reporter's run - reported before, moved rows, the
-same posting twice in one run, a job an older build deleted - the merge and
+same posting twice in one run - the merge and
 the admin API over HTTP). The
 industries, and an older analysis's industry worked out from what it holds,
 are in `jobAnalysisStore.test.js`. The two pages' own decisions - the rows a run is asked for, the
@@ -3843,8 +2887,8 @@ job's type, clearance and industry - are run against the server's code by
 `frontendJobLake.test.js` - with the Lake tab's filter order and Push to
 Google Sheet, whose body is the search's own filters (the same jobs, refused in
 the same words) and whose confirm and result are read from a real push's
-answer - (and Admin → Prompts' notes on a prompt that predates job fields or
-industries by `frontendAnalysis.test.js`), and both pages in a browser by
+answer - (and Admin → Prompts' notes on a prompt that lacks a required variable
+by `frontendAnalysis.test.js`), and both pages in a browser by
 `test/e2e/report-run.js`, and the push - the tab it replaces, a build from it
 that analyses nothing - by `test/e2e/lake-push.js`, against a Google Sheet and
 a seat stubbed by preloads.
@@ -3888,8 +2932,9 @@ element that also holds the summary or the Experience loop, or a paragraph past
 the section finds would stop compiling with less found, and holds the profile
 preview route and the render a PDF prints from to the same answer. The live preview's access rules and its lack of side
 effects are in `profilePreview.test.js`, run with every seat locked so a 200
-also proves no model was asked; the prompt variables and their drift check in
-`promptVariables.test.js`.
+also proves no model was asked; the prompt variables, their drift check and
+the required ones - a save without one refused, a stored record without one
+never run - in `promptVariables.test.js`.
 
 Refund requests are pinned in `refundRequests.test.js` - every allowed and
 refused state change, a double-pressed *Refunded* moving money once, a card's
@@ -3899,8 +2944,7 @@ held open cannot pay out more than was unspent; a refusal puts the credit back;
 no answer keeps it held and the retry sends the same), a Decline refused while
 the refund is with Stripe, crypto only after the by-hand confirmation and at
 the amount sent, one open request per item in SQL, and each notice reaching
-only the account it is for (`notificationRecipients.test.js`), the asking
-routes answering 410 - and the contact
+only the account it is for (`notificationRecipients.test.js`) - and the contact
 channels' rules, `javascript:` and `data:` included, in `contact.test.js`.
 `frontendRefunds.test.js` also parses every page and fails on a sentence that
 asks for an administrator with no Contact admin link after it.
@@ -3926,10 +2970,9 @@ resumes reserve `$0.161`, two refunds give back `$0.046`), `money.test.js` (the
 one dollar parser and formatter - `$1`, `$4.1`, `$0.023`, `$0`, `$1,234.5`,
 `-$0.046` - a guard that no money path floors,
 truncates or float-parses an amount, and that the docs outside the release
-history spell an amount the same way, with no padding zeros), `paymentFees.test.js` (a purchase credits
-exactly what it charges, by card and by crypto) and `dollarSwitch.test.js`,
-which builds a database the way the build before dollars left it - balances, a
-run in progress, a queued order, a pending checkout - and boots this one on it.
+history spell an amount the same way, with no padding zeros) and
+`paymentFees.test.js` (a purchase credits exactly what it charges, by card and
+by crypto).
 
 The frontend has no test runner, so its decisions that need no browser are
 small modules the backend suite transpiles and tests
@@ -3960,17 +3003,7 @@ The documentation is checked too. `backend/test/envExample.test.js` reads
 `.env.example` and this README against the table in
 `backend/src/config/operational.ts`, and fails when a setting there is missing
 from either, ships uncommented, or is shown with a default, a range or a
-read-timing tag the code no longer matches. `backend/test/rollbackDocs.test.js`
-takes the statements out of [Rolling back this
-release](#-rolling-back-this-release) and runs them against a database this
-build made: the check before going back to `5177fc3` must list an open payout
-request and an edited prompt naming `[[industryList]]` (with spaces inside the
-brackets too) and nothing once they are dealt with, what it says about
-building from All under that build must be what its sheet panel takes, its
-own reads and lake writes must still run against this build's schema - and
-the next start must fill in the facts of the rows it wrote - and the
-statements for going back to `90adbaf` must leave a database that build can
-read, naming the record and log this build writes.
+read-timing tag the code no longer matches.
 
 ---
 
@@ -3978,7 +3011,7 @@ read, naming the record and log this build writes.
 
 | Layer | Technologies |
 |-------|--------------|
-| **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
+| **Frontend** | Next.js 16 - pinned exactly, at **Next.js 16.3.8**, and never to one older than 16.3.3 ([GHSA-p293-qw3h-jr36](https://github.com/advisories/GHSA-p293-qw3h-jr36), remote code execution on a Windows-hosted server) - React 19, Tailwind CSS 4 |
 | **Backend** | Express, TypeScript, better-sqlite3 |
 | **AI** | Subscription seats only: Claude Code CLI (default), Codex CLI, Gemini CLI |
 | **PDF** | Puppeteer |

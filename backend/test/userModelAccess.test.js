@@ -19,7 +19,7 @@ const { loadFresh, useAdminEmails, useTempStorage, writeStaticJson } = require('
  *   - The bare-provider and `provider:modelName` request forms are an
  *     administrator's.
  *   - A profile save checks a CHANGED choice against the list its owner picks
- *     from, and stores a retired one as inheriting.
+ *     from.
  *   - The job filter and the Bid Assistant run on the app default model, and the
  *     filter names it by its display name.
  *
@@ -260,9 +260,12 @@ test("the provider forms are an administrator's: refused for anyone else, resolv
     (await preferences.resolveAiChoice({ modelId: 'gemini-cli:auto' }, null, { admin: true })).modelId,
     'gemini-cli-auto'
   );
-  // A retired id from a page loaded before the upgrade still runs on the
-  // default for everyone - that tolerance is about stale tabs, not about roles.
-  assert.equal((await preferences.resolveAiChoice({ modelId: 'openai' }, null)).modelId, 'claude-cli-sonnet');
+  // An id no model has - a provider removed long ago included - is refused
+  // like any other, for everyone: nothing is quietly run on another model at
+  // another price.
+  for (const admin of [false, true]) {
+    await assert.rejects(() => preferences.resolveAiChoice({ modelId: 'openai' }, null, { admin }), { message: GENERIC });
+  }
   // The priced form resolves the same way, with the model's own price.
   await config.updateAIModel('codex-cli-default', { pricePerResumeUsd: '0.003' });
   assert.deepEqual(await preferences.resolvePricedAiChoice({ modelId: 'codex-cli-default' }, null), {
@@ -300,7 +303,7 @@ test('over HTTP, a refused model is a 400 with the generic sentence; only an adm
 
 /* -------------------------------------------------------- profile saves */
 
-test('a profile save checks a changed model against the list, and stores a retired one as inheriting', async () => {
+test('a profile save checks a changed model against the list', async () => {
   const server = await serve('profile-save');
   try {
     await config.updateAIModel('claude-cli-haiku', { enabled: false });
@@ -319,19 +322,13 @@ test('a profile save checks a changed model against the list, and stores a retir
     assert.equal(created.status, 201);
     assert.deepEqual(created.body.profileSettings.ai, { modelId: 'claude-cli-opus' });
 
-    for (const modelId of ['claude-cli', 'claude-cli:opus', 'no-such-model']) {
+    for (const modelId of ['claude-cli', 'claude-cli:opus', 'no-such-model', 'free-hybrid']) {
       const changed = await server.call('alice', 'PUT', '/profiles/p-alice', {
         profileSettings: { ai: { modelId } },
       });
       assert.equal(changed.status, 400, modelId);
       assert.equal(changed.body.code, 'model-unavailable');
     }
-
-    const retired = await server.call('alice', 'PUT', '/profiles/p-alice', {
-      profileSettings: { ai: { modelId: 'free-hybrid' } },
-    });
-    assert.equal(retired.status, 200);
-    assert.deepEqual(retired.body.profileSettings.ai, {}, 'a retired choice is no choice');
 
     // Picked while it ran, switched off since: saving the rest of the profile
     // must still work, and keeps the choice - it falls back when it is used.

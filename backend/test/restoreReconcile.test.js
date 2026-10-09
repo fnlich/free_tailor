@@ -155,23 +155,3 @@ test('a run that had finished, but not settled, when the process stopped is sett
   assert.equal(h.balance(), 16_000);
 });
 
-test('an order queued before batches carried their kind is restored as an order', async () => {
-  const h = setup('restore-order-kind');
-  h.orders.createOrder({ userId: h.alice.id, batchId: 'bat_order', retentionDays: 5 }, [
-    { seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Co 0', role: 'SWE' },
-  ]);
-  h.store.saveBatchWithTasks(batchRow('bat_order'), [taskRow('bat_order', 0, 'queued')]);
-  h.store.saveBatchWithTasks(batchRow('bat_plain'), [taskRow('bat_plain', 0, 'queued')]);
-  const queue = h.queueModule.getGenerationQueue();
-  h.queueModule.registerTaskRunner(h.queueModule.RESUME_TASK_KIND, () => new Promise(() => {}));
-
-  await h.queueModule.restoreGenerationQueue();
-  assert.equal(queue.getBatch('bat_order').shared.kind, 'order');
-  assert.equal(h.queueModule.isOrderBatch(queue.getBatch('bat_order')), true);
-  assert.equal(queue.getBatch('bat_plain').shared.kind, undefined);
-  assert.equal(h.queueModule.isOrderBatch(queue.getBatch('bat_plain')), false);
-
-  // Written back, so the next restart reads it from the batch itself.
-  const rows = loadFresh('../dist/database/generationRepository').loadBatchRows();
-  assert.equal(rows.find((row) => row.id === 'bat_order').data.shared.kind, 'order');
-});

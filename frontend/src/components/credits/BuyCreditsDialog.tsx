@@ -5,10 +5,10 @@ import { useRouter } from 'next/navigation';
 import AmountStep from './AmountStep';
 import OrderSummaryStep from './OrderSummaryStep';
 import PaymentOptionsStep from './PaymentOptionsStep';
-import PayDialog from './PayDialog';
 import { PRIMARY, QUIET } from './chrome';
 import { FIRST_STEP, readPurchaseAmount, wizardReducer, type Order, type Priced } from './order';
 import { stripeFor } from './stripeLoader';
+import Dialog from '@/components/ui/Dialog';
 import { ContactAdminFor } from '@/components/ui/kit';
 import { useTheme } from '@/lib/useTheme';
 import { formatMoney, toDollarInput } from '@/lib/format';
@@ -306,7 +306,7 @@ export default function BuyCreditsDialog({
     );
 
   return (
-    <PayDialog
+    <Dialog
       // Always open: this component is mounted only while it should be.
       open
       title={title}
@@ -369,6 +369,6 @@ export default function BuyCreditsDialog({
           onRetry={retry}
         />
       )}
-    </PayDialog>
+    </Dialog>
   );
 }

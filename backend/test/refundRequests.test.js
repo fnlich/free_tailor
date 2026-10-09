@@ -3,15 +3,15 @@ const test = require('node:test');
 const express = require('express');
 
 const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
+const { seedRefundRequest } = require('./refundSeed');
 
 /**
  * Refund requests, and an administrator deciding (owner decision M3) - for
  * purchases and resumes, which are no longer ASKED for (owner decision R1:
- * POST /api/refund-requests and GET /options answer 410, below) but which an
- * install upgraded with requests open must still decide. The requests are
- * seeded through the service (`createRefundRequest`, kept unrouted for that),
- * and decided over HTTP exactly as before. Payout requests, the one thing
- * still asked for, are test/payoutRequests.test.js.
+ * the routes that asked are gone, below) but which an install with requests
+ * open must still decide. The requests are seeded the way the app made them
+ * (test/refundSeed.js), and decided over HTTP exactly as before. Payout
+ * requests, the one thing still asked for, are test/payoutRequests.test.js.
  *
  * The claims, in the order a reviewer would check them:
  *
@@ -26,8 +26,7 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  *    back;
  *  - ONE OPEN REQUEST PER ITEM, by the database;
  *  - somebody else's purchase or resume is a 404;
- *  - every state change NOTIFIES THE REQUESTER and nobody else, and a new
- *    request notifies each administrator;
+ *  - every state change NOTIFIES THE REQUESTER and nobody else;
  *  - and afterwards the ledger still adds up to every balance.
  *
  * Stripe is replaced at the integration boundary, as the payment tests do; the
@@ -190,13 +189,14 @@ async function serve() {
 
   const feed = async (who) => (await call(who, '/api/notifications')).body;
   /**
-   * A request made the way one was before asking was removed: through the
-   * service, answered in the route's shape - 201 with the request, or the
-   * refusal's status, code and extras.
+   * A request made the way one was before asking was removed (test/refundSeed.js),
+   * answered in the route's old shape - 201 with the request, or the refusal's
+   * status, code and extras.
    */
+  const sqlite = require('../dist/database/sqlite');
   const ask = async (who, itemType, itemId, reason = 'It was for the wrong company.') => {
     try {
-      const request = refunds.createRefundRequest(account(accountOf[who].id), {
+      const request = seedRefundRequest({ refunds, refundDb, sqlite }, account(accountOf[who].id), {
         itemType,
         itemId,
         ...(reason === null ? {} : { reason }),
@@ -420,45 +420,28 @@ test('one open request per item, held by the database', async () => {
   }
 });
 
-test("the reason is required, trimmed and capped; somebody else's item is a 404", async () => {
+test("somebody else's item is a 404, and what a request is for is the server's measure", async () => {
   const s = await serve();
   try {
     s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
     const charge = s.syncCharge(s.alice.id);
     const payment = s.purchase(s.alice.id, 5);
 
-    for (const reason of [null, '', '  \n ']) {
-      const refused = await s.ask('alice', 'charge', charge, reason);
-      assert.equal(refused.status, 400);
-      assert.equal(refused.body.code, 'reason-required');
-    }
-    const overlong = await s.ask('alice', 'charge', charge, 'y'.repeat(1001));
-    assert.equal(overlong.status, 400);
-    assert.equal(overlong.body.code, 'reason-too-long');
-
     for (const [itemType, itemId] of [
       ['charge', charge],
       ['payment', payment.id],
     ]) {
-      const stranger = await s.ask('bob', itemType, itemId);
-      assert.equal(stranger.status, 404, `${itemType}: 404, never 403`);
-      assert.equal(stranger.body.code, 'not-found');
+      assert.throws(
+        () => s.measure('bob', itemType, itemId),
+        (error) => error.status === 404 && error.code === 'not-found',
+        `${itemType}: 404, never 403`
+      );
     }
-    assert.throws(() => s.measure('bob', 'payment', payment.id), (error) => error.status === 404);
+    assert.throws(() => s.measure('alice', 'nonsense', charge), (error) => error.status === 400 && error.code === 'bad-item');
 
-    const unknownType = await s.ask('alice', 'nonsense', charge);
-    assert.equal(unknownType.status, 400);
-    assert.equal(unknownType.body.code, 'bad-item');
-
-    // An amount is never taken from the asker: the server measures it.
-    const withAmount = s.refunds.createRefundRequest(s.users.getUserById(s.alice.id), {
-      itemType: 'charge',
-      itemId: charge,
-      reason: 'please',
-      amountMilli: 999_999,
-      amountUsd: '999',
-    });
-    assert.equal(withAmount.amountMilli, PRICE);
+    // The amount a request records is measured from the item, never taken from anybody.
+    const { request } = (await s.ask('alice', 'charge', charge, 'please')).body;
+    assert.equal(request.amountMilli, PRICE);
 
     // Each account lists its own and nobody else's.
     assert.equal((await s.call('alice', '/api/refund-requests')).body.total, 1);
@@ -938,90 +921,6 @@ test('a resume still being built, a free one and an administrator\'s are not ref
   }
 });
 
-test('a queued resume not placed as an order is named by its task, and stays refundable after its batch is evicted', async () => {
-  const s = await serve();
-  try {
-    s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
-    const kind = `refund-stub-${Math.random()}`;
-    s.taskQueue.registerTaskRunner(kind, async () => 'built');
-    const queue = s.queueModule.getGenerationQueue();
-    const batchId = s.taskQueue.newBatchId();
-    s.credits.reserveCredits(s.users.getUserById(s.alice.id), 2 * PRICE, { kind: 'batch', id: batchId, label: 'run' });
-    const task = (label) => ({
-      queue: 'cli',
-      label: { profileId: label, profileName: 'Jane', companyName: label, role: '' },
-      kind,
-      payload: { costMilli: PRICE },
-    });
-    queue.submit([task('Acme'), task('Globex')], { id: batchId, shared: { ownerId: s.alice.id } });
-    await queue.refreshCapacity();
-    const deadline = Date.now() + 3000;
-    while (queue.snapshot(batchId).completed < 2 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(queue.snapshot(batchId).completed, 2);
-
-    const taskId = queue.getBatch(batchId).tasks[0].id;
-    const measured = s.measure('alice', 'task', taskId);
-    assert.equal(measured.itemType, 'task');
-    assert.equal(measured.refundableMilli, PRICE);
-
-    const { request } = (await s.ask('alice', 'task', taskId)).body;
-    assert.equal(request.itemType, 'task');
-
-    // Bob cannot name it.
-    assert.equal((await s.ask('bob', 'task', taskId)).status, 404);
-
-    // The queue forgets the batch; the request still refunds against the run.
-    s.queueModule.resetGenerationQueueForTests();
-    const refunded = await s.decide('boss', request.id, 'refund');
-    assert.equal(refunded.status, 200, JSON.stringify(refunded.body));
-    assert.equal(refunded.body.request.refundedMilli, PRICE);
-    assert.equal(s.balance(s.alice.id), 1_000 - PRICE);
-
-    assert.throws(() => s.measure('alice', 'task', taskId), /no longer listed/);
-    assertBalancesAddUp(s);
-  } finally {
-    s.close();
-  }
-});
-
-test("an order's task is always named by its order item, so one resume has one name", async () => {
-  const s = await serve();
-  try {
-    s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
-    const kind = `refund-order-stub-${Math.random()}`;
-    s.taskQueue.registerTaskRunner(kind, async () => 'built');
-    const queue = s.queueModule.getGenerationQueue();
-    const batchId = s.taskQueue.newBatchId();
-    s.credits.reserveCredits(s.users.getUserById(s.alice.id), PRICE, { kind: 'batch', id: batchId, label: 'order' });
-    s.orders.createOrder({ userId: s.alice.id, batchId, retentionDays: 5 }, [
-      { seq: 0, profileId: 'p', profileName: 'Jane', companyName: 'Acme', role: '', costMilli: PRICE },
-    ]);
-    queue.submit(
-      [{ queue: 'cli', label: { profileId: 'p', profileName: 'Jane', companyName: 'Acme', role: '' }, kind, payload: { costMilli: PRICE } }],
-      { id: batchId, shared: { ownerId: s.alice.id, kind: 'order' } }
-    );
-    await queue.refreshCapacity();
-    const deadline = Date.now() + 3000;
-    while (queue.snapshot(batchId).completed < 1 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    const taskId = queue.getBatch(batchId).tasks[0].id;
-    s.orders.recordItemOutcome(batchId, 0, { state: 'done', taskId });
-
-    const viaTask = await s.ask('alice', 'task', taskId);
-    assert.equal(viaTask.status, 201, JSON.stringify(viaTask.body));
-    assert.equal(viaTask.body.request.itemType, 'order-item');
-    const itemId = viaTask.body.request.itemId;
-    const viaItem = await s.ask('alice', 'order-item', itemId);
-    assert.equal(viaItem.status, 409);
-    assert.equal(viaItem.body.code, 'request-open', 'the same resume, so the same open request');
-  } finally {
-    s.close();
-  }
-});
-
 test('the admin queue: guarded, filtered, counted, and oldest first while open', async () => {
   const s = await serve();
   try {
@@ -1060,7 +959,7 @@ test('the admin queue: guarded, filtered, counted, and oldest first while open',
   }
 });
 
-test('a new request tells each administrator, and every change tells only the requester', async () => {
+test('every change to a request tells only the requester', async () => {
   const s = await serve();
   try {
     s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
@@ -1069,16 +968,6 @@ test('a new request tells each administrator, and every change tells only the re
 
     const { request } = (await s.ask('alice', 'charge', s.syncCharge(s.alice.id), 'Typo in my name.')).body;
 
-    for (const admin of ['boss', 'deputy']) {
-      const adminFeed = await s.feed(admin);
-      const notice = adminFeed.notifications.find((entry) => entry.recipientId !== null);
-      assert.ok(notice, `${admin} is told`);
-      assert.match(notice.title, /^New refund request FT-RF-/);
-      assert.match(notice.body, /alice@example\.com asks for \$0\.023 back/);
-      assert.match(notice.body, /Typo in my name\./);
-      assert.equal(notice.link, '/admin/payments?tab=refunds');
-      assert.equal(adminFeed.unreadCount, 2, 'the announcement and the request');
-    }
     let alice = await s.feed('alice');
     assert.equal(alice.notifications.length, 1, 'only the announcement - the request notice is the admins\'');
     assert.equal(alice.unreadCount, 1);
@@ -1167,43 +1056,28 @@ test('a resume refund for an account deleted since is refused rather than credit
   }
 });
 
-test('asking for a refund is closed: a stale page gets 410 and a sentence that sends it to an administrator', async () => {
+test('asking for a refund is gone: no route asks, and the requests made before stay readable', async () => {
   const s = await serve();
   try {
     s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
     const charge = s.syncCharge(s.alice.id);
     const payment = s.purchase(s.alice.id, 5);
 
-    for (const who of ['alice', 'boss']) {
-      for (const [method, path, body] of [
-        ['POST', '/api/refund-requests', { itemType: 'charge', itemId: charge, reason: 'Wrong company.' }],
-        ['POST', '/api/refund-requests', {}],
+    for (const who of ['alice', 'boss', 'scout']) {
+      for (const [method, path] of [
+        ['POST', '/api/refund-requests'],
         ['GET', `/api/refund-requests/options?paymentId=${payment.id}`],
-        ['GET', '/api/refund-requests/options'],
       ]) {
-        const answer = await s.call(who, path, { method, ...(body ? { body } : {}) });
-        const where = `${who} ${method} ${path}`;
-        assert.equal(answer.status, 410, where);
-        assert.equal(answer.body.code, 'refund-requests-closed', where);
-        assert.equal(answer.body.error, s.refunds.REFUND_ASKING_CLOSED_MESSAGE, where);
-        // The frontend ends a sentence like this with its Contact admin link.
-        assert.match(answer.body.error, /\bcontact your administrator\b/i, where);
-        assert.equal(answer.body.ref, undefined, 'a closed door is not a failure to look up');
+        const answer = await s.call(who, path, method === 'POST' ? { method, body: { itemType: 'charge', itemId: charge } } : { method }).catch(
+          (error) => ({ status: error.status ?? 'unparsed' })
+        );
+        assert.notEqual(answer.status, 201, `${who} ${method} ${path}`);
+        assert.notEqual(answer.status, 200, `${who} ${method} ${path}`);
       }
     }
     assert.equal(s.refundDb.countRefundRequests(), 0, 'nothing was asked');
     assert.equal(s.balance(s.alice.id), 1_000 - PRICE + 5_000, 'and nothing moved');
-
-    // A reporter meets the same role refusal as before: asking was never theirs.
-    for (const [method, path] of [
-      ['POST', '/api/refund-requests'],
-      ['GET', '/api/refund-requests/options?paymentId=x'],
-    ]) {
-      const answer = await s.call('scout', path, { method, ...(method === 'POST' ? { body: {} } : {}) });
-      assert.equal(answer.status, 403, `${method} ${path}`);
-      assert.equal(answer.body.code, 'role-not-allowed');
-    }
-    assert.equal((await s.call(null, '/api/refund-requests/options')).status, 401);
+    assert.equal(s.refunds.createRefundRequest, undefined, 'the service has no way to ask any more');
 
     // Requests made before stay readable, and filterable by kind.
     const { request } = (await s.ask('alice', 'charge', charge)).body;
@@ -1219,33 +1093,42 @@ test('asking for a refund is closed: a stale page gets 410 and a sentence that s
   }
 });
 
-test('a request whose item this build does not know reads, declines, and never refunds', async () => {
+test('a request whose item this build does not serve - an older task:, or anything else - reads, declines, never refunds', async () => {
   const s = await serve();
   try {
     s.credits.setBalance(s.alice.id, 1_000, s.boss.id);
-    // As a newer build would write one, read after a rollback to this one.
+    // A queued resume's task: request, as an older build wrote one, and an
+    // item type nothing ever wrote.
     const db = require('../dist/database/sqlite').getDb();
-    db.prepare(
-      `INSERT INTO refund_requests (id, reference, account_id, kind, item_key, label, amount_milli, reason, state,
-                                    created_at, updated_at)
-       VALUES ('rfr_future', 'FT-RF-20261006-9999', ?, 'gift', ?, 'A gift card', 5000, 'Please', 'requested',
-               '2026-10-06T00:00:00.000Z', '2026-10-06T00:00:00.000Z')`
-    ).run(s.alice.id, `gift-card:${s.alice.id}`);
+    const insert = db.prepare(
+      `INSERT INTO refund_requests (id, reference, account_id, kind, item_key, task_id, reservation_id, label,
+                                    amount_milli, reason, state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Please', 'requested', '2026-10-06T00:00:00.000Z', '2026-10-06T00:00:00.000Z')`
+    );
+    insert.run('rfr_task', 'FT-RF-20261006-9998', s.alice.id, 'resume', 'task:tsk_old', 'tsk_old', 'gen_old', 'Jane / Acme', PRICE);
+    insert.run('rfr_future', 'FT-RF-20261006-9999', s.alice.id, 'gift', `gift-card:${s.alice.id}`, null, null, 'A gift card', 5000);
 
     const queue = await s.call('boss', '/api/admin/refund-requests');
-    const row = queue.body.requests.find((candidate) => candidate.id === 'rfr_future');
-    assert.ok(row, 'it is listed');
-    assert.equal(row.refundableNowMilli, 0, 'never measured as something it is not');
-    assert.match(row.refundableNowReason, /newer version of the app/);
+    for (const id of ['rfr_task', 'rfr_future']) {
+      const row = queue.body.requests.find((candidate) => candidate.id === id);
+      assert.ok(row, `${id} is listed`);
+      assert.equal(row.refundableNowMilli, 0, 'never measured as something it is not');
+      assert.match(row.refundableNowReason, /cannot measure/);
+    }
+    assert.equal(queue.body.requests.find((row) => row.id === 'rfr_task').kind, 'resume', 'still read as a resume');
 
-    const refused = await s.decide('boss', 'rfr_future', 'refund', { amountUsd: '5', note: 'x', paidByHand: true });
-    assert.equal(refused.status, 409);
-    assert.equal(refused.body.code, 'unrecognised');
+    for (const [id, body] of [
+      ['rfr_task', {}],
+      ['rfr_future', { amountUsd: '5', note: 'x', paidByHand: true }],
+    ]) {
+      const refused = await s.decide('boss', id, 'refund', body);
+      assert.equal(refused.status, 409, id);
+      assert.equal(refused.body.code, 'unrecognised', id);
+      const declined = await s.decide('boss', id, 'decline', { reason: 'Not here.' });
+      assert.equal(declined.status, 200, id);
+      assert.equal(declined.body.request.state, 'declined', id);
+    }
     assert.equal(s.balance(s.alice.id), 1_000, 'nothing moved');
-
-    const declined = await s.decide('boss', 'rfr_future', 'decline', { reason: 'Not here.' });
-    assert.equal(declined.status, 200);
-    assert.equal(declined.body.request.state, 'declined');
     assertBalancesAddUp(s);
   } finally {
     s.close();

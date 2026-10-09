@@ -24,31 +24,8 @@ import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
 
-/**
- * The shared-password login is gone.
- *
- * It never checked anything - `validatePassword` returned true for every input,
- * including an empty one - and there is nothing to keep now that accounts are
- * real. Answering 410 rather than 404 says which: a client that still posts
- * here is not asking for a route that never existed, it is using one that was
- * withdrawn, and the message points at the replacement.
- */
-router.all(['/login', '/verify'], (_req: Request, res: Response) => {
-  res.status(410).json({
-    error:
-      'This installation now signs in with a Google account or an emailed code. ' +
-      'Use /api/auth/options, /api/auth/google or /api/auth/email/request instead.',
-  });
-});
-
-/** Kept as an alias so an older client's logout still ends the session. */
-router.post('/logout', (req: Request, res: Response) => {
-  res.redirect(307, '/api/auth/logout');
-  void req;
-});
-
 // Get admin settings (protected)
-router.get(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: Response) => {
+router.get('/settings', requireAdmin, async (req: Request, res: Response) => {
   try {
     const settings = await getAdminAppSettings();
     res.json(settings);
@@ -153,7 +130,7 @@ router.put('/google-sheets/range', requireAdmin, async (req: Request, res: Respo
 });
 
 // Update admin settings (protected)
-router.put(['/settings', '/ai-models'], requireAdmin, async (req: Request, res: Response) => {
+router.put('/settings', requireAdmin, async (req: Request, res: Response) => {
   try {
     const settings = await updateAppSettings(req.body ?? {});
     res.json(settings);

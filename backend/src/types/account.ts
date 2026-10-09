@@ -5,7 +5,7 @@ import type { AccountSubscriptionId } from '../config/accountSubscriptions';
  *
  * - `user` builds resumes from their own profiles - every new sign-in;
  * - `reporter` adds job postings to the shared job lake and is paid per job
- *   accepted (owner decisions A3, A4). No resume builder, no scrapers: the
+ *   accepted (owner decisions A3, A4). No resume builder, no Job Filter: the
  *   routes for those answer a reporter 403 `role-not-allowed`;
  * - `admin` manages everything the installation shares.
  *

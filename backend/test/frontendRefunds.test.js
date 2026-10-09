@@ -193,7 +193,7 @@ test('no page asks for a refund: the asking routes are gone from the client, and
   for (const file of walk(SRC)) {
     const text = code(file);
     const where = path.relative(SRC, file);
-    // The two routes that answer 410 now, and the button that called them.
+    // The two asking routes the server no longer has, and the button that called them.
     assert.doesNotMatch(text, /refund-requests\/options/, `${where} reads the closed options route`);
     assert.doesNotMatch(text, />\s*Ask for refund\s*</, `${where} still offers Ask for refund`);
     assert.doesNotMatch(text, /refundRequestsApi\.(?:create|options)\b/, `${where} asks for a refund`);

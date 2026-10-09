@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { loadFresh, useTempStorage, writeSettingRaw, useAdminEmails } = require('./helpers');
+const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * The routes that take a spreadsheet id, and who may point them where.
@@ -60,17 +60,11 @@ function makeClient({ configured = true } = {}) {
   };
 }
 
-async function serve(sharedSources = [], { configured = true } = {}) {
-  const { dbDir } = useTempStorage(`sheet-scoping-${Math.random().toString(36).slice(2)}`);
+async function serve({ configured = true } = {}) {
+  useTempStorage(`sheet-scoping-${Math.random().toString(36).slice(2)}`);
   // First in is no longer automatically the admin, so the admin is named.
   useAdminEmails('admin@example.com');
   const express = require('express');
-
-  // Written before anything reads settings: the settings module caches, so a
-  // source added afterwards would not be seen by this process.
-  if (sharedSources.length > 0) {
-    writeSettingRaw(dbDir, 'app-settings', JSON.stringify({ googleSheetsSources: sharedSources }));
-  }
 
   loadFresh('../dist/database/sqlite');
   const users = loadFresh('../dist/database/userRepository');
@@ -134,16 +128,12 @@ const ID_TAKING_ROUTES = [
     path: '/api/jobs/filter-google-sheet',
     body: () => ({ tabName: 'Sheet1', startRow: 2, endRow: 3 }),
   },
-  {
-    path: '/api/jobs/scrapers/export',
-    body: () => ({ source: 'indeed', tabName: 'Sheet1', startRow: 2 }),
-  },
 ];
 
 test('with Google Sheets not set up, a user is sent to the administrator and the cause is logged', async () => {
   // Only an administrator can configure Google Sheets, so "open Settings to
   // finish setting it up" sent account holders to a page with nothing to do.
-  const server = await serve([], { configured: false });
+  const server = await serve({ configured: false });
   const { captureErrorLog } = require('./helpers');
   try {
     for (const route of ID_TAKING_ROUTES) {
@@ -214,34 +204,14 @@ test('an arbitrary pasted spreadsheet id is refused the same way', async () => {
   }
 });
 
-test('the guard runs before any work, so nothing is scraped or written first', async () => {
+test('an administrator is refused another sheet the same way: every route is their own sheet only', async () => {
   const server = await serve();
   try {
     const bobsSheet = await server.sheetIdFor(server.bob);
-    // A scrape request that would take minutes if it got past the guard. It
-    // comes back immediately, which is the evidence that it did not.
-    const response = await server.post(server.aliceToken, '/api/jobs/scrapers/export', {
-      source: 'indeed',
-      sheetId: bobsSheet,
-      tabName: 'Sheet1',
-      startRow: 2,
-      limit: 50,
-    });
-    assert.equal(response.status, 404);
-  } finally {
-    server.close();
-  }
-});
-
-test('an administrator no longer reaches a shared sheet an older build saved: every route is their own sheet only', async () => {
-  // How the admin page of an older build stored them - still in the settings
-  // row (kept for a rollback), and addressable by nobody.
-  const server = await serve([{ id: 'src-1', name: 'Bid History', sheetId: 'shared-sheet-1', createdAt: 'x', updatedAt: 'x' }]);
-  try {
     for (const route of ID_TAKING_ROUTES) {
-      for (const token of [server.aliceToken, server.adminToken]) {
-        const response = await server.post(token, route.path, { ...route.body(), sheetId: 'shared-sheet-1' });
-        assert.equal(response.status, 404, `${route.path}: a saved shared sheet is nobody's to address`);
+      for (const sheetId of [bobsSheet, 'shared-sheet-1']) {
+        const response = await server.post(server.adminToken, route.path, { ...route.body(), sheetId });
+        assert.equal(response.status, 404, `${route.path}: ${sheetId} is not the administrator's own sheet`);
         assert.match((await response.json()).error, /not found/i);
       }
     }

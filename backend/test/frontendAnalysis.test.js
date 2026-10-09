@@ -19,8 +19,8 @@ process.env.DB_DIR = process.env.DB_DIR || fs.mkdtempSync(path.join(os.tmpdir(),
  * whitespace a posting's identity ignores, and the columns the six protected
  * cells sit in. A copy that drifted would mark a row "Skips analysis" that the
  * server then analyses, or show a salary the sheet spells differently. And
- * the notes Admin -> Prompts puts on an analysis prompt written before job
- * fields or industries (lib/promptNotes.ts), held to the server's flags.
+ * the required variables Admin -> Prompts holds a prompt to as it is typed
+ * (lib/promptRequirements.ts), held to the server's rule and its refusal.
  *
  * Loaded the way frontendHelpers.test.js loads its modules: transpiled with
  * the backend's TypeScript, importing nothing at runtime.
@@ -178,7 +178,7 @@ test('an analysis shows its title, its job field label and its salary - each onl
     jobField: 'Unclassified',
     salary: '',
   });
-  // An analysis from a server before job fields has neither.
+  // An analysis without a job field label or a salary shows neither.
   assert.deepEqual(held.analysisFacts({ jobMeta: { title: 'Engineer' } }), { title: 'Engineer', jobField: '', salary: '' });
   assert.deepEqual(held.analysisFacts(null), { title: '', jobField: '', salary: '' });
 });
@@ -331,36 +331,22 @@ test('a loaded row says whether its build skips analysis, with the Job Field and
   ]);
 });
 
-// -- Admin -> Prompts: the notes on an analysis prompt written before ----- //
+// -- Admin -> Prompts: the variables a prompt must use ---------------------- //
 
-test('the editor notes a prompt that predates job fields, industries or the section switches exactly when the server flags it', async () => {
-  const notes = loadFrontendModule('lib/promptNotes.ts');
-  const gate = require('../dist/services/jobAnalysis/gate');
+test('the server flags a saved prompt missing a required variable, names what is missing, and marks the required ones', async () => {
+  // What Admin -> Prompts reads to draw its pill and note: `needsUpdate` on
+  // the saved record, `validation.missingVariables` in the feature's own
+  // order, and `required: true` on those variables in `allowedVariables`.
+  const promptService = require('../dist/services/promptService');
+  assert.deepEqual(promptService.listRequiredPromptVariables('analyze-job-description'), ['jobFieldList', 'industryList']);
+  assert.deepEqual(promptService.listRequiredPromptVariables('tailor-resume'), [
+    'includeStrengths',
+    'includeSoftSkills',
+    'technicalSkillsLayout',
+  ]);
+  assert.deepEqual(promptService.listRequiredPromptVariables('extract-profile-from-resume'), []);
+
   const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
-
-  const analysisTexts = [
-    'Analyze.\n[[jobDescription]]',
-    'Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
-    'Analyze.\n[[ jobFieldList ]]\n[[industryList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
-    'Analyze.\n[[jobFieldList]]\n[[ industryList ]]\n[[jobDescription]]',
-    // Named in prose, never as a variable: not a use.
-    'Analyze. Use the jobFieldList and the industryList.\n[[jobDescription]]',
-    'Analyze.\n[[industryList]]\n[[jobDescription]]',
-    'Analyze.\n[jobFieldList]\n[[jobDescription]]',
-  ];
-  const tailorTexts = ['Old.\n[[profileJson]]', 'New.\n[[profileJson]]\nStrengths: [[ includeStrengths ]]', 'includeStrengths\n[[profileJson]]'];
-
-  // What the gate appends to an analysis turn: everything since job fields,
-  // the industry alone, or nothing - the page's two notes, in that order.
-  for (const content of analysisTexts) {
-    const override = gate.analysisOverrideFor(content);
-    assert.equal(notes.lacksJobFieldList('analyze-job-description', content), override === gate.buildAnalysisFactsOverride(), content);
-    assert.equal(notes.lacksIndustryList('analyze-job-description', content), override === gate.buildIndustryOverride(), content);
-    assert.equal(notes.lacksJobFieldList('tailor-resume', content), false);
-    assert.equal(notes.lacksIndustryList('tailor-resume', content), false);
-  }
-
-  // And the flags the server serves on the saved record, the pills beside its name.
   const storage = useTempStorage('frontend-prompt-notes');
   const shipped = path.join(__dirname, '..', 'static');
   fs.cpSync(path.join(shipped, 'skills'), path.join(storage.staticDir, 'skills'), { recursive: true });
@@ -371,25 +357,107 @@ test('the editor notes a prompt that predates job fields, industries or the sect
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
-  for (const [index, content] of analysisTexts.entries()) {
+  const cases = [
+    ['Analyze.\n[[jobDescription]]', ['jobFieldList', 'industryList']],
+    ['Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]', ['industryList']],
+    ['Analyze.\n[[ jobFieldList ]]\n[[industryList]]\nJob link: [[jobLink]]\n[[jobDescription]]', []],
+    // Named in prose, never as a variable: not a use.
+    ['Analyze. Use the jobFieldList and the industryList.\n[[jobDescription]]', ['jobFieldList', 'industryList']],
+    ['Analyze.\n[[industryList]]\n[[jobDescription]]', ['jobFieldList']],
+  ];
+  for (const [content, missing] of cases) {
     write('analyze-job-description', content);
-    write('tailor-resume', tailorTexts[index % tailorTexts.length]);
+    write('tailor-resume', 'New.\n[[profileJson]]\nStrengths: [[ includeStrengths ]]');
     const listed = new Map((await loadFresh('../dist/services/promptService').listPrompts()).map((prompt) => [prompt.id, prompt]));
     const analysis = listed.get('analyze-job-description');
-    assert.equal(notes.lacksJobFieldList(analysis.featureKey, content), analysis.predatesJobField === true, content);
-    assert.equal(notes.lacksIndustryList(analysis.featureKey, content), analysis.predatesIndustry === true, content);
+    assert.deepEqual(analysis.validation.missingVariables, missing, content);
+    assert.equal(analysis.needsUpdate === true, missing.length > 0, content);
+    assert.deepEqual(
+      analysis.allowedVariables.filter((variable) => variable.required).map((variable) => variable.name).sort(),
+      ['industryList', 'jobFieldList']
+    );
     const tailor = listed.get('tailor-resume');
-    const tailorText = tailorTexts[index % tailorTexts.length];
-    assert.equal(notes.lacksSectionSwitches(tailor.featureKey, tailorText), tailor.predatesSectionSwitches === true, tailorText);
-    assert.equal(notes.lacksSectionSwitches(analysis.featureKey, content), false);
+    assert.deepEqual(tailor.validation.missingVariables, ['includeSoftSkills', 'technicalSkillsLayout']);
+    assert.equal(tailor.needsUpdate, true);
+    for (const flag of ['predatesJobField', 'predatesIndustry', 'predatesSectionSwitches']) {
+      assert.equal(flag in analysis || flag in tailor, false, `${flag} is gone`);
+    }
   }
-  // Never both notes on one prompt: the job-field instructions ask for the industry too.
-  for (const content of analysisTexts) {
-    assert.ok(!(notes.lacksJobFieldList('analyze-job-description', content) && notes.lacksIndustryList('analyze-job-description', content)));
+});
+
+test("the editor reads the text as typed exactly as the server does, and refuses a save in the server's own words", async () => {
+  const notes = loadFrontendModule('lib/promptRequirements.ts');
+  const { loadFresh, useTempStorage } = require('./helpers');
+  const storage = useTempStorage('frontend-prompt-requirements');
+  const shipped = path.join(__dirname, '..', 'static');
+  for (const dir of ['skills', 'prompts']) {
+    fs.cpSync(path.join(shipped, dir), path.join(storage.staticDir, dir), { recursive: true });
   }
-  // The shipped prompt carries neither.
-  const shippedText = JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', 'analyze-job-description.json'), 'utf8')).content;
-  assert.equal(notes.lacksJobFieldList('analyze-job-description', shippedText), false);
-  assert.equal(notes.lacksIndustryList('analyze-job-description', shippedText), false);
+  const promptService = loadFresh('../dist/services/promptService');
+  const listed = new Map((await promptService.listPrompts()).map((prompt) => [prompt.featureKey, prompt]));
   assert.equal(notes.ANALYSIS_PROMPT_FEATURE, 'analyze-job-description');
+
+  // The page reads the required ones off the record the server lists, in the feature's order.
+  for (const [featureKey, prompt] of listed) {
+    assert.deepEqual(notes.requiredVariables(prompt.allowedVariables), promptService.listRequiredPromptVariables(featureKey), featureKey);
+  }
+
+  const analysis = listed.get('analyze-job-description');
+  const tailor = listed.get('tailor-resume');
+  const texts = [
+    'Analyze.\n[[jobDescription]]',
+    'Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
+    'Analyze.\n[[ jobFieldList ]]\n[[industryList]]\n[[jobDescription]]',
+    'Analyze. Use the jobFieldList and the industryList.\n[[jobDescription]]',
+    'Analyze.\n[jobFieldList]\n[[industryList]]\n[[jobDescription]]',
+    'Tailor.\n[[profileJson]]\n[[jobAnalysisJson]]',
+    'Tailor.\n[[profileJson]]\nStrengths: [[ includeStrengths ]] [[technicalSkillsLayout]]',
+    'Tailor.\n[[profileJson]]\n[[includeStrengths]] [[includeSoftSkills]] [[technicalSkillsLayout]]',
+  ];
+  for (const prompt of [analysis, tailor]) {
+    for (const content of texts) {
+      // The same names missing, in the same order, as the server's own validation.
+      const server = promptService.validatePromptContent(content, prompt.allowedVariables).missingVariables;
+      assert.deepEqual(notes.missingRequiredVariables(content, prompt.allowedVariables), server, `${prompt.featureKey}: ${content}`);
+    }
+  }
+  // An unattached prompt has none to miss.
+  assert.deepEqual(notes.missingRequiredVariables('Anything [[x]]', [{ name: 'x' }]), []);
+
+  // What Save says without sending is the server's refusal of that save, word for word.
+  for (const [prompt, content] of [
+    [analysis, 'Analyze.\n[[jobDescription]]'],
+    [analysis, 'Analyze.\n[[jobFieldList]]\n[[jobDescription]]'],
+    [tailor, 'Tailor.\n[[profileJson]]\n[[includeSoftSkills]]'],
+  ]) {
+    const missing = notes.missingRequiredVariables(content, prompt.allowedVariables);
+    assert.ok(missing.length > 0, content);
+    const refused = await promptService.updatePrompt(prompt.id, { content }).then(
+      () => assert.fail(`the server saved ${JSON.stringify(content)}`),
+      (error) => error.message
+    );
+    assert.equal(notes.missingVariablesSentence(prompt.featureLabel, missing, notes.requiredVariables(prompt.allowedVariables)), refused);
+  }
+
+  assert.equal(notes.variableList(['a']), '[[a]]');
+  assert.equal(notes.variableList(['a', 'b']), '[[a]] and [[b]]');
+  assert.equal(notes.variableList(['a', 'b', 'c']), '[[a]], [[b]] and [[c]]');
+
+  // The note on a saved prompt the server will not run says what runs instead.
+  assert.equal(
+    notes.needsUpdateNote({ featureLabel: 'Analyze Job Description', isBuiltIn: true, missing: ['industryList'] }),
+    'The saved prompt does not use [[industryList]], which every Analyze Job Description prompt must use, so the ' +
+      'shipped Analyze Job Description prompt runs in its place until it is saved with it.'
+  );
+  assert.match(
+    notes.needsUpdateNote({ featureLabel: 'Tailor Resume', isBuiltIn: false, missing: ['includeSoftSkills', 'technicalSkillsLayout'] }),
+    /\[\[includeSoftSkills\]\] and \[\[technicalSkillsLayout\]\], .* so the built-in Tailor Resume prompt runs in its place until it is saved with them\.$/
+  );
+
+  // And the page draws the server's flag, never a rule of its own about prompt history.
+  const page = fs.readFileSync(path.join(SRC, 'app', 'admin', 'prompts', 'page.tsx'), 'utf8');
+  assert.match(page, /prompt\.needsUpdate && <Pill tone="amber">Needs update<\/Pill>/);
+  assert.match(page, /missingVariablesSentence\(/);
+  assert.doesNotMatch(page, /predates|promptNotes|getAIModels/);
+  assert.equal(fs.existsSync(path.join(SRC, 'lib', 'promptNotes.ts')), false);
 });

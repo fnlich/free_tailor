@@ -1,7 +1,5 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const path = require('path');
-const Database = require('better-sqlite3');
 
 const { loadFresh, useTempStorage } = require('./helpers');
 
@@ -80,38 +78,6 @@ test('a notice links only to a path on this app', () => {
     assert.equal(notifications.createNotification({ title: 't', link }).link, null);
   }
   assert.equal(notifications.safeAppPath(' /admin/payments?tab=refunds '), '/admin/payments?tab=refunds');
-});
-
-test('a database from before the column keeps every notice as an announcement, and gains the index', () => {
-  const { dbDir } = useTempStorage(`notification-upgrade-${Math.random().toString(36).slice(2)}`);
-  const raw = new Database(path.join(dbDir, 'free_tailor.db'));
-  raw.exec(`
-    CREATE TABLE notifications (
-      id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
-      author_id TEXT NOT NULL DEFAULT '', author_name TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    );
-    INSERT INTO notifications (id, title, created_at, updated_at)
-      VALUES ('not_old', 'Posted by an older build', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
-  `);
-  raw.close();
-
-  const { getDb } = loadFresh('../dist/database/sqlite');
-  const users = loadFresh('../dist/database/userRepository');
-  const notifications = loadFresh('../dist/database/notificationRepository');
-  const db = getDb();
-
-  const columns = db.prepare('PRAGMA table_info(notifications)').all().map((column) => column.name);
-  assert.ok(columns.includes('recipient_id'));
-  assert.ok(columns.includes('link'));
-  const indexes = db.prepare('PRAGMA index_list(notifications)').all().map((index) => index.name);
-  assert.ok(indexes.includes('idx_notifications_recipient'), indexes.join(', '));
-
-  const someone = users.createUser({ email: 'someone@example.com' });
-  const feed = notifications.listNotificationsFor(someone.id);
-  assert.equal(feed.length, 1);
-  assert.equal(feed[0].recipientId, null, 'every row an older build wrote is an announcement');
-  assert.equal(feed[0].link, null);
 });
 
 test('the feed, the unread count and the refund-request lookups are index seeks, not scans', () => {

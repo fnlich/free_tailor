@@ -52,9 +52,8 @@ export const CREDIT_REASONS = [
   'job-report-reward-revoked',
   // Credits became dollars, and every balance was reset to $0. One row per
   // account that held any, in the old unit, taking it to zero - or, for one
-  // whose credits were all held by a run, moving nothing and saying so
-  // (database/dollarSwitch.ts). Always read as a row in credits. Written by
-  // nothing else.
+  // whose credits were all held by a run, moving nothing and saying so.
+  // Always read as a row in credits. History: nothing writes one now.
   'reset',
 ] as const;
 

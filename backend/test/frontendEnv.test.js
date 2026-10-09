@@ -246,13 +246,14 @@ test('CALENDAR_DETAIL_CONCURRENCY: 12 by default, clamped to 1..32', (t) => {
   assert.equal(fresh.calendarDetailConcurrency({ CALENDAR_DETAIL_CONCURRENCY: 'lots' }), 12);
 });
 
-test('uploadMaxMb: the served number, or the old fixed 10 from a server that does not send it', () => {
+test("uploadMaxMb: the served number, or the server's own default until it has said", () => {
   const { readUploadMaxMb, DEFAULT_UPLOAD_MAX_MB } = loadFrontendModule('lib/upload.ts');
 
+  // UPLOAD_MAX_MB's own default (pinned to config/operational.ts below).
   assert.equal(DEFAULT_UPLOAD_MAX_MB, 10);
   assert.equal(readUploadMaxMb(25), 25);
   assert.equal(readUploadMaxMb(1), 1);
-  // A backend that predates the field, and anything that is not a usable cap.
+  // Anything that is not a usable cap.
   assert.equal(readUploadMaxMb(undefined), 10);
   assert.equal(readUploadMaxMb(null), 10);
   assert.equal(readUploadMaxMb('25'), 10);
@@ -339,7 +340,7 @@ test('the frontend readers use the defaults and bounds config/operational.ts dec
     timeZone.defaultValue
   );
 
-  // What the upload pages assume when /auth/me does not say is the server's own default.
+  // What the upload pages assume until /auth/me answers is the server's own default.
   assert.equal(
     loadFrontendModule('lib/upload.ts').DEFAULT_UPLOAD_MAX_MB,
     OPERATIONAL_INT_BOUNDS.UPLOAD_MAX_MB.fallback

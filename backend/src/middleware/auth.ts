@@ -146,7 +146,7 @@ export function requireAccount(req: Request, res: Response, next: NextFunction):
  * It used to mean "signed in", and every router in the app uses it, which is
  * exactly why it changed meaning instead of a new guard being added beside
  * it: a third role, `reporter`, has no business with the builder, profiles,
- * orders, groups, templates, scrapers or payments, and making THIS the narrow
+ * orders, groups, templates, the Job Filter or payments, and making THIS the narrow
  * check closes every one of those routers - and every router written later -
  * without anybody visiting it. The few places a reporter belongs ask for
  * `requireAccount` instead. A refusal is 403 `role-not-allowed`, never 401:

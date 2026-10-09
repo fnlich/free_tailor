@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { openTestDb, useTempStorage } = require('./helpers');
+const { useTempStorage } = require('./helpers');
 
 /**
  * The `job_analyses` table: what identifies a posting, and that every lookup
@@ -88,13 +88,8 @@ test("every gate lookup is one seek on its own index, and the lake's two reads h
   }
 });
 
-test('the two identities are UNIQUE - the link one partial - created after the columns, on a new and an upgraded database', () => {
-  const { dbDir } = useTempStorage('job-analyses-indexes');
-  // An install from before the table: some other table, no job_analyses.
-  const old = openTestDb(dbDir);
-  old.exec('CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE)');
-  old.close();
-
+test('the two identities are UNIQUE - the link one partial - with the merge and job field indexes', () => {
+  useTempStorage('job-analyses-indexes');
   const db = sqlite.getDb();
   const indexes = new Map(
     db

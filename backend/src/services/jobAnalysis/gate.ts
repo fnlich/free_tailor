@@ -1,8 +1,6 @@
 import { createHash } from 'crypto';
 import { resolveAnalysisModel } from '../../config/aiModelConfig';
 import { describeAiChoice, type AiChoice } from '../../config/aiPreferences';
-import { renderIndustryListForPrompt } from '../../config/industries';
-import { renderJobFieldListForPrompt } from '../../config/jobFields';
 import {
   attachCompanyName,
   attachLinkKey,
@@ -16,7 +14,6 @@ import { createPromptCompletion } from '../ai';
 import { resolvePromptByExactId } from '../promptService';
 import { buildAnalyzeJobDescriptionPromptValues, parseJobAnalysisContent } from '../resumeService';
 import { isAnalysisOfPosting } from '../sheets/analysisColumns';
-import { SENIORITY_VALUES } from './facts';
 import { normalizeJobDescriptionText, postingKeysOf, type PostingKeys } from './identity';
 
 export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
@@ -329,81 +326,6 @@ function useSheetAnalysis(sheetRow: SheetRowAnalysis, posting: { jd: string; lin
   return null;
 }
 
-/**
- * The analysis instructions an administrator's record lacks when it was
- * written before postings had a job field (`predatesJobField` on Admin ->
- * Prompts): appended to the turn so its postings are still classified, priced
- * and screened - and filed under an industry, which such a record predates
- * too. The shipped prompt carries all of this in its cached part.
- *
- * Seniority included: such a record asks for an older, shorter list of words
- * (no "intern", "director" or "vp"), and the Job Filter now judges the
- * analysis's own `jobMeta.seniority` - a VP posting answered "unknown" would
- * pass the filter that used to fail it.
- */
-export function buildAnalysisFactsOverride(): string {
-  const seniority = SENIORITY_VALUES.map((word) => `"${word}"`).join(', ');
-  return [
-    `"jobMeta.seniority": exactly one of ${seniority} - this list replaces any other seniority list above. The title`,
-    'decides when it says ("Intern" -> "intern", "Staff Engineer" -> "staff", "Principal" -> "principal", "Lead" -> "lead",',
-    '"Engineering Manager" -> "manager", "Director" -> "director", "VP" or "Vice President" -> "vp"); otherwise years of',
-    'experience: 0-2 -> "junior", 3-5 -> "mid", more than 5 -> "senior".',
-    '',
-    'ALSO RETURN, in the same JSON object, these four keys - read off the posting itself, never guessed:',
-    '"jobField": exactly ONE id from the list below (the text before the colon), or "unclassified" when none fits.',
-    INDUSTRY_INSTRUCTION,
-    '"salary": { "min", "max", "currency", "period", "raw" } - ONLY what the posting explicitly states, numbers for',
-    'min and max, an ISO 4217 code for currency, one of "annual", "monthly", "weekly", "daily", "hourly" for period,',
-    'the posting\'s own words for raw; all five null when it states no salary.',
-    '"filter": { "jobType": "remote"|"hybrid"|"on_site"|"not_specified", "onsiteInterview": "yes"|"no"|"not_specified",',
-    '"companyCategory": "healthcare"|"fintech"|"consulting"|"defense_military"|"saas"|"ecommerce"|"cybersecurity"|',
-    '"ai_ml"|"edtech"|"govtech"|"insurtech"|"legaltech"|"media_entertainment"|"logistics"|"energy"|',
-    '"enterprise_software"|"other", "clearanceRequired": "none"|"public_trust"|"secret"|"top_secret"|"ts_sci"|',
-    '"not_specified", "region": "us"|"not_us", "usState": a 2-letter code, or null when remote or unclear }.',
-    '',
-    'JOB FIELDS (id: label):',
-    renderJobFieldListForPrompt(),
-    '',
-    'INDUSTRIES (id: label):',
-    renderIndustryListForPrompt(),
-  ].join('\n');
-}
-
-/** What the analysis is asked about the industry, worded once for both appended instructions. */
-const INDUSTRY_INSTRUCTION =
-  '"industry": exactly ONE id from the INDUSTRIES list (the text before the colon) - the industry of the company or ' +
-  'client the job is for, from the company and its product when the posting does not say; "other" when none fits, ' +
-  '"not_specified" only when the posting gives nothing to tell it by.';
-
-/**
- * The industry instructions alone, for an administrator's record written
- * after postings had a job field but before they had an industry
- * (`predatesIndustry` on Admin -> Prompts): appended to every turn so its
- * postings are filed under one. A record that predates the job field gets
- * these inside `buildAnalysisFactsOverride` instead.
- */
-export function buildIndustryOverride(): string {
-  return [
-    'ALSO RETURN, in the same JSON object, this key - read off the posting itself, never guessed:',
-    INDUSTRY_INSTRUCTION,
-    '',
-    'INDUSTRIES (id: label):',
-    renderIndustryListForPrompt(),
-  ].join('\n');
-}
-
-/**
- * What an administrator's analysis record lacks, appended to its every turn:
- * everything since the job field when it never names `[[jobFieldList]]`, the
- * industry alone when it names that but not `[[industryList]]`, else nothing.
- */
-export function analysisOverrideFor(content: string | undefined): string | null {
-  if (typeof content !== 'string') return null;
-  if (!/\[\[\s*jobFieldList\s*\]\]/.test(content)) return buildAnalysisFactsOverride();
-  if (!/\[\[\s*industryList\s*\]\]/.test(content)) return buildIndustryOverride();
-  return null;
-}
-
 /** SHA-256 of the prompt text that produced an analysis - an audit, never part of its identity. */
 function promptHash(content: string | undefined): string {
   return content ? createHash('sha256').update(content, 'utf8').digest('hex') : '';
@@ -427,8 +349,10 @@ async function analyseAndStore(
     modelId: model.id,
     modelLabel: model.name,
   };
+  // The record that runs: an administrator's edit that lacks a required
+  // variable never does (promptService `usableAtRuntime`), so every posting
+  // is asked for its job field and industry from the lists.
   const record = await resolvePromptByExactId(ANALYSIS_PROMPT_ID).catch(() => null);
-  const override = record ? analysisOverrideFor(record.content) : null;
 
   const startedAt = process.hrtime.bigint();
   console.log(`[analysis] Analysing a new posting (${describeAiChoice(choice)})`);
@@ -443,7 +367,6 @@ async function analyseAndStore(
     responseFormat: 'json',
     useExactPromptId: true,
     runChoiceWins: true,
-    ...(override ? { appendToUserBody: override } : {}),
     signal,
   });
   const analysis = parseJobAnalysisContent(content, input.jd);

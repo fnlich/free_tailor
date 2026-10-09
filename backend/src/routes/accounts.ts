@@ -221,49 +221,6 @@ function refuseOwnAccountChange(
 }
 
 /**
- * True, after answering 400, when a body still names the tier `plan`.
- *
- * The field was renamed `subscription` with no alias, because the frontend
- * ships with this file. But an Accounts page left open across the upgrade
- * still sends the old name, and ignoring it would be silent in the worst way:
- * an invite meant for Premium would create a Default account, and a change
- * would answer "nothing to change". Admin-only, so the sentence may say why.
- *
- * The refusal is the guarantee; the sentence is reached only by that old
- * page's Add-an-account form. Its table answers a refused change by reloading
- * the list, which no longer carries the `plans` it reads, so it breaks with a
- * client-side exception before the sentence is drawn. Nothing is changed
- * either way, and README's Troubleshooting row says to reload.
- */
-function refuseRetiredPlanField(req: Request, res: Response): boolean {
-  if (req.body?.plan === undefined) return false;
-  res.status(400).json({
-    error: 'This page is from an older version of the app. Reload it and try again.',
-    code: 'stale-page',
-  });
-  return true;
-}
-
-/**
- * True, after answering 400, when a body still names a balance in CREDITS.
- *
- * Credits became dollars, and the fields with them: a balance is set with
- * `balanceUsd` and moved with `amountUsd`, both dollars. An Accounts page left
- * open across the upgrade still sends `credits` and `amount` as whole credits,
- * and reading those as dollars - or ignoring them and answering "nothing to
- * change" - would move somebody's money by a figure nobody meant. Refused, as
- * the retired `plan` field is, with the same sentence and code.
- */
-function refuseRetiredCreditFields(req: Request, res: Response, fields: string[]): boolean {
-  if (!fields.some((field) => req.body?.[field] !== undefined)) return false;
-  res.status(400).json({
-    error: 'This page is from an older version of the app. Reload it and try again.',
-    code: 'stale-page',
-  });
-  return true;
-}
-
-/**
  * An amount an administrator typed, in dollars, as thousandths - or null after
  * answering 400 with what was wrong with it. Admin-only, so the sentence may
  * say exactly what to type.
@@ -321,8 +278,6 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
  * (`configuredAdmin` on the row says so).
  */
 router.post('/', (req: Request, res: Response) => {
-  if (refuseRetiredPlanField(req, res)) return;
-  if (refuseRetiredCreditFields(req, res, ['credits'])) return;
   const email = normalizeEmail(req.body?.email);
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     res.status(400).json({ error: 'A valid email address is required.' });
@@ -379,8 +334,6 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
-  if (refuseRetiredPlanField(req, res)) return;
-  if (refuseRetiredCreditFields(req, res, ['credits'])) return;
   const target = getUserById(req.params.id);
   if (!target) {
     res.status(404).json({ error: 'No such account.' });
@@ -523,7 +476,6 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
  * "0.005" grants five thousandths, "0.0005" is refused.
  */
 router.post('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
-  if (refuseRetiredCreditFields(req, res, ['amount'])) return;
   const target = getUserById(req.params.id);
   if (!target) {
     res.status(404).json({ error: 'No such account.' });
@@ -565,7 +517,6 @@ router.post('/:id/credits', (req: Request<{ id: string }>, res: Response) => {
  * names it; null when none was open.
  */
 router.post('/:id/payout', (req: Request<{ id: string }>, res: Response) => {
-  if (refuseRetiredCreditFields(req, res, ['amount', 'credits'])) return;
   const target = getUserById(req.params.id);
   if (!target) {
     res.status(404).json({ error: 'No such account.' });

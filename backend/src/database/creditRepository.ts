@@ -16,9 +16,7 @@ import { getDb } from './sqlite';
  * and nothing here rounds: a $0.023 charge takes 23, seven of them 161, and a
  * refund of two gives back 46. The whole-credit columns beside these (credits,
  * delta, units...) belong to the history from before credits became dollars;
- * every row written here puts 0 in them, so an older build rolled back to
- * reads nothing moving rather than a thousand times what did
- * (database/dollarSwitch.ts).
+ * every row written here puts 0 in them, so a row is in exactly one unit.
  */
 
 type LedgerRow = {
@@ -63,8 +61,8 @@ function now(): string {
  * fields read 0, which is true: no dollar moved.
  *
  * A `reset` row is in credits even when it moves none: the one written for an
- * account whose credits were all held by a run (database/dollarSwitch.ts) has
- * delta 0, and read by its delta alone it would show as a "+$0.000" movement
+ * account whose credits were all held by a run when credits became dollars
+ * has delta 0, and read by its delta alone it would show as a "+$0.000" movement
  * in dollars rather than as the end of the history in credits.
  */
 function toEntry(row: LedgerRow): LedgerEntry {

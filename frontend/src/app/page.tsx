@@ -645,7 +645,7 @@ export default function Home() {
     if (!quoteRequest) return;
     let cancelled = false;
     // No line rather than a wrong one: a quote that fails (a model that is no
-    // longer on offer, a server from before quotes) leaves the run to say so.
+    // longer on offer) leaves the run to say so.
     generationApi.quote(quoteRequest.body).then(
       (quote) => {
         if (!cancelled) setQuoteResult({ key: quoteRequest.key, quote });

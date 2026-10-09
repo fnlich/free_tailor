@@ -51,7 +51,7 @@ export function resetEnvWarningsForTests(): void {
  * The trimmed value, or null when the variable is unset, empty or whitespace.
  *
  * Exported for the rare reader whose empty case is not simply "the default" and
- * that therefore has to look at the raw text first (APIFY_PROXY_GROUPS' `auto`).
+ * that therefore has to look at the raw text first.
  */
 export function envRaw(name: string, env: EnvSource = process.env): string | null {
   const raw = env[name];
@@ -147,8 +147,8 @@ const INTEGER = /^[+-]?\d+$/;
  * Here that is junk, and junk is reported.
  *
  * A `null` fallback is for the variables whose default is "not set at all"
- * (SCRAPER_MAX_RESULTS: no cap), so junk there means no cap rather than some
- * number invented to stand for it.
+ * (a cap that is off unless set), so junk there means no value rather than
+ * some number invented to stand for it.
  */
 export function envInt(name: string, fallback: number, opts: EnvIntOptions, env?: EnvSource): number;
 export function envInt(

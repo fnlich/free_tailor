@@ -412,22 +412,18 @@ function RefundDialog({
         <p className="mt-2 text-sm text-muted">
           {/*
             Said BEFORE the button, because for crypto the answer
-            is "not by us" - and pressing it does NOTHING.
+            is "not by us" - and pressing it does NOTHING:
             `refundPayment` answers 409 for every crypto provider
-            before touching the balance, so the old chain line
-            ("pressing this will reverse the credits only") was a
-            promise the server refuses. The old copy before that
-            said "the money goes back through chain" and let the
-            administrator discover the refusal by pressing, which
-            is a worse way to find out than reading it here.
+            before touching the balance, and finding that out by
+            pressing is a worse way than reading it here. A row
+            from a crypto provider since removed is pointed back
+            at wherever it was taken, as the server's refusal is.
           */}
           {payment.method === 'crypto' ? (
             <>
-              {payment.provider === 'chain'
-                ? 'This cannot be sent back from here - nobody is holding the coin. Return it from the wallet you configured.'
-                : payment.provider === 'coinbase'
-                  ? 'This cannot be sent back from here. Return it from your Coinbase Commerce account.'
-                  : 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard.'}{' '}
+              {payment.provider === 'cryptomus'
+                ? 'This cannot be sent back from here. Return it from your Cryptomus merchant dashboard.'
+                : 'This cannot be sent back from here. Send the funds back from wherever this payment was taken.'}{' '}
               Then adjust the balance from the accounts page. Pressing this reverses
               nothing and will say so.
             </>

@@ -282,10 +282,10 @@ test('tailorResume still delivers its skill override after the transport change'
   );
 });
 
-test('a prompt record model override beats the caller, and a stale provider id still resolves', async () => {
+test('a prompt record model override beats the caller', async () => {
   const { staticDir } = useTempStorage('facade-override');
   writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]', {
-    modelProvider: 'openrouter',
+    modelProvider: 'claude-cli',
     modelName: 'opus',
   });
 
@@ -300,10 +300,44 @@ test('a prompt record model override beats the caller, and a stale provider id s
     fallbackModelName: 'default',
     useExactPromptId: true,
   });
-
-  // The record wins over the caller's fallback, and the removed provider id it
-  // names is read as the provider that replaced it rather than throwing.
   assert.equal(requests[0].modelName, 'opus');
+});
+
+test('a stored override naming a provider this build does not have is no override: logged once, never a throw', async () => {
+  // Read on every listing and every run: a throw here took Admin -> Prompts
+  // down with it, and every run of a shipped prompt.
+  const { staticDir } = useTempStorage('facade-override-unknown');
+  writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]', {
+    modelProvider: 'openrouter',
+    modelName: 'opus',
+  });
+
+  const ai = loadAi();
+  const codex = stubAdapter();
+  ai.registerAdapter('codex-cli', () => ({ ...codex.adapter, id: 'codex-cli' }));
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (line) => warnings.push(String(line));
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      await ai.createPromptCompletion({
+        promptId: 'analyze-job-description',
+        promptValues: { jobDescription: 'A job' },
+        fallbackProvider: 'codex-cli',
+        fallbackModelName: 'default',
+        useExactPromptId: true,
+      });
+    }
+    const listed = await loadFresh('../dist/services/promptService').listPrompts();
+    const prompt = listed.find((entry) => entry.id === 'analyze-job-description');
+    assert.equal(prompt.modelProvider, undefined, 'listed with no override');
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(codex.requests.map((request) => request.modelName), ['default', 'default'], "on the caller's model");
+  const lines = warnings.filter((line) => line.includes('openrouter/opus'));
+  assert.equal(lines.length, 1, warnings.join('\n'));
+  assert.match(lines[0], /cannot use .*Saving the prompt under Admin -> Prompts clears it/);
 });
 
 test("a prompt's override does not move a resume off the model it is charged at", async () => {

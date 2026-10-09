@@ -111,7 +111,3 @@ export function subscriptionAtLeast(value: unknown, minimum: AccountSubscription
   return resolveSubscription(value).order >= SUBSCRIPTIONS[minimum].order;
 }
 
-/** How the limit reads in a sentence: "5" or "unlimited". */
-export function describeProfileLimit(subscription: AccountSubscription): string {
-  return subscription.profileLimit === null ? 'unlimited' : String(subscription.profileLimit);
-}

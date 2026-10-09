@@ -1,7 +1,6 @@
 /**
  * The tabs of the account's own job sheet, as every page that picks one shows
- * them: the builder's sheet panel, Job Search's export, the Job Filter and
- * Report Jobs.
+ * them: the builder's sheet panel, the Job Filter and Report Jobs.
  *
  * Imports nothing at runtime, so backend/test/frontendJobSheet.test.js runs
  * it against the server's own listing (services/sheets/accountSheet.ts
@@ -13,9 +12,8 @@
  * (integrations/googleSheets.ts `jobTabLayoutOf`): `job` - it starts with the
  * six user headers, Date to Job Description; `blank` - row 1 is empty (the
  * server lays such a tab out the first time it is used, if the WHOLE tab is
- * empty); `other` - anything else: a daily tab an older build made in its
- * sixteen columns, or a tab of the person's own. No job route reads or
- * writes an `other` tab.
+ * empty); `other` - anything else, which is a tab of the person's own
+ * whatever its name. No job route reads or writes an `other` tab.
  */
 export type SheetTabLayout = 'job' | 'blank' | 'other';
 
@@ -23,8 +21,7 @@ export type SheetTabLayout = 'job' | 'blank' | 'other';
 export type ListedSheetTab = {
   title: string;
   gid?: number;
-  /** Absent from a server older than the layouts: every tab is then offered. */
-  layout?: SheetTabLayout;
+  layout: SheetTabLayout;
 };
 
 export type SheetTabListing = {
@@ -37,9 +34,6 @@ export type SheetTabListing = {
 export const DEFAULT_TAB = 'All';
 /** The second tab every account sheet has (accountSheet.ts `TEMP_TAB`). */
 export const TEMP_TAB = 'Temp For AI';
-
-/** An older build's tab for the day: `MM/DD/YYYY`, in its sixteen-column layout. */
-const OLDER_DAILY_TAB = /^\d{2}\/\d{2}\/\d{4}$/;
 
 /** Whether a job route reads (and writes) the tab: anything but `other`. */
 export function isJobTab(tab: Pick<ListedSheetTab, 'layout'>): boolean {
@@ -54,14 +48,8 @@ export type SheetTabOption = {
   usable: boolean;
 };
 
-/**
- * Why a tab is not read, as the option says it. A tab named for a day is an
- * older build's - the app made one a day before All and Temp For AI, in
- * other columns - and every other is somebody's own.
- */
-export function unreadTabNote(title: string): string {
-  return OLDER_DAILY_TAB.test(title.trim()) ? 'old layout, not read' : 'not a job tab';
-}
+/** Why a tab is not read, as its option says it. */
+const UNREAD_TAB_LABEL = 'not a job tab';
 
 /** Every tab, in the spreadsheet's order, each with whether it may be chosen. */
 export function sheetTabOptions(tabs: readonly ListedSheetTab[]): SheetTabOption[] {
@@ -70,7 +58,7 @@ export function sheetTabOptions(tabs: readonly ListedSheetTab[]): SheetTabOption
     .map((tab) =>
       isJobTab(tab)
         ? { title: tab.title, label: tab.title, usable: true }
-        : { title: tab.title, label: `${tab.title} (${unreadTabNote(tab.title)})`, usable: false }
+        : { title: tab.title, label: `${tab.title} (${UNREAD_TAB_LABEL})`, usable: false }
     );
 }
 
@@ -94,22 +82,20 @@ export function hasUnreadTabs(tabs: readonly ListedSheetTab[]): boolean {
 }
 
 /**
- * The sentence under a tab select that lists a tab it will not read. The
- * rows of an older build's daily tab are not lost - they are where they were
- * - but its columns are not these (its Company is B, here it is C), so they
- * are copied into All by hand.
+ * The sentence under a tab select that lists a tab it will not read. Its rows
+ * are not lost - they are where they were - but no job route reads its
+ * columns, so a job in one is copied into All by hand, into the four columns
+ * a job tab keeps it in.
  *
  * Plain string literals, not template literals with `${DEFAULT_TAB}`: Next
  * 16.1's Turbopack folds an exported constant made of template literals
- * joined with `+` at build time, and dropped the middle one of three - the
- * page said "...before All and Temp For AIJob Description into...". The tab
- * names are spelled out; backend/test/frontendJobSheet.test.js holds them to
- * the constants above.
+ * joined with `+` at build time, and dropped the middle one of three. The tab
+ * name is spelled out; backend/test/frontendJobSheet.test.js holds it to the
+ * constant above.
  */
 export const UNREAD_TABS_NOTE =
-  'Tabs that are not laid out as job tabs - the daily tabs from before All and Temp For AI, and tabs of your own - ' +
-  'are listed but not read. To use a job from an old daily tab, copy its Company, Job Title, Job Link and Job ' +
-  'Description into columns C to F of All.';
+  'Tabs that are not laid out as job tabs are listed but not read. To use a job from one, copy its Company, ' +
+  'Job Title, Job Link and Job Description into columns C to F of All.';
 
 /**
  * The same note when the tab named All is the person's own (a name clash the
@@ -119,10 +105,10 @@ export const UNREAD_TABS_NOTE =
  * sends them. Plain literals, for the reason above.
  */
 export const UNREAD_TABS_NOTE_ALL_CLASH =
-  'Tabs that are not laid out as job tabs - the daily tabs from before All and Temp For AI, and tabs of your own - ' +
-  'are listed but not read. Your own tab named All is one of them: rename or delete it in Google Sheets, then open ' +
-  'Settings > Job Sheet to have the job tab All added. To use a job from an old daily tab, copy its Company, Job ' +
-  'Title, Job Link and Job Description into columns C to F of that new All.';
+  'Tabs that are not laid out as job tabs are listed but not read. Your own tab named All is one of them: rename ' +
+  'or delete it in Google Sheets, then open Settings > Job Sheet to have the job tab All added. To use a job from ' +
+  'a tab that is not read, copy its Company, Job Title, Job Link and Job Description into columns C to F of that ' +
+  'new All.';
 
 /** The note under a tab select, for the tabs it lists. */
 export function unreadTabsNoteFor(tabs: readonly ListedSheetTab[]): string {

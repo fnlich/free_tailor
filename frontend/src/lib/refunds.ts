@@ -5,10 +5,10 @@ import { apiFetch } from './api';
  *
  * Only a REPORTER asks now, and only to be paid out (owner decision R1): the
  * whole earned balance, with an optional note, never a figure they type. Users
- * and administrators no longer ask for refunds in the app - the server answers
- * the old asking routes 410 `refund-requests-closed` - but what they asked
- * before is still listed on /credits, read-only, and every request still open
- * is decided in the queue exactly as before.
+ * and administrators no longer ask for refunds in the app - the server has no
+ * route to ask one - but what they asked before is still listed on /credits,
+ * read-only, and every request still open is decided in the queue exactly as
+ * before.
  *
  * Every amount coming back is an integer count of thousandths of a dollar in
  * a field ending `Milli`, shown with lib/format.ts's `formatMoney`; an amount
@@ -38,11 +38,11 @@ export type RefundKindFilter = RefundKind | 'all';
 
 /**
  * How the thing asked about is named. A resume has exactly one name: an order
- * item, the charge of a resume the builder handed straight back, or - while
- * the queue still holds its run - the task of a queued resume not placed as an
- * order. A payout's item is the reporter's own account (`itemId`).
+ * item, or the charge of a resume the builder handed straight back. A payout's
+ * item is the reporter's own account (`itemId`). A request naming anything
+ * else is served `unrecognised`: declinable, never refundable.
  */
-export type RefundItemType = 'payment' | 'order-item' | 'task' | 'charge' | 'payout';
+export type RefundItemType = 'payment' | 'order-item' | 'charge' | 'payout';
 
 /** A request as the person who asked reads it. */
 export type RefundRequest = {

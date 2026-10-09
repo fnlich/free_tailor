@@ -52,9 +52,9 @@ import { contentHash, linkKey, postingKeysOf, samePosting, type PostingKeys } fr
  *
  * Only the app's OWN sheets get any of this - a spreadsheet allocated to an
  * account, which the server's identity owns and can protect - and in them
- * only the job tabs (`isJobSheetTab`): a tab the person made for themselves,
- * or a daily tab an older build laid out in its own columns, keeps its header
- * and its columns, and is neither read for an analysis nor written.
+ * only the job tabs (`isJobSheetTab`): any other tab - one the person made
+ * for themselves - keeps its header and its columns, and is neither read for
+ * an analysis nor written.
  */
 
 /** Google's limit on one cell. The Analysis cell is cut to fit, with a marker. */
@@ -322,9 +322,8 @@ export async function readAnalysisRows(spreadsheetId: string, tabName: string, r
     if (result.verified.jobTab === false) {
       result.jobTab = false;
       console.log(
-        `[sheets] "${tabName}" in ${spreadsheetId} is not laid out as a job tab (a tab of the person's own, or an ` +
-          "older build's daily tab); its columns are left as they are, and its postings are analysed from the store " +
-          'instead.'
+        `[sheets] "${tabName}" in ${spreadsheetId} is not laid out as a job tab (a tab of the person's own); its ` +
+          'columns are left as they are, and its postings are analysed from the store instead.'
       );
       return result;
     }

@@ -511,7 +511,7 @@ test("Admin -> Accounts names the setting that makes a row an administrator agai
       'and at every restart, whatever role is set here.',
   });
   assert.equal(configuredAdminNotes('ADMIN_EMAILS').line, 'ADMIN_EMAILS: an administrator again at sign-in');
-  // A backend from before `configuredAdminSource` sent only the flag, which meant ADMIN_EMAILS.
+  // Anything else names ADMIN_EMAILS, the setting the server reads first.
   for (const older of [undefined, null, '', 'none', 'smtp_user']) {
     assert.equal(configuredAdminNotes(older).line, 'ADMIN_EMAILS: an administrator again at sign-in', String(older));
   }

@@ -520,22 +520,16 @@ export function sampledNotice(sampled: readonly string[] | null | undefined): st
 
 // ------------------------------------------------------------- templates
 
-/**
- * The layouts a template is offered for. A server that predates the field
- * offered every template for both, so absent - or nothing recognisable - reads
- * as both rather than as neither.
- */
+/** The layouts a template is offered for, as the server lists them, in the order the editor names them. */
 export function templateSkillsLayouts(template: Pick<Template, 'skillsLayouts'>): TechnicalSkillsLayout[] {
-  const listed = Array.isArray(template.skillsLayouts) ? template.skillsLayouts : [];
-  const known = ALL_SKILLS_LAYOUTS.filter((layout) => listed.includes(layout));
-  return known.length > 0 ? known : [...ALL_SKILLS_LAYOUTS];
+  return ALL_SKILLS_LAYOUTS.filter((layout) => template.skillsLayouts.includes(layout));
 }
 
 export function templateOffersLayout(
   template: Pick<Template, 'skillsLayouts'>,
   layout: TechnicalSkillsLayout
 ): boolean {
-  return templateSkillsLayouts(template).includes(layout);
+  return template.skillsLayouts.includes(layout);
 }
 
 /**

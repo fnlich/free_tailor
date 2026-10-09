@@ -193,10 +193,10 @@ test('an administrator prices a new model in dollars, exactly, and a bad or miss
       `refuses ${JSON.stringify(bad)}`
     );
   }
-  // A page from before credits were dollars sends a price in credits.
+  // A price under any other name - the credits an older page sent - is not read.
   await assert.rejects(
     () => config.createAIModel({ name: 'Old', provider: 'gemini-cli', modelName: 'flash-lite', creditsPerResume: 2 }),
-    /older version of the app/
+    /Price per resume is required for a new model/
   );
   assert.equal(
     (await config.getAdminAppSettings()).aiModels.some((model) => model.modelName === 'flash-lite'),
@@ -221,7 +221,8 @@ test('a partial edit keeps the price, and an edit of the price alone changes onl
     { name: 'Opus', description: 'Hardest prompts.', enabled: true, pricePerResumeMilli: 0 }
   );
   await assert.rejects(() => config.updateAIModel('claude-cli-opus', { pricePerResumeUsd: '1001' }), /Price per resume/);
-  await assert.rejects(() => config.updateAIModel('claude-cli-opus', { creditsPerResume: 4 }), /older version/);
+  const ignored = await config.updateAIModel('claude-cli-opus', { creditsPerResume: 4 });
+  assert.equal(ignored.aiModels.find((model) => model.id === 'claude-cli-opus').pricePerResumeMilli, 0, 'not read as a price');
 });
 
 test('every save keeps the prices, and a model list sent to the settings save is ignored', async () => {
@@ -401,11 +402,10 @@ test('the queue refunds what each failed task was charged, read from its payload
   }
 });
 
-test('a restored task keeps the price it was charged, even when its choice is resolved again', async () => {
-  // Queued on a retired provider, with a snapshot of $0.040; its profile now
-  // runs on a model priced $0.090. The restore moves it onto the new model -
-  // and must not move its price with it, or the refund would hand back money
-  // never taken.
+test('a restored task keeps the price it was charged, whatever its model costs now', async () => {
+  // Queued with a snapshot of $0.040 on a model repriced to $0.090 since. The
+  // restore must not move its price with the model, or the refund would hand
+  // back money never taken.
   const { users, credits, alice } = creditSetup('restore');
   process.env.GENERATION_MAX_ATTEMPTS = '1';
   try {
@@ -435,7 +435,7 @@ test('a restored task keeps the price it was charged, even when its choice is re
     credits.reserveCredits(users.getUserById(alice.id), 40, { kind: 'batch', id: 'bat_restore' });
 
     const store = loadFresh('../dist/database/generationRepository');
-    const retiredChoice = { provider: 'openai', modelName: 'gpt-5.1', modelId: 'openai-gpt-5-1', modelLabel: 'GPT' };
+    const choice = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'claude-cli-sonnet', modelLabel: 'Claude Sonnet' };
     const row = (id, seq, payload) => ({
       id,
       batchId: 'bat_restore',
@@ -445,7 +445,7 @@ test('a restored task keeps the price it was charged, even when its choice is re
         queue: 'cli',
         label: { profileId: 'p-ada', profileName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
         kind: 'resume',
-        payload: { batchId: 'bat_restore', profileId: 'p-ada', jobIndex: 0, choice: retiredChoice, ...payload },
+        payload: { batchId: 'bat_restore', profileId: 'p-ada', jobIndex: 0, choice, ...payload },
       },
     });
     store.saveBatchWithTasks(
@@ -459,7 +459,7 @@ test('a restored task keeps the price it was charged, even when its choice is re
           createdAt: Date.now(),
         },
       },
-      [row('tsk_priced', 0, { costMilli: 40 }), row('tsk_pre_dollars', 1, { creditCost: 1 })]
+      [row('tsk_priced', 0, { costMilli: 40 }), row('tsk_unpriced', 1, {})]
     );
 
     const queueModule = loadFresh('../dist/services/queue/index');
@@ -481,10 +481,10 @@ test('a restored task keeps the price it was charged, even when its choice is re
         { model: 'claude-cli-sonnet', costMilli: 40 },
         { model: 'claude-cli-sonnet', costMilli: undefined },
       ],
-      'resolved again onto the profile model, with the snapshot carried, not re-priced'
+      'the snapshot carried, not re-priced'
     );
     // $1.000 - $0.040 + $0.040: what was charged comes back, not the model's
-    // $0.090 - and the task from before dollars adds nothing.
+    // $0.090 - and a task with no snapshot adds nothing.
     assert.equal(users.getUserById(alice.id).balanceMilli, 1_000);
     queueModule.resetGenerationQueueForTests();
   } finally {

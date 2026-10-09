@@ -182,11 +182,6 @@ export function deleteNotification(id: string): boolean {
   return result.changes > 0;
 }
 
-/** Every notice written for one account - when that account is deleted, nobody else can read them. */
-export function deleteNotificationsFor(recipientId: string): number {
-  return getDb().prepare('DELETE FROM notifications WHERE recipient_id = ?').run(recipientId).changes;
-}
-
 /**
  * How many notices this reader has not seen: the announcements and their own.
  *

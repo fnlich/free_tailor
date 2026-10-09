@@ -159,12 +159,7 @@ export interface JobFilterFacts {
  * these CLIs and would move every call onto metered billing while looking
  * identical.
  *
- * The former `openrouter` id was replaced by `claude-cli`; stored records that
- * still carry it are coerced by `coerceProviderId` in config/providerCatalog.
- * Two families were retired outright, with no replacement: the browser chat
- * providers (`claude-web`, `chatgpt-web`) and the metered APIs (`claude`, the
- * Anthropic API, plus `openai` and `deepseek`). Stored records naming them are
- * dropped or ignored on read - see `RETIRED_PROVIDER_IDS` there.
+ * Every one a subscription seat; config/providerCatalog.ts is the one list.
  */
 export type AIProvider = 'claude-cli' | 'codex-cli' | 'gemini-cli';
 

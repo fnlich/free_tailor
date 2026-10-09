@@ -180,8 +180,8 @@ function source(value: unknown, fallback: ProviderSettingSource): ProviderSettin
 
 /**
  * One provider as the server sent it, or null for something that is not one.
- * Lenient on everything else - a settings page must not go blank over a field
- * an older or newer server spells differently.
+ * Lenient on everything else - a settings page must not go blank over one
+ * field it cannot read.
  */
 export function normalizeAdminProvider(value: unknown): AdminAIProvider | null {
   const entry = record(value);
@@ -294,8 +294,8 @@ export function normalizeProviderCards(value: unknown): ProviderCard[] {
  * Whether any provider of the type is switched on - the third clause of the
  * server's `isProviderEnabled`: a type whose every provider an administrator
  * switched off runs nothing, exactly as if its own switch were off. An empty
- * list says nothing (a server from before providers sent none), so it counts
- * as on, as the server's does for a settings object without the list.
+ * list - the settings not read yet - says nothing, so it counts as on, as the
+ * server's does for a settings object without the list.
  */
 export function hasEnabledProviderOfType(providers: readonly Pick<AdminAIProvider, 'type' | 'enabled'>[], type: AIProvider): boolean {
   if (providers.length === 0) return true;

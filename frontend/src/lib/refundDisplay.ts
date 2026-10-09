@@ -386,12 +386,12 @@ export function byHandRefundBody(amountSent: string, confirmedMilli: number): { 
  * (`refunding`) or holding a card refund Stripe never confirmed
  * (`refund-unconfirmed`, which the row says once read again), the request or
  * its account gone, a payout's account no longer a reporter
- * (`not-a-reporter`), a request a newer build wrote (`unrecognised`) - so the
- * queue reads its list again behind the error. Not `paid-by-hand-required`,
- * which is the dialog asking for the by-hand confirmation, nor `bad-amount`,
- * a reason or note refusal, or a payout above the balance
- * (`insufficient-balance`, which names the balance now and leaves the dialog
- * open to record less), which are about what was typed.
+ * (`not-a-reporter`), a request naming something the server cannot measure
+ * (`unrecognised`) - so the queue reads its list again behind the error. Not
+ * `paid-by-hand-required`, which is the dialog asking for the by-hand
+ * confirmation, nor `bad-amount`, a reason or note refusal, or a payout above
+ * the balance (`insufficient-balance`, which names the balance now and leaves
+ * the dialog open to record less), which are about what was typed.
  */
 export function isStaleRefundRefusal(code: string | undefined): boolean {
   return (

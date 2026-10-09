@@ -496,7 +496,7 @@ function ReportJobsBody() {
                         {!tabs ? 'Loading tabs...' : tabOptions.length === 0 ? 'No tabs found' : 'No job tab to report from'}
                       </option>
                     )}
-                    {/* A tab that is not a job tab - an older build's daily tab, a tab of their own - is listed, not chosen. */}
+                    {/* A tab that is not a job tab - a tab of their own - is listed, not chosen. */}
                     {tabOptions.map((option) => (
                       <option key={option.title} value={option.title} disabled={!option.usable}>
                         {option.label}

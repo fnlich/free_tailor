@@ -6,7 +6,6 @@ import {
   saveBatchWithTasks,
   saveTaskRow,
 } from '../../database/generationRepository';
-import { orderExistsForBatch } from '../../database/orderRepository';
 import { getProfile } from '../../database/profileRepository';
 import { getAppSettings, isProviderEnabled } from '../../config/aiModelConfig';
 import {
@@ -16,6 +15,7 @@ import {
   type ResolvedAIProvider,
 } from '../../config/aiProviders';
 import { getDatabasePath } from '../../database/sqlite';
+import { AI_PROVIDER_IDS } from '../../config/providerCatalog';
 import { checkProviderHealth, providerReadiness, providersNow } from '../ai';
 import { closeIfSettled, refundTaskUnit } from '../credits';
 import { recordTaskFinished, recordTaskStarted } from '../orders/orderTracking';
@@ -33,14 +33,7 @@ import {
   type Task,
   type TaskState,
 } from './taskQueue';
-import type { AiChoice } from '../../config/aiPreferences';
-import {
-  currentChoice,
-  makeResumeRunner,
-  namesRetiredProvider,
-  RESUME_TASK_KIND,
-  type ResumeJob,
-} from './resumeTask';
+import { makeResumeRunner, RESUME_TASK_KIND, type ResumeJob } from './resumeTask';
 
 export { TaskQueue, registerTaskRunner, newBatchId } from './taskQueue';
 export { TabLeases, type TabLeaseDeps, type TabLeaseState } from './tabLease';
@@ -65,7 +58,6 @@ export type {
 export {
   runResumeTask,
   makeResumeRunner,
-  resetResumeTaskStateForTests,
   RESUME_TASK_KIND,
   type ResumeJob,
   type ResumeTaskInput,
@@ -124,24 +116,6 @@ async function readCapacity(env: NodeJS.ProcessEnv = process.env): Promise<Capac
 }
 
 /**
- * Lane names an older build wrote, when every seat had one lane named for it.
- * A task restored from one goes to its type's pool.
- */
-const LEGACY_LANE_POOL: ReadonlyMap<string, string> = new Map([
-  ['cli', 'claude-cli'],
-  ['codex', 'codex-cli'],
-  ['gemini', 'gemini-cli'],
-]);
-
-/**
- * A lane name an older build wrote, as its pool - asked of a Map, so a stored
- * `constructor` or `__proto__` is not mistaken for one by inheritance.
- */
-function legacyLanePool(lane: unknown): string | null {
-  return typeof lane === 'string' ? LEGACY_LANE_POOL.get(lane) ?? null : null;
-}
-
-/**
  * What the dispatcher asks between readings. A provider is ready when its
  * adapter has no hold on the whole seat - nor, for a task, on the task's
  * model - and its last health check was not against it, all synchronous, so
@@ -153,7 +127,7 @@ const lanePolicy: LanePolicy = {
     return readiness.ready !== false && !readiness.held;
   },
   modelOf: (task) => taskModelName(task.payload),
-  poolOf: (lane) => providerTypeOf(lane) ?? legacyLanePool(lane),
+  poolOf: (lane) => providerTypeOf(lane),
 };
 
 /**
@@ -254,21 +228,10 @@ export function getTabLeases(): TabLeases {
  * refund when it does not deliver, so the two can never be worked out two
  * different ways.
  *
- * The snapshot when it carries a sane one. A payload WITHOUT one is $0, and
- * that is a decision, not a gap:
- *
- *   - a task queued before credits became dollars was paid for in credits,
- *     and the reset cleared every credit. It finishes on that payment - not
- *     charged again in dollars - and if it fails, what it would give back was
- *     reset with the balance, so it gives back nothing. The switch writes
- *     `costMilli: 0` on such a task explicitly; this is the same answer for
- *     one it could not reach. Its `creditCost` (whole credits) is never read
- *     as money: one credit read as one thousandth would be a refund nobody
- *     was charged, and the reservation it would refund into was closed by the
- *     switch anyway.
- *   - every task the queue makes now carries `costMilli` (`buildTasks`), so
- *     nothing new reaches this branch; the stub payloads the queue's own tests
- *     run are not resumes and are not charged.
+ * The snapshot when it carries a sane one, and $0 for a payload without one:
+ * every resume task the queue makes carries `costMilli` (`buildTasks`), so
+ * only a payload that is not a resume - the stub payloads the queue's own
+ * tests run - reaches that branch, and nothing charged it.
  *
  * Never re-priced from the model: see ResumeTaskPayload.costMilli.
  */
@@ -460,13 +423,7 @@ export type RestoreReport = {
  *   `immediate` that /orders never lists, so its files are filed and
  *   owner-checked like an order's and deleted soon after it ends.
  *
- * Every batch submitted since both kinds existed carries one. A batch WITHOUT
- * one was queued by an older build and restored: an order if the orders table
- * says so (the restore writes that back), otherwise a builder run from before
- * Generate Immediately, which is left to run to the end as it always did - no
- * lease, no priority.
- *
- * On `shared` because `shared` is persisted whole and read back whole by the
+ * Every batch the generation routes submit carries one. On `shared` because `shared` is persisted whole and read back whole by the
  * restore - a field there survives a restart with no projection to update.
  */
 export const ORDER_BATCH_KIND = 'order';
@@ -484,7 +441,7 @@ export function isImmediateBatch(batch: { shared: Record<string, unknown> }): bo
   return batch.shared.kind === IMMEDIATE_BATCH_KIND;
 }
 
-/** A batch's kind as a page reads it, or null for one queued before kinds existed. */
+/** A batch's kind as a page reads it, or null for a batch that names neither (never one the routes submit). */
 export function batchKind(batch: { shared: Record<string, unknown> }): BatchKind | null {
   return isOrderBatch(batch) ? ORDER_BATCH_KIND : isImmediateBatch(batch) ? IMMEDIATE_BATCH_KIND : null;
 }
@@ -494,68 +451,24 @@ export function batchKind(batch: { shared: Record<string, unknown> }): BatchKind
  * by the type id - which is also the built-in provider's lane, so the queue
  * has somewhere to hold it before its first reading. The queue then places it
  * with whichever provider of the type has the most room (taskQueue.ts
- * `place`). Anything that is not a type - a retired provider on a choice
- * stored before the upgrade, which the restore resolves again before it runs
- * - goes to the Claude pool, the lane of last resort it always was.
+ * `place`). Anything that is not a type - a damaged task row - goes to the
+ * first seat's pool rather than nowhere, and fails there by name.
  */
 export function laneFor(provider: unknown): QueueName {
-  return providerTypeOf(provider) === provider ? (provider as QueueName) : 'claude-cli';
+  return providerTypeOf(provider) === provider ? (provider as QueueName) : AI_PROVIDER_IDS[0];
 }
 
 /**
  * The lane a restored task goes back in.
  *
  * Its stored lane when that is a provider this process has. Otherwise - a
- * provider removed since, a lane an older build wrote (`cli`, `codex`,
- * `gemini`, or the browser chat providers' before them), no lane at all - the
- * pool of the provider type the task was resolved to, the way `routeFor`
- * places new work; the queue then moves it to a provider of that type.
+ * provider removed since - the pool of the provider type the task was
+ * resolved to, the way `routeFor` places new work; the queue then moves it to
+ * a provider of that type.
  */
 function restoredLane(stored: unknown, payload: unknown): QueueName {
   if (typeof stored === 'string' && providersNow().some((entry) => entry.id === stored)) return stored;
-  // An older build's lane says the type as surely as the choice does.
-  return (
-    legacyLanePool(stored) ??
-    laneFor((payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider)
-  );
-}
-
-/**
- * The payload of a task that will run, with a choice naming a removed provider
- * resolved again from its profile - and so the lane it belongs in.
- *
- * Done HERE, before the task is placed, rather than only when it starts. The
- * lane is the provider's resource: placed by the stale provider, a task that
- * now resolves to the Codex seat would sit in a Claude-seat slot, report that
- * seat as what it runs on, and queue at the Codex semaphore with its deadline
- * already running - beside the Codex lane's own work, past the limit the lane
- * split exists to keep. The fresh choice is written back with the batch, so a
- * second restart reads it as stored.
- *
- * Resolved once per profile, which is what a batch's tasks usually share. A
- * profile that cannot be read leaves the task as it was: the runner resolves it
- * again at start, or reports the profile missing, which is its job.
- */
-async function refreshRetiredChoice(
-  payload: unknown,
-  resolved: Map<string, Promise<AiChoice | null>>
-): Promise<{ payload: unknown; lane: QueueName } | null> {
-  const stored = payload as { profileId?: unknown; choice?: unknown } | null | undefined;
-  if (!stored || typeof stored.profileId !== 'string' || !namesRetiredProvider(stored.choice)) return null;
-  const profileId = stored.profileId;
-  const storedChoice = stored.choice;
-
-  let pending = resolved.get(profileId);
-  if (!pending) {
-    pending = (async () => {
-      const profile = getProfile(profileId);
-      return profile ? currentChoice(storedChoice, profile) : null;
-    })().catch(() => null);
-    resolved.set(profileId, pending);
-  }
-  const choice = await pending;
-  if (!choice) return null;
-  return { payload: { ...stored, choice }, lane: laneFor(choice.provider) };
+  return laneFor((payload as { choice?: { provider?: unknown } } | null | undefined)?.choice?.provider);
 }
 
 /**
@@ -603,7 +516,6 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
   // with its provider only if this process has that provider.
   await getAppSettings().catch(() => undefined);
 
-  const resolvedChoices = new Map<string, Promise<AiChoice | null>>();
   for (const row of rows) {
     if (row.state !== 'running') continue;
     if (row.tasks.length === 0) continue;
@@ -623,9 +535,8 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
       let requeued = 0;
       const entries = [];
       for (const task of [...row.tasks].sort((a, b) => a.seq - b.seq)) {
-        // `data` is whatever the build that wrote it projected, so every field
-        // is read as possibly absent. An earlier build also wrote a list of
-        // chat sites here; it is not read, and the next write drops it.
+        // `data` is the projection `taskRow` wrote, every field read as
+        // possibly absent.
         const taskData = task.data as {
           queue?: unknown;
           label?: Task['label'];
@@ -637,21 +548,11 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           ranOn?: unknown;
         };
         if (task.state === 'running') requeued += 1;
-        // Only work that will run again needs a model it can run on; a
-        // finished task keeps the choice it was built with. Awaited only for
-        // a choice that needs it, so a restore with none - every one, once the
-        // upgrade's own queue has drained - finishes before any request can
-        // queue work ahead of it, as it did when it was synchronous.
-        const refreshed =
-          (task.state === 'queued' || task.state === 'running') &&
-          namesRetiredProvider((taskData.payload as { choice?: unknown } | null | undefined)?.choice)
-            ? await refreshRetiredChoice(taskData.payload, resolvedChoices)
-            : null;
         entries.push({
           id: task.id,
           seq: task.seq,
           state: task.state as TaskState,
-          queue: refreshed ? refreshed.lane : restoredLane(taskData.queue, taskData.payload),
+          queue: restoredLane(taskData.queue, taskData.payload),
           label: taskData.label ?? {
             profileId: '',
             profileName: 'Unknown',
@@ -662,7 +563,7 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           // Whole, as `taskRow` wrote it: `costMilli` (what was charged) and
           // `analysisId` (the job's stored analysis, so this task does not
           // reach the analysis step again) come back with it.
-          payload: refreshed ? refreshed.payload : taskData.payload,
+          payload: taskData.payload,
           ...(taskData.value !== undefined ? { value: taskData.value } : {}),
           ...(taskData.error ? { error: taskData.error } : {}),
           ...(typeof taskData.ranOn === 'string' && taskData.ranOn ? { ranOn: taskData.ranOn } : {}),
@@ -673,11 +574,7 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
         });
       }
 
-      // An order queued before batches carried their kind: the orders table
-      // still knows, and the builder must not take it for a run of its own.
-      // Written back with the batch below, so this is asked once.
       const shared = { ...(data.shared ?? {}) };
-      if (shared.kind === undefined && orderExistsForBatch(row.id)) shared.kind = ORDER_BATCH_KIND;
 
       // Restored under its OWN id, so the payloads still point at the right
       // batch for their jobs and the rows on disk stay the rows for this batch.

@@ -15,7 +15,6 @@ import {
 } from '../services/templateImport';
 import { isTemplateSource, templateFileId } from '../database/templateFiles';
 import {
-  currentTemplateId,
   deleteStoredTemplate,
   getStoredTemplate,
   getTemplateOverride,
@@ -135,13 +134,10 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
 /**
  * The id a template's file is named by, or '' for one no file can have - a
  * `..`, a slash, a reserved device name - which then finds nothing, before
- * any path is built from it. An older build's spelling finds the file the
- * one-time move filed that row under, else its folded form, so a profile
- * naming an older import's `My_Template` still finds `my-template.json`
- * (`currentTemplateId`).
+ * any path is built from it.
  */
 function normalizeTemplateId(id: string): string {
-  return currentTemplateId(id) ?? '';
+  return templateFileId(id) ?? '';
 }
 
 function applyTemplateOverride(template: Template): Template {

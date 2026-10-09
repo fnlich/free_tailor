@@ -9,7 +9,11 @@
  * page would then promise one size and the server refuse another.
  */
 
-/** What a server that predates the field enforces - its old hard-coded 10MB. */
+/**
+ * The cap the page assumes until the server has said: UPLOAD_MAX_MB's own
+ * default (config/operational.ts), so the first answer changes nothing on an
+ * install that never set it.
+ */
 export const DEFAULT_UPLOAD_MAX_MB = 10;
 
 const BYTES_PER_MB = 1024 * 1024;
@@ -17,9 +21,9 @@ const BYTES_PER_MB = 1024 * 1024;
 /**
  * `uploadMaxMb` from a /auth/me response, or the default.
  *
- * Anything but a positive whole number is treated as missing: the field is
- * absent from an older backend, and a page that printed "max undefinedMB" or
- * refused every file over 0MB would be worse than the old fixed text.
+ * Anything but a positive whole number is treated as missing: a page that
+ * printed "max undefinedMB" or refused every file over 0MB would be worse
+ * than one that assumed the default and let the server's 413 decide.
  */
 export function readUploadMaxMb(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0

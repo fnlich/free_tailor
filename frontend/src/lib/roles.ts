@@ -137,7 +137,7 @@ export type ConfiguredAdminSource = 'ADMIN_EMAILS' | 'SMTP_USER';
  * `configuredAdminSource`. An install that signs in by email and sets no
  * ADMIN_EMAILS gets its operator from SMTP_USER, and a row that always said
  * ADMIN_EMAILS sent them to edit a setting that was empty. ADMIN_EMAILS for
- * anything else - a backend from before the field - which is what it meant then.
+ * anything else, the setting the server reads first.
  */
 export function configuredAdminNotes(source: unknown): { line: string; title: string } {
   const setting: ConfiguredAdminSource = source === 'SMTP_USER' ? 'SMTP_USER' : 'ADMIN_EMAILS';

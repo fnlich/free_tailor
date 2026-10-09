@@ -129,7 +129,7 @@ test('an asset names an asset row only, never the card row', async () => {
   await assert.rejects(() => quotePurchase('5', { method: 'crypto', asset: 'card' }), /smallest crypto purchase/);
 });
 
-test('an administrator sets the limits in dollars, in whole cents, and a page still in cents is refused', async () => {
+test('an administrator sets the limits in dollars, in whole cents, and a row with no dollars is refused', async () => {
   const { config, dbDir } = await pricing();
 
   const saved = await config.updateAppSettings({
@@ -156,8 +156,8 @@ test('an administrator sets the limits in dollars, in whole cents, and a page st
     [[{ target: 'card', minUsd: '', maxUsd: '100' }], /card: the smallest purchase is required/],
     [[{ target: 'card', minUsd: '0', maxUsd: '100' }], /between \$0\.01/],
     [[{ target: 'card', minUsd: '1', maxUsd: '100', presetsUsd: ['five'] }], /card: preset 1 must be an amount in dollars/],
-    // The shape a Payments page loaded before dollars sends: cents.
-    [[{ target: 'card', minCents: 250, maxCents: 10_000, presetsCents: [] }], /older version of the app/],
+    // Cents, the shape the row is STORED in, are not an amount a save reads.
+    [[{ target: 'card', minCents: 250, maxCents: 10_000, presetsCents: [] }], /card: the smallest purchase is required/],
   ]) {
     await assert.rejects(() => config.updateAppSettings({ paymentLimits: rows }), why, JSON.stringify(rows));
   }

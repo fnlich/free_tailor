@@ -1,5 +1,3 @@
-import { getDb } from '../../database/sqlite';
-import { runDataMigrations } from '../../database/migrations';
 import {
   consumeLoginCode,
   createSession,
@@ -43,15 +41,7 @@ export type SignInResult = {
   created: boolean;
 };
 
-/**
- * Everything that happens once an address is proven.
- *
- * The migration re-run is the subtle part. Ownership migration 003 defers while
- * there is no admin, and on a fresh install that is every boot until somebody
- * signs in - which is THIS moment. Running the migrations again here means the
- * pre-account profiles are adopted the instant an admin exists, rather than on
- * the next restart, which on a long-running server could be weeks.
- */
+/** Everything that happens once an address is proven. */
 function completeSignIn(input: {
   email: string;
   name?: string;
@@ -74,16 +64,6 @@ function completeSignIn(input: {
   const promoted = promoteIfConfiguredAdmin(account);
   if (promoted) account.role = 'admin';
 
-  if ((created || promoted) && account.role === 'admin') {
-    try {
-      runDataMigrations(getDb());
-    } catch (error) {
-      // Never fatal: the sign-in itself succeeded, and the worst case is that
-      // the pre-account profiles wait for the next restart.
-      console.warn('[auth] Could not adopt pre-account data for the first admin.', error);
-    }
-  }
-
   markSignedIn(account.id);
 
   // Started, not awaited. Allocating a spreadsheet and adding the day's tab is
@@ -99,33 +79,12 @@ function completeSignIn(input: {
 }
 
 /**
- * The startup promotion, and the migrations that were waiting for it.
- *
- * An account named by ADMIN_EMAILS or SMTP_USER that already exists becomes an
- * administrator here, at boot - which is the moment the migration chain, run a
- * few lines earlier by `getDb()`, stopped at 003 for want of one. Without
- * running it again now, the chain would stay stopped for the life of the
- * process: that administrator signing in later is promoted already, so
- * `completeSignIn` has no reason to run it either.
- *
- * And it must not wait that long. Every later step sits behind 003, and 006
- * among them has to see the settings row BEFORE an administrator's first save
- * normalizes the browser chat records out of it: the ids of an administrator's
- * own browser models are only in those records, and a profile pinned to one is
- * cleared by 006 only if 006 learned the id. Saved first, the profile would
- * fail every generation as a model that "was not found".
+ * The startup promotion: an account named by ADMIN_EMAILS or SMTP_USER that
+ * already exists becomes an administrator at boot, rather than at its next
+ * sign-in. Answers how many were promoted.
  */
 export function applyConfiguredAdmins(): number {
-  const promoted = promoteConfiguredAdmins();
-  if (promoted > 0) {
-    try {
-      runDataMigrations(getDb());
-    } catch (error) {
-      // Never fatal, as on sign-in: the next restart runs them.
-      console.warn('[auth] Could not run the migrations waiting for an administrator.', error);
-    }
-  }
-  return promoted;
+  return promoteConfiguredAdmins();
 }
 
 export async function signInWithGoogle(idToken: string): Promise<SignInResult> {

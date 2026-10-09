@@ -141,7 +141,7 @@ export default function JobFilterPage() {
                       {!listing && !tabsError ? 'Loading tabs...' : options.length === 0 ? 'No tabs found' : 'No job tab to filter'}
                     </option>
                   )}
-                  {/* A tab that is not a job tab - an older build's daily tab, a tab of your own - is listed, not chosen. */}
+                  {/* A tab that is not a job tab - a tab of your own - is listed, not chosen. */}
                   {options.map((option) => (
                     <option key={option.title} value={option.title} disabled={!option.usable}>
                       {option.label}
@@ -227,11 +227,11 @@ export default function JobFilterPage() {
                   ['Scanned', summary.scannedRows],
                   // The administrator's name for the model, never the provider
                   // or the CLI's own id for it.
-                  ['Analysis model', summary.modelLabel || 'App default'],
+                  ['Analysis model', summary.modelLabel],
                   ['Scraped pages', summary.scrapedRows],
                   // Judged on an analysis the posting already had, found by
                   // its link: no page fetched and no model asked.
-                  ['Already analysed', summary.reusedAnalyses ?? 0],
+                  ['Already analysed', summary.reusedAnalyses],
                   ['Rows without a link', summary.skippedRows],
                   ['Rows with errors', summary.errorRows],
                   ['Rows', summary.endRow >= summary.startRow ? `${summary.startRow} to ${summary.endRow}` : 'None'],

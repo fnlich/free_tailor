@@ -12,13 +12,14 @@ test('app settings persist in the SQLite settings table', async () => {
   const config = loadFresh('../dist/config/aiModelConfig');
 
   const defaults = await config.getAdminAppSettings();
-  assert.equal(defaults.claudeCliEnabled, true);
+  assert.equal(defaults.providersEnabled['claude-cli'], true);
+  assert.equal('claudeCliEnabled' in defaults, false, 'no flat per-seat flag on the wire');
   assert.equal(defaults.providersEnabled['codex-cli'], true);
   assert.equal(defaults.defaultMode, 'preview');
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), null);
 
   // The saved shared sheet an older build kept ("Bid History"): in the row,
-  // as that build wrote it, before this one first saves.
+  // as that build wrote it. Nothing reads it, and the next save drops it.
   writeSettingRaw(dbDir, APP_SETTINGS_KEY, JSON.stringify({
     googleSheetsSources: [{
       id: 'sheet-1',
@@ -57,11 +58,7 @@ test('app settings persist in the SQLite settings table', async () => {
   assert.equal(updated.providersEnabled['codex-cli'], false);
   assert.equal(updated.providersEnabled['claude-cli'], true);
   assert.deepEqual(Object.keys(updated.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
-  // The Claude seat's flat boolean stays on the wire, derived, so a browser
-  // tab loaded before this release keeps working. The metered APIs' went with
-  // them.
-  assert.equal(updated.claudeCliEnabled, true);
-  for (const retired of ['claudeEnabled', 'openaiEnabled', 'deepseekEnabled']) {
+  for (const retired of ['claudeCliEnabled', 'claudeEnabled', 'openaiEnabled', 'deepseekEnabled']) {
     assert.equal(retired in updated, false, retired);
   }
   // There is no key to fetch for anything any more.
@@ -77,8 +74,8 @@ test('app settings persist in the SQLite settings table', async () => {
 
   const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
   assert.equal('apiKeys' in stored, false, 'no credential may be written to the database');
-  // ...but the list in the row survives every save, unchanged, for a rollback.
-  assert.deepEqual(stored.googleSheetsSources.map((source) => [source.name, source.sheetId]), [['Bid History', 'abc123']]);
+  // ...and from the row: the save writes the settings this build reads, field by field.
+  assert.equal('googleSheetsSources' in stored, false);
 });
 
 test('reading settings does not rewrite an existing settings record', async () => {
@@ -108,47 +105,10 @@ test('reading settings does not rewrite an existing settings record', async () =
 
   const loaded = await config.getAdminAppSettings();
   assert.equal(loaded.outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
-  // The metered flags in it are residue the reader ignores - and does not
-  // clean up: that is migration 007's job, after it has snapshotted the row.
+  // Keys for anything but the catalog's seats are ignored, and a read
+  // rewrites nothing.
   assert.deepEqual(Object.keys(loaded.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
   assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), originalJson);
-});
-
-// The one exception to the rule above, and the reason it is an exception:
-// leaving the row alone would leave secrets in the database that nothing can
-// read, manage or remove - the app uses no API key at all any more.
-test('a settings row holding API keys is rewritten once, without them', async () => {
-  const { rootDir, dbDir } = useTempStorage('settings-key-purge');
-  writeSettingRaw(
-    dbDir,
-    APP_SETTINGS_KEY,
-    JSON.stringify({
-      providersEnabled: { 'claude-cli': true, claude: true, openai: true, deepseek: true },
-      defaultMode: 'preview',
-      defaultTheme: 'light',
-      outputBaseDir: path.join(rootDir, 'generated-output'),
-      outputPathTemplate: '/{{date}}/{{profile name}}/{{company name}}',
-      googleSheetsSources: [],
-      apiKeys: {
-        openai: { activeKeyId: 'k1', entries: [{ id: 'k1', name: 'Primary', value: 'sk-secret' }] },
-      },
-    })
-  );
-
-  const config = loadFresh('../dist/config/aiModelConfig');
-
-  await config.getAdminAppSettings();
-
-  const rewritten = readSettingRaw(dbDir, APP_SETTINGS_KEY);
-  assert.equal('apiKeys' in JSON.parse(rewritten), false, 'the key store must be gone');
-  assert.equal(rewritten.includes('sk-secret'), false, 'no key text may survive anywhere in the row');
-  // Everything else survives the rewrite.
-  assert.equal(JSON.parse(rewritten).outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
-
-  // And it is a one-time rewrite, not a write on every read.
-  config.invalidateSettingsCache();
-  await config.getAdminAppSettings();
-  assert.equal(readSettingRaw(dbDir, APP_SETTINGS_KEY), rewritten);
 });
 
 test('invalid settings JSON is reported and never overwritten with defaults', async () => {
@@ -297,19 +257,18 @@ test('generated path helpers apply per-profile output file name templates', asyn
   );
 });
 
-test("a client that still sends the Claude seat's flat boolean is heard", async () => {
-  // The stored row always carries a providersEnabled record, and the record
-  // wins over the flat fields - so merging an older client's payload naively
-  // made its provider toggle appear to save and change nothing.
-  useTempStorage('settings-legacy-flags');
+test('a seat is switched only through providersEnabled; a flat per-seat flag is not read', async () => {
+  useTempStorage('settings-flat-flags');
   const config = loadFresh('../dist/config/aiModelConfig');
 
   await config.getAdminAppSettings();
-  const updated = await config.updateAppSettings({ claudeCliEnabled: false });
+  const ignored = await config.updateAppSettings({ claudeCliEnabled: false, openrouterEnabled: false });
+  assert.equal(ignored.providersEnabled['claude-cli'], true);
+  assert.equal('claudeCliEnabled' in ignored, false);
 
-  assert.equal(updated.providersEnabled['claude-cli'], false);
-  assert.equal(updated.providersEnabled['codex-cli'], true, 'untouched providers keep their setting');
-  assert.equal(updated.claudeCliEnabled, false);
+  const updated = await config.updateAppSettings({ providersEnabled: { 'codex-cli': false } });
+  assert.equal(updated.providersEnabled['codex-cli'], false);
+  assert.equal(updated.providersEnabled['claude-cli'], true, 'untouched providers keep their setting');
 });
 
 test("a stale page's metered flags are ignored without error, and never written", async () => {

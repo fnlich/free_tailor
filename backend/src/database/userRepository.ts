@@ -33,8 +33,6 @@ type UserRow = {
   last_login_at: string | null;
   sheet_id: string | null;
   sheet_url: string | null;
-  sheet_tab_date: string | null;
-  sheet_tab_gid: string | null;
   sheet_shared_at: string | null;
   sheet_layout: number | null;
   sheet_all_gid: string | null;
@@ -46,7 +44,7 @@ type UserRow = {
 const USER_COLUMNS =
   'id, email, name, picture, role, subscription, credits, balance_milli, google_sub, disabled, created_at, ' +
   'updated_at, ' +
-  'last_login_at, sheet_id, sheet_url, sheet_tab_date, sheet_tab_gid, sheet_shared_at, ' +
+  'last_login_at, sheet_id, sheet_url, sheet_shared_at, ' +
   'sheet_layout, sheet_all_gid, sheet_temp_gid, notifications_seen_at, stripe_customer_id';
 
 function now(): string {
@@ -230,8 +228,7 @@ function roleForNewUser(email: string, requested?: UserRole): UserRole {
  * Promote only, never demote. A demoting version would mean a typo in .env, or
  * an SMTP provider swapped for one that uses a username, locks the operator out
  * of their own installation with no way back through the UI. Returns true when
- * it actually changed something, so the caller can say so and re-run the
- * ownership migration that waits for an admin to exist.
+ * it actually changed something, so the caller can say so.
  */
 export function promoteIfConfiguredAdmin(account: UserAccount): boolean {
   if (account.role === 'admin' || !isConfiguredAdmin(account.email)) return false;
@@ -300,8 +297,6 @@ export function createUser(input: CreateUserInput): UserAccount {
     // transaction that makes somebody an account.
     sheet_id: null,
     sheet_url: null,
-    sheet_tab_date: null,
-    sheet_tab_gid: null,
     sheet_shared_at: null,
     sheet_layout: null,
     sheet_all_gid: null,
@@ -317,8 +312,8 @@ export function createUser(input: CreateUserInput): UserAccount {
     .prepare(
       `INSERT INTO users (${USER_COLUMNS})
        VALUES (@id, @email, @name, @picture, @role, @subscription, @credits, @balance_milli, @google_sub, @disabled,
-               @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url, @sheet_tab_date,
-               @sheet_tab_gid, @sheet_shared_at, @sheet_layout, @sheet_all_gid, @sheet_temp_gid,
+               @created_at, @updated_at, @last_login_at, @sheet_id, @sheet_url,
+               @sheet_shared_at, @sheet_layout, @sheet_all_gid, @sheet_temp_gid,
                @notifications_seen_at,
                @stripe_customer_id)`
     )
@@ -430,8 +425,7 @@ export function recordAccountSheet(id: string, sheetId: string, sheetUrl: string
 /**
  * Remembers that the sheet is laid out to `layout` - its All and Temp For AI
  * tabs there, with these gids, or NULL for one whose name a tab that is not
- * a job tab already holds - so the next sign-in calls nobody. Never touches
- * sheet_tab_date / sheet_tab_gid, an older build's own cache.
+ * a job tab already holds - so the next sign-in calls nobody.
  */
 export function recordSheetLayout(id: string, layout: number, allGid: number | null, tempGid: number | null): void {
   getDb()
@@ -469,7 +463,11 @@ export function recordOwnerGrant(id: string, at: string): void {
     .run(at, now(), id);
 }
 
-/** Accounts from before this feature, in creation order, for the boot backfill. */
+/**
+ * Accounts with no spreadsheet - made while Google Sheets was not set up, or
+ * whose allocation at sign-in failed - in creation order, for the boot
+ * backfill.
+ */
 export function listAccountsWithoutSheet(): UserAccount[] {
   return (
     getDb()
@@ -479,24 +477,6 @@ export function listAccountsWithoutSheet(): UserAccount[] {
          ORDER BY created_at ASC`
       )
       .all() as UserRow[]
-  ).map(toAccount);
-}
-
-/**
- * Accounts whose sheet an older build laid out (or whose tabs were never
- * finished), in creation order, for the boot backfill: a spreadsheet, a
- * layout below `layout`, not disabled.
- */
-export function listAccountsNeedingSheetLayout(layout: number): UserAccount[] {
-  return (
-    getDb()
-      .prepare(
-        `SELECT ${USER_COLUMNS} FROM users
-         WHERE sheet_id IS NOT NULL AND sheet_id != '' AND (sheet_layout IS NULL OR sheet_layout < ?)
-           AND disabled = 0
-         ORDER BY created_at ASC`
-      )
-      .all(layout) as UserRow[]
   ).map(toAccount);
 }
 

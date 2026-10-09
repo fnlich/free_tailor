@@ -24,6 +24,14 @@
  * test/orderRoutes.test.js` runs one file the same way - after `npm run build`,
  * because the tests load `dist/`.
  *
+ * DB_DIR is pointed at a directory inside the root too, whatever the
+ * environment says. A test that loads a module reading the database before it
+ * calls `useTempStorage` - the PDF generator reads the skill library as it
+ * loads - otherwise opened the DEFAULT database directory (`/data/db` on
+ * Linux), or whatever an operator's shell or `.env` names: a real install's
+ * database, written by the suite, and refused by the startup guard when it is
+ * one an older build left unfinished.
+ *
  * TAILOR_KEEP_TEST_TMP=1 keeps the root and prints where it is, for looking at
  * what a failing test left behind.
  */
@@ -37,12 +45,14 @@ const BACKEND_DIR = path.join(__dirname, '..');
 const keep = process.env.TAILOR_KEEP_TEST_TMP === '1';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tailor-test-run-'));
+const dbDir = path.join(root, 'db');
+fs.mkdirSync(dbDir);
 const patterns = process.argv.slice(2);
 const args = ['--test', ...(patterns.length > 0 ? patterns : ['test/*.test.js'])];
 
 const child = spawn(process.execPath, args, {
   cwd: BACKEND_DIR,
-  env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root },
+  env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root, DB_DIR: dbDir },
   stdio: 'inherit',
 });
 

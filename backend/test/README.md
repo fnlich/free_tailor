@@ -18,7 +18,7 @@ The suite needs only the backend installed. Two tests in `installCheck.test.js` 
 
 Storage tests point `DB_DIR` (SQLite database) and `TAILOR_STATIC_DIR` (default prompts, skill seed, built-in templates) at temporary folders under `os.tmpdir()`, so they never touch the real database or shipped assets.
 
-**The run cleans up after itself.** The suite makes a fresh temporary directory for nearly every test (several hundred per run) and nothing deletes them one by one, so `scripts/runTests.js` gives the whole run a temporary root of its own - it sets `TMPDIR`, `TEMP` and `TMP` (what `os.tmpdir()` reads on each platform, inherited by any child a test spawns) to a new `tailor-test-run-*` directory, runs `node --test "test/*.test.js"`, deletes the directory and exits with the suite's own code. The system temp directory gains nothing from a run. To look at what a failing test left behind, keep it:
+**The run cleans up after itself.** The suite makes a fresh temporary directory for nearly every test (several hundred per run) and nothing deletes them one by one, so `scripts/runTests.js` gives the whole run a temporary root of its own - it sets `TMPDIR`, `TEMP` and `TMP` (what `os.tmpdir()` reads on each platform, inherited by any child a test spawns) to a new `tailor-test-run-*` directory - and `DB_DIR` to a `db` directory inside it, whatever the environment says, so a test that opens the database before it sets up its own storage (the PDF generator reads the skill library as it loads) never reaches the real one - runs `node --test "test/*.test.js"`, deletes the directory and exits with the suite's own code (`testRunner.test.js` holds it to that). The system temp directory gains nothing from a run. To look at what a failing test left behind, keep it:
 
 ```sh
 TAILOR_KEEP_TEST_TMP=1 npm run test --prefix backend
@@ -36,15 +36,24 @@ Coverage currently focuses on:
 
 - SQLite-backed skills CRUD and seeding from the static skill library
 - prompt CRUD, rendering, activation, and validation
-- app settings persistence and the provider migrations, among them the two
-  removals - the browser chat providers (006, `browserChatRemoval.test.js`) and
-  the metered API providers (007, `meteredRemoval.test.js`) - each pinned both
-  as the migration and as the read-time tolerance that stands without it
+- the startup guard (`upgradeGuard.test.js`): a database this build creates
+  stamped with every mark and opening again; one build ac3df79 finished
+  upgrading opening, stamped once, so later starts read only the stamp, and
+  that first stamp dropping only the report records whose lake row is gone;
+  each upgrade it never finished refused by name - its migrations stopped at
+  version 5 or never recorded, waiting for an administrator, credits never
+  switched to dollars, saved templates never moved or moved incompletely,
+  `users.plan` never renamed, lake rows without their facts - with nothing
+  created and no stamp, every one of them in a single refusal; and the real
+  server spawned on such a database printing that one line and exiting 1, no
+  stack trace, never listening; and the README's quotes of that line held to
+  the guard's own words
+- app settings persistence, and an id outside the provider catalog - an older
+  build's OpenRouter, browser-chat or metered provider - read as unknown, never
+  as a seat (`claudeCli.test.js`, `aiFacade.test.js`, `userModelAccess.test.js`)
 - the Gemini seat wired in - catalog, registry, health card (which asks every
   seat for a fresh check, the one that can lift a hold), operational
-  settings, fresh-install seeds - and migration 008, which gives an upgraded
-  model list the Gemini model and renames untouched seed names
-  (`geminiSeat.test.js`)
+  settings, fresh-install seeds (`geminiSeat.test.js`)
 - model administration: the per-seat model-name lists and their `.env`
   overrides, the admin payload that serves them, create and edit validation,
   Set Default refusing a model that cannot run, and prompt overrides checked
@@ -56,7 +65,8 @@ Coverage currently focuses on:
   dollar price refused by name on a save when missing or bad; kept by a
   partial edit and by every settings save), the credit primitives taking an
   amount, and the queue refunding each task's snapshotted `costMilli` -
-  restored tasks included (`modelPricing.test.js`); and through the routes, the quote, a mixed-price
+  restored tasks included (`modelPricing.test.js`); and through the routes, the
+  quote, a mixed-price
   batch charged the sum and refunded per task, the 402, free models, the
   exempt administrator and `/resume/generate` resolving before it charges
   (`generationPricing.test.js`)
@@ -64,7 +74,8 @@ Coverage currently focuses on:
   /api/resume/models`, a stored choice falling back while a requested one is
   refused with one generic sentence, the provider request forms kept for
   administrators, the profile-save check, the job filter naming the analysis
-  model and the Bid Assistant on the app default model (`userModelAccess.test.js`)
+  model and the Bid Assistant on the app default model
+  (`userModelAccess.test.js`)
 - job analysis runs once (PLAN check 1): the ten cases that used to re-run it,
   each through the real routes and queue against a COUNTING stub seat that
   must see exactly one analysis call, and a damaged stored row analysed once
@@ -74,11 +85,12 @@ Coverage currently focuses on:
   a caller's abort, a failed call storing nothing (`analysisInFlight.test.js`);
   the gate as the only caller of the analysis prompt, its byte-identical
   cached prefix holding the job field and industry lists ahead of the
-  posting, an administrator's prompt from before job fields asked for all of
-  them every turn and one from before industries (`predatesIndustry`) asked
-  for the industry alone, and a sheet row's cell worth only the stored
+  posting, an administrator's analysis prompt that never names the lists not
+  run - the built-in is, and no turn carries an addendum - and a sheet row's
+  cell worth only the stored
   analysis its id names for that posting - an unknown id never stored, and
-  nothing in the code writing `source = 'sheet'` (`analysisGate.test.js`); the table, its UNIQUE
+  nothing in the code writing `source = 'sheet'` (`analysisGate.test.js`); the
+  table, its UNIQUE
   indexes, the link and text identities, EXPLAIN QUERY PLAN on every lookup
   (and on the lake's two reads) and the repair of an unreadable row, the
   closed industry list with stable ids (an unknown word Other), an industry
@@ -88,7 +100,8 @@ Coverage currently focuses on:
   Hybrid, Onsite or blank) and clearance (required unless the analysis says
   none or does not say) (`jobAnalysisStore.test.js`); the industry, like the
   job field, salary and filter, never reaching the tailoring prompt nor
-  changing a tailoring cache key (`tokenBudget.test.js`); and the app sheet's six
+  changing a tailoring cache key (`tokenBudget.test.js`); and the app sheet's
+  six
   analysis columns - sheet-first builds with one batched read, write-back once
   and RAW, the trust rule, row identity, a cell used only when it names its
   posting's stored analysis (a replaced posting, a sort under the protected
@@ -104,33 +117,25 @@ Coverage currently focuses on:
   analysis per posting (re-spaced text the same posting, edited text or
   another link not, a 400 letting it go), the salary line, the posting
   normalisation, the Analysis cell's states and the sheet panel's column
-  letters, and the prompt editor's notes on a prompt that predates job
-  fields, industries or the section switches, each run against the server's
-  own code
+  letters, and the prompt editor's required variables - which they are, what
+  a text lacks, the *Needs update* note and the refusal of a save in the
+  server's sentence - each run against the server's own code
 - the Job Data Lake: the company normalisation and the versioned hash
   (`jobLakeIdentity.test.js`); the tables and exactly the planned indexes -
-  the two partial "facts still to fill" ones and `job_reports`' two among
-  them - with EXPLAIN QUERY PLAN on the duplicate check, the admin page's
-  default view (filtered on the three facts too, never a sort), the
-  "reported before" reads and the boot step's own statements, the duplicate
+  `job_reports`' two among them - with EXPLAIN QUERY PLAN on the duplicate
+  check, the admin page's default view (filtered on the three facts too,
+  never a sort) and the "reported before" reads, the duplicate
   window on a fake clock (59 days a duplicate, 61 a replacement with its
   history), the administrator's window over `.env` over 60, rewards at the
   reporter's own rate else the global one, snapshotted, once per version,
   under the daily cap (which a revoke does not free), never a $0 ledger row;
   job type, clearance and industry stored from the analysis, moved by a
   replacement and kept in the history, and filtered on by the admin query;
-  the boot step filling them once, from the stored analyses with no model,
-  for rows an older build wrote (one it replaced included) and recording
-  the reports those rows hold - a report-sourced row only, never a merge,
-  the first version `added` and each later one `replaced` - then a no-op,
-  and a row an older build adds after a rollback filled at the next start;
   `already` from `job_reports` for the same account and posting on any row
   or tab, or none, even after the window, with nothing moved or paid, and
   another account's report of it a duplicate recorded as theirs; an
   unclassified report recorded, one with no company not; a delete forgetting
-  the reports that reached the row, so each can report it again; a record an
-  older build left pointing at a row it deleted counted by no reader, and
-  replaced at the next start when that build added the row again; revoke and
+  the reports that reached the row, so each can report it again; revoke and
   delete; the admin query; and four threads adding the same job at once
   (`jobLakeStore.test.js`); the admin sheet's outbox - created once (a failed
   header write finishes the same spreadsheet), shared with enabled
@@ -146,9 +151,9 @@ Coverage currently focuses on:
   paid, written and painted red, a re-run that analyses and pays nothing, the
   same posting moved, on another row or on another tab *Reported before* and
   unpaid, the same posting twice in one run a red duplicate the second time,
-  a row whose first outcome was a duplicate painted red again, a job an older
-  build deleted from the lake reported again, a posting pasted over another
-  reported like any other and its row's analysis cells put right, a Skipped
+  a row whose first outcome was a duplicate painted red again, a posting
+  pasted over another reported like any other and its row's analysis cells put
+  right, a Skipped
   row's analysis cells written once it is reported, one row's seat or merge
   failure failing only that row, duplicates painted only in rows that still
   hold their posting and nothing written into a cell), the admin merge, the
@@ -173,11 +178,12 @@ Coverage currently focuses on:
   the server's, and the query string in that order; Push to Google Sheet's
   body - the search's own filters - pushing exactly the jobs Search lists, in
   its order, and refused in its words, its confirm and its result (the cap
-  sentence included) read from real pushes; every row and merge status given its words, *Reported
+  sentence included) read from real pushes; every row and merge status given its
+  words, *Reported
   before (Added)* and the rest in the server's, and red exactly for a
   duplicate and a row reported before whose first outcome was one - the rows
   a run paints; a lake job's type, clearance and industry in the server's
-  words, a row not filled in yet saying so; when Add to job lake may be
+  words; when Add to job lake may be
   pressed; a sheet's `javascript:` link never an href; and the owner's line
   drawn from a real run's summary, with a tab of the reporter's own refused
   in the run's words
@@ -243,8 +249,8 @@ Coverage currently focuses on:
   the installation's workings (AI health, the queues, prompt bodies, the
   sign-in options, the skill library's writes, the Bid Assistant template and
   job deletion); an administrator's settings read that fails carrying its
-  cause and a ref; the payment method reasons and the scraper actors are
-  pinned beside their routes (`paymentRoutes.test.js`, `scraperWiring.test.js`)
+  cause and a ref; the payment method reasons are pinned beside their routes
+  (`paymentRoutes.test.js`)
 - whose Bid Assistant data is whose (`bidAssistantScoping.test.js`): a saved
   sheet source is its owner's, and a legacy owner-less one or a deleted
   account's an administrator's to change; answers are read and deleted
@@ -253,13 +259,12 @@ Coverage currently focuses on:
   and the shared job board's deletions are an administrator's
 - the batch progress stream's bare-newline heartbeat, which keeps a proxy's
   idle timeout from cutting a long batch (`batchStream.test.js`)
-- the account tier's rename from plan to subscription
-  (`subscriptionRename.test.js`): `users.plan` renamed in place on a database
-  the older build made, values and default kept, logged once and a no-op on
-  the next start, renamed forward again after a rollback renamed it back, and
-  both columns left alone with a warning; Settings > Subscription as a tab
-  with `/settings/plan` a `redirect()` to it; and no frontend code or copy
-  still calling the tier a plan. The tier gate itself, `requireSubscription`,
+- the account tier called a subscription everywhere
+  (`subscriptionRename.test.js`): a database this build creates with
+  `users.subscription` and no `plan` (an older one still on `plan` is the
+  startup guard's to refuse); Settings > Subscription as a tab, with no page
+  at `/settings/plan`; and no frontend code or copy still calling the tier a
+  plan. The tier gate itself, `requireSubscription`,
   is in `sectionPermissions.test.js`, the admin payloads in
   `accountRoutes.test.js`, and the frontend's copy of the tier order is held
   to the backend's in `frontendHelpers.test.js`
@@ -267,19 +272,19 @@ Coverage currently focuses on:
   is 23, `"0.0235"` refused, shown with no trailing zeros - `$1`, `$4.1`,
   `$0.023`, `$0` - never rounded, whole cents only where a card is charged or
   refunded) and a guard that no money module floors,
-  truncates or float-parses an amount (`money.test.js`); the switch from
-  credits, on a database the build before dollars left - balances and prices
-  reset with a `reset` row each, a run in progress settled, nothing free and
-  nothing charged twice, a second start a no-op (`dollarSwitch.test.js`); a
+  truncates or float-parses an amount (`money.test.js`); a
   purchase crediting exactly what it charges, with no fee, and the payment
   limits in dollars (`paymentFees.test.js`); and the frontend's copies of all
   of it run against the server's (`frontendMoney.test.js`)
 - refund requests and Contact admin: every allowed and refused state change,
   a double-pressed *Refunded* moving money once, a card's partial refund with
   its credit held while Stripe answers, crypto at the amount sent by hand, one
-  open request per item in SQL, the requests seeded through the service now
-  that asking answers 410, and a row of an item type this build does not know
-  never refunded (`refundRequests.test.js`); a reporter's payout request -
+  open request per item in SQL, the older kinds of request seeded through
+  `refundSeed.js` (`seedRefundRequest`, the checks the removed asking route
+  made) now that nothing can ask, the service offering no way to, and a row of
+  an item type this build does not know - an older build's `task:` - never
+  refunded, only declined (`refundRequests.test.js`); a reporter's payout
+  request -
   asked once at a time, never at $0, by a reporter only; Record payout writing
   one row keyed by the request, refused above the balance or for an account
   no longer a reporter with nothing moved, and Admin -> Accounts' payout
@@ -309,10 +314,11 @@ Coverage currently focuses on:
 - saved templates as files (`templateFiles.test.js`): import, extraction and
   the manual builder each writing `<id>.json` with its source, an edit
   rewriting it and a delete removing it while a built-in stays as shipped, ids
-  checked before any path is built, a directory that cannot be written giving
-  the generic error and leaving no `.tmp`, the one-time move of an older
-  database's rows - renames, retries of only what failed, and running again
-  once its record is deleted
+  checked before any path is built, a lookup taking an id exactly as its file
+  carries it (no folding of case or underscores), a directory that cannot be
+  written giving the generic error and leaving no `.tmp`, the startup line
+  saying whether saved templates can be written, and a stale scratch file
+  swept
 - the profile preview's sample person (`sampleDefaults.test.js`): an empty
   draft filled field by field and section by section, typed values winning,
   and the sample reaching nothing but the preview route - never a save, a PDF
@@ -358,7 +364,8 @@ Coverage currently focuses on:
   file never rewritten
 - the live profile preview over HTTP (`profilePreview.test.js`), run with all
   three seats locked so a 200 also proves no model was asked: nothing written
-  or charged even at the subscription's profile limit, the draft laid over the caller's own
+  or charged even at the subscription's profile limit, the draft laid over the
+  caller's own
   profile and somebody else's a 404, half-typed drafts rendering, nothing typed
   able to run, the layout and switches reaching the page, the template order
   and layout fallback, a disabled template a 404 for a user only, and a 503
@@ -376,10 +383,10 @@ Coverage currently focuses on:
 - prompt variables (`promptVariables.test.js`): every feature declaring
   exactly the variables its code supplies, a typo refused on save and named
   on validate (also through the routes), the shipped prompts validating
-  clean, the note on a tailoring prompt that predates the switches and on an
-  analysis prompt that names the job fields but not the industries
-  (`predatesIndustry`), and such a tailoring prompt still obeying the switches
-  through a stub seat
+  clean, a save that leaves out a required variable refused naming it and the
+  rule, a stored record without one marked `needsUpdate` with the names and
+  never run - the built-in runs in its place, said once - and the switches
+  stated on every tailoring turn whichever record runs, through a stub seat
 - the three CLI seats, each with no binary, no subprocess and no network:
   the Claude provider - argv, child environment, event reduction, failure
   classification, rate limits, outages and concurrency, and a sign-in hold
@@ -411,9 +418,8 @@ Coverage currently focuses on:
   not the one its row decides, and over HTTP with a session per role it
   refuses a reporter every route that is not theirs (403 `role-not-allowed`)
   and lets them reach their own account, credits, bell, sheet and refund
-  history. Roles, a reporter's rate per job (served on the list too, and
-  added to a `users` table from before reporters), which setting names a
-  configured administrator, and recorded payouts are in
+  history. Roles, a reporter's rate per job (served on the list too), which
+  setting names a configured administrator, and recorded payouts are in
   `accountRoutes.test.js` and `accounts.test.js`
 - the reporter's side of the frontend (`frontendRoles.test.js`): its copy of
   the role catalog is the backend's; a reporter's Credits mounts no buyer's
@@ -454,38 +460,18 @@ Coverage currently focuses on:
   (`operationalWiring.test.js`), and the same for the AI layer's own - the
   request deadline and the CLI health-probe timeouts - with `execFile` stubbed
   (`aiOperationalWiring.test.js`)
-- the job scrapers' SCRAPER_* and APIFY_* settings: the actor inputs each
-  mapper builds from them (`scraperFilters.test.js`); the actor id, run
-  timeout and input every provider sends - identical to the old literals when
-  nothing is set - plus the served catalog and the routes' default location
-  and result cap, with the Apify client stubbed on its prototype
-  (`scraperWiring.test.js`); and the jobs form's handling of the served values
-  (`scraperForm.test.js`)
 - the documentation of those settings: `.env.example` and the README's
   Configuration table checked against the table in `config/operational.ts` -
   every setting documented, shipped commented out with the code's own default
   and range, and tagged with when it is read - and its README row showing the
   same default, range and tag; plus the CLI budgets shipped commented out
   (`envExample.test.js`)
-- the README's rollback procedure (`rollbackDocs.test.js`), taken from the
-  README itself (its sqlite3 and node spellings agreeing) and run against a
-  database this build made: the check before going back to the previous
-  release (5177fc3) lists an open payout request and an edited analysis prompt
-  naming `[[industryList]]`, spaced `[[ industryList ]]` too (that build reads
-  it the same) - not a payout request already decided, nor an older analysis
-  variant edited here, whose row names the variable only outside its text -
-  and nothing once the payout is recorded and the variable taken out; every
-  place it says how to build from All under 5177fc3 names the From/To columns
-  and the four mapped ones, which that build's panel check (frozen) takes as
-  All's own C to F; that build's own reads (accounts, refund requests, the
-  lake) and its lake insert
-  still run against this build's schema, it reads a payout request as a
-  resume's, and the next start here fills in the facts of the job it added
-  and records its report; and the statements for going back to 90adbaf leave
-  every column it selects under its old name, only announcements in
-  `notifications` and no enabled account in a role it does not know, with the
-  record and settings log that subsection names being the ones this build
-  writes
+- the job sheet writer the removed job search exported with, kept for Find
+  Jobs (`jobSheetRoutes.test.js`): `appendJobRows` on the caller's own sheet
+  only, A to F - or A to L for a row carrying its analysis cells - after the
+  last row used, NO(DATE) carrying on the day's count, a company (or whatever
+  `duplicateKeys` names) already in the tab skipped, a row typed meanwhile
+  stepped over, and a tab that is not a job tab refused before anything is read
 
 ## Testing the CLI providers
 

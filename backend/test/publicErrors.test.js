@@ -356,7 +356,6 @@ test('an administrator reading a settings row that does not parse gets the cause
   try {
     for (const [route, fallback] of [
       ['/api/admin/settings', 'Failed to load settings'],
-      ['/api/admin/ai-models', 'Failed to load settings'],
       ['/api/admin/models', 'Failed to load AI models'],
     ]) {
       const { result, lines } = await captureErrorLog(() => server.call('admin', 'GET', route));

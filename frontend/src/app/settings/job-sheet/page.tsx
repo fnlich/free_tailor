@@ -133,7 +133,7 @@ export default function JobSheetSettingsPage() {
             <a
               // All when we know its id, so the link opens the tab the job
               // pages write to rather than whichever tab Google shows first -
-              // after an upgrade, an older build's daily tabs are still there.
+              // a sheet can hold tabs of the person's own before it.
               href={sheet.defaultTabUrl ?? sheet.spreadsheetUrl}
               target="_blank"
               rel="noreferrer"

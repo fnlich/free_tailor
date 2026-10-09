@@ -1,4 +1,3 @@
-import { readScraperCatalog, readScraperSettings } from './scraperForm';
 import { formatMoney } from './format';
 import type { JobFilterFacts, JobSalary } from './jobAnalysis';
 import type { SheetTabListing } from './sheetTabs';
@@ -541,11 +540,8 @@ export function getAIProviderLabel(provider: AIProvider): string {
     : provider;
 }
 
-/** Provider ids an older release wrote, and what they mean now. */
-const LEGACY_PROVIDER_ALIASES: Record<string, AIProvider> = { openrouter: 'claude-cli' };
-
 /**
- * Narrows an untrusted provider string, following legacy aliases.
+ * Narrows an untrusted provider string to one of the three seats, or null.
  *
  * Own-property checks throughout: `in` and a plain index both walk the
  * prototype chain, so "constructor" or "toString" would otherwise be accepted
@@ -554,11 +550,7 @@ const LEGACY_PROVIDER_ALIASES: Record<string, AIProvider> = { openrouter: 'claud
 export function coerceProvider(value: unknown): AIProvider | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  if (Object.prototype.hasOwnProperty.call(PROVIDER_META, trimmed)) return trimmed as AIProvider;
-  if (Object.prototype.hasOwnProperty.call(LEGACY_PROVIDER_ALIASES, trimmed)) {
-    return LEGACY_PROVIDER_ALIASES[trimmed];
-  }
-  return null;
+  return Object.prototype.hasOwnProperty.call(PROVIDER_META, trimmed) ? (trimmed as AIProvider) : null;
 }
 export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';
@@ -647,105 +639,6 @@ export function formatPricePerResume(milli: number): string {
   return `${formatMoney(milli)} / resume`;
 }
 
-export type ScraperSource = 'indeed' | 'jobboard' | 'wellfound' | 'lever' | 'hiringcafe';
-export type ScraperTimePosted = '24h' | '3d' | '7d' | '30d';
-export type ScraperJobType = 'full-time' | 'part-time' | 'contract' | 'internship' | 'temporary';
-
-export interface ScraperProviderSummary {
-  id: string;
-  label: string;
-  description: string;
-  /** The most results one run returns (the actor's limit or SCRAPER_MAX_RESULTS); null for no limit. */
-  maxResults: number | null;
-}
-
-export interface ScraperSourceProviderCatalog {
-  source: ScraperSource;
-  defaultProviderId: string;
-  providers: ScraperProviderSummary[];
-}
-
-/**
- * GET /jobs/scrapers/settings. The deployment's scraper settings are served
- * rather than compiled in as NEXT_PUBLIC_ values, so the form always shows what
- * the server will actually apply. Null where the server did not say - one that
- * predates the endpoint - and the server's own default then applies unnamed.
- */
-export interface ScraperSettings {
-  /** SCRAPER_DEFAULT_LOCATION: what an empty location searches. */
-  defaultLocation: string | null;
-  /** APIFY_RUN_TIMEOUT_S: how long one run may take. */
-  runTimeoutS: number | null;
-}
-
-/**
- * What an export wrote into the account's own sheet: A to F of the rows after
- * the last one used, dated `date` (MM/DD/YYYY, the server's SHEET_TIMEZONE)
- * and numbered `firstNo`..`lastNo` in NO(DATE), carrying on the day's count.
- */
-export interface JobSheetExportSummary {
-  spreadsheetId: string;
-  spreadsheetTitle: string;
-  selectedTab: string;
-  /** A link that opens the tab written to; absent from a server before it. */
-  tabUrl?: string;
-  date?: string;
-  updatedRanges: string[];
-  rowsWritten: number;
-  startRow: number;
-  endRow: number;
-  /** The NO(DATE) of the first and last rows written; null when nothing was. */
-  firstNo?: number | null;
-  lastNo?: number | null;
-  unresolvedJobLinks: number;
-  skippedCompanyDuplicates: number;
-  beforeExportResultCount?: number;
-}
-
-export interface ScraperJob {
-  id: string;
-  title: string;
-  company: string;
-  location: string;
-  job_type: string;
-  salary_min: number | null;
-  salary_max: number | null;
-  equity: string | null;
-  posted_at: string | null;
-  description: string;
-  apply_url: string;
-  source: ScraperSource;
-  raw: Record<string, unknown>;
-}
-
-export interface ScraperRunFilters {
-  title?: string;
-  rows?: number;
-  keywords?: string;
-  startUrl?: string;
-  location?: string;
-  timePosted?: ScraperTimePosted;
-  jobType?: ScraperJobType;
-  remoteOnly?: boolean;
-  maxResults?: number;
-  rawResultCount?: number;
-  resultsWithinPostedWindowCount?: number;
-  remoteFilteredCount?: number;
-}
-
-export interface ScraperRunResponse {
-  fetchedAt: string;
-  source: ScraperSource;
-  providerId: string;
-  providerLabel: string;
-  filters: ScraperRunFilters;
-  results: ScraperJob[];
-}
-
-export interface ScraperExportResponse extends ScraperRunResponse {
-  export: JobSheetExportSummary;
-}
-
 /**
  * One row of a Job Filter run, as the page lists it: its verdict and why -
  * nothing of it is written into the sheet. `result` is null for a row that
@@ -773,9 +666,8 @@ export interface GoogleSheetJobFilterResponse {
    * The display name of the analysis model - the one that analyses a posting
    * the filter finds no analysis for (the filter asks no model of its own) -
    * an administrator's own name for it, never a provider or a CLI model id.
-   * Optional because a server from before it sent neither.
    */
-  modelLabel?: string;
+  modelLabel: string;
   startRow: number;
   endRow: number;
   scannedRows: number;
@@ -784,17 +676,16 @@ export interface GoogleSheetJobFilterResponse {
   scrapedRows: number;
   /**
    * Rows judged on an analysis their posting already had, found by the job
-   * link - so neither the page was fetched nor a model asked. Absent from a
-   * server before analyses were stored.
+   * link - so neither the page was fetched nor a model asked.
    */
-  reusedAnalyses?: number;
+  reusedAnalyses: number;
   errorRows: number;
   rowErrors: Array<{
     row: number;
     message: string;
   }>;
-  /** Every row that holds anything in C:E, in sheet order. Absent from a server before the filter stopped writing. */
-  rows?: JobFilterRowResult[];
+  /** Every row that holds anything in C:E, in sheet order. */
+  rows: JobFilterRowResult[];
   /** Said instead of results, e.g. for a tab with no job rows yet. */
   message?: string;
 }
@@ -898,7 +789,6 @@ export interface AdminAppSettings extends BuilderDefaults {
    * Every PROVIDER - each place a type runs, signed in at a folder of its own
    * (lib/providerDisplay.ts) - built-ins first among their type. Folders and
    * binaries on the server: the administrator's payload alone carries it.
-   * Empty from a server that predates providers.
    */
   aiProviders: AdminAIProvider[];
   /** Every seat in catalog order, locked ones included, with the model names it offers. */
@@ -991,41 +881,15 @@ function normalizePaymentLimits(value: unknown): PaymentTargetLimits[] {
 }
 
 /**
- * Reads the enable flags, accepting the canonical record and the flat
- * `claudeCliEnabled` an older backend sends (and `openrouterEnabled`, the flag
- * for the provider `claude-cli` replaced).
+ * The enable flags, keyed by provider id (`providersEnabled`). A seat the
+ * record does not name is on, as the server reads it.
  */
 function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIProvider, boolean> {
-  const record =
-    typeof source.providersEnabled === 'object' && source.providersEnabled !== null
-      ? (source.providersEnabled as Record<string, unknown>)
-      : null;
-
-  // Partial on purpose, mirroring the backend catalog: the seats added after
-  // the flat flags stopped being written have none, and inventing one would
-  // only be a field with no writer.
-  const legacyField: Partial<Record<AIProvider, string>> = {
-    'claude-cli': 'claudeCliEnabled',
-  };
-
+  const record = asRecord(source.providersEnabled);
   const result = {} as Record<AIProvider, boolean>;
   for (const provider of AI_PROVIDERS) {
-    const fromRecord = record?.[provider];
-    if (typeof fromRecord === 'boolean') {
-      result[provider] = fromRecord;
-      continue;
-    }
-    const field = legacyField[provider];
-    const flat = field ? source[field] : undefined;
-    if (typeof flat === 'boolean') {
-      result[provider] = flat;
-      continue;
-    }
-    if (provider === 'claude-cli' && typeof source.openrouterEnabled === 'boolean') {
-      result[provider] = source.openrouterEnabled as boolean;
-      continue;
-    }
-    result[provider] = true;
+    const flag = record[provider];
+    result[provider] = typeof flag === 'boolean' ? flag : true;
   }
   return result;
 }
@@ -1111,14 +975,12 @@ function normalizePublicModelOptions(value: unknown): PublicModelOption[] {
 }
 
 /**
- * The per-seat model-name lists. A server that predates them sends none, and
- * then every seat is offered with an empty list - the form says so rather than
- * inventing names the server might refuse.
+ * The per-seat model-name lists, every seat in catalog order (locked ones
+ * included). A seat whose list is empty is offered with none - the form says
+ * so rather than inventing names the server might refuse.
  */
 function normalizeProviderModelOptions(value: unknown): ProviderModelOptions[] {
-  if (!Array.isArray(value)) {
-    return AI_PROVIDERS.map((provider) => ({ provider, label: getAIProviderLabel(provider), models: [] }));
-  }
+  if (!Array.isArray(value)) return [];
   const seenProviders = new Set<AIProvider>();
   return value.flatMap((entry) => {
     if (typeof entry !== 'object' || entry === null) return [];
@@ -1236,9 +1098,7 @@ function normalizeUserAppSettings(value: unknown): UserAppSettings {
   const source = asRecord(value);
   return {
     ...normalizeBuilderDefaults(source),
-    // `aiModels` is what a server from before the slim payload calls the list.
-    // Only its ids and names are read, so nothing else it carried is kept.
-    models: normalizePublicModelOptions(Array.isArray(source.models) ? source.models : source.aiModels),
+    models: normalizePublicModelOptions(source.models),
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
   };
@@ -1400,10 +1260,9 @@ export interface ProviderHealthReport {
   };
   /**
    * Every provider's holds, keyed by PROVIDER id (a type id is its built-in
-   * one). Codex's is only ever a usage limit. Optional, so a card reading an older server falls
-   * back to `subscription.outages`.
+   * one). Codex's is only ever a usage limit.
    */
-  outagesByProvider?: Partial<Record<string, ProviderOutage[]>>;
+  outagesByProvider: Partial<Record<string, ProviderOutage[]>>;
   /** Each provider's calls, keyed by provider id. */
   concurrency: Record<string, { limit: number; inFlight: number; queued: number }>;
   usage: {
@@ -1433,20 +1292,6 @@ export const adminApi = {
     return { ...report, providers: normalizeProviderCards(report?.providers) };
   },
 
-  login: (password: string) =>
-    apiFetch<{ token: string; message: string }>('/admin/login', {
-      method: 'POST',
-      body: JSON.stringify({ password }),
-    }),
-
-  logout: () =>
-    apiFetch<{ message: string }>('/admin/logout', {
-      method: 'POST',
-    }),
-
-  verify: () =>
-    apiFetch<{ valid: boolean }>('/admin/verify'),
-
   getSettings: async () =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/settings')),
 
@@ -1473,18 +1318,6 @@ export const adminApi = {
       method: 'PUT',
       body: JSON.stringify(data),
     })),
-
-  getAIModels: async () =>
-    normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/ai-models')),
-
-  updateAIModels: async (data: AdminAppSettingsUpdate) =>
-    normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/ai-models', {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    })),
-
-  listModels: async () =>
-    normalizeModelRecords((await apiFetch<{ models: unknown }>('/admin/models')).models),
 
   createModel: async (data: {
     name: string;
@@ -1547,38 +1380,7 @@ export const importApi = {
   listTabs: () => apiFetch<ImportSheetTabs>('/import/tabs'),
 };
 
-/**
- * Where an export writes: always the account's own sheet, on the tab named -
- * All when none is. The columns and the row are the server's (A to F, after
- * the last row used), so there is nothing else to say.
- */
-export type JobSheetDestination = {
-  tabName?: string;
-};
-
 export const jobsApi = {
-  // Both normalised (lib/scraperForm.ts), so a backend on another version than
-  // this page degrades the form instead of crashing it.
-  getScraperProviders: () =>
-    apiFetch<unknown>('/jobs/scrapers/providers').then((body) => readScraperCatalog(body)),
-  getScraperSettings: () =>
-    apiFetch<unknown>('/jobs/scrapers/settings').then((body) => readScraperSettings(body)),
-
-  runScraper: (data: ScraperRunFilters & { source: ScraperSource; provider?: string }) =>
-    apiFetch<ScraperRunResponse>('/jobs/scrapers/run', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  exportScraperToGoogleSheet: (data: ScraperRunFilters & JobSheetDestination & {
-    source: ScraperSource;
-    provider?: string;
-  }) =>
-    apiFetch<ScraperExportResponse>('/jobs/scrapers/export', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
   /** The account's own sheet, All when no tab is named. Writes nothing into the sheet. */
   filterGoogleSheetJobs: (data: {
     tabName?: string;
@@ -1806,9 +1608,9 @@ export interface ProfilePreviewResult {
   /**
    * The fields the server drew from the sample resume because the draft left
    * them empty - 'name', 'phone', 'experience'... In the preview only; a save,
-   * a PDF and tailoring never see them. Absent from an older server.
+   * a PDF and tailoring never see them. Empty when the draft filled every one.
    */
-  sampled?: string[];
+  sampled: string[];
 }
 
 // Template types
@@ -1842,12 +1644,11 @@ export interface Template {
   manualConfig?: ManualTemplateConfigStored;
   isBuiltIn?: boolean;
   /**
-   * The Technical Skills layouts this template is offered for: a category grid
-   * is Grouped only, most designs are both. Optional only for a server that
-   * predates it, which offered every template for every layout - read it
-   * through lib/profileDraft.ts's `templateSkillsLayouts` rather than directly.
+   * The Technical Skills layouts this template is offered for, never empty: a
+   * category grid is Grouped only, most designs are both. Read it through
+   * lib/profileDraft.ts's `templateOffersLayout`.
    */
-  skillsLayouts?: TechnicalSkillsLayout[];
+  skillsLayouts: TechnicalSkillsLayout[];
   /** Whether its markup has a Soft Skills section. Worked out by the server on every read. */
   supportsSoftSkills?: boolean;
   /** Whether its markup has a Strengths section. Worked out by the server on every read. */
@@ -1866,11 +1667,20 @@ export interface PromptVariableDefinition {
   name: string;
   description?: string;
   sampleValue?: string;
+  /**
+   * True on a variable every prompt of its feature must use - the analysis
+   * prompt's job field and industry lists, the tailoring prompt's three
+   * section words. The server refuses a save without them (lib/promptRequirements.ts
+   * says so first, in its words).
+   */
+  required?: true;
 }
 
 export interface PromptValidation {
   usedVariables: string[];
   unknownVariables: string[];
+  /** The feature's required variables the text does not use, in the feature's order; [] for none. */
+  missingVariables: string[];
 }
 
 export interface PromptSummary {
@@ -1893,25 +1703,11 @@ export interface PromptSummary {
   createdAt: string;
   updatedAt: string;
   /**
-   * A tailor-resume record whose text never mentions `[[includeStrengths]]`:
-   * written before the profile's section switches. The app still enforces them.
+   * Set on a SAVED record that does not use one of its feature's required
+   * variables (`validation.missingVariables` names them). It is never run:
+   * the feature's built-in prompt runs in its place until it is updated here.
    */
-  predatesSectionSwitches?: boolean;
-  /**
-   * The analysis record, when its text never mentions `[[jobFieldList]]`:
-   * written before a posting had a job field. Its postings are still
-   * classified - the server appends the instructions to every turn - but
-   * outside the cached part of the prompt, so the shipped text is cheaper.
-   */
-  predatesJobField?: boolean;
-  /**
-   * The analysis record, when its text names `[[jobFieldList]]` but never
-   * `[[industryList]]`: written after job fields, before industries. Its
-   * postings still get an industry - the server appends the list and the
-   * instruction to every turn - outside the cached part of the prompt. Never
-   * set together with `predatesJobField`.
-   */
-  predatesIndustry?: boolean;
+  needsUpdate?: true;
 }
 
 export interface PromptRecord extends PromptSummary {
@@ -2148,8 +1944,6 @@ export const templatesApi = {
       options?.includeDisabled ? '/templates?includeDisabled=true' : '/templates'
     ),
 
-  getById: (id: string) => apiFetch<Template>(`/templates/${id}`),
-
   update: (
     id: string,
     data: {
@@ -2187,18 +1981,7 @@ export const templatesApi = {
     const formData = new FormData();
     formData.append('template', file);
 
-    const result = await apiFetch<Template & Partial<TemplateImportResult>>(
-      '/templates/upload-json',
-      { method: 'POST', body: formData }
-    );
-    // A server that predates multi-template files answers with the template
-    // itself and nothing else. Read as one import rather than as zero.
-    const templates = result.templates ?? [result as Template];
-    return {
-      templates,
-      imported: result.imported ?? templates.length,
-      keptIds: result.keptIds ?? 0,
-    };
+    return apiFetch<TemplateImportResult>('/templates/upload-json', { method: 'POST', body: formData });
   },
 
   delete: (id: string) =>
@@ -2357,56 +2140,6 @@ export const resumeApi = {
       body: JSON.stringify({ jobDescription }),
     }),
 
-  generate: (data: {
-    profileId: string;
-    templateId: string;
-    jobDescription?: string;
-    jobLink?: string;
-    /** The stored analysis to build on (`AnalyzedJob.analysisId`); without one the server finds or makes the posting's. */
-    analysisId?: string;
-    tailoredContent?: TailoredContent;
-    /**
-     * The preview's token, sent with its `tailoredContent`: it names the model
-     * that wrote that content, which is what finalising is charged at.
-     */
-    previewToken?: string;
-    companyName: string;
-    role: string;
-    sourceRowNumber?: number;
-    model?: string;
-    format?: 'pdf' | 'docx' | 'both';
-    includeCoverLetterDocx?: boolean;
-  }) =>
-    apiFetch<
-      | {
-          filename: string;
-          downloadUrl: string;
-          tailored: boolean;
-          format?: 'pdf' | 'docx';
-          analysisId?: string;
-          unconfirmedHardSkills?: string[];
-          unconfirmedSoftSkills?: string[];
-        }
-      | {
-          pdf: { filename: string; downloadUrl: string };
-          docx: { filename: string; downloadUrl: string };
-          coverLetter?: {
-            pdf: { filename: string; downloadUrl: string };
-            docx?: { filename: string; downloadUrl: string };
-          };
-          tailored: boolean;
-          analysisId?: string;
-          unconfirmedHardSkills?: string[];
-          unconfirmedSoftSkills?: string[];
-        }
-    >(
-      '/resume/generate',
-      {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }
-    ),
-
   confirmSkill: (data: { type: 'hard' | 'soft'; skill: string }) =>
     apiFetch<{ added: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills/confirm', {
       method: 'POST',
@@ -2487,7 +2220,4 @@ export const resumeApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-
-  getDownloadUrl: (filename: string) =>
-    `${getCurrentApiBase()}/resume/download/${filename}`,
 };

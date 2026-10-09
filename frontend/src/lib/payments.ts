@@ -293,9 +293,8 @@ export const paymentsApi = {
   /**
    * A page of this account's own payments.
    *
-   * `total` is what lets the page say how many it is not showing. The
-   * parameters are optional at the API, so an older tab that sends neither
-   * keeps getting the newest 50 exactly as it did.
+   * `total` is what lets the page say how many it is not showing. Without
+   * `limit` the server answers the newest 50.
    *
    * `method` narrows both the rows and `total` to card or crypto. Left out,
    * the list spans both.

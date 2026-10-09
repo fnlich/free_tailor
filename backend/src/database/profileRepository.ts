@@ -3,7 +3,6 @@ import { Profile } from '../types/profile';
 import type { UserAccount } from '../types/account';
 import { DocumentTable } from './documentTable';
 import { getDb } from './sqlite';
-import { currentTemplateId } from './templateRepository';
 import { PublicError } from '../middleware/publicError';
 
 /**
@@ -51,26 +50,8 @@ export type ListOptions = {
   allOwners?: boolean;
 };
 
-/**
- * A profile as read: its template named by the id that template is filed
- * under now (`currentTemplateId`).
- *
- * An older build's spelling - `My_Template`, or `Navy_Rule`, which the
- * one-time move filed as a `u-` id - can still be stored: a row the move did
- * not reach, a built-in file renamed by hand. The server finds the template
- * either way, but the editor, the Profiles list and the one-template-per-
- * profile rule compare ids as they are, and would call it a template no
- * longer offered. Not written back here; the next save stores it.
- */
-function withCurrentTemplateId(profile: Profile): Profile {
-  const named = profile.preferredTemplate;
-  if (typeof named !== 'string' || !named) return profile;
-  const current = currentTemplateId(named);
-  return current && current !== named ? { ...profile, preferredTemplate: current } : profile;
-}
-
 export function listProfilesFor(viewer: Viewer, options: ListOptions = {}): Profile[] {
-  const all = profiles.list().map(withCurrentTemplateId);
+  const all = profiles.list();
   const visible = all.filter((profile) => {
     if (viewer === null) return true;
     if (viewer.role === 'admin' && options.allOwners) return true;
@@ -93,13 +74,12 @@ export function listAllProfilesUnscoped(options: { includeDisabled?: boolean } =
 export function getProfileFor(viewer: Viewer, id: string): Profile | null {
   const profile = profiles.get(id);
   if (!profile) return null;
-  return canSee(viewer, profile) ? withCurrentTemplateId(profile) : null;
+  return canSee(viewer, profile) ? profile : null;
 }
 
-/** Unscoped read, for the queue and the migrations. */
+/** Unscoped read, for the queue. */
 export function getProfile(id: string): Profile | null {
-  const profile = profiles.get(id);
-  return profile ? withCurrentTemplateId(profile) : null;
+  return profiles.get(id) ?? null;
 }
 
 export function hasProfile(id: string): boolean {

@@ -1,6 +1,5 @@
 import {
   envInt,
-  envList,
   envRaw,
   envString,
   type EnvIntOptions,
@@ -75,7 +74,6 @@ export const OPERATIONAL_INT_BOUNDS = {
   SHEET_BACKFILL_PAUSE_MS: { fallback: 250, min: 0, max: 60_000, unit: 'ms' },
   JOB_PAGE_FETCH_TIMEOUT_MS: { fallback: 20_000, min: 1_000, max: 120_000, unit: 'ms' },
   JOB_PAGE_BROWSER_TIMEOUT_MS: { fallback: 25_000, min: 1_000, max: 180_000, unit: 'ms' },
-  APIFY_RUN_TIMEOUT_S: { fallback: 300, min: 30, max: 3_600, unit: 's' },
   CRYPTOMUS_INVOICE_LIFETIME_S: { fallback: 3_600, min: 300, max: 43_200, unit: 's' },
   JOB_LAKE_DUPLICATE_WINDOW_DAYS: { fallback: 60, min: 1, max: 3_650, unit: 'day(s)' },
   JOB_LAKE_PUSH_MAX_ROWS: { fallback: 1_000, min: 1, max: 5_000, unit: 'row(s)' },
@@ -431,103 +429,6 @@ export function jobPageUserAgent(env: EnvSource = process.env): string {
   );
 }
 
-/* ================================================================ scrapers */
-
-/**
- * The location a scraper is given when the user leaves it empty, the fixed
- * memo23 location, and the jobs form's initial value. The deployment's job
- * market. Served to the jobs page by GET /api/jobs/scrapers/settings.
- */
-export function scraperDefaultLocation(env: EnvSource = process.env): string {
-  return envString(
-    'SCRAPER_DEFAULT_LOCATION',
-    'United States',
-    { maxLength: 100, expected: 'a location of at most 100 characters' },
-    env
-  );
-}
-
-/**
- * The Indeed actor's country and the memo23 proxy exit country, as an ISO
- * 3166-1 alpha-2 code. Should agree with SCRAPER_DEFAULT_LOCATION.
- */
-export function scraperCountry(env: EnvSource = process.env): string {
-  return envString(
-    'SCRAPER_COUNTRY',
-    'US',
-    { upperCase: true, pattern: /^[A-Z]{2}$/, expected: 'a two-letter ISO country code such as US or GB' },
-    env
-  );
-}
-
-/**
- * The Apify proxy groups for the jobboard, hiringcafe and memo23 runs.
- *
- * EMPTY MEANS THE DEFAULT, not "no group": a bare `APIFY_PROXY_GROUPS=` is what
- * a copied example produces, and reading it as "omit" would quietly move every
- * such install onto datacenter proxies. The word `auto` is how to omit the
- * groups and let Apify choose; the result is then an empty list.
- */
-export function apifyProxyGroups(env: EnvSource = process.env): string[] {
-  if (envRaw('APIFY_PROXY_GROUPS', env)?.toLowerCase() === 'auto') return [];
-  return envList(
-    'APIFY_PROXY_GROUPS',
-    ['RESIDENTIAL'],
-    { upperCase: true, pattern: /^[A-Z0-9_]+$/, expected: 'an Apify proxy group name (letters, digits, _)' },
-    env
-  );
-}
-
-/**
- * The Apify run timeout in seconds, which is also how long POST
- * /api/jobs/scrapers/run blocks - a reverse proxy's read timeout must be at
- * least this. Billed until it expires.
- */
-export function apifyRunTimeoutS(env: EnvSource = process.env): number {
-  return readInt('APIFY_RUN_TIMEOUT_S', env);
-}
-
-/**
- * The most results one scraper run may request, or null for no cap (the
- * default, and today's server behaviour). The only spend limit on a
- * plan-billed third party that the browser cannot simply bypass.
- */
-export function scraperMaxResults(env: EnvSource = process.env): number | null {
-  return envInt('SCRAPER_MAX_RESULTS', null, { min: 1, max: 10_000, unit: 'result(s)' }, env);
-}
-
-/**
- * Third-party Apify actor ids, one variable per scraper.
- *
- * Configurable because actors get renamed, go paid, or are forked - but only a
- * drop-in fork with the SAME input and output schema works, because the
- * filters and the normalizer are written per actor. The pattern accepts
- * `owner/name`, `owner~name` and Apify's 17-character actor ids.
- */
-export const APIFY_ACTOR_DEFAULTS = {
-  APIFY_ACTOR_INDEED: 'misceres/indeed-scraper',
-  APIFY_ACTOR_JOBBOARD: 'openclawai/job-board-scraper',
-  APIFY_ACTOR_WELLFOUND: 'blackfalcondata/wellfound-scraper',
-  APIFY_ACTOR_LEVER: 'deadlyaccurate/lever-jobs-scraper',
-  APIFY_ACTOR_HIRINGCAFE: 'manojachari/hiring-cafe-scraper',
-  APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS: 'crawlerbros/hiring-cafe-scraper',
-  APIFY_ACTOR_HIRINGCAFE_MEMO23: 'memo23/apify-hiring-cafe-scraper',
-} as const;
-
-export type ApifyActorVariable = keyof typeof APIFY_ACTOR_DEFAULTS;
-
-const APIFY_ACTOR_ID = /^(?:[A-Za-z0-9._-]+[/~][A-Za-z0-9._-]+|[A-Za-z0-9]{17})$/;
-
-/** The actor id configured under `name`, or its default. */
-export function apifyActorId(name: ApifyActorVariable, env: EnvSource = process.env): string {
-  return envString(
-    name,
-    APIFY_ACTOR_DEFAULTS[name],
-    { pattern: APIFY_ACTOR_ID, expected: 'an Apify actor id (owner/name, owner~name or a 17-character id)' },
-    env
-  );
-}
-
 /* ================================================================ payments */
 
 /**
@@ -630,17 +531,6 @@ function intEntry(
   };
 }
 
-function actorEntry(name: ApifyActorVariable, readIn: string): OperationalVariable {
-  return {
-    name,
-    defaultValue: APIFY_ACTOR_DEFAULTS[name],
-    side: 'backend',
-    readAt: 'per-call',
-    readIn,
-    current: (env) => apifyActorId(name, env),
-  };
-}
-
 /**
  * Every setting this file owns, grouped by the feature each one tunes - the
  * way `.env.example` groups them.
@@ -698,58 +588,7 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
   // Google Sheets
   intEntry('SHEET_BACKFILL_PAUSE_MS', 'per-call', 'services/sheets/accountSheet.ts', sheetBackfillPauseMs),
 
-  // Job scrapers (Apify) and job pages
-  {
-    name: 'SCRAPER_DEFAULT_LOCATION',
-    defaultValue: 'United States',
-    side: 'backend',
-    readAt: 'per-call',
-    readIn: 'routes/jobs.ts, services/scraperProviders.ts (served on GET /api/jobs/scrapers/settings)',
-    current: scraperDefaultLocation,
-  },
-  {
-    name: 'SCRAPER_COUNTRY',
-    defaultValue: 'US',
-    side: 'backend',
-    readAt: 'per-call',
-    readIn: 'services/scraperProviders.ts -> scrapers/filters.js',
-    current: scraperCountry,
-  },
-  {
-    name: 'SCRAPER_MAX_RESULTS',
-    defaultValue: '',
-    bounds: { min: 1, max: 10_000 },
-    side: 'backend',
-    readAt: 'per-call',
-    readIn:
-      'routes/jobs.ts, services/scraperProviders.ts -> scrapers/filters.js ' +
-      '(served on GET /api/jobs/scrapers/providers)',
-    current: (env) => String(scraperMaxResults(env) ?? ''),
-  },
-  {
-    name: 'APIFY_PROXY_GROUPS',
-    defaultValue: 'RESIDENTIAL',
-    side: 'backend',
-    readAt: 'per-call',
-    readIn: 'services/scraperProviders.ts -> scrapers/filters.js',
-    current: (env) => {
-      const groups = apifyProxyGroups(env);
-      return groups.length === 0 ? 'auto' : groups.join(',');
-    },
-  },
-  intEntry(
-    'APIFY_RUN_TIMEOUT_S',
-    'per-call',
-    'services/scraperProviders.ts -> scrapers/*.js (served on GET /api/jobs/scrapers/settings)',
-    apifyRunTimeoutS
-  ),
-  actorEntry('APIFY_ACTOR_INDEED', 'scrapers/indeed.js'),
-  actorEntry('APIFY_ACTOR_JOBBOARD', 'scrapers/jobboard.js'),
-  actorEntry('APIFY_ACTOR_WELLFOUND', 'scrapers/wellfound.js'),
-  actorEntry('APIFY_ACTOR_LEVER', 'scrapers/lever.js'),
-  actorEntry('APIFY_ACTOR_HIRINGCAFE', 'scrapers/hiringcafe.js'),
-  actorEntry('APIFY_ACTOR_HIRINGCAFE_CRAWLERBROS', 'scrapers/hiringcafeCrawlerbros.js'),
-  actorEntry('APIFY_ACTOR_HIRINGCAFE_MEMO23', 'scrapers/hiringcafeMemo23.js'),
+  // Job pages
   intEntry('JOB_PAGE_FETCH_TIMEOUT_MS', 'per-call', 'services/jobPageContent.ts', jobPageFetchTimeoutMs),
   intEntry('JOB_PAGE_BROWSER_TIMEOUT_MS', 'per-call', 'services/jobPageContent.ts', jobPageBrowserTimeoutMs),
   {

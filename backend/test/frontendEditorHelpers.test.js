@@ -258,7 +258,7 @@ test("the builder picks back up only this tab's own Generate Immediately run, ne
 
   // An order is followed on the Orders page, never here - even from a server
   // that still lists one, and even when it is the remembered id - and so is a
-  // run from before kinds, which no tab holds.
+  // run without a kind (one the server no longer holds), which no tab holds.
   const order = { batchId: 'b-order', state: 'running', kind: 'order' };
   const legacy = { batchId: 'b-legacy', state: 'running', kind: null };
   assert.deepEqual(reattachTarget([order], null), { batchId: null, forget: false });

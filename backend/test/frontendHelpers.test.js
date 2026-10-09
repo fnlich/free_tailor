@@ -7,8 +7,7 @@ const ts = require('typescript');
 
 /**
  * Small pure helpers the frontend pages decide things with, tested from here
- * because the frontend has no test runner (the `scraperForm.test.js` pattern):
- * each module is transpiled with the backend's own TypeScript and must import
+ * because the frontend has no test runner: each module is transpiled with the backend's own TypeScript and must import
  * nothing at runtime - type imports are erased.
  */
 
@@ -100,11 +99,11 @@ test("each seat's card shows that seat's own holds, Gemini's included", () => {
   assert.deepEqual(seatHolds(health, 'codex-cli'), []);
   assert.deepEqual(seatHolds(null, 'gemini-cli'), []);
 
-  // A server too old to send the map: Claude's own list still shows on
-  // Claude's card, and is never credited to another seat.
-  const older = { subscription: { seat: {}, outages: [claudeHold] } };
-  assert.deepEqual(seatHolds(older, 'claude-cli'), [claudeHold]);
-  assert.deepEqual(seatHolds(older, 'gemini-cli'), []);
+  // The map is the whole answer: a provider it does not name has no holds,
+  // and the built-in Claude's own list is never read beside it.
+  const unnamed = { subscription: { seat: {}, outages: [claudeHold] }, outagesByProvider: {} };
+  assert.deepEqual(seatHolds(unnamed, 'claude-cli'), []);
+  assert.deepEqual(seatHolds(unnamed, 'gemini-cli'), []);
 });
 
 

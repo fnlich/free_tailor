@@ -169,8 +169,8 @@ function PayoutForm({
   );
 }
 
-/** The server's role catalog, for a backend that predates sending one. */
-const FALLBACK_ROLES: RoleOption[] = ACCOUNT_ROLES.map((id) => ({ id, label: ROLE_LABELS[id] }));
+/** The role catalog until the server's own list arrives (lib/roles.ts is a drift-tested copy of it). */
+const CATALOG_ROLES: RoleOption[] = ACCOUNT_ROLES.map((id) => ({ id, label: ROLE_LABELS[id] }));
 
 /** Said on your own row, beside the controls it locks. */
 const OWN_ROW_NOTE =
@@ -181,11 +181,11 @@ function AccountsTable() {
 
   const [accounts, setAccounts] = useState<ManagedAccount[]>([]);
   const [subscriptions, setSubscriptions] = useState<AccountSubscription[]>([]);
-  const [roles, setRoles] = useState<RoleOption[]>(FALLBACK_ROLES);
+  const [roles, setRoles] = useState<RoleOption[]>(CATALOG_ROLES);
   /**
    * The rate a reporter with no rate of their own is paid, set on Admin -> Job
    * Lake: what an empty rate box means, named by its figure. Null until the
-   * list arrives (or from a backend from before the job lake).
+   * list arrives.
    */
   const [globalRateMilli, setGlobalRateMilli] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -235,8 +235,8 @@ function AccountsTable() {
       const data = await accountsApi.list();
       setAccounts(data.accounts);
       setSubscriptions(data.subscriptions);
-      if (Array.isArray(data.roles) && data.roles.length > 0) setRoles(data.roles);
-      setGlobalRateMilli(typeof data.globalReportRateMilli === 'number' ? data.globalReportRateMilli : null);
+      setRoles(data.roles);
+      setGlobalRateMilli(data.globalReportRateMilli);
       setError(null);
     } catch (caught) {
       setError(messageWithDetail(caught, 'Could not load accounts.'));

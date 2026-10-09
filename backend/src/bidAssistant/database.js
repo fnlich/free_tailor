@@ -3,116 +3,27 @@ const { getDb } = require('../database/sqlite');
 // Bid-assistant tables live in the shared application database.
 const db = getDb();
 
-function createJobsTable(tableName = 'jobs') {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ${tableName} (
-      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-      company_name          TEXT,
-      job_title             TEXT,
-      job_url               TEXT,
-      description           TEXT,
-      salary_range          TEXT,
-      comment               TEXT,
-      row_number            INTEGER,
-      posted_date           TEXT,
-      imported_at           TEXT,
-      is_error              INTEGER NOT NULL DEFAULT 0,
-      error_reason          TEXT,
-      google_sheet_id       TEXT,
-      google_sheet_tab_name TEXT
-    );
-  `);
-}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS jobs (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_name          TEXT,
+    job_title             TEXT,
+    job_url               TEXT,
+    description           TEXT,
+    salary_range          TEXT,
+    comment               TEXT,
+    row_number            INTEGER,
+    posted_date           TEXT,
+    imported_at           TEXT,
+    is_error              INTEGER NOT NULL DEFAULT 0,
+    error_reason          TEXT,
+    google_sheet_id       TEXT,
+    google_sheet_tab_name TEXT
+  );
 
-function createJobsIndexes(tableName = 'jobs') {
-  db.exec(`
-    DROP INDEX IF EXISTS ${tableName}_google_sheet_row_unique;
-
-    CREATE INDEX IF NOT EXISTS ${tableName}_google_sheet_row_index
-    ON ${tableName}(google_sheet_id, google_sheet_tab_name, row_number);
-  `);
-}
-
-function dropJobUrlUniqueIndex(tableName = 'jobs') {
-  db.exec(`DROP INDEX IF EXISTS ${tableName}_job_url_unique`);
-}
-
-
-function migrateJobsTableIfNeeded() {
-  createJobsTable();
-
-  const jobsTableSql = db.prepare(`
-    SELECT sql
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name = 'jobs'
-  `).get();
-  const jobColumns = db.prepare(`PRAGMA table_info(jobs)`).all();
-  const columnNames = new Set(jobColumns.map((column) => column.name));
-  const hasGoogleSheetIdColumn = columnNames.has('google_sheet_id');
-  const hasGoogleSheetTabNameColumn = columnNames.has('google_sheet_tab_name');
-  const hasIsErrorColumn = columnNames.has('is_error');
-  const hasErrorReasonColumn = columnNames.has('error_reason');
-  const hasLegacyJobUrlUniqueConstraint = /job_url\s+text\s+unique/i.test(jobsTableSql?.sql || '');
-
-  if (
-    hasGoogleSheetIdColumn
-    && hasGoogleSheetTabNameColumn
-    && hasIsErrorColumn
-    && hasErrorReasonColumn
-    && !hasLegacyJobUrlUniqueConstraint
-  ) {
-    dropJobUrlUniqueIndex();
-    createJobsIndexes();
-    return;
-  }
-
-  db.transaction(() => {
-    db.exec(`DROP TABLE IF EXISTS jobs_migrated`);
-    createJobsTable('jobs_migrated');
-
-    db.exec(`
-      INSERT INTO jobs_migrated (
-        id,
-        company_name,
-        job_title,
-        job_url,
-        description,
-        salary_range,
-        comment,
-        row_number,
-        posted_date,
-        imported_at,
-        is_error,
-        error_reason,
-        google_sheet_id,
-        google_sheet_tab_name
-      )
-      SELECT
-        id,
-        company_name,
-        job_title,
-        job_url,
-        description,
-        salary_range,
-        ${columnNames.has('comment') ? 'comment' : "''"},
-        ${columnNames.has('row_number') ? 'row_number' : 'NULL'},
-        posted_date,
-        imported_at,
-        ${hasIsErrorColumn ? 'is_error' : '0'},
-        ${hasErrorReasonColumn ? 'error_reason' : 'NULL'},
-        ${hasGoogleSheetIdColumn ? 'google_sheet_id' : 'NULL'},
-        ${hasGoogleSheetTabNameColumn ? 'google_sheet_tab_name' : 'NULL'}
-      FROM jobs;
-      DROP TABLE jobs;
-      ALTER TABLE jobs_migrated RENAME TO jobs;
-    `);
-    dropJobUrlUniqueIndex();
-    createJobsIndexes();
-  })();
-}
-
-migrateJobsTableIfNeeded();
+  CREATE INDEX IF NOT EXISTS jobs_google_sheet_row_index
+  ON jobs(google_sheet_id, google_sheet_tab_name, row_number);
+`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS answers (
@@ -128,13 +39,8 @@ db.exec(`
   );
 `);
 
-const answerColumns = db.prepare(`PRAGMA table_info(answers)`).all();
-const hasQuestionOrderColumn = answerColumns.some((column) => column.name === 'question_order');
-
-if (!hasQuestionOrderColumn) {
-  db.exec(`ALTER TABLE answers ADD COLUMN question_order INTEGER`);
-}
-
+// An answer saved without an order is given the next one in its job and
+// profile, in the order it was saved, so a list always reads back in order.
 db.exec(`
   WITH ranked_answers AS (
     SELECT
@@ -171,6 +77,11 @@ if (orphanedAnswerCount > 0) {
   console.log(`[bid-assistant] Removed ${orphanedAnswerCount} saved answer(s) whose profile no longer exists.`);
 }
 
+/*
+ * Each source belongs to the account that saved it (account_id). A row with
+ * no owner - saved while the Bid Assistant was a single-user tool - is listed
+ * for everybody, as it always was, and only an administrator may change it.
+ */
 db.exec(`
   CREATE TABLE IF NOT EXISTS google_sheets (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,21 +89,10 @@ db.exec(`
     sheet_id   TEXT,
     sheet_gid  TEXT,
     created_at TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    account_id TEXT
   );
 `);
-
-/*
- * Each source belongs to the account that saved it. The table had no owner -
- * the Bid Assistant was a single-user tool - so any signed-in account could
- * rename or delete anybody's. Added the way question_order was, in place: a
- * row saved before this has no owner, is listed for everybody as it always
- * was, and only an administrator may change it.
- */
-const googleSheetColumns = db.prepare(`PRAGMA table_info(google_sheets)`).all();
-if (!googleSheetColumns.some((column) => column.name === 'account_id')) {
-  db.exec(`ALTER TABLE google_sheets ADD COLUMN account_id TEXT`);
-}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_settings (

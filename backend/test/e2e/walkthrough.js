@@ -119,14 +119,14 @@ async function main() {
     body: JSON.stringify({ method: 'card', amountUsd: '20.005' }),
   });
   check('and so is a fraction of a cent, rather than rounded', fraction.status === 400, `status=${fraction.status}: ${fraction.body?.error}`);
-  const stale = await call(buyerToken, '/payments/checkout', {
+  const noAmount = await call(buyerToken, '/payments/checkout', {
     method: 'POST',
     body: JSON.stringify({ method: 'card', credits: 40 }),
   });
   check(
-    'a count of credits from a page loaded before dollars is refused as a stale page',
-    stale.status === 400 && /older version of the app/.test(stale.body?.error ?? ''),
-    `status=${stale.status}: ${stale.body?.error}`
+    'a purchase with no amount in dollars is refused, whatever else it names',
+    noAmount.status === 400 && /Choose an amount in dollars/.test(noAmount.body?.error ?? ''),
+    `status=${noAmount.status}: ${noAmount.body?.error}`
   );
 
   console.log('\n=== 3. Card: checkout, pay, credit ===');

@@ -1,16 +1,7 @@
 import { randomUUID } from 'crypto';
 import nodePath from 'path';
 
-import { getSetting, getSettingFamilyRaw, getSettingRaw, setSetting } from '../database/settingsRepository';
-import {
-  MIGRATION_LOG_KEY as BROWSER_CHAT_LOG_KEY,
-  SETTINGS_BACKUP_KEY as BROWSER_CHAT_SNAPSHOT_KEY,
-} from '../database/migrations/006_remove_browser_chat';
-import {
-  MIGRATION_LOG_KEY as METERED_LOG_KEY,
-  SETTINGS_BACKUP_KEY as METERED_SNAPSHOT_KEY,
-} from '../database/migrations/007_remove_metered_providers';
-import { MIGRATION_LOG_KEY as SEED_LOG_KEY } from '../database/migrations/008_seed_gemini_and_rename_seeds';
+import { getSetting, setSetting } from '../database/settingsRepository';
 import { getDatabasePath } from '../database/sqlite';
 import { AIProvider } from '../types/template';
 import { CODEX_DEFAULT_MODEL } from '../services/ai/providers/codexCli/options';
@@ -18,18 +9,11 @@ import { GEMINI_DEFAULT_MODEL } from '../services/ai/providers/geminiCli/options
 import {
   AI_PROVIDER_IDS,
   coerceProviderId,
-  getProviderDescriptor,
   getProviderLabel as getCatalogProviderLabel,
   getProviderLockReason,
   isProviderLocked,
-  isRetiredProviderId,
   listLockedProviderIds,
   LOCKED_PROVIDERS_ENV_VAR,
-  RETIRED_FAMILY_DESCRIPTION,
-  RETIRED_FAMILY_MIGRATION,
-  retiredModelFamily,
-  retiredProviderFamily,
-  type RetiredProviderFamily,
 } from './providerCatalog';
 import { DEFAULT_CLAUDE_CLI_MODEL } from '../services/aiModelCatalog';
 import {
@@ -71,14 +55,6 @@ export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';
 export type DefaultResumeSelection = 'single' | 'all' | 'group';
 
-type GoogleSheetSource = {
-  id: string;
-  name: string;
-  sheetId: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type AIModelRecord = {
   id: string;
   name: string;
@@ -101,11 +77,7 @@ export type AIModelRecord = {
 export type ProvidersEnabled = Record<AIProvider, boolean>;
 
 type AppSettings = {
-  /**
-   * Canonical enable flags. Replaces the hand-written booleans this type used
-   * to carry; the Claude seat's survives only as a derived, read-only field on
-   * the wire so an already-loaded browser tab does not break across a deploy.
-   */
+  /** Which seats an administrator has left switched on, keyed by provider type. */
   providersEnabled: ProvidersEnabled;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
@@ -129,12 +101,9 @@ type AppSettings = {
   /**
    * What each payment method may be bought in.
    *
-   * There is no price of a credit beside this any more: a credit is a dollar,
-   * so a purchase of $X credits exactly $X, and these dollar bounds are the
-   * whole of what limits one. `creditPriceCents`, `creditMinCredits` and
-   * `creditMaxCredits` - a credit's price and a purchase's bounds in credits -
-   * were retired with that; a stored row that still has them is read without
-   * them, and the next save drops them.
+   * There is no price of a credit beside this: a credit is a dollar, so a
+   * purchase of $X credits exactly $X, and these dollar bounds are the whole of
+   * what limits one.
    *
    * One flat list rather than a field per method, because the targets were not
    * a fixed set while this application chose the coin itself: every asset an
@@ -178,15 +147,6 @@ type AppSettings = {
    * untouched install stores none and reads `.env` as it always did.
    */
   aiProviders: StoredAIProvider[];
-  /**
-   * The saved "shared" Google Sheets an older build let an administrator
-   * point the builder, the Job Filter, the export and the range importer at.
-   * Removed (owner decision S1): every sheet route is the account's own
-   * sheet now, and nothing reads this. It is KEPT in the stored row - read,
-   * normalised and written back unchanged by every save, never served - so
-   * an older build rolled back to finds its list as it left it.
-   */
-  googleSheetsSources: GoogleSheetSource[];
 };
 
 /**
@@ -204,19 +164,6 @@ export type AIModelSettings = Pick<AppSettings, 'providersEnabled'> & {
    * older caller, a test) reads as the three built-ins, all enabled.
    */
   aiProviders?: StoredAIProvider[];
-};
-
-/**
- * The flat per-provider boolean older clients read. Derived from
- * `providersEnabled` on the way out; accepted on the way in.
- *
- * Only the Claude seat's. The metered APIs' flags (`claudeEnabled`,
- * `openaiEnabled`, `deepseekEnabled`) went with them: a page that still sends
- * one is ignored, not refused, and a stored row that still has one is residue
- * migration 007 deletes.
- */
-export type LegacyProviderFlags = {
-  claudeCliEnabled: boolean;
 };
 
 /** The builder defaults an administrator sets under Admin -> Settings, as every page reads them. */
@@ -240,10 +187,9 @@ type BuilderDefaults = Pick<
  * more than an ordinary account may know - which seats exist and are switched
  * on, every model's provider and CLI model name. An ordinary account gets
  * `UserAppSettings` now; this is only ever read on the way to
- * `AdminAppSettings`. The saved shared sheets are in no payload any more
- * (see `AppSettings.googleSheetsSources`).
+ * `AdminAppSettings`.
  */
-type BaseAppSettings = AIModelSettings & LegacyProviderFlags & BuilderDefaults &
+type BaseAppSettings = AIModelSettings & BuilderDefaults &
   Pick<AppSettings, 'aiModels' | 'analysisModelId'>;
 
 /** One model as an ordinary account sees it: the id a request names it by, and the name an administrator gave it. */
@@ -301,10 +247,9 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
   aiProviders: AdminAIProvider[];
   /**
    * The ids of every enabled model priced $0.000, in stored order: free to
-   * everybody who picks it. Admin -> Models lists them in red. After the
-   * switch to dollars that is every model until an administrator prices it,
-   * and a model a migration seeds arrives unpriced too - free on purpose is
-   * allowed (0 is a valid price), but never silently.
+   * everybody who picks it. Admin -> Models lists them in red. A seed model
+   * arrives unpriced - free on purpose is allowed (0 is a valid price), but
+   * never silently.
    */
   freeEnabledModelIds: string[];
   /**
@@ -330,8 +275,6 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
  * one.
  */
 export type AppSettingsUpdate = Partial<Omit<BaseAppSettings, 'aiModels'>> & {
-  /** Accepted for one release so a stale client can still save. */
-  openrouterEnabled?: boolean;
   outputBaseDir?: string;
   outputPathTemplate?: string;
   /** Per method, in dollars. See `PaymentLimitsInput`. */
@@ -437,9 +380,8 @@ function createDefaultModelRecords(): AIModelRecord[] {
   const now = new Date().toISOString();
   /*
    * Display names say what a person picks, and nothing about how it is paid
-   * for: every model is a subscription seat now, and the name is the only part
-   * of a record a user ever sees. Migration 008 renames the earlier
-   * "(subscription)" names on installs that never changed them.
+   * for: every model is a subscription seat, and the name is the only part
+   * of a record a user ever sees.
    */
   const seeds: Array<Pick<AIModelRecord, 'name' | 'provider' | 'modelName' | 'description'>> = [
     // The Claude seat's models come first, so `runnableModels[0]` - the
@@ -573,7 +515,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   requireThreeDSecure: false,
   aiModels: DEFAULT_MODEL_RECORDS,
   aiProviders: normalizeStoredProviders([]),
-  googleSheetsSources: [],
 };
 
 function cloneDefaultSettings(): AppSettings {
@@ -582,7 +523,6 @@ function cloneDefaultSettings(): AppSettings {
     providersEnabled: { ...DEFAULT_SETTINGS.providersEnabled },
     aiModels: DEFAULT_SETTINGS.aiModels.map((model) => ({ ...model })),
     aiProviders: DEFAULT_SETTINGS.aiProviders.map((entry) => ({ ...entry })),
-    googleSheetsSources: [...DEFAULT_SETTINGS.googleSheetsSources],
   };
 }
 
@@ -626,10 +566,6 @@ function normalizeDefaultResumeSelection(
   fallback: DefaultResumeSelection
 ): DefaultResumeSelection {
   return value === 'single' || value === 'all' || value === 'group' ? value : fallback;
-}
-
-function normalizeGoogleSheetSourceName(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
 /**
@@ -735,216 +671,8 @@ function normalizePaymentLimits(
   return Array.isArray(input) ? DEFAULT_PAYMENT_LIMITS.map((row) => ({ ...row })) : fallback;
 }
 
-function normalizeGoogleSheetsSources(input: unknown, fallback: GoogleSheetSource[], strict = false): GoogleSheetSource[] {
-  if (strict && typeof input !== 'undefined' && !Array.isArray(input)) {
-    throw new Error('Stored Google Sheets sources must be an array');
-  }
-
-  const rawEntries = Array.isArray(input) ? input : fallback;
-  const seenIds = new Set<string>();
-
-  return rawEntries
-    .map((entry, index) => {
-      if (typeof entry !== 'object' || entry === null) {
-        if (strict) {
-          throw new Error(`Stored Google Sheets source ${index + 1} is invalid`);
-        }
-        return null;
-      }
-
-      const raw = entry as Partial<GoogleSheetSource>;
-      const sheetId = typeof raw.sheetId === 'string' ? raw.sheetId.trim() : '';
-      if (!sheetId) {
-        if (strict) {
-          throw new Error(`Stored Google Sheets source ${index + 1} is missing a sheetId`);
-        }
-        return null;
-      }
-
-      const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : randomUUID();
-      if (seenIds.has(id)) {
-        if (strict) {
-          throw new Error(`Stored Google Sheets source ${index + 1} has a duplicate id`);
-        }
-        return null;
-      }
-      seenIds.add(id);
-
-      const createdAt = typeof raw.createdAt === 'string' && raw.createdAt.trim()
-        ? raw.createdAt.trim()
-        : new Date().toISOString();
-      const updatedAt = typeof raw.updatedAt === 'string' && raw.updatedAt.trim()
-        ? raw.updatedAt.trim()
-        : createdAt;
-
-      return {
-        id,
-        name: normalizeGoogleSheetSourceName(raw.name, `Google Sheet ${index + 1}`),
-        sheetId,
-        createdAt,
-        updatedAt,
-      } satisfies GoogleSheetSource;
-    })
-    .filter((entry): entry is GoogleSheetSource => Boolean(entry));
-}
-
 function normalizeAIModelProvider(value: unknown): AIProvider | null {
   return coerceProviderId(value);
-}
-
-/**
- * Ids of model records that ran on a retired provider - dropped on read, or
- * deleted by migration 006 or 007 - and which removal retired each.
- *
- * Remembered so that a reference to one - a profile's stored preference, a
- * request from a page loaded before the upgrade - is recognised as naming a
- * retired provider and falls back to the default, instead of failing as a model
- * that "was not found". The shipped ids are listed in `RETIRED_MODEL_IDS`; this
- * covers the ones an administrator created, whose ids are random UUIDs, and the
- * metered seed ids an install's own `*_MODEL` variables derived.
- *
- * Two sources, because a reference outlives the record it names. A read that
- * finds such a record notes its id; and the migrations, which delete the
- * records at boot - usually before anything has read them - log the ids they
- * removed, which `learnRemovedModelIds` reads back. A builder tab left open
- * across the upgrade, or a profile editor loaded before it that saves its old
- * choice again, sends one long after the row is clean and the process that saw
- * the record has restarted. Only ever added to, and it deliberately does not
- * grow into "any id that is missing falls back" - a model an administrator
- * deleted is still an error.
- */
-const droppedRetiredModelIds = new Map<string, RetiredProviderFamily>();
-
-function isLogEntry(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Where each removal logs its runs, and the snapshot it keeps of a row it rewrote. */
-const REMOVAL_MIGRATIONS: ReadonlyArray<{ family: RetiredProviderFamily; logKey: string; snapshotKey: string }> = [
-  { family: 'browser-chat', logKey: BROWSER_CHAT_LOG_KEY, snapshotKey: BROWSER_CHAT_SNAPSHOT_KEY },
-  { family: 'metered-api', logKey: METERED_LOG_KEY, snapshotKey: METERED_SNAPSHOT_KEY },
-];
-
-type RemovalRun = { family: RetiredProviderFamily; entry: Record<string, unknown> };
-
-/**
- * Every run migrations 006 and 007 have logged, oldest first across both: each
- * first run's entry, the later runs appended to it, and any run logged under a
- * dated key of its own. Read as data: an entry that is not an object is
- * skipped, and a log row that does not parse reads as no log at all.
- */
-function removalMigrationRuns(
-  families: readonly RetiredProviderFamily[] = REMOVAL_MIGRATIONS.map((migration) => migration.family)
-): RemovalRun[] {
-  const runs: RemovalRun[] = [];
-  for (const { family, logKey } of REMOVAL_MIGRATIONS) {
-    if (!families.includes(family)) continue;
-    let values: string[];
-    try {
-      values = getSettingFamilyRaw(logKey);
-    } catch {
-      continue;
-    }
-    for (const raw of values) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        continue;
-      }
-      if (!isLogEntry(parsed)) continue;
-      runs.push({ family, entry: parsed });
-      if (Array.isArray(parsed.laterRuns)) {
-        runs.push(...parsed.laterRuns.filter(isLogEntry).map((entry) => ({ family, entry })));
-      }
-    }
-  }
-  return runs.sort((left, right) => String(left.entry.at ?? '').localeCompare(String(right.entry.at ?? '')));
-}
-
-/**
- * `<family>:<database path>` for every removal log already read into
- * `droppedRetiredModelIds`. Per family, because the two migrations can run in
- * this process at different times - both wait for the first administrator, and
- * 007 waits on 006 - and having read one log must not stop the other being read
- * once it appears.
- */
-const learnedRemovalLogs = new Set<string>();
-
-/**
- * Reads the model ids 006 and 007 removed into `droppedRetiredModelIds`, once
- * per database and log. Looked for again on each uncached settings read until
- * the log exists, because either migration can run in this process after its
- * first read - on the sign-in or the promotion that makes the first
- * administrator.
- */
-function learnRemovedModelIds(path: string): void {
-  const pending = REMOVAL_MIGRATIONS.map((migration) => migration.family).filter(
-    (family) => !learnedRemovalLogs.has(`${family}:${path}`)
-  );
-  if (pending.length === 0) return;
-  const runs = removalMigrationRuns(pending);
-  for (const { family, entry } of runs) {
-    learnedRemovalLogs.add(`${family}:${path}`);
-    if (!Array.isArray(entry.removedModelIds)) continue;
-    for (const id of entry.removedModelIds) {
-      if (typeof id === 'string' && id.trim() && !droppedRetiredModelIds.has(id.trim())) {
-        droppedRetiredModelIds.set(id.trim(), family);
-      }
-    }
-  }
-}
-
-/**
- * One line per kind of retired-provider residue, however many reads find it.
- *
- * Settings are re-read every few seconds; a warning per read would bury the log
- * under the same sentence for as long as the residue is there.
- */
-const warnedRetiredResidue = new Set<string>();
-
-function warnRetiredResidueOnce(key: string, message: string): void {
-  if (warnedRetiredResidue.has(key)) return;
-  warnedRetiredResidue.add(key);
-  console.warn(message);
-}
-
-/** "the browser chat providers, which were removed", ready for a sentence. */
-function removedFamilyPhrase(family: RetiredProviderFamily): string {
-  return `the ${RETIRED_FAMILY_DESCRIPTION[family]}, which were removed`;
-}
-
-function noteDroppedRetiredModel(raw: Partial<Record<keyof AIModelRecord, unknown>>): void {
-  const provider = typeof raw.provider === 'string' ? raw.provider.trim() : '';
-  const family = retiredProviderFamily(provider) ?? 'browser-chat';
-  const id = normalizeAIModelText(raw.id);
-  const modelName = normalizeAIModelText(raw.modelName);
-  // The id a record with none would have been given, so a reference built the
-  // same way is recognised too.
-  const recordId = id || `${provider}-${slugifyModelPart(modelName) || 'model'}`;
-  if (!droppedRetiredModelIds.has(recordId)) droppedRetiredModelIds.set(recordId, family);
-
-  warnRetiredResidueOnce(
-    `records:${provider}`,
-    `[ai] Ignoring stored model record(s) for "${provider}": ${removedFamilyPhrase(family)}. ` +
-      `Migration ${RETIRED_FAMILY_MIGRATION[family]} deletes these records on start-up, and saving ` +
-      'Admin -> Settings writes the row without them.'
-  );
-}
-
-/**
- * Which removal retired the model `id` names, or null when it names a model
- * that has not been retired.
- *
- * Asked by every path that resolves a model id, so that all of them agree on
- * what such a reference means: the app default, never "not found".
- */
-function retiredReferenceFamily(id: string): RetiredProviderFamily | null {
-  return retiredModelFamily(id) ?? droppedRetiredModelIds.get(id.trim()) ?? null;
-}
-
-function isRetiredModelReference(id: string): boolean {
-  return retiredReferenceFamily(id) !== null;
 }
 
 function normalizeAIModelText(value: unknown, fallback = ''): string {
@@ -970,16 +698,6 @@ function normalizeAIModelRecords(input: unknown, fallback: AIModelRecord[], stri
       }
 
       const raw = entry as Partial<AIModelRecord>;
-      // Skipped EVEN WHEN STRICT. Strict exists to report a row somebody edited
-      // into nonsense; this is a row an older release wrote correctly, and
-      // nearly every install that ever saved its settings carries two of them.
-      // Refusing it would fail every settings read - the model list, every
-      // generation, and the very page an admin would repair it from.
-      if (isRetiredProviderId(raw.provider)) {
-        noteDroppedRetiredModel(raw);
-        return null;
-      }
-
       const provider = normalizeAIModelProvider(raw.provider);
       if (!provider) {
         if (strict) {
@@ -1025,11 +743,9 @@ function normalizeAIModelRecords(input: unknown, fallback: AIModelRecord[], stri
         description: normalizeAIModelText(raw.description),
         enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
         // Carried, or every save that goes through here would drop it and every
-        // model would be free again. Lenient even when strict: a record priced
-        // before credits were dollars has only `creditsPerResume` - another
-        // unit, never read as a price - and reads as $0.000, and one
-        // hand-edited out of range clamps rather than failing the read every
-        // page depends on.
+        // model would be free again. Lenient even when strict: a record with
+        // no price reads as $0.000, and one hand-edited out of range clamps
+        // rather than failing the read every page depends on.
         pricePerResumeMilli: readPricePerResumeMilli(raw.pricePerResumeMilli, id),
         createdAt,
         updatedAt,
@@ -1046,9 +762,6 @@ function resolveDefaultModelId(
 ): string {
   const runnableModels = aiModels.filter((model) => model.enabled && isProviderEnabled(model.provider, providerSettings));
   const availableModels = runnableModels.length > 0 ? runnableModels : aiModels.filter((model) => model.enabled);
-  // A default that names a retired model - the browser entry, or one of the
-  // records dropped on read - is not among them, so it lands on the seed
-  // default below like any other default that no longer resolves.
   const preferredId = typeof requestedDefaultModelId === 'string' ? requestedDefaultModelId.trim() : '';
 
   if (preferredId && availableModels.some((model) => model.id === preferredId)) {
@@ -1077,27 +790,11 @@ export function getRunnableModels(settings: AIModelSettings & Pick<AppSettings, 
 }
 
 /**
- * Reads the enable flags from a stored row.
- *
- * Accepts three shapes, in order: the canonical `providersEnabled` record; the
- * flat per-provider booleans an older release wrote (including
- * `openrouterEnabled`, which becomes the CLI provider's flag - so an install
- * whose ONLY enabled provider was OpenRouter comes back with a working one
- * rather than a settings row that fails `assertAtLeastOneProviderEnabled`);
- * and, failing both, the fallback.
- *
- * Keys for a retired provider are ignored, and so are the metered APIs' flat
- * flags. A row whose only switched-on providers were retired ones is given one
- * that runs by
- * `rescueRetiredProviderRow`, when it is read from the database - not here,
- * because this also normalizes an administrator's save, where nothing enabled
- * is a mistake to report rather than repair.
+ * Reads the enable flags from the `providersEnabled` record, one per seat in
+ * the catalog; a seat the record does not name keeps the fallback. Keys for
+ * anything else are ignored, so they never reach a written row.
  */
-function normalizeProvidersEnabled(
-  source: Record<string, unknown>,
-  fallback: ProvidersEnabled,
-  strict: boolean
-): ProvidersEnabled {
+function normalizeProvidersEnabled(source: Record<string, unknown>, fallback: ProvidersEnabled): ProvidersEnabled {
   const record =
     typeof source.providersEnabled === 'object' && source.providersEnabled !== null
       ? (source.providersEnabled as Record<string, unknown>)
@@ -1110,29 +807,6 @@ function normalizeProvidersEnabled(
       result[id] = fromRecord;
       continue;
     }
-
-    // A provider added after the flat flags stopped being written has none, so
-    // there is nothing older that could be asking about it.
-    const legacyField = getProviderDescriptor(id).legacyEnabledField;
-    if (legacyField) {
-      const fromLegacy = source[legacyField];
-      if (typeof fromLegacy === 'boolean') {
-        result[id] = fromLegacy;
-        continue;
-      }
-      if (strict && hasOwnProperty(source, legacyField)) {
-        throw new Error(`${legacyField} must be a boolean`);
-      }
-    }
-
-    // The one alias that carries meaning: a row written before the CLI
-    // provider existed says `openrouterEnabled`, and that flag is what the
-    // admin actually chose for the provider this one replaced.
-    if (id === 'claude-cli' && typeof source.openrouterEnabled === 'boolean') {
-      result[id] = source.openrouterEnabled;
-      continue;
-    }
-
     result[id] = fallback[id] ?? true;
   }
   return result;
@@ -1173,314 +847,10 @@ function normalizeStoredCents(
 }
 
 
-/**
- * Whether the row still runs on exactly what a removal migration left it
- * running on, as its log records: every provider switched on or off as it was,
- * and the same models switched on. Saves that change nothing of that - the
- * default mode, prices, the API key store the reader removes - leave it the
- * migration's row.
- */
-/**
- * The model ids migration 008 appended to a row at or after `since`, as its log says.
- *
- * 008 adds the Gemini seed to an explicit list, switched on, so a row 007 left
- * would otherwise stop matching 007's record of it the moment 008 ran - and a
- * lock added later would find a row nobody answers for. What a migration added
- * after the removal is still what the migrations left.
- */
-function seedAppendsSince(since: string): string[] {
-  let values: string[];
-  try {
-    values = getSettingFamilyRaw(SEED_LOG_KEY);
-  } catch {
-    return [];
-  }
-  const ids: string[] = [];
-  for (const raw of values) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    if (!isLogEntry(parsed)) continue;
-    const runs = [parsed, ...(Array.isArray(parsed.laterRuns) ? parsed.laterRuns.filter(isLogEntry) : [])];
-    for (const run of runs) {
-      // Strictly before, not "at or before": 008 runs straight after 007 in
-      // one chain, and the two can log the same millisecond.
-      if (String(run.at ?? '') < since || !Array.isArray(run.appendedModelIds)) continue;
-      for (const id of run.appendedModelIds) {
-        if (typeof id === 'string' && id.trim() && !ids.includes(id.trim())) ids.push(id.trim());
-      }
-    }
-  }
-  return ids;
-}
-
-function stillRunsAsMigrationLeftIt(
-  left: Record<string, unknown>,
-  providersEnabled: ProvidersEnabled,
-  aiModels: AIModelRecord[],
-  leftAt: string
-): boolean {
-  const flags = isLogEntry(left.providersEnabled) ? left.providersEnabled : {};
-  // Only the providers the run recorded and this build still has: one added to
-  // the catalog since reads as its default, which is not a choice anybody
-  // made, and a retired one's flag is ignored on read.
-  if (AI_PROVIDER_IDS.some((id) => typeof flags[id] === 'boolean' && flags[id] !== providersEnabled[id])) {
-    return false;
-  }
-  const enabledIds = (models: AIModelRecord[]): string[] =>
-    models.filter((model) => model.enabled).map((model) => model.id).sort();
-  // null: the row had no list of its own, and inherited the seed models. A
-  // logged id that has since been retired - 006 logged the metered models it
-  // left on - is not on the row any more for the reader to compare against.
-  const was = Array.isArray(left.enabledModelIds)
-    ? [
-        ...new Set([
-          ...left.enabledModelIds.filter(
-            (id): id is string => typeof id === 'string' && !isRetiredModelReference(id)
-          ),
-          ...seedAppendsSince(leftAt),
-        ]),
-      ].sort()
-    : enabledIds(DEFAULT_MODEL_RECORDS);
-  const now = enabledIds(aiModels);
-  return was.length === now.length && was.every((id, index) => id === now[index]);
-}
-
-/** Keys an older row carries only for a retired provider, as residue on their own. */
-const RETIRED_SETTINGS_FLAGS: ReadonlyArray<{ key: string; family: RetiredProviderFamily }> = [
-  { key: 'claudeEnabled', family: 'metered-api' },
-  { key: 'openaiEnabled', family: 'metered-api' },
-  { key: 'deepseekEnabled', family: 'metered-api' },
-];
-
-type RetiredTrace = { cause: 'residue' | 'migrated'; family: RetiredProviderFamily };
-
-/**
- * What makes a stored row that can run nothing a removal's doing, if anything
- * does, and which removal:
- *
- *   - 'residue': the row still names a retired provider. The migration that
- *     removes it has not reached it, or a restored backup put the names back.
- *   - 'migrated': a removal migration rewrote it - the snapshot each keeps of
- *     every row it rewrote says so long after the row stops saying it - and it
- *     still runs on exactly what the LATEST such run, 006 or 007, left it on. A
- *     lock added since leaves that row with nothing, and that is still the
- *     migration's to answer for.
- *   - null: anything else, an administrator's own choice saved after the
- *     migrations among them. A lock that leaves THAT with nothing is theirs to
- *     answer, and the assert names it; repairing it would quietly switch back
- *     on a seat they had switched off.
- *
- * Asked only once a row has already failed to offer anything runnable, so the
- * extra reads cost nothing on any read that succeeds.
- */
-function retiredProviderTrace(
-  source: Record<string, unknown>,
-  providersEnabled: ProvidersEnabled,
-  aiModels: AIModelRecord[]
-): RetiredTrace | null {
-  const flags = source.providersEnabled;
-  if (typeof flags === 'object' && flags !== null) {
-    const retired = Object.keys(flags).map(retiredProviderFamily).find(Boolean);
-    if (retired) return { cause: 'residue', family: retired };
-  }
-  if (Array.isArray(source.aiModels)) {
-    for (const entry of source.aiModels) {
-      const family =
-        typeof entry === 'object' && entry !== null
-          ? retiredProviderFamily((entry as Record<string, unknown>).provider)
-          : null;
-      if (family) return { cause: 'residue', family };
-    }
-  }
-  const flat = RETIRED_SETTINGS_FLAGS.find(({ key }) => hasOwnProperty(source, key));
-  if (flat) return { cause: 'residue', family: flat.family };
-
-  const snapshotted = REMOVAL_MIGRATIONS.some(({ snapshotKey }) => {
-    try {
-      return getSettingRaw(snapshotKey) !== null;
-    } catch {
-      return false;
-    }
-  });
-  if (!snapshotted) return null;
-  const latest = [...removalMigrationRuns()].reverse().find((run) => isLogEntry(run.entry.leftRunning));
-  // A removal that recorded no such thing ran on a build before the log said
-  // it - 006's first version, only ever on its own development branch. Its row
-  // is taken as untouched, as every such row was before the log said otherwise.
-  if (!latest) {
-    return { cause: 'migrated', family: 'browser-chat' };
-  }
-  return stillRunsAsMigrationLeftIt(
-    latest.entry.leftRunning as Record<string, unknown>,
-    providersEnabled,
-    aiModels,
-    String(latest.entry.at ?? '')
-  )
-    ? { cause: 'migrated', family: latest.family }
-    : null;
-}
-
-/**
- * What the stored row records for `id`'s switch, read the way
- * `normalizeProvidersEnabled` reads it, or null when it records nothing - in
- * which case the reader takes it as switched on.
- */
-function recordedProviderSwitch(source: Record<string, unknown>, id: AIProvider): boolean | null {
-  const record = isLogEntry(source.providersEnabled) ? source.providersEnabled : null;
-  if (typeof record?.[id] === 'boolean') return record[id] as boolean;
-  const legacyField = getProviderDescriptor(id).legacyEnabledField;
-  if (legacyField && typeof source[legacyField] === 'boolean') return source[legacyField] as boolean;
-  if (id === 'claude-cli' && typeof source.openrouterEnabled === 'boolean') return source.openrouterEnabled;
-  return null;
-}
-
-/**
- * Keeps a stored row that ran on a retired provider readable once it is gone.
- *
- * Without the browser chat providers or the metered APIs an install can be
- * left with nothing it can run: an operator who used them alone, or whose
- * seats are locked on this machine (`AI_LOCKED_PROVIDERS`) - which is exactly
- * what moved many installs onto them. The asserts in `readSettings` would then
- * refuse every settings read: the model list, every generation, and the
- * Settings page an administrator would repair it from. So one seat this
- * machine CAN run is read as switched on, and given a model that runs:
- *
- *   - not locked here - a locked seat switched on would repair nothing;
- *   - one the row explicitly switched on, then one it records no choice for,
- *     then one it switched off; one with a model already switched on before
- *     one without; catalog order after that;
- *   - its missing seed models added and, failing that, one of its own switched
- *     back on.
- *
- * That is exactly the repair migration 007 writes, rank for rank - so the
- * install does not change seat the moment its first administrator lets 007
- * run. Every seat is a subscription, so nothing a repair brings back bills per
- * token. It is needed after the migrations too, because a lock can be added at
- * any time and each runs once.
- *
- * Only for a row a removal answers for (`retiredProviderTrace`): one that still
- * names a retired provider, or the row the latest removal left, unchanged
- * since. Any other row an operator left with nothing runnable - every seat they
- * ticked since locked in .env, after an administrator's save - still fails by
- * name, pointing at the lock they set, which is the place to undo it. And
- * nothing is possible when every seat is locked: the read degrades to no
- * runnable models, and the lock list says why.
- *
- * In memory only. Nothing here writes; the migration, or the next save from the
- * admin page, persists it - so the migration still finds the residue and
- * snapshots the row before it changes anything. `providersEnabled` is the
- * caller's freshly normalized record and is updated in place.
- */
-function rescueRetiredProviderRow(
-  source: Record<string, unknown>,
-  providersEnabled: ProvidersEnabled,
-  aiModels: AIModelRecord[]
-): AIModelRecord[] {
-  const anyProvider = AI_PROVIDER_IDS.some((id) => isProviderEnabled(id, { providersEnabled }));
-  if (anyProvider && getRunnableModels({ providersEnabled, aiModels }).length > 0) {
-    return aiModels;
-  }
-  const trace = retiredProviderTrace(source, providersEnabled, aiModels);
-  if (!trace) {
-    return aiModels;
-  }
-
-  // Lowest first; a stable sort, so catalog order breaks ties.
-  const rank = (id: AIProvider): number => {
-    const recorded = recordedProviderSwitch(source, id);
-    return (
-      (recorded === true ? 0 : recorded === null ? 1 : 2) * 2 +
-      (aiModels.some((model) => model.provider === id && model.enabled) ? 0 : 1)
-    );
-  };
-  const target = AI_PROVIDER_IDS.filter((id) => !isProviderLocked(id)).sort((a, b) => rank(a) - rank(b))[0];
-  if (!target) {
-    return aiModels;
-  }
-
-  const switchedOn = providersEnabled[target] !== true;
-  providersEnabled[target] = true;
-
-  let rescued = aiModels;
-  const added: string[] = [];
-  let revived = '';
-  if (getRunnableModels({ providersEnabled, aiModels: rescued }).length === 0) {
-    const seeds = DEFAULT_MODEL_RECORDS.filter((model) => model.provider === target);
-    const own = () => rescued.filter((model) => model.provider === target);
-    // Its missing seed models, as 007 gives it them. By id AND by provider and
-    // model name: the reader refuses two records for one pair, so a seed
-    // beside a record the operator created under their own id would break the
-    // row it is repairing.
-    const presentIds = new Set(rescued.map((model) => model.id));
-    const presentKeys = new Set(rescued.map((model) => `${model.provider}:${model.modelName.toLowerCase()}`));
-    const fresh = seeds
-      .filter(
-        (model) =>
-          !presentIds.has(model.id) && !presentKeys.has(`${model.provider}:${model.modelName.toLowerCase()}`)
-      )
-      .map((model) => ({ ...model }));
-    rescued = [...fresh, ...rescued];
-    added.push(...fresh.map((model) => model.id));
-    // Its models were there all along but switched off. One is switched back
-    // on - its seed default where it has that one - because a row that cannot
-    // be read at all is worse than an administrator's untick being undone, and
-    // the warning below says which it was.
-    if (getRunnableModels({ providersEnabled, aiModels: rescued }).length === 0) {
-      const seedDefault = seeds[0];
-      const revive =
-        own().find(
-          (model) =>
-            seedDefault !== undefined &&
-            (model.id === seedDefault.id || model.modelName.toLowerCase() === seedDefault.modelName.toLowerCase())
-        ) ?? own()[0];
-      if (revive) {
-        rescued = rescued.map((model) => (model === revive ? { ...model, enabled: true } : model));
-        revived = revive.id;
-      }
-    }
-  }
-
-  const locked = listLockedProviderIds();
-  const lockedHere = locked.length ? ` (locked here: ${locked.join(', ')})` : '';
-  // About the lock when the row no longer names a retired provider: that is
-  // what changed, and the removal is only why the row is the migration's.
-  const cause =
-    trace.cause === 'residue'
-      ? `Nothing in the stored settings can run on this machine without ${removedFamilyPhrase(trace.family)}` +
-        lockedHere
-      : `Nothing the stored settings switch on can run on this machine${lockedHere}, and they are still what ` +
-        `migration ${RETIRED_FAMILY_MIGRATION[trace.family]} left when it removed the ` +
-        RETIRED_FAMILY_DESCRIPTION[trace.family];
-  warnRetiredResidueOnce(
-    `rescued:${target}`,
-    `[ai] ${cause}; reading "${getCatalogProviderLabel(target)}" as ` +
-      [
-        switchedOn ? 'switched on' : '',
-        added.length ? `given its models (${added.join(', ')})` : '',
-        revived ? `with ${revived} switched back on` : '',
-      ]
-        .filter(Boolean)
-        .join(', ') +
-      ' instead. Review it under Admin -> Settings and Admin -> Models, and save to keep it.'
-  );
-  return rescued;
-}
-
-/**
- * `storedRow` marks the one caller that reads the row from the database, as
- * opposed to normalizing an administrator's save or a row about to be written:
- * only a stored row is repaired in memory or reported as retired-provider
- * residue.
- */
 function normalizeSettings(
   input: unknown,
   fallback: AppSettings = DEFAULT_SETTINGS,
-  strict = false,
-  storedRow = false
+  strict = false
 ): AppSettings {
   if (strict && (typeof input !== 'object' || input === null)) {
     throw new Error('Settings file must contain a JSON object');
@@ -1491,36 +861,15 @@ function normalizeSettings(
       ? (input as Partial<AppSettings> & Record<string, unknown>)
       : {};
 
-  const providersEnabled = normalizeProvidersEnabled(source, fallback.providersEnabled, strict);
+  const providersEnabled = normalizeProvidersEnabled(source, fallback.providersEnabled);
 
-  const normalizedModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
-  // Only for a STORED row. A save from the admin page that leaves nothing
-  // runnable is refused by name instead, and repairing it behind the
-  // operator's back would hide the mistake they made.
-  const aiModels = storedRow
-    ? rescueRetiredProviderRow(source, providersEnabled, normalizedModels)
-    : normalizedModels;
+  const aiModels = normalizeAIModelRecords(source.aiModels, fallback.aiModels, strict);
   const defaultModelId = resolveDefaultModelId(
     source.defaultModelId,
     aiModels,
     { providersEnabled },
     fallback.defaultModelId
   );
-  // A stored default that named a retired model is replaced like any default
-  // that no longer resolves - but this one is residue with a known cause, so it
-  // is said once, as a stored profile preference or prompt override naming one
-  // is. After the records are normalized, so an administrator's own retired
-  // model, whose id only its dropped record could name, is recognised too.
-  const storedDefault = typeof source.defaultModelId === 'string' ? source.defaultModelId.trim() : '';
-  const defaultFamily = storedRow && storedDefault ? retiredReferenceFamily(storedDefault) : null;
-  if (defaultFamily) {
-    warnRetiredResidueOnce(
-      `default:${storedDefault}`,
-      `[ai] The stored default model is "${storedDefault}", a model on ${removedFamilyPhrase(defaultFamily)}; ` +
-        `"${defaultModelId || '(none)'}" is the default instead. Migration ` +
-        `${RETIRED_FAMILY_MIGRATION[defaultFamily]} repoints it, and saving Admin -> Settings writes the new one.`
-    );
-  }
 
   return {
     providersEnabled,
@@ -1567,13 +916,10 @@ function normalizeSettings(
     defaultModelId,
     // Kept as stored, even when it no longer names a model that runs: a
     // switched-off model comes back on, and the gate falls back to the app
-    // default meanwhile (resolveAnalysisModel). A retired id is residue and
-    // reads as unset.
+    // default meanwhile (resolveAnalysisModel).
     analysisModelId:
       typeof source.analysisModelId === 'string'
-        ? isRetiredModelReference(source.analysisModelId.trim())
-          ? ''
-          : source.analysisModelId.trim()
+        ? source.analysisModelId.trim()
         : strict && hasOwnProperty(source, 'analysisModelId')
           ? (() => { throw new Error('analysisModelId must be a string'); })()
           : fallback.analysisModelId,
@@ -1614,7 +960,6 @@ function normalizeSettings(
     aiProviders: normalizeStoredProviders(
       Array.isArray(source.aiProviders) ? source.aiProviders : fallback.aiProviders
     ),
-    googleSheetsSources: normalizeGoogleSheetsSources(source.googleSheetsSources, fallback.googleSheetsSources, strict),
   };
 }
 
@@ -1640,13 +985,6 @@ function assertAtLeastOneRunnableModel(settings: AppSettings): void {
   if (getRunnableModels(settings).length === 0) {
     throw new Error('At least one enabled model must remain available under an enabled provider');
   }
-}
-
-/** The flat boolean older clients still read, derived from the record. */
-function toLegacyProviderFlags(settings: AppSettings): LegacyProviderFlags {
-  return {
-    claudeCliEnabled: settings.providersEnabled['claude-cli'],
-  };
 }
 
 /**
@@ -1684,7 +1022,6 @@ function toBaseSettings(settings: AppSettings): BaseAppSettings {
   const runnable = getRunnableModels(settings);
   return {
     providersEnabled: { ...settings.providersEnabled },
-    ...toLegacyProviderFlags(settings),
     ...toBuilderDefaults(settings),
     aiModels: runnable.map((model) => ({ ...model })),
     analysisModelId: settings.analysisModelId,
@@ -1774,20 +1111,11 @@ function limitCents(value: unknown, label: string): number {
   return cents;
 }
 
-/**
- * The admin's limit rows, in dollars, as the cents they are stored in.
- *
- * A row still in cents (`minCents`) is from a Payments page loaded before
- * credits were dollars, and is refused rather than guessed at: read as dollars
- * it would set a $250 minimum where $2.50 was meant.
- */
+/** The admin's limit rows, in dollars, as the cents they are stored in. */
 function parsePaymentLimitsInput(input: unknown): PaymentTargetLimits[] {
   if (!Array.isArray(input)) throw new Error('Payment limits must be a list.');
   return input.map((entry, index) => {
-    const row = (entry && typeof entry === 'object' ? entry : {}) as PaymentLimitsInput & Record<string, unknown>;
-    if (row.minCents !== undefined || row.maxCents !== undefined || row.presetsCents !== undefined) {
-      throw new Error('This page is from an older version of the app. Reload it and try again.');
-    }
+    const row = (entry && typeof entry === 'object' ? entry : {}) as PaymentLimitsInput;
     const target = typeof row.target === 'string' ? row.target.trim() : '';
     const name = target || `Payment limit ${index + 1}`;
     const minCents = limitCents(row.minUsd, `${name}: the smallest purchase`);
@@ -1832,26 +1160,6 @@ export function invalidateSettingsCache(): void {
   settingsCache = null;
 }
 
-/**
- * Whether a stored settings row still carries the removed key store.
- *
- * Keys used to live in the app's own database, managed from a panel on the
- * Settings page, for the metered API providers. Those providers are gone and
- * the app runs on subscription seats with no key at all, so an upgraded install
- * has secrets sitting in a row nothing reads. Detected here so `readSettings`
- * can rewrite the row without them, once - and PERMANENTLY, not only until
- * migration 007 has run: a restored backup can bring the store back any time.
- */
-function purgeStoredApiKeys(stored: unknown): boolean {
-  if (!stored || typeof stored !== 'object') return false;
-  if (!hasOwnProperty(stored as object, 'apiKeys')) return false;
-  console.warn(
-    '[settings] Removing API keys stored in the database. Nothing in this release uses an API key - ' +
-      'every AI provider is a subscription seat signed in on the server.'
-  );
-  return true;
-}
-
 async function readSettings(): Promise<AppSettings> {
   const path = getDatabasePath();
   const cached = settingsCache;
@@ -1860,9 +1168,6 @@ async function readSettings(): Promise<AppSettings> {
     return cached.value;
   }
 
-  // Before anything resolves a model id against what this returns: every path
-  // that does reads settings first.
-  learnRemovedModelIds(path);
   const stored = getSetting<unknown>(APP_SETTINGS_KEY);
   if (stored === null) {
     const defaults = cloneDefaultSettings();
@@ -1871,21 +1176,7 @@ async function readSettings(): Promise<AppSettings> {
     return defaults;
   }
 
-  const settings = normalizeSettings(stored, cloneDefaultSettings(), true, true);
-  // A database written before keys moved to the environment still holds them.
-  // Normalizing drops them from what this process uses, but the row on disk
-  // would keep the secrets indefinitely with nothing left that can manage
-  // them, so they are written out rather than merely ignored.
-  //
-  // The stored row minus its key store, and NOTHING else. Writing the
-  // normalized row instead would also clean out whatever this read is only
-  // tolerating - retired providers' records among them - before migrations 006
-  // and 007 have snapshotted them, and would forget which profile preferences
-  // named them.
-  if (purgeStoredApiKeys(stored)) {
-    const { apiKeys: _discarded, ...withoutKeys } = stored as Record<string, unknown>;
-    setSetting(APP_SETTINGS_KEY, withoutKeys);
-  }
+  const settings = normalizeSettings(stored, cloneDefaultSettings(), true);
   // With every seat locked here nothing can run, and no save could change that:
   // the lock is the deployment's, not the row's. Refusing the READ would take
   // down every page that reads settings - the admin pages that say why among
@@ -1942,8 +1233,7 @@ export async function getAdminAppSettings(): Promise<AdminAppSettings> {
  * comes back showing a different default, with nothing saying why. Only an id
  * the save CHANGES is checked - a full-form save re-sends the default it loaded,
  * and one that stopped being runnable since must not stop the rest of the form
- * saving - and a retired id from a page loaded before the upgrade still falls
- * back quietly, as every retired reference does.
+ * saving.
  */
 function assertRequestedDefaultCanRun(input: AppSettingsUpdate, current: AppSettings, next: AppSettings): void {
   if (!hasOwnProperty(input, 'defaultModelId')) return;
@@ -1951,7 +1241,6 @@ function assertRequestedDefaultCanRun(input: AppSettingsUpdate, current: AppSett
   // Empty clears it, which resolves to the seed default like an unset one.
   if (!requested) return;
   if (requested === current.defaultModelId || requested === effectiveDefaultModelId(current)) return;
-  if (isRetiredModelReference(requested)) return;
 
   const model = next.aiModels.find((entry) => entry.id === requested);
   if (!model) {
@@ -2024,48 +1313,17 @@ export async function resolveAnalysisModel(): Promise<AIModelRecord> {
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
   const current = await readSettings();
 
-  // A client that still sends the flat per-provider booleans has to be heard.
-  // Merged naively they never would be: `current` always carries a
-  // `providersEnabled` record, and the record wins over the flat fields, so an
-  // older client's provider toggle would appear to save and change nothing.
-  const legacyFlags = input as Record<string, unknown>;
-  // A page loaded before a provider was retired still sends its switches: a
-  // flag per retired provider in `providersEnabled`, the metered APIs' flat
-  // flags, the browser master switch and the list of debug browsers. Every one
-  // is dropped without a word - the normalizer below names none of them, so
-  // nothing reaches the row - because refusing the save would only stop a
-  // stale tab saving the settings it CAN still change. The retired provider
-  // flags are taken out here as well rather than left to it: a stored row whose
-  // only ticked providers are retired reads with a seat switched on, and on a
-  // save that would silently undo an administrator unticking everything else
-  // instead of telling them why it cannot be saved.
-  const requestedFlags = input.providersEnabled
-    ? (Object.fromEntries(
-        Object.entries(input.providersEnabled).filter(([id]) => !isRetiredProviderId(id))
-      ) as Partial<ProvidersEnabled>)
-    : null;
-  const providersEnabled = requestedFlags
-    ? { ...current.providersEnabled, ...requestedFlags }
-    : AI_PROVIDER_IDS.reduce((acc, id) => {
-        const legacyField =
-          id === 'claude-cli' && typeof legacyFlags.openrouterEnabled === 'boolean'
-            ? 'openrouterEnabled'
-            : getProviderDescriptor(id).legacyEnabledField;
-        const flat = legacyField ? legacyFlags[legacyField] : undefined;
-        acc[id] = typeof flat === 'boolean' ? flat : current.providersEnabled[id];
-        return acc;
-      }, {} as ProvidersEnabled);
+  // Only the seats the save names change; the normalizer below reads nothing
+  // but catalog seats out of the record, so any other key never reaches the row.
+  const providersEnabled = input.providersEnabled
+    ? { ...current.providersEnabled, ...input.providersEnabled }
+    : { ...current.providersEnabled };
 
   // A model list in a settings save is dropped, not merged: this path
   // normalizes leniently, so a list here would skip the model-name check and
   // clamp a mistyped price where the model routes refuse it by name. Nothing
   // the admin pages send carries one.
   /*
-   * A model list in a settings save is dropped, as above. So are the retired
-   * pricing fields (`creditPriceCents`, `creditMinCredits`,
-   * `creditMaxCredits`) a page from before credits were dollars still sends:
-   * nothing reads them, and `normalizeSettings` builds the row field by field.
-   *
    * The payment limits arrive in DOLLARS and are parsed here, strictly, into
    * the cents they are stored in. This path otherwise normalizes non-strict,
    * which drops a bad row and keeps what was there before - the kind direction
@@ -2074,19 +1332,15 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
    * amount or an inverted band is reported by name.
    */
   // And the providers, which have routes of their own for the same reason:
-  // every folder and binary they name is checked there, by name. And the
-  // saved shared sheets, which are gone (owner decision S1): a stale page
-  // still sending its list must not change the one kept for a rollback.
+  // every folder and binary they name is checked there, by name.
   const {
     aiModels: _models,
     aiProviders: _providers,
-    googleSheetsSources: _sheets,
     paymentLimits: limitsInput,
     ...changes
   } = input as AppSettingsUpdate & {
     aiModels?: unknown;
     aiProviders?: unknown;
-    googleSheetsSources?: unknown;
   };
   const paymentLimits = limitsInput === undefined ? current.paymentLimits : parsePaymentLimitsInput(limitsInput);
   const next = normalizeSettings(
@@ -2232,21 +1486,6 @@ export async function resolveStoredAIModelPreference(
   }
 
   const settings = await readSettings();
-
-  // A preference for a model that ran on a removed provider - the browser
-  // entry, a browser chat record, a metered API model - is stale in the same
-  // way, and more permanently. Checked before the lookup, because the record is
-  // not in `aiModels` any more and the lookup would only report it missing.
-  const family = retiredReferenceFamily(requested);
-  if (family) {
-    warnOncePerPreference(
-      requested,
-      `[ai] A stored preference names "${requested}", a model on ${removedFamilyPhrase(family)}; those ` +
-        'calls run on the default model instead. Pick a new model for it to silence this.'
-    );
-    return resolveRequestedAIModel();
-  }
-
   const found = lookUpModel(settings, requested, true);
   if ('model' in found) {
     return found.model;
@@ -2268,8 +1507,7 @@ export async function resolveStoredAIModelPreference(
  * saving their phone number - the stored choice already falls back to the
  * default when it is used (see resolveStoredAIModelPreference), and the form
  * says so. A NEW choice has to be one the owner could have picked: a runnable
- * model, by id. A retired id from a page loaded before the upgrade is stored as
- * no choice at all, which is what it means everywhere else.
+ * model, by id.
  */
 export async function checkProfileModelChoice(requested: unknown, stored: unknown): Promise<string> {
   const next = typeof requested === 'string' ? requested.trim() : '';
@@ -2277,31 +1515,9 @@ export async function checkProfileModelChoice(requested: unknown, stored: unknow
   if (!next || next === current) return next;
 
   const settings = await readSettings();
-  const retired = namesRetiredModel(next);
-  if (retired) {
-    warnOncePerPreference(
-      `profile-save:${next}`,
-      `[ai] A profile save named "${next}", a model on ${removedFamilyPhrase(retired)}; it is saved as ` +
-        'inheriting the default instead. Reloading the page that sent it stops this.'
-    );
-    return '';
-  }
-
   const found = lookUpModel(settings, next, false);
   if ('model' in found) return next;
   throw new ModelUnavailableError(found.problem);
-}
-
-/**
- * Which removal a request id can only mean, or null: a retired model id, a
- * dropped record's id, a retired provider id on its own, or `provider:model`
- * with a retired provider - the four shapes `resolveRequestedAIModel` accepts.
- */
-function namesRetiredModel(requested: string): RetiredProviderFamily | null {
-  const direct = retiredReferenceFamily(requested) ?? retiredProviderFamily(requested);
-  if (direct) return direct;
-  const separator = requested.indexOf(':');
-  return separator > 0 ? retiredProviderFamily(requested.slice(0, separator)) : null;
 }
 
 /** One line per stale preference, however many calls it makes. */
@@ -2342,25 +1558,7 @@ export async function resolveRequestedAIModel(
     throw new AiUnavailableError('No enabled AI models are configured.');
   }
 
-  const named = typeof requestedModelId === 'string' ? requestedModelId.trim() : '';
-  /*
-   * A request naming a model on a removed provider runs on the default.
-   *
-   * Not refused, unlike every other id this cannot find. It comes from a page
-   * loaded before the upgrade, or a choice that page remembered, and the one
-   * such id a person could have picked on purpose was the browser entry, which
-   * the picker labelled as the default. Refusing would break every stale tab on
-   * a change nobody using it made; running the default is what it asked for.
-   */
-  const retired = named ? namesRetiredModel(named) : null;
-  if (retired) {
-    warnOncePerPreference(
-      `request:${named}`,
-      `[ai] A request named "${named}", a model on ${removedFamilyPhrase(retired)}; it runs on the ` +
-        'default model instead. Reloading the page that sent it stops this.'
-    );
-  }
-  const requested = retired ? '' : named;
+  const requested = typeof requestedModelId === 'string' ? requestedModelId.trim() : '';
   if (!requested) {
     return runnableModels.find((model) => model.id === settings.defaultModelId) ?? runnableModels[0];
   }
@@ -2385,8 +1583,6 @@ type AIModelMutationInput = {
    * an edit, the stored price stays.
    */
   pricePerResumeUsd?: unknown;
-  /** From a page loaded before credits were dollars; refused, see below. */
-  creditsPerResume?: unknown;
 };
 
 /**
@@ -2408,13 +1604,6 @@ function normalizeAIModelMutationInput(
   input: AIModelMutationInput,
   fallback?: AIModelRecord
 ): Omit<AIModelRecord, 'id' | 'createdAt' | 'updatedAt'> {
-  // A price in credits, from an Admin -> Models page loaded before credits
-  // were dollars. Refused rather than ignored: ignored, the page's own save
-  // would "succeed" leaving the price at whatever it was, and read as dollars
-  // a price of 2 credits would be $2.000 a resume.
-  if (input.creditsPerResume !== undefined) {
-    throw new Error('This page is from an older version of the app. Reload it and try again.');
-  }
   const provider = normalizeAIModelProvider(input.provider ?? fallback?.provider);
   if (!provider) {
     throw new Error(`Model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`);

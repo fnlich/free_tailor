@@ -131,16 +131,15 @@ function makeClient(overrides = {}) {
 }
 
 /**
- * An account whose sheet an older build allocated: daily tabs in the old
- * layout, and the row as that build left it (sheet_tab_date set, no layout).
+ * An account whose sheet was allocated but never laid out (no layout on the
+ * row) - its two tabs never landed - holding tabs of the person's own in
+ * another layout: they are not job tabs.
  */
-function olderBuildSheet(users, fake, account, extraTabs = []) {
+function unfinishedSheet(users, fake, account, extraTabs = []) {
   const spreadsheetId = 'old-sheet';
   users.recordAccountSheet(account.id, spreadsheetId, `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`);
   users.recordOwnerGrant(account.id, '2026-09-01T00:00:00.000Z');
   fake.shares.set(spreadsheetId, account.email);
-  const { getDb } = require('../dist/database/sqlite');
-  getDb().prepare("UPDATE users SET sheet_tab_date = '10/05/2026', sheet_tab_gid = '55' WHERE id = ?").run(account.id);
   fake.addTab(spreadsheetId, '10/04/2026', OLD_DAILY_HEADER);
   fake.addTab(spreadsheetId, '10/05/2026', OLD_DAILY_HEADER);
   for (const [title, header, options] of extraTabs) fake.addTab(spreadsheetId, title, header, options);
@@ -247,12 +246,6 @@ test('a new sheet is made with All first and Temp For AI second, both laid out, 
   assert.notEqual(state.defaultTabUrl, state.tempTabUrl);
   assert.equal(state.conflict, undefined);
   assert.equal(users.getUserById(account.id).sheetLayout, 2);
-  // The older build's daily-tab cache is never written, so a rollback finds it as it was.
-  const { getDb } = require('../dist/database/sqlite');
-  assert.deepEqual(getDb().prepare('SELECT sheet_tab_date, sheet_tab_gid FROM users WHERE id = ?').get(account.id), {
-    sheet_tab_date: null,
-    sheet_tab_gid: null,
-  });
 
   // The second sign-in. The stored layout is what makes this free: without
   // it every sign-in would cost a round trip to list the tabs.
@@ -262,11 +255,11 @@ test('a new sheet is made with All first and Temp For AI second, both laid out, 
   assert.equal(named('listSheetTabs').length, 0);
 });
 
-test("a sheet an older build laid out by day gets All and Temp For AI in front, and its daily tabs are never touched", async () => {
+test("a sheet whose two tabs never landed gets All and Temp For AI in front, and the person's tabs are never touched", async () => {
   const fake = setup('upgrade');
   const { users, sheets, named, titles, tabs, calls } = fake;
   const account = users.createUser({ email: 'alice@example.com' });
-  const id = olderBuildSheet(users, fake, account, [['Notes', ['My', 'own', 'header']]]);
+  const id = unfinishedSheet(users, fake, account, [['Notes', ['My', 'own', 'header']]]);
 
   const state = await sheets.ensureAccountSheet(users.getUserById(account.id));
   assert.equal(named('createSpreadsheet').length, 0, 'the sheet is kept');
@@ -285,11 +278,6 @@ test("a sheet an older build laid out by day gets All and Temp For AI in front, 
 
   const row = users.getUserById(account.id);
   assert.equal(row.sheetLayout, 2);
-  const { getDb } = require('../dist/database/sqlite');
-  assert.deepEqual(getDb().prepare('SELECT sheet_tab_date, sheet_tab_gid FROM users WHERE id = ?').get(account.id), {
-    sheet_tab_date: '10/05/2026',
-    sheet_tab_gid: '55',
-  }, "the older build's cache, untouched");
 
   // Laid out once: the next sign-in asks Google nothing.
   calls.length = 0;
@@ -305,7 +293,7 @@ test('an All already there is used when it is a job tab (or empty), and reported
   const carol = users.createUser({ email: 'carol@example.com' });
 
   // Alice's "All" is a tab of her own: a name clash.
-  const hers = olderBuildSheet(users, fake, alice, [['All', ['Company', 'Notes'], { at: 0 }]]);
+  const hers = unfinishedSheet(users, fake, alice, [['All', ['Company', 'Notes'], { at: 0 }]]);
   const herAll = tabs.get(hers)[0];
   const state = await sheets.ensureAccountSheet(users.getUserById(alice.id));
   // Temp For AI goes first while All cannot be placed, so the All added later lands it second.
@@ -357,14 +345,14 @@ test('an All already there is used when it is a job tab (or empty), and reported
   assert.equal(named('createSpreadsheet').length, 0);
 });
 
-test('a clash behind an older build\'s daily tab ends All first and Temp For AI second, however it is resolved', async (t) => {
+test('a clash behind tabs of the person\'s own ends All first and Temp For AI second, however it is resolved', async (t) => {
   for (const resolve of ['rename', 'delete']) {
     await t.test(resolve, async () => {
       const fake = setup(`clash-order-${resolve}`);
       const { users, sheets, titles, tabs } = fake;
       const alice = users.createUser({ email: 'alice@example.com' });
       // The daily tabs first, then Notes, then her own All, then Scratch.
-      const hers = olderBuildSheet(users, fake, alice, [
+      const hers = unfinishedSheet(users, fake, alice, [
         ['Notes', ['My', 'own', 'header']],
         ['All', ['Company', 'Notes']],
         ['Scratch', ['x']],
@@ -389,7 +377,7 @@ test('a look at a clash that Google refuses still answers, from the row - and th
   const fake = setup('clash-recheck-fails');
   const { users, sheets, client } = fake;
   const alice = users.createUser({ email: 'alice@example.com' });
-  const hers = olderBuildSheet(users, fake, alice, [['All', ['Company', 'Notes'], { at: 0 }]]);
+  const hers = unfinishedSheet(users, fake, alice, [['All', ['Company', 'Notes'], { at: 0 }]]);
   const warnings = [];
   const realWarn = console.warn;
   console.warn = (...args) => warnings.push(args.map(String).join(' '));
@@ -633,20 +621,24 @@ test('accounts from before the feature are given a spreadsheet by the backfill',
   assert.equal(named('createSpreadsheet').length, 2);
 });
 
-test("the backfill also lays out the sheets an older build made, and leaves their daily tabs alone", async () => {
+test('the backfill gives a sheet only to accounts with none; one whose tabs never landed is laid out at its next sign-in', async () => {
   const fake = setup('backfill-layout');
   const { users, sheets, named, titles, tabs } = fake;
-  const old = users.createUser({ email: 'old@example.com' });
-  const id = olderBuildSheet(users, fake, old);
+  const unfinished = users.createUser({ email: 'old@example.com' });
+  const id = unfinishedSheet(users, fake, unfinished);
   const fresh = users.createUser({ email: 'new@example.com' });
 
   const result = await sheets.backfillAccountSheets(0);
-  assert.equal(result.done, 2, 'one allocated, one laid out');
+  assert.equal(result.done, 1, 'one allocated');
   assert.equal(named('createSpreadsheet').length, 1, 'only for the account with no sheet');
+  assert.ok(users.getUserById(fresh.id).sheetId);
+  assert.deepEqual(titles(id), ['10/04/2026', '10/05/2026'], 'the sheet with no layout is not the backfill\'s');
+  assert.equal(users.getUserById(unfinished.id).sheetLayout, undefined, 'not laid out');
+
+  await sheets.ensureAccountSheet(users.getUserById(unfinished.id));
   assert.deepEqual(titles(id), ['All', 'Temp For AI', '10/04/2026', '10/05/2026']);
   assert.deepEqual(tabs.get(id).find((tab) => tab.title === '10/04/2026').header, OLD_DAILY_HEADER);
-  assert.equal(users.getUserById(old.id).sheetLayout, 2);
-  assert.ok(users.getUserById(fresh.id).sheetId);
+  assert.equal(users.getUserById(unfinished.id).sheetLayout, 2);
 
   const again = await sheets.backfillAccountSheets(0);
   assert.equal(again.done, 0, 'nothing left to do on the next boot');

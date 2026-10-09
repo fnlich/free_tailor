@@ -82,7 +82,6 @@ test('the lake has exactly the planned indexes, and the duplicate check and defa
     indexes('job_lake').map((index) => index.name),
     [
       'idx_job_lake_company_updated',
-      'idx_job_lake_facts_missing',
       'idx_job_lake_field_updated',
       'idx_job_lake_hash',
       'idx_job_lake_requested_by',
@@ -95,15 +94,7 @@ test('the lake has exactly the planned indexes, and the duplicate check and defa
   assert.match(byName.idx_job_lake_unsynced, /\(id\) WHERE sheet_synced_at IS NULL/);
   assert.match(byName.idx_job_lake_field_updated, /\(job_field_id, updated_at\)/);
   assert.match(byName.idx_job_lake_company_updated, /\(company_key, updated_at\)/);
-  assert.match(byName.idx_job_lake_facts_missing, /\(id\) WHERE job_type IS NULL/);
-  assert.deepEqual(
-    indexes('job_lake_history').map((index) => index.name),
-    ['idx_job_lake_history_facts_missing', 'idx_job_lake_history_lake']
-  );
-  assert.match(
-    Object.fromEntries(indexes('job_lake_history').map((index) => [index.name, index.sql])).idx_job_lake_history_facts_missing,
-    /\(id\) WHERE job_type IS NULL/
-  );
+  assert.deepEqual(indexes('job_lake_history').map((index) => index.name), ['idx_job_lake_history_lake']);
   assert.deepEqual(indexes('job_reports').map((index) => index.name), ['idx_job_reports_account_analysis', 'idx_job_reports_lake']);
   assert.match(
     Object.fromEntries(indexes('job_reports').map((index) => [index.name, index.sql])).idx_job_reports_account_analysis,
@@ -137,26 +128,10 @@ test('the lake has exactly the planned indexes, and the duplicate check and defa
     /SEARCH job_reports USING INDEX idx_job_reports_account_analysis \(account_id=\? AND analysis_id=\?\)/
   );
   assert.match(plan(lake.DELETE_LAKE_REPORTS_SQL, 1), /SEARCH job_reports USING (COVERING )?INDEX idx_job_reports_lake \(lake_id=\?\)/);
-  // The run's and the preview's read: a seek per posting, and one on the lake row's id to know it still stands.
+  // The run's and the preview's read: a seek per posting.
   const reportsRead = plan(lake.findJobReportsSql(2), 'u', 'a', 'b');
-  assert.match(reportsRead, /SEARCH r USING INDEX idx_job_reports_account_analysis \(account_id=\? AND analysis_id=\?\)/);
-  assert.match(reportsRead, /SEARCH l USING INTEGER PRIMARY KEY \(rowid=\?\)/);
+  assert.match(reportsRead, /SEARCH job_reports USING INDEX idx_job_reports_account_analysis \(account_id=\? AND analysis_id=\?\)/);
   assert.doesNotMatch(reportsRead, /SCAN/);
-  // The boot step's two batch reads, as it runs them (with their join to the
-  // analyses), read the rows still to fill off the partial indexes - none,
-  // once filled - so a start with nothing to fill never walks either table.
-  const lakeFacts = require('../dist/database/jobLakeFacts');
-  const lakeToFill = plan(lakeFacts.LAKE_TO_FILL_SQL, 0, 500);
-  assert.match(lakeToFill, /SEARCH l USING INDEX idx_job_lake_facts_missing \(id>\?\)/);
-  assert.doesNotMatch(lakeToFill, /INTEGER PRIMARY KEY|SCAN l/);
-  const historyToFill = plan(lakeFacts.HISTORY_TO_FILL_SQL, 0, 500);
-  assert.match(historyToFill, /SEARCH h USING INDEX idx_job_lake_history_facts_missing \(id>\?\)/);
-  assert.doesNotMatch(historyToFill, /INTEGER PRIMARY KEY|SCAN h/);
-  // Its replacement of a record an older build left pointing at a deleted row: one seek.
-  assert.match(
-    plan(lakeFacts.DROP_STALE_REPORT_SQL, 'u', 'a'),
-    /SEARCH job_reports USING INDEX idx_job_reports_account_analysis \(account_id=\? AND analysis_id=\?\)/
-  );
   // The three facts filter while the page reads idx_job_lake_updated in its order: never a sort of the lake.
   for (const [clause, value] of [['job_type = ?', 'remote'], ['clearance = ?', 1], ['industry = ?', 'finance']]) {
     const filtered = plan(`${lake.LIST_DEFAULT_SQL.replace(' ORDER BY', ` WHERE ${clause} ORDER BY`)}`, value, 50, 0);
@@ -288,121 +263,6 @@ test("a row stores its analysis's job type, clearance and industry; a replacemen
   const junk = service.mergeIntoLake(job({ company: 'Junk Co', jobType: 'weird', clearance: 'yes', industry: 'made-up' }), first.id, { reward: false, now: T0 });
   const junkEntry = lake.getLakeEntry(junk.lakeId);
   assert.deepEqual([junkEntry.jobType, junkEntry.clearance, junkEntry.industry], ['', false, 'not_specified']);
-});
-
-test('the boot step fills the facts of rows an older build wrote from their analyses, records their reports, once - and asks no model', () => {
-  const storage = fresh('backfill');
-  const db = sqlite.getDb();
-  const rita = reporter('rita@example.com');
-  const otto = reporter('otto@example.com');
-  const facts = require('../dist/database/jobLakeFacts');
-  const filter = (extra) => ({ jobType: 'not_specified', onsiteInterview: 'no', companyCategory: 'other', clearanceRequired: 'none', region: 'us', usState: '', ...extra });
-  const a = storeJobAnalysis({ jobField: 'backend', filter: filter({ jobType: 'remote', companyCategory: 'fintech', clearanceRequired: 'secret' }) }, { jobDescription: 'Posting A, long enough to be one.' });
-  const b = storeJobAnalysis({ jobField: 'backend', industry: 'education', filter: filter({ jobType: 'hybrid' }) }, { jobDescription: 'Posting B, long enough to be one.' });
-  const c = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: 'Posting C, damaged later, long enough.' });
-  const e1 = storeJobAnalysis({ jobField: 'backend', filter: filter({ companyCategory: 'saas' }) }, { jobDescription: 'Posting E1, long enough to be one.' });
-  const e2 = storeJobAnalysis({ jobField: 'backend', filter: filter({ jobType: 'on_site', companyCategory: 'energy' }) }, { jobDescription: 'Posting E2, long enough to be one.' });
-  const g1 = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: 'Posting G1, long enough to be one.' });
-  const g2 = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: 'Posting G2, long enough to be one.' });
-  const g3 = storeJobAnalysis({ jobField: 'backend', filter: filter({ jobType: 'remote', companyCategory: 'healthcare' }) }, { jobDescription: 'Posting G3, long enough to be one.' });
-  db.prepare("UPDATE job_analyses SET analysis_json = '{broken' WHERE id = ?").run(c);
-  const analysesBefore = db.prepare('SELECT id, analysis_json FROM job_analyses ORDER BY id').all();
-
-  // Rows as an older build writes them: it names none of the three columns.
-  const older = db.prepare(
-    `INSERT INTO job_lake (job_hash, hash_version, company, company_key, job_field_id, analysis_id, requested_by, source,
-       report_ref, created_at, updated_at, reward_milli)
-     VALUES (?, 1, ?, ?, 'backend', ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const at = new Date(T0).toISOString();
-  const idA = Number(older.run('hash-a', 'A Co', 'aco', a, rita.id, 'report', 'sheet-9:12:All', at, at, 50).lastInsertRowid);
-  // A merge names the account its analysis was made for (an older build's
-  // merge.ts passes `created_by`): still nobody's report.
-  const idB = Number(older.run('hash-b', 'B Co', 'bco', b, rita.id, 'merge', null, at, at, 0).lastInsertRowid);
-  const idC = Number(older.run('hash-c', 'C Co', 'cco', c, rita.id, 'report', null, at, at, 0).lastInsertRowid);
-  const idD = Number(older.run('hash-d', 'D Co', 'dco', null, rita.id, 'report', null, at, at, 0).lastInsertRowid);
-  // And a row THIS build added (E1, by Rita) that an older build then replaced
-  // (E2, by Otto): it copied E1 to history without the three columns, and left
-  // E1's facts on the row.
-  const e = service.mergeIntoLake(service.lakeJobFromAnalysis(analyses.getJobAnalysisById(e1), 'report', { company: 'E Co' }), rita.id, { reward: false, now: T0 });
-  db.prepare(
-    `INSERT INTO job_lake_history (lake_id, job_hash, hash_version, company, job_field_id, analysis_id, requested_by, source,
-       version_at, replaced_at)
-     SELECT id, job_hash, hash_version, company, job_field_id, analysis_id, requested_by, source, updated_at, ? FROM job_lake WHERE id = ?`
-  ).run(at, e.lakeId);
-  db.prepare('UPDATE job_lake SET analysis_id = ?, requested_by = ?, updated_at = ? WHERE id = ?').run(e2, otto.id, new Date(T0 + DAY).toISOString(), e.lakeId);
-  // And a job an older build added (G1, by Rita) and replaced twice (G2 by
-  // Otto, then G3 by Rita again): two earlier versions in history, all NULL.
-  const idG = Number(older.run('hash-g', 'G Co', 'gco', g1, rita.id, 'report', null, at, at, 50).lastInsertRowid);
-  const olderReplace = (analysisId, account, days) => {
-    db.prepare(
-      `INSERT INTO job_lake_history (lake_id, job_hash, hash_version, company, job_field_id, analysis_id, requested_by, source,
-         version_at, replaced_at)
-       SELECT id, job_hash, hash_version, company, job_field_id, analysis_id, requested_by, source, updated_at, ? FROM job_lake WHERE id = ?`
-    ).run(new Date(T0 + days * DAY).toISOString(), idG);
-    db.prepare('UPDATE job_lake SET analysis_id = ?, requested_by = ?, updated_at = ? WHERE id = ?').run(analysisId, account, new Date(T0 + days * DAY).toISOString(), idG);
-  };
-  olderReplace(g2, otto.id, 61);
-  olderReplace(g3, rita.id, 122);
-  db.prepare('DELETE FROM job_reports').run();
-  assert.equal(lake.getLakeEntry(idA).jobType, null, 'not filled yet reads as null');
-  assert.equal(lake.getLakeEntry(idA).industryLabel, '');
-
-  // At the next start: getDb() opening the file runs it.
-  const quiet = console.log;
-  const logged = [];
-  console.log = (line) => logged.push(String(line));
-  try {
-    loadFresh('../dist/database/sqlite').getDb();
-  } finally {
-    console.log = quiet;
-  }
-  assert.ok(logged.some((line) => /Filled in job type, clearance and industry for 6 lake row\(s\) and 3 earlier version/.test(line)), logged.join('\n'));
-  const factsOf = (id) => {
-    const row = lake.getLakeEntry(id);
-    return [row.jobType, row.clearance, row.industry];
-  };
-  assert.deepEqual(factsOf(idA), ['remote', true, 'finance'], 'from the company category: no industry asked for');
-  assert.deepEqual(factsOf(idB), ['hybrid', false, 'education'], 'its own industry');
-  assert.deepEqual(factsOf(idC), ['', false, 'not_specified'], 'an unreadable analysis says nothing');
-  assert.deepEqual(factsOf(idD), ['', false, 'not_specified'], 'nor does a row with none');
-  assert.deepEqual(factsOf(e.lakeId), ['on_site', false, 'energy_utilities'], "the older build's replacement, refilled from E2");
-  const [eOld] = lake.listLakeHistory(e.lakeId);
-  assert.deepEqual([eOld.jobType, eOld.clearance, eOld.industry], ['', false, 'technology'], 'E1, from its own analysis');
-  assert.deepEqual(factsOf(idG), ['remote', false, 'healthcare'], 'G3, the version the row holds now');
-  assert.deepEqual(lake.listLakeHistory(idG).map((version) => version.industry), ['not_specified', 'not_specified']);
-
-  // The reports they hold: the first report of a posting kept, oldest first.
-  const reportOf = (account, analysisId) => lake.findJobReports(account, [analysisId]).get(analysisId);
-  assert.deepEqual(
-    (({ outcome, lakeId, spreadsheetId, tabName, row, rewardMilli }) => ({ outcome, lakeId, spreadsheetId, tabName, row, rewardMilli }))(reportOf(rita.id, a)),
-    { outcome: 'added', lakeId: idA, spreadsheetId: 'sheet-9', tabName: 'All', row: 12, rewardMilli: 50 }
-  );
-  assert.equal(reportOf(rita.id, c).outcome, 'added', 'the record names the analysis, readable or not');
-  assert.equal(lake.findJobReports(rita.id, [b]).size, 0, 'a merge is nobody\'s report');
-  assert.deepEqual([reportOf(rita.id, e1).outcome, reportOf(rita.id, e1).lakeId], ['added', e.lakeId]);
-  assert.deepEqual([reportOf(otto.id, e2).outcome, reportOf(otto.id, e2).lakeId], ['replaced', e.lakeId]);
-  // Every version of a job replaced more than once: the first added, each later one a replacement.
-  assert.deepEqual([reportOf(rita.id, g1).outcome, reportOf(rita.id, g1).lakeId], ['added', idG], 'the first version');
-  assert.deepEqual([reportOf(otto.id, g2).outcome, reportOf(otto.id, g2).lakeId], ['replaced', idG], 'a later history version');
-  assert.deepEqual([reportOf(rita.id, g3).outcome, reportOf(rita.id, g3).lakeId], ['replaced', idG], 'the version the row holds');
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM job_reports').get().n, 7);
-  // So Rita reporting A again is "already", unpaid.
-  assert.equal(service.mergeIntoLake(job({ company: 'A Co', analysisId: a }), rita.id, { reward: true, now: T0 + DAY }).status, 'already');
-
-  // No model, and nothing written into an analysis.
-  assert.deepEqual(db.prepare('SELECT id, analysis_json FROM job_analyses ORDER BY id').all(), analysesBefore);
-
-  // Idempotent: the next start finds nothing to do.
-  assert.deepEqual(facts.fillLakeFacts(db), { lakeRows: 0, historyRows: 0, reportsRecorded: 0 });
-
-  // Rolled back to an older build, which adds a row with the columns NULL: the next start fills it alone.
-  const f = storeJobAnalysis({ jobField: 'backend', filter: filter({ clearanceRequired: 'top_secret', companyCategory: 'govtech' }) }, { jobDescription: 'Posting F, long enough to be one.' });
-  const idF = Number(older.run('hash-f', 'F Co', 'fco', f, otto.id, 'report', null, at, at, 0).lastInsertRowid);
-  assert.deepEqual(facts.fillLakeFacts(db), { lakeRows: 1, historyRows: 0, reportsRecorded: 1 });
-  assert.deepEqual(factsOf(idF), ['', true, 'government']);
-  assert.deepEqual(facts.fillLakeFacts(db), { lakeRows: 0, historyRows: 0, reportsRecorded: 0 });
-  void storage;
 });
 
 test('the admin query filters on the three facts', () => {
@@ -577,7 +437,7 @@ test('the same posting reported again by the same account - any row, any tab - i
   const first = service.mergeIntoLake(job({ analysisId: storedId, reportedFrom: row8 }), account.id, { reward: true, now: T0 });
   assert.equal(first.status, 'added');
   assert.ok(analyses.getJobAnalysisById(storedId).mergedAt, 'the analysis is marked merged with it');
-  // Recorded once, with where it came from; report_ref still written, for an older build.
+  // Recorded once, with where it came from.
   const record = lake.findJobReports(account.id, [storedId]).get(storedId);
   assert.deepEqual(
     { ...record, id: 0, createdAt: '' },
@@ -585,10 +445,6 @@ test('the same posting reported again by the same account - any row, any tab - i
       id: 0, accountId: account.id, analysisId: storedId, outcome: 'added', lakeId: first.lakeId, jobHash: first.jobHash,
       rewardMilli: 50, spreadsheetId: 'sheet-1', tabName: '10/05/2026', row: 8, createdAt: '',
     }
-  );
-  assert.equal(
-    sqlite.getDb().prepare('SELECT report_ref FROM job_lake WHERE id = ?').get(first.lakeId).report_ref,
-    lake.reportRefOf('sheet-1', '10/05/2026', 8)
   );
 
   // The same row again, another row, another tab, no row at all - and after the window too.
@@ -687,70 +543,7 @@ test('deleting a lake row deletes the reports that reached it: the posting can b
   assert.notEqual(back.lakeId, first.lakeId);
   assert.equal(service.mergeIntoLake(job({ analysisId: storedId }), account.id, { reward: true, now: T0 + DAY }).status, 'duplicate');
   assert.equal(service.mergeIntoLake(job({ jobFieldId: 'frontend', analysisId: keptId }), account.id, { reward: true, now: T0 + DAY }).lakeId, kept.lakeId);
-
-  // A row deleted by a build that knew nothing of the records (an older one,
-  // rolled back to) leaves its record behind: it is dropped when next met.
-  const staleId = storeJobAnalysis({ jobField: 'devops' }, { jobDescription: 'A posting an older build deleted, long enough.' });
-  const stale = service.mergeIntoLake(job({ jobFieldId: 'devops', analysisId: staleId }), account.id, { reward: true, now: T0 });
-  sqlite.getDb().prepare('DELETE FROM job_lake WHERE id = ?').run(stale.lakeId);
-  const reported = service.mergeIntoLake(job({ jobFieldId: 'devops', analysisId: staleId }), account.id, { reward: true, now: T0 + DAY });
-  assert.equal(reported.status, 'added');
-  assert.equal(lake.findJobReports(account.id, [staleId]).get(staleId).lakeId, reported.lakeId);
   assert.deepEqual(credits.findInconsistentBalances(), []);
-});
-
-test('a record an older build left pointing at a row it deleted: no reader counts it, and a row it re-added is recorded at the next start, so a delete here forgets it', () => {
-  fresh('stale-reports');
-  const db = sqlite.getDb();
-  const facts = require('../dist/database/jobLakeFacts');
-  const account = reporter();
-  const other = reporter('other@example.com');
-  const admin = users.createUser({ email: 'boss@example.com', role: 'admin' });
-  const storedId = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: 'A posting an older build deleted, long enough.' });
-  const first = service.mergeIntoLake(job({ analysisId: storedId }), account.id, { reward: false, now: T0 });
-  service.mergeIntoLake(job({ analysisId: storedId }), other.id, { reward: false, now: T0 });
-  // An older build's deleteLakeEntry: history, then the row - never job_reports.
-  const olderBuildDelete = (id) => {
-    db.prepare('DELETE FROM job_lake_history WHERE lake_id = ?').run(id);
-    db.prepare('DELETE FROM job_lake WHERE id = ?').run(id);
-  };
-  olderBuildDelete(first.lakeId);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM job_reports').get().n, 2, 'both records left behind');
-  assert.equal(lake.findJobReports(account.id, [storedId]).size, 0, 'a record whose row is gone is not "reported before"');
-  assert.equal(lake.findJobReports(other.id, [storedId]).size, 0);
-
-  // The older build, still running, takes the same report again as a new row
-  // (its facts NULL); this build's next start fills it and records the report
-  // against it - in place of the record naming the row that is gone.
-  const at = new Date(T0 + DAY).toISOString();
-  const readded = Number(
-    db
-      .prepare(
-        `INSERT INTO job_lake (job_hash, hash_version, company, company_key, job_field_id, analysis_id, requested_by, source,
-           report_ref, created_at, updated_at, reward_milli)
-         VALUES (?, 1, 'Acme, Inc.', 'acme', 'backend', ?, ?, 'report', 'sheet-2:5:All', ?, ?, 0)`
-      )
-      .run(first.jobHash, storedId, account.id, at, at).lastInsertRowid
-  );
-  assert.deepEqual(facts.fillLakeFacts(db), { lakeRows: 1, historyRows: 0, reportsRecorded: 1 });
-  const record = lake.findJobReports(account.id, [storedId]).get(storedId);
-  assert.deepEqual([record.outcome, record.lakeId, record.tabName, record.row], ['added', readded, 'All', 5]);
-  assert.equal(
-    db.prepare('SELECT COUNT(*) AS n FROM job_reports WHERE account_id = ?').get(other.id).n,
-    1,
-    "another account's stale record is not this row's to replace: it stays, unread, until met"
-  );
-  assert.deepEqual(facts.fillLakeFacts(db), { lakeRows: 0, historyRows: 0, reportsRecorded: 0 }, 'and a second start does nothing');
-
-  // So this build's delete of the re-added row forgets the report, and it can be reported again.
-  lake.deleteLakeEntry(readded, { revokeReward: false, actorId: admin.id });
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM job_reports WHERE account_id = ?').get(account.id).n, 0);
-  const back = service.mergeIntoLake(job({ analysisId: storedId }), account.id, { reward: false, now: T0 + 2 * DAY });
-  assert.equal(back.status, 'added');
-  // And the other account's stale record is dropped when it is met: a duplicate of the new row, not "already".
-  const theirs = service.mergeIntoLake(job({ analysisId: storedId }), other.id, { reward: false, now: T0 + 2 * DAY });
-  assert.deepEqual([theirs.status, theirs.lakeId], ['duplicate', back.lakeId]);
-  assert.equal(lake.findJobReports(other.id, [storedId]).get(storedId).lakeId, back.lakeId);
 });
 
 test('the daily cap: a reward is cut to what is left of the UTC day, then nothing, and the next day pays again', () => {

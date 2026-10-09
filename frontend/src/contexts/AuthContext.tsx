@@ -45,8 +45,7 @@ type AuthState = {
   /**
    * The largest PDF the server accepts, in MB - its UPLOAD_MAX_MB, served on
    * this same `/auth/me` so an upload page can say the limit and check it
-   * before sending. The old fixed 10 until the first answer, and from a
-   * server too old to send it.
+   * before sending. The server's default, 10, until the first answer.
    */
   uploadMaxMb: number;
   /**

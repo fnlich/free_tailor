@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { requireAccount, requireAdmin, requireReporter, requireUser } from '../middleware/auth';
+import { requireAccount, requireAdmin, requireReporter } from '../middleware/auth';
 import { sendPublicError } from '../middleware/publicError';
 import {
   approveRefund,
@@ -9,7 +9,6 @@ import {
   describePayoutStatus,
   listMyRefundRequests,
   listRefundQueue,
-  refundAskingClosedError,
   refundRequest,
 } from '../services/refunds';
 import {
@@ -26,9 +25,8 @@ import { readPage } from './paging';
 /**
  * Refund requests: a reporter asking for a PAYOUT of their earnings, anybody
  * reading their own requests, and administrators deciding. Asking for a
- * refund of a purchase or a resume was removed (owner decision R1): its two
- * routes answer 410 `refund-requests-closed` for a page left open from
- * before, and the requests made before stay in the queue.
+ * refund of a purchase or a resume was removed (owner decision R1); the
+ * requests made before stay in the queue.
  *
  * Two routers, mounted apart - /api/refund-requests and
  * /api/admin/refund-requests - so "requires an administrator" is a property of
@@ -130,20 +128,6 @@ router.post('/payout', requireReporter, (req: Request, res: Response) => {
   } catch (error) {
     sendPublicError(req, res, error, 'Could not send the payout request');
   }
-});
-
-/*
- * Asking for a refund of a purchase or a resume, removed (owner decision R1):
- * 410 `refund-requests-closed` with a sentence that asks the reader to contact
- * their administrator, so a page left open from before says what happened
- * instead of failing generically. Nothing in the request is read.
- */
-router.get('/options', requireUser, (req: Request, res: Response) => {
-  sendPublicError(req, res, refundAskingClosedError(), 'Refunds are no longer asked for here');
-});
-
-router.post('/', requireUser, (req: Request, res: Response) => {
-  sendPublicError(req, res, refundAskingClosedError(), 'Refunds are no longer asked for here');
 });
 
 export default router;

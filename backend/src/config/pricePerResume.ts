@@ -12,8 +12,8 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../utils/money
  * It replaced `creditsPerResume`, a whole number of credits at whatever a
  * credit then cost. That field is never read as a price: it was in another
  * unit, and every balance it was spent from was reset to $0 when credits
- * became dollars (database/dollarSwitch.ts). A stored record that still
- * carries it, and no `pricePerResumeMilli`, reads as FREE - see below.
+ * became dollars. A stored record that still carries it, and no
+ * `pricePerResumeMilli`, reads as FREE - see below.
  *
  * A leaf on purpose. The model settings read it to normalize a record and the
  * admin routes to parse one, and neither may import the other.
