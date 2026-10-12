@@ -332,6 +332,50 @@ test('a record that needs updating is never run: the built-in prompt runs in its
   assert.match((await promptService.getPromptById('analyze-job-description')).content, /^Edited/);
 });
 
+/*
+ * The built-in an outdated record falls back to may be outdated too: an
+ * upgraded database can hold a tailoring variant AND an edit of the built-in
+ * tailoring prompt, both saved before the rule. Then the SHIPPED text runs,
+ * never the edit - and the same by every road a run takes: by exact id, by
+ * feature or id (resolvePromptByRuntimeId), and rendered by feature.
+ */
+test('when the built-in edit needs updating as well, the shipped prompt runs, by every road', async () => {
+  const { staticDir } = seeded('needs-update-both');
+  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${SWITCHES}`);
+  const promptService = loadFresh('../dist/services/promptService');
+  const { saveStoredPrompt } = require('../dist/database/promptRepository');
+  const at = '2026-01-01T00:00:00.000Z';
+  saveStoredPrompt({ id: 'tailor-resume', featureKey: 'tailor-resume', content: 'Stale edit.\n[[profileJson]]', isBuiltIn: true, createdAt: at, updatedAt: at });
+  saveStoredPrompt({ id: 'custom-tailor-resume-mine', name: 'Mine', featureKey: 'tailor-resume', content: 'Mine.\n[[profileJson]]', isBuiltIn: false, createdAt: at, updatedAt: at });
+
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const byExactId = await promptService.resolvePromptByExactId('custom-tailor-resume-mine');
+    assert.match(byExactId.content, /^Shipped tailoring/, 'the shipped text, not the stale edit of the built-in');
+    assert.match((await promptService.resolvePromptByExactId('tailor-resume')).content, /^Shipped tailoring/);
+
+    for (const id of ['tailor-resume', 'custom-tailor-resume-mine']) {
+      const byRuntimeId = await promptService.resolvePromptByRuntimeId(id);
+      assert.match(byRuntimeId.content, /^Shipped tailoring/, `resolvePromptByRuntimeId('${id}')`);
+      assert.equal(byRuntimeId.needsUpdate, undefined);
+    }
+
+    const values = {
+      profileJson: 'PROFILE',
+      jobAnalysisJson: '',
+      includeStrengths: 'yes',
+      includeSoftSkills: 'no',
+      technicalSkillsLayout: 'grouped',
+    };
+    const segments = await promptService.renderPromptSegments('tailor-resume', values);
+    assert.match(segments.map((segment) => segment.text).join(''), /^Shipped tailoring\.\nPROFILE\nStrengths: yes\./);
+    assert.match(await promptService.renderPrompt('tailor-resume', values), /^Shipped tailoring\.\nPROFILE\n/);
+  } finally {
+    console.warn = realWarn;
+  }
+});
+
 /* -------------------------------------------- the backstop, through a seat */
 
 function stubSeat(answer) {

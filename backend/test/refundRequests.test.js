@@ -1114,8 +1114,15 @@ test('a request whose item this build does not serve - an older task:, or anythi
       assert.ok(row, `${id} is listed`);
       assert.equal(row.refundableNowMilli, 0, 'never measured as something it is not');
       assert.match(row.refundableNowReason, /cannot measure/);
+      // Served as a payment, with no field of its own saying otherwise - the
+      // reason above and the refusal below are what mark it (CLAUDE.md says so).
+      assert.equal(row.itemType, 'payment', id);
+      assert.ok(!('unrecognised' in row), `${id}: the flag stays on the stored request`);
     }
     assert.equal(queue.body.requests.find((row) => row.id === 'rfr_task').kind, 'resume', 'still read as a resume');
+    const own = (await s.call('alice', '/api/refund-requests')).body.requests.find((row) => row.id === 'rfr_task');
+    assert.equal(own.itemType, 'payment');
+    assert.ok(!('unrecognised' in own) && !('refundableNowReason' in own), 'the requester reads it as a payment request');
 
     for (const [id, body] of [
       ['rfr_task', {}],

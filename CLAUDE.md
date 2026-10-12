@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~60s with the tsc step, 1595 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 1608 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -308,15 +308,30 @@ backend/src/
                       #   `provider_schema_version` = 8,
                       #   `credit_unit` = 'usd-milli' and
                       #   `templates_moved_to_files` (not `"complete": false`),
-                      #   `users` has `subscription` (not `plan`), and no
-                      #   `job_lake` row has `job_type IS NULL` (no such
-                      #   column refuses too): `DatabaseNotUpgradedError
+                      #   `users` has `subscription` (not `plan`), every table
+                      #   it has carries each column ac3df79 adds to an
+                      #   existing table (`UPGRADE_ADDED_COLUMNS`: that
+                      #   build's addMissingColumns and the Bid Assistant's
+                      #   two, less the three this build never makes; a
+                      #   table it lacks is not asked about - SCHEMA makes
+                      #   it whole), and no `job_lake` row has `job_type IS
+                      #   NULL`. The marks alone are not enough: ccd70b3 to
+                      #   1df7275 wrote all four before `users.sheet_layout`
+                      #   and others existed, and such a database, let in
+                      #   and stamped, failed every account read. A typo in
+                      #   the list would refuse every upgraded database, so
+                      #   the test checks each is a column this build makes:
+                      #   `DatabaseNotUpgradedError
                       #   { databasePath, problems }`, "The database at <path>
                       #   has not finished upgrading: <phrases, '; '>. Start
                       #   build ac3df79 once on this database to finish its
                       #   upgrade, then start this build." (a migrations
                       #   phrase adds that they wait for an administrator when
-                      #   none exists). A database that passes is stamped
+                      #   none exists - ac3df79 makes an EXISTING account at the
+                      #   ADMIN_EMAILS address one as its backend starts, else
+                      #   somebody signs in through ac3df79's frontend, which
+                      #   README Upgrading says to build and start for it). A
+                      #   database that passes is stamped
                       #   `schema_meta.baseline_build` = ac3df79, once, and
                       #   later starts read ONLY the stamp (the lake check
                       #   would read every row); that first stamp also deletes
@@ -351,7 +366,9 @@ backend/src/
                       #   next step is 9 - never a number below it. Adding a
                       #   seed model needs a step: stored `aiModels` is read
                       #   verbatim, never unioned with the defaults, so a seed
-                      #   reaches fresh installs only.
+                      #   reaches fresh installs only. test/migrationRunner
+                      #   .test.js holds the runner to all of this with steps
+                      #   of its own (9, 10, 11), since none ship.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service.
@@ -533,7 +550,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 130 files; fixtures/cli, codex and gemini
+  test/               # node:test, 131 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -1012,11 +1029,12 @@ commit. Its wording is kind-aware (*Payout request approved/declined*, *Payout
 recorded: $X*, link `/credits`); a refunded payout reads *Paid out*.
 `toRequest` derives the kind from the ITEM KEY (`kindOfItemType`) and marks an
 item type this build does not know - an older build's `task:`, or a row edited
-by hand - `unrecognised`: served as itemType `payment` with `unrecognised:
-true` and UNRECOGNISED_REASON (*This request names something this version of
-the app cannot measure, so it cannot be refunded here. Decline it, and refund
-by hand from Accounts if it is owed.*), refundable never (409 `unrecognised`),
-declinable. `GET /api/refund-requests?kind=` filters by kind. Asking for a
+by hand - `unrecognised` (on the RefundRequest, NOT in any response): served
+as itemType `payment`, and in the admin view with `refundableNowMilli` 0 and
+UNRECOGNISED_REASON (*This request names something this version of the app
+cannot measure, so it cannot be refunded here. Decline it, and refund by hand
+from Accounts if it is owed.*) as `refundableNowReason`; refundable never (409
+`unrecognised`), declinable. `GET /api/refund-requests?kind=` filters by kind. Asking for a
 purchase or resume refund is CLOSED (R1), and there is no route for it at all
 (`POST /` and `GET /options` are gone - a 404) and no service function either:
 tests and the e2e scripts seed such a request with test/refundSeed.js's

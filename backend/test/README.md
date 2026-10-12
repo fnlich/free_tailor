@@ -41,13 +41,23 @@ Coverage currently focuses on:
   upgrading opening, stamped once, so later starts read only the stamp, and
   that first stamp dropping only the report records whose lake row is gone;
   each upgrade it never finished refused by name - its migrations stopped at
-  version 5 or never recorded, waiting for an administrator, credits never
+  version 5 or 7 or never recorded, waiting for an administrator, credits never
   switched to dollars, saved templates never moved or moved incompletely,
-  `users.plan` never renamed, lake rows without their facts - with nothing
-  created and no stamp, every one of them in a single refusal; and the real
-  server spawned on such a database printing that one line and exiting 1, no
-  stack trace, never listening; and the README's quotes of that line held to
-  the guard's own words
+  `users.plan` never renamed, a column ac3df79 adds missing (a database
+  last opened by 1df7275, by a build whose lake had no fact columns, or by a
+  build from before the lake), lake rows without their facts - with nothing
+  created and no stamp, every one of them in a single refusal; a template-move
+  record nobody can parse read as complete; every column it asks for one this
+  build makes; and the real server spawned on such a database printing that
+  one line and exiting 1, no stack trace, never listening; and the README's
+  quotes of that line held to the guard's own words
+- the data-migration runner (`migrationRunner.test.js`), with no steps
+  shipped and so given steps of the test's own: each step's version written
+  as it finishes and nothing run twice, a step at or below the database's
+  version never run, a deferred step writing nothing and stopping the ones
+  after it until it runs, a step that throws logged - never thrown - with the
+  steps before it kept, and a database whose version cannot be read left
+  alone
 - app settings persistence, and an id outside the provider catalog - an older
   build's OpenRouter, browser-chat or metered provider - read as unknown, never
   as a seat (`claudeCli.test.js`, `aiFacade.test.js`, `userModelAccess.test.js`)
@@ -385,7 +395,9 @@ Coverage currently focuses on:
   on validate (also through the routes), the shipped prompts validating
   clean, a save that leaves out a required variable refused naming it and the
   rule, a stored record without one marked `needsUpdate` with the names and
-  never run - the built-in runs in its place, said once - and the switches
+  never run - the built-in runs in its place, said once, and the shipped text
+  when the built-in's own edit needs updating too, by exact id, by runtime id
+  and rendered by feature - and the switches
   stated on every tailoring turn whichever record runs, through a stub seat
 - the three CLI seats, each with no binary, no subprocess and no network:
   the Claude provider - argv, child environment, event reduction, failure

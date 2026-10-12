@@ -2084,9 +2084,10 @@ create is the most common first-run failure, and it says exactly that.
 carries none of the code that upgraded an older build's database, so before
 anything else it checks that every one of those upgrades finished - the data
 migrations, the switch of credits to dollars, the move of saved templates into
-files, the rename of `users.plan`, the Job Data Lake's job type, clearance and
-industry - and refuses a database where one did not, with one line naming each
-step that is missing, and exit code 1:
+files, the rename of `users.plan`, the columns `ac3df79` adds to existing
+tables, the Job Data Lake's job type, clearance and industry - and refuses a
+database where one did not, with one line naming each step that is missing, and
+exit code 1:
 
 ```
 [db] The database at /data/db/free_tailor.db has not finished upgrading: its credits were never switched to dollars (schema_meta.credit_unit). Start build ac3df79 once on this database to finish its upgrade, then start this build.
@@ -2099,14 +2100,28 @@ build again.
 ```bash
 git checkout ac3df79
 npm run install:all && npm run build --prefix backend
-npm start --prefix backend    # once it has started, stop it with Ctrl+C
+npm start --prefix backend    # once it has started (and, if the line asked, an administrator exists), stop it with Ctrl+C
 git checkout -                # back to this build, then install, build and start it
 ```
 
 When the line says the migrations *wait for an administrator*, the database has
-nobody to adopt the profiles made before accounts existed: sign in to
-`ac3df79` as an administrator (an address in `ADMIN_EMAILS`) before stopping
-it. A database that passes is stamped once (`schema_meta.baseline_build`) and
+nobody to adopt the profiles made before accounts existed, and `ac3df79` runs
+them only once it has one. There are two ways to give it one:
+
+- **The account already exists** - somebody signed in before with the address
+  in `ADMIN_EMAILS` (else an `SMTP_USER` that is an address): starting
+  `ac3df79`'s backend as above, with that variable set in `.env`, is enough. It
+  makes that account an administrator as it starts and runs the waiting
+  migrations then; its log says `[auth] <address> is configured as an
+  administrator; role updated.`
+- **Nobody has that address yet**: sign in to `ac3df79` with it, which needs
+  `ac3df79`'s frontend as well as its backend, and a sign-in method in `.env`
+  (`GOOGLE_CLIENT_ID`, or SMTP). Build it too before starting the backend
+  (`npm run build --prefix frontend`), and once the backend is up start it in
+  a second terminal (`npm start --prefix frontend`); sign in in a browser, and
+  only then stop both.
+
+A database that passes is stamped once (`schema_meta.baseline_build`) and
 later starts read only that stamp; one this build creates is stamped as it is
 made.
 
@@ -2735,7 +2750,7 @@ file. Export them in the shell, for the install and the server alike:
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm run install:all` from the repository root, or `npm install --include=dev --prefix backend` (never `--omit=dev`) - `--include=dev` installs them even where `NODE_ENV=production` or npm's `omit=dev` would leave them out (the `concurrently` row above). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
 | On **Admin → Templates**, importing, extracting, building or editing a template answers *Template could not be saved. Please try again, or contact your administrator.* with a `Ref:` (or deleting one, *Template could not be deleted.*) | Saved templates are files in `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), and the server could not write there: the directory is read-only to the user the backend runs as - a checkout owned by somebody else, a read-only container layer - or the disk is full. The startup line under `Database:` says so as `Templates: <dir> is NOT writable (<reason>)`; the backend log line carrying the same `Ref` names the file and the error, and an administrator sees it under the message. Give that user write access to the directory (or point `TAILOR_STATIC_DIR` at a writable copy of `backend/static`) and try again. A failed save leaves the template as it was and no temporary file behind. Renaming, disabling or reclassifying a **built-in** still works meanwhile, because those go to the database. |
 | A template file copied into `backend/static/templates` by hand is not offered any more, a profile that used it is drawn with `default`, and the startup line under `Database:` ends *Not offered, because a template file is named <id>.json with an id of lower-case letters, digits and hyphens: Company_Brand.json* | A template's id is its file name, and ids are lower-case letters, digits and hyphens now; an older release offered a file under any name. Rename the file to its id - `Company_Brand.json` to `company-brand.json` - and it is offered at the next request, with no restart; a profile naming `Company_Brand` finds it again, because a lookup folds case and `_`. What an administrator had changed about it as a built-in on **Admin → Templates** - its name, description, disabled flag and layouts - was recorded under the old id, so set those again there. |
-| The backend stops at once with `[db] The database at <path> has not finished upgrading: <what is missing>. Start build ac3df79 once on this database to finish its upgrade, then start this build.` (exit code 1) | The database was last opened by a build older than `ac3df79`, or `ac3df79` never finished its upgrades on it - and this build carries none of the code that made them, so read as it is it would read wrongly: balances in the old unit, saved templates missing, providers that no longer exist. The line names each step that is missing. Start build `ac3df79` once on the same `DB_DIR`, let it finish starting, stop it, then start this build again (see [Upgrading](#4-upgrading)). Where the line says the migrations *wait for an administrator*, sign in to `ac3df79` as one (an address in `ADMIN_EMAILS`) before stopping it; where it says *some saved templates could not be written*, make `backend/static/templates` writable for the user the server runs as first. A copied or restored database is checked the same way, so a backup from before that build needs the same. A database that passed once is never checked again. |
+| The backend stops at once with `[db] The database at <path> has not finished upgrading: <what is missing>. Start build ac3df79 once on this database to finish its upgrade, then start this build.` (exit code 1) | The database was last opened by a build older than `ac3df79`, or `ac3df79` never finished its upgrades on it - and this build carries none of the code that made them, so read as it is it would read wrongly: balances in the old unit, saved templates missing, providers that no longer exist. The line names each step that is missing - *its tables lack columns build ac3df79 adds (...)* is a database last opened by a build from before one of them, which carried the other marks already. Start build `ac3df79` once on the same `DB_DIR`, let it finish starting, stop it, then start this build again (see [Upgrading](#4-upgrading)). Where the line says the migrations *wait for an administrator*, `ac3df79` needs one before it stops: an account that already exists at the `ADMIN_EMAILS` address is made one as `ac3df79`'s backend starts, and otherwise sign in to `ac3df79` with that address, which needs its frontend built and started too (both in [Upgrading](#4-upgrading)); where it says *some saved templates could not be written*, make `backend/static/templates` writable for the user the server runs as first. A copied or restored database is checked the same way, so a backup from before that build needs the same. A database that passed once is never checked again. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | How a run of many resumes is actually scheduled | The backend owns a queue. One request carries every resume - thirty sheet rows and three profiles is ninety tasks - and the request returns a batch id straight away, before any of them has run. Each lane takes tasks off the head of its line as its slots come free, so with `AI_CLI_CONCURRENCY=4` four resumes are built at once on the Claude seat and the moment one finishes the next task starts. A second request appends behind the first - except that a Generate Immediately run's resumes wait ahead of every Order's on the same seat (somebody is watching one; nobody is waiting on the other), first come, first served within each. There is a lane per real resource - one per PROVIDER (the three built-in seats, and any an administrator added), each at its own limit - so no provider can hold up another, and a model's resumes are spread over every provider of its type that can take work (see [Several providers of one type](#several-providers-of-one-type)). |
@@ -2841,10 +2856,18 @@ The startup guard is pinned in `upgradeGuard.test.js`: a database this build
 creates is stamped and opens again; one that build `ac3df79` finished upgrading
 opens and is stamped, so later starts read only the stamp; a database missing
 any one of the upgrades - its migrations, the dollar switch, the template move,
-the `users.plan` rename, the lake's facts - is refused by name with nothing
-written, all of them in one refusal; the real server, started on such a
-database, prints that one line and exits 1 before it listens; and this README
-quotes that line in the guard's own words.
+the `users.plan` rename, a column `ac3df79` adds (as a database from 1df7275,
+from a lake without its facts or from before the lake lacks them), the lake's
+facts - is refused by name with nothing written, all of them in one refusal,
+and migrations at 7 are refused as surely as at 2; a template-move record
+nobody can parse reads as complete; every column it asks for is one this build
+makes; the real server, started on such a database, prints that one line and
+exits 1 before it listens; and this README quotes that line in the guard's own
+words. The data-migration runner, which has no steps today, is pinned with
+steps of the test's own in `migrationRunner.test.js`: the version written after
+each step, a deferred step stopping the ones after it until it runs, a failing
+one logged and never thrown, and nothing at or below the database's version
+run again.
 
 Generate Immediately and Order are pinned in `immediateRuns.test.js` (kinds,
 the tab lease through the stream, the release, the owner-checked per-file
@@ -2934,7 +2957,8 @@ preview route and the render a PDF prints from to the same answer. The live prev
 effects are in `profilePreview.test.js`, run with every seat locked so a 200
 also proves no model was asked; the prompt variables, their drift check and
 the required ones - a save without one refused, a stored record without one
-never run - in `promptVariables.test.js`.
+never run, nor an outdated edit of the built-in that would run in its place -
+in `promptVariables.test.js`.
 
 Refund requests are pinned in `refundRequests.test.js` - every allowed and
 refused state change, a double-pressed *Refunded* moving money once, a card's

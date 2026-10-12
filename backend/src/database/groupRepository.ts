@@ -37,11 +37,6 @@ export function getGroupFor(viewer: Viewer, id: string): Group | null {
   return canSee(viewer, group) ? group : null;
 }
 
-/** Unscoped read, for the paths that have no viewer. */
-export function getGroup(id: string): Group | null {
-  return groups.get(id);
-}
-
 export function saveGroup(group: Group): Group {
   return groups.save(group);
 }

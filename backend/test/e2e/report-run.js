@@ -12,7 +12,8 @@
  *     by them before are marked skipped, with what became of them then
  *     ("Reported before (Added)", "(Duplicate)"), and a `javascript:` link
  *     typed into the sheet is never an anchor - while a tab of their own and
- *     an older build's daily tab are listed, marked, and cannot be chosen
+ *     a daily tab in an older build's layout are listed as not job tabs, and
+ *     cannot be chosen
  *   - "Add to job lake" runs in the background with a progress bar, and ends
  *     with the owner's line, "2 out of 6 was added, your current credit is
  *     $0.1", and every row's outcome - red exactly where the run paints the
@@ -185,12 +186,13 @@ async function main() {
       })
     );
 
-    // A tab of the reporter's own and an older build's daily tab are listed,
-    // each saying why, and cannot be chosen: their columns are not a job tab's.
+    // A tab of the reporter's own and a daily tab in an older build's layout
+    // are listed, each as not a job tab, and cannot be chosen: their columns
+    // are not a job tab's, whatever their names.
     check(
-      'My notes and the old daily tab are listed, marked, and cannot be chosen; Temp For AI can',
+      'My notes and the daily tab are listed as not job tabs and cannot be chosen; Temp For AI can',
       opened.tabs.map((tab) => `${tab.text}${tab.disabled ? ' [disabled]' : ''}`).join(' | ') ===
-        'All | Temp For AI | 09/30/2026 (old layout, not read) [disabled] | My notes (not a job tab) [disabled]',
+        'All | Temp For AI | 09/30/2026 (not a job tab) [disabled] | My notes (not a job tab) [disabled]',
       JSON.stringify(opened.tabs)
     );
     await page.select('#report-tab', 'My notes');

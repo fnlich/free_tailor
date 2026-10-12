@@ -72,8 +72,7 @@ function toAccount(row: UserRow): UserAccount {
     // A role this build does not know - a hand-edited row, or one a newer
     // build wrote - reads as `user`, the role every sign-in starts with. Not
     // as `reporter`: that would take somebody's resume builder away over a
-    // typo. (An OLDER build reads `reporter` itself this way, which is why a
-    // rollback hands every reporter the full app - README, roles.)
+    // typo.
     role: isAccountRole(row.role) ? row.role : 'user',
     // Coerced rather than trusted: a row naming a subscription this build
     // removed must read as the smallest one, not as an entitlement nobody

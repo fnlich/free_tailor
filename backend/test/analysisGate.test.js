@@ -42,7 +42,6 @@ const MAY_NAME_THE_PROMPT = new Map([
   ['services/promptService.ts', "declares the feature and its variables; runs nothing"],
   ['config/promptCategories.ts', 'files the feature under Extracting'],
   ['types/prompt.ts', 'the feature key type'],
-  ['database/migrations/001_openrouter_to_claude_cli.ts', 'frozen history: which prompts shipped then'],
 ]);
 
 const MAY_BUILD_THE_COMPLETION = new Map([
@@ -69,6 +68,13 @@ test('nothing but the gate names the analysis prompt or builds its completion', 
     }
   }
   assert.deepEqual(offenders, [], 'a posting must reach a model through services/jobAnalysis/gate.ts alone');
+
+  // Every exemption names a file that is there: one that outlived its file
+  // would quietly let a new file at that path name the prompt.
+  const stale = [...MAY_NAME_THE_PROMPT.keys(), ...MAY_BUILD_THE_COMPLETION.keys()].filter(
+    (relative) => !fs.existsSync(path.join(SRC, ...relative.split('/')))
+  );
+  assert.deepEqual(stale, [], 'an exemption for a file that no longer exists');
 
   // And the gate does what this says it does: the analysis call is in it.
   const gateSource = fs.readFileSync(path.join(SRC, 'services', 'jobAnalysis', 'gate.ts'), 'utf8');

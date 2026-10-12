@@ -9,9 +9,10 @@
  *
  *   - the account's own sheet is the only one: there is no sheet to choose,
  *     and no column mapping
- *   - the Tab select is on the page, lists EVERY tab, and starts on All; an
- *     older build's daily tab is listed, marked as an old layout that is not
- *     read, and cannot be chosen
+ *   - the Tab select is on the page, lists EVERY tab, and starts on All; a
+ *     tab not laid out as a job tab (stub-sheets.js's daily tab, in the
+ *     layout an older build wrote) is listed, marked as not a job tab, and
+ *     cannot be chosen
  *   - Load rows shows the jobs found - company, title, a link only when it is
  *     a web address - and counts the rows skipped, before anything is built
  *   - another tab is another set of rows, loaded again
@@ -211,8 +212,8 @@ async function main() {
     check('it starts on All', tabs?.value === all, JSON.stringify(tabs));
     const olderOption = tabs?.options.find((option) => option.value === OLDER_TAB);
     check(
-      "an older build's daily tab is listed as an old layout that is not read, and cannot be chosen",
-      Boolean(olderOption) && olderOption.disabled && olderOption.text === `${OLDER_TAB} (old layout, not read)` &&
+      'a tab not laid out as a job tab is listed as not a job tab, and cannot be chosen',
+      Boolean(olderOption) && olderOption.disabled && olderOption.text === `${OLDER_TAB} (not a job tab)` &&
         tabs.options.filter((option) => option.disabled).length === 1,
       JSON.stringify(tabs?.options)
     );
@@ -220,7 +221,7 @@ async function main() {
       sheetSelect: Boolean(document.getElementById('sheet-source')),
       advanced: Array.from(document.querySelectorAll('button')).some((b) => /Advanced columns/i.test(b.textContent)),
       columnInputs: Boolean(document.getElementById('sheet-from-col') || document.getElementById('sheet-col-company')),
-      note: /Tabs that are not laid out as job tabs .* are listed but not read/.test(document.body.innerText),
+      note: /Tabs that are not laid out as job tabs are listed but not read/.test(document.body.innerText),
     }));
     check(
       'no sheet to choose and no column mapping: the own sheet and its columns are the app\'s; the page says why a tab is not read',
@@ -230,7 +231,7 @@ async function main() {
     // Picked anyway - a select can be driven past its disabled options - it is still All.
     await page.select('#sheet-tab', OLDER_TAB);
     await wait(300);
-    check('choosing the old tab anyway leaves All chosen', (await readTabs(page))?.value === all, JSON.stringify(await readTabs(page)));
+    check('choosing that tab anyway leaves All chosen', (await readTabs(page))?.value === all, JSON.stringify(await readTabs(page)));
     const importButton = await page.evaluate(() =>
       Array.from(document.querySelectorAll('button')).some((b) => /Import from Google Sheet/i.test(b.textContent))
     );
@@ -383,8 +384,8 @@ async function main() {
       Array.from(document.getElementById('job-filter-tab')?.options ?? []).map((option) => `${option.textContent.trim()}${option.disabled ? ' [disabled]' : ''}`)
     );
     check(
-      'the Job Filter lists the same tabs, starts on All, and the old daily tab cannot be chosen',
-      filterTabs.join(' | ') === `All | Temp For AI | ${OLDER_TAB} (old layout, not read) [disabled] | Notes`,
+      'the Job Filter lists the same tabs, starts on All, and the tab that is not a job tab cannot be chosen',
+      filterTabs.join(' | ') === `All | Temp For AI | ${OLDER_TAB} (not a job tab) [disabled] | Notes`,
       JSON.stringify(filterTabs)
     );
     check('Run job filter is pressed', await pressButton(page, 'Run job filter'));

@@ -971,8 +971,10 @@ export function getDatabasePath(): string {
  * reaches both, and SQLite makes it cheap: it rewrites no rows.
  *
  * Empty: every column an older build added this way is on every database the
- * startup guard lets through, and in SCHEMA for a fresh one. A column added to
- * SCHEMA from here on gets an entry here as well. Run before any migration and
+ * startup guard lets through - it asks for each one this build reads
+ * (upgradeGuard.ts's `UPGRADE_ADDED_COLUMNS`, frozen at what ac3df79 adds) -
+ * and in SCHEMA for a fresh one. A column added to SCHEMA from here on gets an
+ * entry here as well, not there. Run before any migration and
  * before any query, since a data migration that writes one of these columns
  * needs it to exist first.
  */

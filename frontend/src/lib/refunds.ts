@@ -40,7 +40,9 @@ export type RefundKindFilter = RefundKind | 'all';
  * How the thing asked about is named. A resume has exactly one name: an order
  * item, or the charge of a resume the builder handed straight back. A payout's
  * item is the reporter's own account (`itemId`). A request naming anything
- * else is served `unrecognised`: declinable, never refundable.
+ * else (an older build's `task:`) is served as `payment`, with no field
+ * saying so: the admin view gives it `refundableNowMilli` 0 and a reason
+ * saying to decline it, and Refunded is refused (409 `unrecognised`).
  */
 export type RefundItemType = 'payment' | 'order-item' | 'charge' | 'payout';
 

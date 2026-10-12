@@ -23,12 +23,19 @@ import { BASELINE_SCHEMA_VERSION, SCHEMA_VERSION_KEY } from './migrations';
  *   - `schema_meta.templates_moved_to_files`, the template move, and not one
  *     that recorded a template it could not write (`"complete": false`);
  *   - `users.subscription` (not `plan`), the rename;
+ *   - every column ac3df79 adds to a table that already exists
+ *     (`UPGRADE_ADDED_COLUMNS`), which this build no longer adds;
  *   - no `job_lake` row whose `job_type` IS NULL, the facts fill.
+ *
+ * The marks alone are not enough: builds ccd70b3 to 1df7275 already wrote the
+ * first four, yet came before columns only ac3df79 (or d51d235) adds - a
+ * database last opened by one of them passed on its marks, was stamped, and
+ * then failed every account read with "no such column: sheet_layout".
  *
  * A database that passes is stamped `baseline_build` = ac3df79, and from then
  * on only that stamp is read: the lake check would otherwise read every row
  * of the lake at every start, and nothing this build writes can undo any of
- * the five. A FRESH database - no `users` table yet - is stamped with all of
+ * the six. A FRESH database - no `users` table yet - is stamped with all of
  * them as it is created (`stampCurrentDatabase`), since this build's SCHEMA
  * and defaults are what those steps produced.
  */
@@ -42,6 +49,48 @@ export const DOLLAR_SWITCH_UNIT = 'usd-milli';
 export const TEMPLATE_MOVE_MARKER = 'templates_moved_to_files';
 /** Written once the guard has passed, or when this build created the database. */
 export const BASELINE_MARKER = 'baseline_build';
+
+/**
+ * Every column build ac3df79 adds, at every start, to a table that already
+ * exists: its `addMissingColumns` list, then the Bid Assistant's two, added
+ * as bidAssistant/database.js loads. This build adds none of them
+ * (sqlite.ts's ADDED_COLUMNS is empty) and reads all of them, so a database
+ * missing one would open and then fail on the first query naming it.
+ *
+ * Left out: the three ac3df79 adds that this build neither creates nor reads
+ * (`users.sheet_tab_date`, `users.sheet_tab_gid`, `job_lake.report_ref`).
+ * A table the database does not have yet is not asked about, as ac3df79 did
+ * not ask: SCHEMA (or the Bid Assistant) creates it whole, and an empty lake
+ * is right for a database that never had one.
+ */
+export const UPGRADE_ADDED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  profiles: ['owner_id'],
+  profile_groups: ['owner_id'],
+  users: [
+    'sheet_id',
+    'sheet_url',
+    'sheet_shared_at',
+    'stripe_customer_id',
+    'notifications_seen_at',
+    'balance_milli',
+    'sheet_layout',
+    'sheet_all_gid',
+    'sheet_temp_gid',
+    'report_rate_milli',
+  ],
+  payments: ['fee_cents', 'credits_granted', 'credit_milli', 'credited_milli', 'refunded_milli', 'refund_cents'],
+  credit_ledger: ['delta_milli', 'balance_after_milli'],
+  credit_reservations: ['units_milli', 'refunded_milli'],
+  notifications: ['recipient_id', 'link'],
+  order_items: ['cost_milli', 'provider_id'],
+  refund_requests: ['hold_key'],
+  orders: ['kind'],
+  job_analyses: ['company_name'],
+  job_lake: ['job_type', 'clearance', 'industry'],
+  job_lake_history: ['job_type', 'clearance', 'industry'],
+  answers: ['question_order'],
+  google_sheets: ['account_id'],
+};
 
 /** Refused at startup; `index.ts` prints the message and exits. */
 export class DatabaseNotUpgradedError extends Error {
@@ -140,14 +189,21 @@ export function upgradeProblems(db: Database.Database): string[] {
     problems.push('users.plan was never renamed to users.subscription');
   }
 
+  const missingColumns = Object.entries(UPGRADE_ADDED_COLUMNS).flatMap(([table, wanted]) => {
+    const has = columnNames(db, table);
+    if (has.size === 0) return [];
+    return wanted.filter((column) => !has.has(column)).map((column) => `${table}.${column}`);
+  });
+  if (missingColumns.length > 0) {
+    problems.push(`its tables lack columns build ${UPGRADE_BUILD} adds (${missingColumns.join(', ')})`);
+  }
+
   if (
     tableExists(db, 'job_lake') &&
     columnNames(db, 'job_lake').has('job_type') &&
     db.prepare('SELECT 1 FROM job_lake WHERE job_type IS NULL LIMIT 1').get()
   ) {
     problems.push('some Job Data Lake rows were never given their job type, clearance and industry');
-  } else if (tableExists(db, 'job_lake') && !columnNames(db, 'job_lake').has('job_type')) {
-    problems.push('the Job Data Lake has no job type, clearance or industry columns');
   }
 
   return problems;

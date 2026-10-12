@@ -259,9 +259,10 @@ count only has to be more than nothing.
 `sheet-panel.js` — 36 claims. The sheet card has no *Import from Google Sheet*
 button, no sheet to choose and no column mapping (the own sheet and its
 columns are the app's); the Tab select lists every tab in the spreadsheet's
-order and starts on **All**, the old daily tab listed as *09/30/2026 (old
-layout, not read)* and disabled - driven to it anyway, the select stays on All
-- with the sentence that says where its rows go; nothing can be built before
+order and starts on **All**, the daily tab in an older build's layout listed
+as *09/30/2026 (not a job tab)* and disabled - driven to it anyway, the
+select stays on All - with the sentence that says where its rows go; nothing
+can be built before
 rows are loaded. *Load rows* shows a job per row with a company and a
 description (rows 2, 3 and 5 of All), a link only where the cell is a web
 address (not the
@@ -367,8 +368,8 @@ DB_DIR=/tmp/e2e-db node test/e2e/report-run.js
 server's memory, so a second run against the same server finds them reported).
 The two earlier reports are on record; Report Jobs opens on **All**, rows
 2-501, with the rate per job; Add to job lake waits for a preview; *My notes*
-and the old daily tab are listed as *(not a job tab)* and *(old layout, not
-read)* and cannot be chosen - driven to *My notes* anyway, the select stays on
+and the daily tab in an older build's layout are both listed as *(not a job
+tab)* and cannot be chosen - driven to *My notes* anyway, the select stays on
 All; the preview lists
 the eight rows, *Initech* as *Reported before (Added) - skipped* and *Hooli*
 as *Reported before (Duplicate) - skipped*, and the `javascript:` link as

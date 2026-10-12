@@ -116,14 +116,6 @@ export function templateFileExists(fileId: string): boolean {
   return readTemplateFileRecord(fileId).exists;
 }
 
-/** What is at this id: nothing, a saved template, a built-in, or a file that cannot be read. */
-export function templateFileKind(fileId: string): 'none' | 'saved' | 'built-in' | 'unreadable' {
-  const read = readTemplateFileRecord(fileId);
-  if (!read.exists) return 'none';
-  if (!read.record) return 'unreadable';
-  return isTemplateSource(read.record.source) ? 'saved' : 'built-in';
-}
-
 /** A saved template's file as stored, with its id taken from the file name. Null for a built-in. */
 export function readSavedTemplateFile(fileId: string): Template | null {
   const read = readTemplateFileRecord(fileId);

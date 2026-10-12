@@ -17,7 +17,8 @@ const { loadFresh, openTestDb, useTempStorage } = require('./helpers');
  *
  * "Finished" is what ac3df79 leaves: data migrations at version 8, credits
  * switched to dollars, saved templates moved to files (all of them),
- * `users.subscription` (not `plan`), and no lake row without its facts.
+ * `users.subscription` (not `plan`), every column it adds to a table that
+ * already exists, and no lake row without its facts.
  */
 
 const FINISH = 'Start build ac3df79 once on this database to finish its upgrade, then start this build.';
@@ -28,10 +29,14 @@ function meta(db, key) {
 }
 
 /**
- * A database as ac3df79 leaves it: made by this build's schema (the shape is
- * the same), with every marker that build writes and none of this build's own
+ * A database as ac3df79 leaves it, near enough: made by this build's schema,
+ * with every marker that build writes and none of this build's own
  * `baseline_build` - so the guard reads it as an upgraded install, not one it
- * made. `change` then undoes one upgrade.
+ * made. ac3df79's own also keeps what this build neither makes nor reads (a
+ * `templates` table, `users.sheet_tab_*`, `job_lake.report_ref`), which the
+ * guard never asks about. `change` then undoes one upgrade - or, for an older
+ * build's SHAPE, drops the tables and columns that build did not have yet:
+ * the shape is NOT the same for every build that wrote the markers.
  */
 function upgradedByOlderBuild(name, change = () => {}) {
   const { dbDir } = useTempStorage(`upgrade-guard-${name}`);
@@ -101,6 +106,48 @@ test('a database ac3df79 finished upgrading opens, and is stamped so later start
   assert.equal(open(), null);
 });
 
+/*
+ * The template move wrote its record after a pass, and read back a record it
+ * could not parse as done - so does the guard. Only `"complete": false` says
+ * a template was left behind (refused below).
+ */
+test('a template-move record nobody can parse reads as complete, as the move read it', () => {
+  upgradedByOlderBuild('templates-unparseable', (raw) =>
+    raw.prepare("UPDATE schema_meta SET value = 'not json' WHERE key = 'templates_moved_to_files'").run()
+  );
+  assert.equal(open(), null);
+});
+
+/*
+ * The columns the guard asks an existing database for are ones this build
+ * makes: a name this build's tables lack - a typo, or a column dropped from
+ * SCHEMA later - would refuse every database ac3df79 upgraded. The Bid
+ * Assistant's two are on tables its module creates, as it loads, so the
+ * ac3df79-shaped databases above never have them to check.
+ */
+test('every column the guard asks for is one a database this build creates has', () => {
+  const { dbDir } = useTempStorage('upgrade-guard-columns');
+  loadFresh('../dist/database/sqlite').getDb();
+  loadFresh('../dist/bidAssistant/database');
+  const { UPGRADE_ADDED_COLUMNS } = require('../dist/database/upgradeGuard');
+
+  const raw = openTestDb(dbDir);
+  try {
+    const missing = Object.entries(UPGRADE_ADDED_COLUMNS).flatMap(([table, columns]) => {
+      const has = raw.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
+      assert.ok(has.length > 0, `${table} is a table this build creates`);
+      return columns.filter((column) => !has.includes(column)).map((column) => `${table}.${column}`);
+    });
+    assert.deepEqual(missing, []);
+    for (const gone of ['users.sheet_tab_date', 'users.sheet_tab_gid', 'job_lake.report_ref']) {
+      const [table, column] = gone.split('.');
+      assert.ok(!(UPGRADE_ADDED_COLUMNS[table] || []).includes(column), `${gone} is not asked for: this build never makes it`);
+    }
+  } finally {
+    raw.close();
+  }
+});
+
 test('its first stamp forgets a report record whose lake row an older build deleted, and only that', () => {
   const dbDir = upgradedByOlderBuild('stale-report', (raw) => {
     const lakeId = raw
@@ -144,6 +191,13 @@ const UNFINISHED = [
     name: 'migrations-stopped',
     change: (raw) => raw.prepare("UPDATE schema_meta SET value = '5' WHERE key = 'provider_schema_version'").run(),
     says: /its data migrations stopped at version 5 of 8/,
+  },
+  {
+    // One short of the last: 008 alone is missing. The version must be 8
+    // exactly, not "7 or more".
+    name: 'migrations-at-7',
+    change: (raw) => raw.prepare("UPDATE schema_meta SET value = '7' WHERE key = 'provider_schema_version'").run(),
+    says: /its data migrations stopped at version 7 of 8\. Start build/,
   },
   {
     name: 'no-migrations',
@@ -194,6 +248,51 @@ const UNFINISHED = [
         )
         .run(),
     says: /some Job Data Lake rows were never given their job type, clearance and industry/,
+  },
+  {
+    // Last opened by a build that had the lake but not its facts (4238e2e to
+    // 176b9e1 - 5177fc3, the release before ac3df79, among them): the four
+    // marks, a lake, and no job type, clearance or industry column on it or
+    // its history at all - so no row can be NULL in one, and the lake check
+    // finds nothing. Let in, every lake read failed: no such column. (A real
+    // one lacks the sheet layout's columns too; this keeps to the lake's, so
+    // leaving them off the guard's list fails here.)
+    name: 'lake-without-fact-columns',
+    change: (raw) => {
+      for (const table of ['job_lake', 'job_lake_history']) {
+        for (const column of ['job_type', 'clearance', 'industry']) raw.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      }
+    },
+    says: new RegExp(
+      'its tables lack columns build ac3df79 adds \\(job_lake\\.job_type, job_lake\\.clearance, job_lake\\.industry, ' +
+        'job_lake_history\\.job_type, job_lake_history\\.clearance, job_lake_history\\.industry\\)\\. Start build'
+    ),
+  },
+  {
+    // Last opened by 1df7275: all four marks written, the lake there with its
+    // facts, but not the sheet layout columns d51d235 added. Let in, it was
+    // stamped and then every account read failed: no such column.
+    name: 'columns-1df7275',
+    change: (raw) => {
+      for (const column of ['sheet_layout', 'sheet_all_gid', 'sheet_temp_gid']) {
+        raw.exec(`ALTER TABLE users DROP COLUMN ${column}`);
+      }
+    },
+    says: /its tables lack columns build ac3df79 adds \(users\.sheet_layout, users\.sheet_all_gid, users\.sheet_temp_gid\)\. Start build/,
+  },
+  {
+    // Last opened by a build from before the Job Data Lake (ccd70b3 to
+    // b1c9299): the marks again, and no lake for the lake checks to read -
+    // what gives it away is the columns ac3df79 added elsewhere.
+    name: 'before-the-lake',
+    change: (raw) => {
+      raw.exec('DROP TABLE job_lake_fts; DROP TABLE job_lake; DROP TABLE job_lake_history; DROP TABLE job_reports');
+      raw.exec('ALTER TABLE users DROP COLUMN sheet_layout');
+      raw.exec('ALTER TABLE users DROP COLUMN report_rate_milli');
+      raw.exec('ALTER TABLE order_items DROP COLUMN provider_id');
+      raw.exec('ALTER TABLE job_analyses DROP COLUMN company_name');
+    },
+    says: /its tables lack columns build ac3df79 adds \(users\.sheet_layout, users\.report_rate_milli, order_items\.provider_id, job_analyses\.company_name\)\. Start build/,
   },
 ];
 
@@ -269,9 +368,10 @@ test("the README quotes the refusal in the guard's own words", () => {
   const row = `[db] The database at <path> has not finished upgrading: <what is missing>. ${FINISH}`;
   assert.ok(readme.includes(row), `Troubleshooting quotes "${row}"`);
 
-  // The two phrases the README says what to do about, as the guard words them.
+  // The phrases the README says what to do about, or explains, as the guard
+  // words them.
   const source = fs.readFileSync(require.resolve('../dist/database/upgradeGuard'), 'utf8');
-  for (const phrase of ['wait for an administrator', 'some saved templates could not be written']) {
+  for (const phrase of ['wait for an administrator', 'some saved templates could not be written', 'its tables lack columns build']) {
     assert.ok(source.includes(phrase), `the guard says "${phrase}"`);
     assert.ok(readme.includes(phrase), `and the README names it`);
   }
