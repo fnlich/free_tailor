@@ -8,12 +8,12 @@
  * label may be reworded freely, while an id that is retired stays out of use
  * for ever, as a job field's does (config/jobFields.ts).
  *
- * The list reaches the model as the analysis prompt's `[[industryList]]`
- * (`renderIndustryListForPrompt`), stable text the shipped prompt carries
- * BEFORE the posting, beside the job fields, so a CLI's prompt cache reuses
- * it. The answer is checked in code (services/jobAnalysis/facts.ts
- * `normalizeIndustry`): a word the list does not have becomes `other`, never
- * itself.
+ * The list no longer reaches a model (owner decision O1): a new analysis's
+ * industry is derived from the company category its job facts call answers
+ * (services/jobAnalysis/facts.ts `industryOf`, `COMPANY_CATEGORY_INDUSTRY`).
+ * An analysis stored while the analysis prompt asked for an industry (v6)
+ * keeps the one it was given, checked in code (`normalizeIndustry`): a word
+ * the list does not have became `other`, never itself.
  *
  * An analysis stored before this list existed has no `industry` at all, and
  * is NEVER sent back to a model for one: its industry is derived when it is
@@ -175,20 +175,6 @@ export function industryFromText(text: unknown): string | null {
     if (pattern.test(spaced)) return id;
   }
   return null;
-}
-
-/**
- * The list as the analysis prompt shows it: one `id: Label` line per
- * industry, then `not_specified`.
- *
- * A pure function of this module, so it is byte-identical for every posting -
- * which is what lets it sit in the cached part of the prompt.
- */
-export function renderIndustryListForPrompt(): string {
-  return [
-    ...INDUSTRIES.map((entry) => `- ${entry.id}: ${entry.label}`),
-    `- ${NOT_SPECIFIED_INDUSTRY_ID}: the posting gives nothing to tell its industry by`,
-  ].join('\n');
 }
 
 /** The list as a page offers it, for a filter: every industry, `not_specified` last with its own words. */

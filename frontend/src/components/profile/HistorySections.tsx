@@ -79,7 +79,7 @@ export function ExperienceSection({
   return (
     <Section
       title="Experience"
-      description="A role, company and dates are enough to start: tailoring writes a missing description and achievements from the job it is tailored to."
+      description="A role, company and dates are enough to start: tailoring writes each role's bullets for the job, drawing on the description and achievements you give it. A tailored resume prints no role description; yours shows only in this editor's preview."
       actions={
         <AddRowButton
           onClick={() => update((current) => ({ ...current, experience: [...current.experience, emptyExperience()] }))}

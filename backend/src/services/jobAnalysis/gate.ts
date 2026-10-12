@@ -12,9 +12,18 @@ import {
 } from '../../database/jobAnalysisRepository';
 import { createPromptCompletion } from '../ai';
 import { resolvePromptByExactId } from '../promptService';
-import { buildAnalyzeJobDescriptionPromptValues, parseJobAnalysisContent } from '../resumeService';
+import {
+  buildAnalyzeJobDescriptionPromptValues,
+  buildJobFactsPromptValues,
+  composeJobAnalysis,
+  parseJobAnalysisKeywords,
+  parseJobFacts,
+  type JobAnalysisKeywords,
+} from '../resumeService';
 import { isAnalysisOfPosting } from '../sheets/analysisColumns';
+import type { JobFactsAnswer } from './facts';
 import { normalizeJobDescriptionText, postingKeysOf, type PostingKeys } from './identity';
+import { JOB_FIELD_PREAMBLE, JOB_FIELD_REMINDER } from './jobFieldLine';
 
 export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
 
@@ -39,24 +48,33 @@ export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
  *      its whitespace-normalised text (identity.ts), one index seek each;
  *   2. the analysis of this posting already in flight in this process, which
  *      the caller waits for instead of starting its own;
- *   3. ONE model call, on the administrator's analysis model (J1), stored with
- *      INSERT ... ON CONFLICT DO NOTHING and read back - so even a race lost
- *      between two processes keeps one row, and both get it.
+ *   3. ONE analysis, on the administrator's analysis model (J1): two calls
+ *      made in parallel (owner decision O1) - the analysis prompt for the
+ *      posting's keywords, and the Job Facts (Filter) prompt for its facts
+ *      plus the job field the code asks for (jobFieldLine.ts) - composed
+ *      into one row, stored with INSERT ... ON CONFLICT DO NOTHING and read
+ *      back - so even a race lost between two processes keeps one row, and
+ *      both get it.
  *
  * Nothing about a model, a prompt, a profile or an account is part of what
- * identifies a posting: editing the prompt or switching the analysis model
+ * identifies a posting: editing either prompt or switching the analysis model
  * reaches only postings never analysed before, and there is no re-analyse.
  * A call that FAILS - a timeout, a seat down, an answer that does not parse -
- * stores nothing, because there is no analysis yet; the next request is the
- * first real one. That is the only way a posting reaches a model twice - bar
- * a stored row damaged outside the program (hand-edited, a backup restored
- * part way), which reads as absent: its posting is analysed once more and the
- * answer written into that row (jobAnalysisRepository's `repairUnreadableRow`),
- * not once per request.
+ * stops the other and stores nothing, because there is no analysis yet; the
+ * next request is the first real one and makes both calls again. That is the
+ * only way a posting reaches a model twice - bar a facts answer that names no
+ * job field, which is asked once more before it is stored as unclassified,
+ * and a stored row damaged outside the program (hand-edited, a backup
+ * restored part way), which reads as absent: its posting is analysed once
+ * more and the answer written into that row (jobAnalysisRepository's
+ * `repairUnreadableRow`), not once per request.
  */
 
 /** The analysis prompt's id: the built-in record, edited by an administrator or not. */
 export const ANALYSIS_PROMPT_ID = 'analyze-job-description';
+
+/** The job facts prompt's id - the analysis's second call. The owner's id, from when it was the Job Filter's own read. */
+export const JOB_FACTS_PROMPT_ID = 'filter-google-sheet-job';
 
 /** A posting shorter than this, with nothing stored for it, is not analysed. */
 export const JOB_ANALYSIS_MIN_LENGTH = 50;
@@ -326,17 +344,72 @@ function useSheetAnalysis(sheetRow: SheetRowAnalysis, posting: { jd: string; lin
   return null;
 }
 
-/** SHA-256 of the prompt text that produced an analysis - an audit, never part of its identity. */
-function promptHash(content: string | undefined): string {
-  return content ? createHash('sha256').update(content, 'utf8').digest('hex') : '';
+/**
+ * SHA-256 of what produced an analysis - an audit, never part of its
+ * identity: the two prompt texts that ran and the code's own job field text,
+ * so a change of any one of them is told apart. '' when a record could not
+ * be read.
+ */
+function promptHash(analysisPrompt: string | undefined, factsPrompt: string | undefined): string {
+  if (!analysisPrompt || !factsPrompt) return '';
+  return createHash('sha256')
+    .update([analysisPrompt, factsPrompt, JOB_FIELD_PREAMBLE, JOB_FIELD_REMINDER].join('\0'), 'utf8')
+    .digest('hex');
 }
 
 /**
- * The model call, and the row it leaves.
+ * The job facts call: the Job Facts (Filter) prompt, with the job field list
+ * before it and the one-line reminder after the posting (jobFieldLine.ts) -
+ * code-owned text, so no edit of the prompt can drop the job field. An answer
+ * that names no job field at all (as opposed to "unclassified") is asked once
+ * more, then stored as unclassified with a warning naming the posting: the
+ * job field is what files a job in the lake for ever.
+ */
+async function askJobFacts(
+  input: { jd: string; link: string; hash: string },
+  choice: AiChoice,
+  signal: AbortSignal
+): Promise<JobFactsAnswer> {
+  const ask = async (): Promise<JobFactsAnswer> =>
+    parseJobFacts(
+      await createPromptCompletion({
+        promptId: JOB_FACTS_PROMPT_ID,
+        callSite: JOB_FACTS_PROMPT_ID,
+        promptValues: buildJobFactsPromptValues(input.jd, input.link),
+        systemPreamble: JOB_FIELD_PREAMBLE,
+        appendToUserBody: JOB_FIELD_REMINDER,
+        fallbackProvider: choice.provider,
+        fallbackModelName: choice.modelName,
+        maxTokens: 1000,
+        temperature: 0,
+        responseFormat: 'json',
+        useExactPromptId: true,
+        runChoiceWins: true,
+        signal,
+      })
+    );
+  const first = await ask();
+  if (first.jobField !== null) return first;
+  if (signal.aborted) throw cancelled(signal);
+  const second = await ask();
+  if (second.jobField !== null) return second;
+  console.warn(
+    `[analysis] The job facts answer for posting ${input.hash} named no job field, asked twice; it is stored as ` +
+      'unclassified, which keeps it out of the Job Data Lake.'
+  );
+  return second;
+}
+
+/**
+ * The two model calls, and the row they leave.
  *
- * On the analysis model whatever the prompt record names (`runChoiceWins`):
- * the setting under Admin -> Settings is the one place that decides which
- * model reads postings, so every posting's job field comes from one model.
+ * On the analysis model whatever either prompt record names
+ * (`runChoiceWins`): the setting under Admin -> Settings is the one place
+ * that decides which model reads postings, so every posting's job field
+ * comes from one model. In parallel, so the facts call adds no wait to the
+ * analysis a build is waiting on; and either failing aborts the other - one
+ * analysis is both answers or nothing, and nothing is stored. The shared
+ * `signal` (the last waiter leaving, see `waitFor`) stops both.
  */
 async function analyseAndStore(
   input: { jd: string; link: string; keys: { hash: string; link: string | null }; requestedBy: string | null; company: string },
@@ -349,27 +422,50 @@ async function analyseAndStore(
     modelId: model.id,
     modelLabel: model.name,
   };
-  // The record that runs: an administrator's edit that lacks a required
-  // variable never does (promptService `usableAtRuntime`), so every posting
-  // is asked for its job field and industry from the lists.
-  const record = await resolvePromptByExactId(ANALYSIS_PROMPT_ID).catch(() => null);
+  // The records that run, for the audit hash: an administrator's edit that
+  // needs updating never does (promptService `usableAtRuntime`).
+  const [analysisRecord, factsRecord] = await Promise.all([
+    resolvePromptByExactId(ANALYSIS_PROMPT_ID).catch(() => null),
+    resolvePromptByExactId(JOB_FACTS_PROMPT_ID).catch(() => null),
+  ]);
 
   const startedAt = process.hrtime.bigint();
   console.log(`[analysis] Analysing a new posting (${describeAiChoice(choice)})`);
-  const content = await createPromptCompletion({
-    promptId: ANALYSIS_PROMPT_ID,
-    callSite: ANALYSIS_PROMPT_ID,
-    promptValues: buildAnalyzeJobDescriptionPromptValues(input.jd, input.link),
-    fallbackProvider: choice.provider,
-    fallbackModelName: choice.modelName,
-    maxTokens: 7000,
-    temperature: 0,
-    responseFormat: 'json',
-    useExactPromptId: true,
-    runChoiceWins: true,
-    signal,
-  });
-  const analysis = parseJobAnalysisContent(content, input.jd);
+  const both = new AbortController();
+  const stopBoth = () => both.abort(signal.reason);
+  if (signal.aborted) stopBoth();
+  else signal.addEventListener('abort', stopBoth, { once: true });
+  // The first failure aborts the other call: its answer would be thrown away.
+  const settle = <T>(work: Promise<T>): Promise<T> =>
+    work.catch((error: unknown) => {
+      if (!both.signal.aborted) both.abort(error);
+      throw error;
+    });
+  let keywords: JobAnalysisKeywords;
+  let facts: JobFactsAnswer;
+  try {
+    [keywords, facts] = await Promise.all([
+      settle(
+        createPromptCompletion({
+          promptId: ANALYSIS_PROMPT_ID,
+          callSite: ANALYSIS_PROMPT_ID,
+          promptValues: buildAnalyzeJobDescriptionPromptValues(input.jd, input.link),
+          fallbackProvider: choice.provider,
+          fallbackModelName: choice.modelName,
+          maxTokens: 7000,
+          temperature: 0,
+          responseFormat: 'json',
+          useExactPromptId: true,
+          runChoiceWins: true,
+          signal: both.signal,
+        }).then((content) => parseJobAnalysisKeywords(content, input.jd))
+      ),
+      settle(askJobFacts({ jd: input.jd, link: input.link, hash: input.keys.hash }, choice, both.signal)),
+    ]);
+  } finally {
+    signal.removeEventListener('abort', stopBoth);
+  }
+  const analysis = composeJobAnalysis(keywords, facts);
   const seconds = (Number(process.hrtime.bigint() - startedAt) / 1_000_000_000).toFixed(2);
 
   const { row, inserted } = insertJobAnalysisIfAbsent({
@@ -378,7 +474,7 @@ async function analyseAndStore(
     jobLink: input.link,
     analysis,
     modelId: model.id,
-    promptHash: promptHash(record?.content),
+    promptHash: promptHash(analysisRecord?.content, factsRecord?.content),
     source: 'ai',
     createdBy: input.requestedBy,
     companyName: input.company,

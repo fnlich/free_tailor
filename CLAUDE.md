@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~60s with the tsc step, 1608 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 1668 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -233,7 +233,11 @@ backend/src/
                       #   industries.ts the industries it is filed under
                       #   (closed list, stable ids, `not_specified`; the
                       #   keywords an older analysis's free text is read
-                      #   by); providerModels.ts each seat's model-name
+                      #   by); conceptTools.ts the concepts a posting may name
+                      #   and the tools they are built with (the tailoring's
+                      #   `[[conceptToolsJson]]`; closed, ~40 rows, and
+                      #   `termPattern`, the whole-word matcher every tailoring
+                      #   check uses); providerModels.ts each seat's model-name
                       #   list; pricePerResume.ts the price field's rules
                       #   (thousandths of a dollar, see "Money" below);
                       #   modelErrors.ts the two model refusals;
@@ -370,7 +374,16 @@ backend/src/
                       #   .test.js holds the runner to all of this with steps
                       #   of its own (9, 10, 11), since none ship.
   extractors/         # reading a template's styles back out of its HTML
-  generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars
+  generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars.
+                      #   pdfGenerator.ts holds THE render gate every output
+                      #   goes through (`prepareResumeRenderData` ->
+                      #   `applySkillsLimit`) and the compile step's markup
+                      #   rewrites - see "Profiles, templates and the section
+                      #   switches" below. coverLetterGenerator.ts adds the
+                      #   greeting and sign-off the prompts tell the model to
+                      #   leave out, and splits paragraphs on a blank line, or
+                      #   on every line break when the letter has none
+                      #   (`splitCoverLetterParagraphs`).
   integrations/       # Stripe, Cryptomus, Google Sheets - one file per service.
                       #   Every Sheets/Drive call goes through `fetchWithBackoff`
                       #   (429: jittered exponential backoff, Retry-After
@@ -441,11 +454,14 @@ backend/src/
                       #   type a call runs on
   services/jobAnalysis/ # THE way to a job analysis: gate.ts's
                       #   `getOrCreateAnalysis` (the only caller of the analysis
-                      #   prompt - test/analysisGate.test.js greps for any
+                      #   prompt and the Job Facts (Filter) prompt, its two
+                      #   calls - test/analysisGate.test.js greps for any
                       #   other), identity.ts (link key, content hash),
-                      #   facts.ts (salary, filter facts), submit.ts (a batch's
-                      #   analyses at submission, sheet first). See "Job
-                      #   analysis runs once" below.
+                      #   facts.ts (the facts answer, salary, filter facts),
+                      #   jobFieldLine.ts (the code's job field question on the
+                      #   facts call), submit.ts (a batch's analyses at
+                      #   submission, sheet first). See "Job analysis runs
+                      #   once" below.
   services/queue/     # on-disk generation queue (survives a restart). One LANE
                       #   per PROVIDER (lane id = provider id: `claude-cli`,
                       #   `codex-cli`, `gemini-cli` for the built-ins, `prv-...`
@@ -518,15 +534,32 @@ backend/src/
                       #   files and result alike; the builder has no
                       #   Fallback Role.
   services/tailorCache.ts # the tailoring cache (owner decision P6): the model's
-                      #   answer to a tailoring or a cover-letter call, reused
-                      #   for the same unchanged profile, posting, model and
-                      #   prompt - see "The tailoring cache" below.
+                      #   answer to a tailoring (revised, when the revise pass
+                      #   changed it) or a cover-letter call, reused for the
+                      #   same unchanged profile, posting, model and prompts -
+                      #   see "The tailoring cache" below.
+  services/tailorContract.ts # what the tailoring prompt is promised about the
+                      #   code: the lists it is sent (`buildTailorLists`, the
+                      #   posting's own spelling, no library), the seeded
+                      #   per-resume draws (`tailorSeed`, `mulberry32`), the
+                      #   composed title, the restored roles, the eight-bullet
+                      #   cap, the banned vocabulary, the dash and numeral
+                      #   backstops. Pure; resumeService puts it together - see
+                      #   "Prompt variables are the code's, strictly".
+  services/reviseCoverage.ts # the revise pass's pure half: missing terms,
+                      #   figures, its prompt values, `mergeRevision`.
+                      #   resumeService's `tailorResume` makes the call.
   services/sheets/    # each account's OWN job sheet (accountSheet.ts), the
                       #   program's analysis columns (analysisColumns.ts), and
                       #   jobExport.ts's `appendJobRows` - the writer the
                       #   removed Apify job search exported with, kept for Find
                       #   Jobs and called by no route yet (see "The export
                       #   writer" below).
+  services/skillGroups.ts # THE reader of the model's Technical Skills block
+                      #   (`skillGroups`), for the tailoring parse and the
+                      #   render gate alike: sanitise the shape, find the
+                      #   soft-skill group, flatten for Plain. Pure - see
+                      #   "Profiles, templates and the section switches".
   services/templateChoice.ts # THE answer to "which template is this resume
                       #   drawn with" - resolveTemplateForProfile, for the live
                       #   preview, /resume/preview, /preview-all,
@@ -550,7 +583,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 131 files; fixtures/cli, codex and gemini
+  test/               # node:test, 137 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -629,10 +662,18 @@ frontend/src/
                       #   what the preview is sent, which templates the picker
                       #   offers, the sample-text notice and placeholders, what
                       #   an unticked section keeps - are lib/profileDraft.ts,
-                      #   which imports types only so test/frontendHelpers and
-                      #   frontendEditorHelpers.test.js can load it. An
+                      #   which imports types only so test/frontendHelpers,
+                      #   frontendEditorHelpers and frontendTailoring.test.js
+                      #   can load it (the last holds what it saves and
+                      #   previews to the settings the server reads - no
+                      #   `hardSkillOrdering`, no `coverLetterPromptId`). An
                       #   unticked Soft Skills / Strengths box shows only its
-                      #   switch and "N kept"; nothing is deleted.
+                      #   switch and "N kept"; nothing is deleted. The
+                      #   switches' copy (SkillSections) says what a TAILORED
+                      #   resume does with them: Soft Skills on prints the
+                      #   posting's soft-skill group in that section (off, it
+                      #   is the last group of Technical Skills), Strengths
+                      #   prints the person's own, as typed.
   components/icons/   # Hand-rolled inline SVG set (there is no icon library).
                       #   index.tsx is UI icons - one grid, one stroke, one
                       #   colour, and the ROW decides it. marks.tsx is brand
@@ -743,7 +784,24 @@ frontend/src/
                       #   `canBuildForManyProfiles` (the backend's
                       #   hasSubscription, admins exempt; frontendHelpers.test.js
                       #   runs both), and the target in effect is DERIVED from it
-                      #   rather than corrected in an effect.
+                      #   rather than corrected in an effect. A preview's
+                      #   "Manual Edits (JSON)" box offers only what an edit
+                      #   can change (lib/tailoredDraft.ts: title, summary,
+                      #   each role's bullets, skillGroups - the soft group
+                      #   marked `soft: true` - and coverLetter), plus each
+                      #   role's company, title and dates, which only say which
+                      #   role the bullets are - the parse restores them from
+                      #   the profile, and the dates are how its `closestStint`
+                      #   tells two stints apart; no description, no place.
+                      #   TAILORED_DRAFT_NOTE says so, and that the title
+                      #   counts only without a headline. It sends
+                      #   that back for the server to finish against the
+                      #   profile; frontendTailoring.test.js holds the edit to
+                      #   finish exactly as the whole content does. There is no
+                      #   skill-confirm panel: nothing a tailoring prints is
+                      #   checked against the library, so the server's
+                      #   `unconfirmed*Skills` lists are always [] (the profile
+                      #   editor's add still goes through /skills/confirm).
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page, and formatMoney / parseDollars /
@@ -845,9 +903,45 @@ when the payload omits it, and only a boolean decides. `Profile.softSkills` is
 the person's own list (trimmed, case-insensitively unique, 50 x 100 chars).
 
 **The render gate** is `applySkillsLimit` in `generators/pdfGenerator.ts`: every
-path - the live preview, the PDF, the DOCX, the queue - empties a switched-off
-section there, whatever content it was handed, because batch and queued
-content can arrive from the client without being re-parsed. At compile time
+path - the live preview, the PDF, the DOCX, the queue, the gallery - empties a
+switched-off section there, whatever content it was handed, because batch and
+queued content can arrive from the client without being re-parsed. It also
+decides the Technical Skills block, and NOTHING on any path pads it from the
+skill library or reorders it by library priority (`padSkillCategories`, the
+five-by-five fill and the gate that dropped `CI/CD` are gone); only (2) and (3)
+below still file and filter by it. In order: (1)
+tailored content's `skillGroups` (the model's block; `services/skillGroups.ts`
+is the one reader, shared with the parse: `sanitizeSkillGroups` - shape only,
+12 groups x 40 skills - `findSoftSkillGroup`: a `soft: true` group, else the
+one headed `softSkillGroupHeading`, else the LAST group only under one of
+`SOFT_SKILL_GROUP_HEADINGS`, never just "the last" - and `flattenSkillGroups`):
+Grouped prints them verbatim, Plain as one headless list in the same order
+with case-insensitive repeats removed, and the soft-skill group goes to the
+Soft Skills section while that switch is on as the TEMPLATE leaves it (so on
+burgundy-rule, navy-rule, charcoal-sidebar and ink-ledger it stays in the
+block) and stays in the block, under its heading, while it is off; a block
+left empty is the profile's own skills; (2) older content with only
+`hardSkills` (or `skills`), unpadded: Plain that list, unfiltered, in its
+order; Grouped under the author's headings when the profile has any
+(`buildAuthoredSkillCategories`: every skill, the author's heading order, a
+skill they never placed under the library's heading at the end), else
+regrouped under the library's headings in `SKILL_CATEGORY_ORDER`,
+library-known skills only (`groupClaimedSkills`); (3) otherwise the profile's
+own (`ownSkillCategories`), unpadded: Plain the library-known skills in the
+person's order, in the library's spelling (`normalizeLibraryHardSkills`);
+Grouped the author's grouping as typed, else `groupClaimedSkills` - the
+library's headings in their order, the person's order under each,
+library-known skills only. With no soft group routed the Soft Skills section
+is the content's `softSkills`, else the profile's own. Strengths are ALWAYS
+the profile's own (the tailoring prompt writes none; a content `strengths`
+is never printed). `prepareResumeRenderData`'s tailored branch prints the
+title as composed (`tailoredContent.title`, else the profile's headline, both
+through `sanitizeTitleForATS`, which keeps letters, digits and `| ( ) / , . &
++ # · -` and turns any other symbol into a space), blanks every role's
+`description` and keeps at most 8 bullets (`MAX_TAILORED_BULLETS`, the
+backstop for content the parse never saw). test/tailoredRender.test.js holds
+all of it in every built-in, both layouts, both switch states, and the DOCX;
+test/skillGroups.test.js the module. At compile time
 a switched-off section is stripped WHOLE, heading included, and a switched-on
 one is guarded on its list (`{{#if strengths.length}}`) - both through ONE
 finder, `findOptionalSections`: the `section-strengths` / `section-soft-skills`
@@ -871,8 +965,21 @@ with the marked sections only, then with none, logged once per template - a
 find must never stop a template rendering. The stored file is never
 rewritten. Per-item skill loops are rewritten into categories only for
 `categorized` (the compile cache is keyed on the markup plus those choices).
-The DOCX draws its own sections from the gated lists, so it never needed the
-finder.
+Two guards run on every template's markup, built-in or uploaded, last:
+`guardEmptyCategoryHeadings` (the flat layout's headless group) and
+`guardEmptyDescriptions` - any element holding only `{{description}}` is
+wrapped in `{{#if description}}`, because every built-in kept an empty,
+margined wrapper for a tailored role's blank description. It takes an inner
+`{{#if description}}{{description}}{{/if}}` whole or not at all (a block that
+opens inside the element and closes outside it is left as written), and a
+result that would stop markup that parsed from parsing is dropped for the
+markup as it was - every rung of `compilableMarkup` runs it, so its fallbacks
+could not rescue a bad cut (test/tailoredRender.test.js). After the compile,
+`enforceSkillCategoryLineBreaks` turns a "Heading: a, b" line into a heading
+block for the headings this render actually has (`skillCategories`, escaped),
+not a fixed list of the library's. The DOCX draws its own sections from the
+gated lists, so it never needed the finder; it prints no paragraph for an
+empty description either.
 
 **The template decides the switches too.** A switch that the generation's
 template has no section for counts as OFF everywhere: read the profile through
@@ -882,9 +989,10 @@ entry point does (`generateResumePDF`, `generatePreviewHTML`,
 template for exactly this) and every tailoring caller does before
 `tailorResume` / `parseTailoredResumeContent` / `finaliseHeldContent` (the two
 resume routes, `/preview-all` - which resolves each profile's template before
-tailoring - and `runResumeTask`). A new output or tailoring path that skips it
-prints a section the PDF does not, or loses the posting's soft skills from the
-summary to a list that never prints.
+tailoring - and `runResumeTask`), and the gallery does too. A new output or
+tailoring path that skips it prints a section the PDF does not, or routes the
+model's soft-skill group to a Soft Skills section the template does not have,
+where it never prints.
 
 Every template carries `skillsLayouts` (a non-empty subset, in the order
 `['categorized','flat']`): the built-ins state it in their JSON (Burgundy Rule
@@ -909,14 +1017,19 @@ their switch is on for the template (it runs after `profileForTemplate`).
 education, skills, strengths, softSkills`. It is applied in that route and
 nowhere else - never a save, a generation, a PDF/DOCX or a prompt -
 and test/sampleDefaults.test.js fails if anything else calls it. `buildPreviewProfile` never throws and takes only the
-four render settings from the draft; nothing is saved, no subscription limit is
+three render settings from the draft; nothing is saved, no subscription limit is
 checked, no model is asked, no credit moves (test/profilePreview.test.js runs
 with every seat locked to prove it). The document carries
 `PREVIEW_CONTENT_SECURITY_POLICY` as a meta right after its doctype - before it
-would flip the page into quirks mode and away from the PDF's layout - and a
-Grouped preview is NOT padded from the library (`padSkillCategories: false`),
-while generation still is. The gallery's `GET /api/templates/:id/preview` sends
-the same policy as a header and takes `?layout=&softSkills=&strengths=`.
+would flip the page into quirks mode and away from the PDF's layout. The
+gallery's `GET /api/templates/:id/preview` sends the same policy as a header
+and takes `?layout=&softSkills=&strengths=`; it draws the sample person
+TAILORED (`SAMPLE_TAILORED_CONTENT`, the same file: a composed title, model
+`skillGroups` ending in a `soft: true` "Professional Skills" group, no role
+descriptions, at most 8 bullets) through the tailored branch, read through
+`profileForTemplate`, so it shows what a generated resume prints;
+test/sampleDefaults.test.js fails if any file but pdfGenerator.ts and
+sampleProfile.ts names either sample.
 
 ## Money
 
@@ -1149,8 +1262,8 @@ with no runnable models (saves keep their asserts) while a run fails with
 `AiUnavailableError`. The Bid Assistant runs on the app default MODEL - a
 record's provider and model name - like any run that names none, and a
 prompt's model override still decides it. It does NOT decide a resume:
-tailoring and cover letter pass `runChoiceWins`, so they run on the model the
-run was charged at, whatever the prompt record says. A JOB ANALYSIS runs on the
+tailoring, its revise pass and the cover letter pass `runChoiceWins`, so they
+run on the model the run was charged at, whatever the prompt record says. A JOB ANALYSIS runs on the
 administrator's analysis model (`analysisModelId`, see "Job analysis runs once"
 below), also with `runChoiceWins`, and the Job Filter makes no model call of its
 own at all - it judges that analysis.
@@ -1202,51 +1315,163 @@ profile's own model costs (`resolveSuppliedContentChoice`).
 **Prompt variables are the code's, strictly.** A feature-linked prompt may use
 exactly the variables `PROMPT_FEATURES` declares for it (`promptService.ts`), and
 that list must equal the keys of the feature's value builder -
-`buildTailorResumePromptValues`, `buildAnalyzeJobDescriptionPromptValues` and
-their siblings in `resumeService.ts`; test/promptVariables.test.js fails when
-they drift, so a new variable goes in both. A variable whose value the CODE
-fixes and is the same on every call is listed in `STABLE_PROMPT_VARIABLES`
-(promptService.ts) - today the analysis prompt's `[[jobFieldList]]` and
-`[[industryList]]` - and promptAssembly keeps it in the cacheable stable part
-instead of starting the call's data at it. Create, update,
-`/prompts/validate` and `/preview` refuse or report any other name (`Unknown
-prompt variables: x`; an unsaved draft names its `featureKey`), and a stored
-record holding one fails at render with `contains unknown variables`. Some
-are REQUIRED (`PromptFeatureDefinition.requiredVariables`,
-`listRequiredPromptVariables(featureKey)`): `jobFieldList` and `industryList`
-for analyze-job-description, `includeStrengths`, `includeSoftSkills` and
-`technicalSkillsLayout` for tailor-resume. Create and update refuse a text
+`buildTailorResumePromptValues`, `buildAnalyzeJobDescriptionPromptValues`,
+`buildJobFactsPromptValues` and their siblings in `resumeService.ts`;
+test/promptVariables.test.js fails when they drift, so a new variable goes in
+both. The features, in this order everywhere (`listPromptFeatureKeys`):
+analysis, Job Facts (Filter) (id `filter-google-sheet-job`, the analysis's
+second call, Extracting), tailoring, Revise Resume Coverage (id
+`revise-resume-coverage`, the tailoring's second call, Building), cover
+letter, the two extractors. The
+built-in texts are the owner's, shipped verbatim in `backend/static/prompts`.
+A variable whose value the CODE fixes and is the same on every call would be
+listed in `STABLE_PROMPT_VARIABLES` (promptService.ts), which promptAssembly
+keeps in the cacheable stable part instead of starting the call's data at it -
+EMPTY today: the analysis's job field and industry lists were the two, and
+neither is a variable now (the job field list is code-owned text on the facts
+call, below; the industry is derived). Create, update, `/prompts/validate` and
+`/preview` refuse or report any other name (`Unknown prompt variables: x`; an
+unsaved draft names its `featureKey`). Some are REQUIRED - contract markers, a
+record without which cannot produce what the code parses
+(`PromptFeatureDefinition.requiredVariables`,
+`listRequiredPromptVariables(featureKey)`): `jobDescription` for
+analyze-job-description and for filter-google-sheet-job, `profileJson` for
+generate-cover-letter, `profileJson`, `jobAnalysisJson` and
+`softSkillGroupHeading` for tailor-resume (the parse finds the soft-skill group
+by that heading), and `draftJson` and `missingTermsJson` for
+revise-resume-coverage. Create and update refuse a text
 without them (400 `Missing required prompt variables: a, b. Every <Label>
 prompt must use [[a]] and [[b]].`); validate and preview report them
 (`validation.missingVariables: string[]`; `allowedVariables[].required: true`).
-A STORED record without them - edited before the rule, or by hand - is listed
+A STORED FEATURE record without them, OR naming a variable the code no longer
+supplies (`validation.unknownVariables` - an analysis edit asking for the old
+`[[jobFieldList]]`, a filter edit from before its retirement reading
+`[[jobContent]]`, a tailoring edit or per-profile variant naming the old
+`[[includeStrengths]]`/`[[includeSoftSkills]]`/`[[technicalSkillsLayout]]`
+switches or `[[hardSkillsJson]]`) - edited before the rule, or by hand - is listed
 `needsUpdate: true` and never run: at runtime (resolvePromptByExactId /
 ByRuntimeId, renderPrompt*, renderPromptSegmentsByExactId) promptService's
 `usableAtRuntime` puts the feature's built-in in its place - the admin's edit
-of it when complete, else the shipped file - and logs `[prompts] The prompt
+of it when usable, else the shipped file - and logs `[prompts] The prompt
 "<name>" (<id>) does not use [[...]], which every <Label> prompt must; the
 built-in <Label> prompt runs instead until it is updated under Admin ->
-Prompts.` once per record id and updatedAt. So no turn carries an override for
-a prompt that predates a variable. The
-tailor-resume prompt gets the profile's section choices as three words -
-`[[includeStrengths]]` / `[[includeSoftSkills]]` yes|no and
-`[[technicalSkillsLayout]]` grouped|plain (`buildResumeSectionPromptValues`) -
-never inside `profileJson`, and referenced AFTER it in the shipped prompt so the
-cacheable stable part is byte-identical. The switches do decide what
-`profileJson` HOLDS: `buildPromptProfile` sends `strengths` only while
-Strengths is on (off means not given to the model, tailoring and cover letter
-alike), and never sends `softSkills`, which the code lists after the answer.
-Whichever record runs, `buildFinalSkillOverride(profile)` - a function of the
-profile, not a constant - is appended to the user body of EVERY tailor-resume
-turn and states all three; `parseTailoredResumeContent` then enforces them
-against the profile as it is NOW (strengths `[]` when off, never a made-up "Core Strength";
-the profile's own soft skills first when on; a Plain hard-skill list with no
-library padding; the summary's `Working style:` sentence only while Soft Skills
-is off). `runResumeTask` runs client-held preview content through the same
-parse (`finaliseHeldContent`), as `/resume/generate` does, so a switch flipped
-between preview and batch is honoured. Nothing about a profile is in a
-posting's analysis, on purpose: the analysis reads the posting, not the
-profile, and one analysis serves every profile, for ever (below).
+Prompts.` (or `uses [[x]], which this version does not supply`, or `dates
+from an older version of the <Label> prompt`, several joined by `, and`) once
+per record id and updatedAt. Variables alone cannot catch every older edit:
+an analysis edit from before the job field lists, or a Job Filter edit from
+before its retirement, names only `[[jobDescription]]`, as the owner's new
+texts do. So a feature whose contract changed carries `contractSince`
+(`OWNER_PROMPTS_CONTRACT`, the shipped analysis, job facts and tailoring
+files' `updatedAt` - promptVariables.test.js holds them equal), and a STORED
+record of it saved before then - the admin's edit of the built-in or a
+variant, never the shipped file, and an `updatedAt` that is no time counts as
+before - is `needsUpdate` and `savedForOlderVersion` whatever its variables;
+any save clears it. The cover letter's contract did not change, so its edits
+are not dated. That is how every edit written for an older prompt contract
+gives way to the owner's texts, with no migration. An UNATTACHED record is never flagged (it has no built-in to give
+way to): one naming a variable it does not declare still fails at render with
+`contains unknown variables`. So no turn carries an override for a prompt
+that predates a variable. FOUR features have one prompt each
+(`SINGLE_PROMPT_FEATURES`, `listSinglePromptFeatures`): the analysis, the job
+facts, the revise pass and the cover letter, each run by its exact id on a
+model the code chooses (`runChoiceWins`) - so `createPrompt` refuses a variant (and moving a
+prompt into one) and `activatePrompt` an old variant, each in its feature's
+own sentence, a stale `activePrompts` entry for one is ignored (and dropped on
+the next write), and a variant an older build saved is listed, never active.
+`profileSettings.coverLetterPromptId` is gone (no page ever set it; a save
+drops a stored one): `generateCoverLetter` runs the built-in. A profile's
+`resumePromptId` naming a record that is gone (a deleted custom prompt) or one
+that is not a Tailor Resume prompt runs the built-in `tailor-resume`, warned
+once per profile and id (resumeService `resolveProfileResumePromptId`), rather
+than failing every build with `Prompt "<id>" not found`.
+
+The tailoring's values (`buildTailorResumePromptValues`) are the posting's
+analysis in its own spelling and nothing else - no skill library, no profile
+setting - built by services/tailorContract.ts `buildTailorLists`, which reads an
+analysis of either shape (a posting is analysed once, ever, so most are older):
+`jobAnalysisJson` the analysis prompt's own schema (no posting text, facts or
+duplicate lists), `targetRoleTitle` = `jobTitle` = `jobMeta.title`,
+`skillsJSON` its abilities, tools, technologies and protocols,
+`topSkillsJson` the five it leans on (`pickTopSkills`: +6 must-include, +3 a
+mention in a requirements block, +1 a mention, capped at 6, up to +3 for
+coming early; a one- or two-character name like Go matched as spelled),
+`keywordsJson` its soft skills, must-include terms and past-tense action verbs
+not banned, `conceptKeywordsJson` its architecture patterns, methodologies and
+buzzwords, `conceptToolsJson` config/conceptTools.ts's rows its terms name
+(the posting's spelling of the concept, the tools shuffled), the
+responsibilities, the domain knowledge alone, and `softSkillGroupHeading` one
+of services/skillGroups.ts's six. The three per-resume draws - the heading,
+the tools' order, the title's shape - are SEEDED (`tailorSeed` =
+sha256(profile id + posting hash), `mulberry32`, one sequence per draw), never
+`Math.random()`: the same resume asked again is the same question and a cache
+hit, and the parse can redo them. The section switches and layout are not
+values: they decide how the answer is DRAWN. The Strengths switch reaches the
+model only as `profileJson`'s `strengths` (sent while on), and `softSkills`
+is never sent. Nothing is appended to a tailor-resume turn.
+
+`parseTailoredResumeContent` reads an answer - fresh, cached, or held by a page
+- against the profile as it is NOW, idempotently: the title is the profile's
+headline (else the model's, else the latest role's title - never the kind
+alone; with none of them it is '' and the render prints getResumeTitle's
+fallback) with the posting's role KIND (`roleKind`: any " - "/","/":"/"("
+tail cut, then level words taken off its EDGES only - a leading Senior/Staff/
+Lead..., a trailing II/3 - so "Tech Lead" keeps its Lead) composed on in one
+of six seeded shapes unless the headline already says it
+(`composeTailoredTitle`); roles keep
+the model's order with their five facts restored from the profile, a role the
+profile lacks dropped, one the answer left out put back with its own bullets
+(`restoreRoles`; of two stints with one company and title, the one whose
+dates agree with the answer's - `closestStint`: start before end, the same
+text before the same years, else profile order - so a profile typed oldest
+first never swaps them), `description` '' always, and bullets sanitised and capped at
+8 - the eight with the most distinct checklist terms (`capBullets`); an empty
+role gets the profile's own bullets. The summary is only made safe (spelled-out
+years, one to twenty and both ends of a range, become numerals; a compound
+like "Twenty-five" or "twenty one" is left as written); no sentence is added. `skillGroups` are kept as the
+model wrote them (shape only), the soft group marked `soft: true` and
+`softSkillGroupHeading` stored; `hardSkills` = `skills` the technical groups,
+`softSkills` the soft group's while Soft Skills is on for the template, else
+[]; strengths the profile's own while on; the unconfirmed lists always [].
+With no `skillGroups` in the answer, the profile's own grouping or skills.
+`dashBackstop` takes em/en dashes and a spaced `--` out of the summary,
+bullets and cover letter (a range becomes a hyphen - a dash whose words on
+both sides carry a digit, so `$5M–$10M`, `50%–80%` and `Q1–Q3` stay ranges,
+never lists), and
+`generateCoverLetter`'s result. `runResumeTask` runs client-held preview content
+through the same parse (`finaliseHeldContent`), as `/resume/generate` does.
+
+**The revise pass** (owner's `revise-resume-coverage`; services/reviseCoverage.ts,
+called inside `tailorResume`, so all five callers get it) runs after a FRESH
+tailoring only - never on a cache hit or on content a page sent back - when
+TAILOR_REVISE_PASS is on and the draft is missing a checklist term, or its
+bullets carry fewer than five figures and one could carry another (a figure:
+a number not glued to a letter, so S3, EC2, p99 are names). The checklist
+(`TailorLists.checklist`): the top five, the must-include terms, the
+concepts, the soft skills, the skills, the verbs - not responsibilities or
+domain knowledge. `missingTermsJson` is the ones the summary and bullets lack,
+in that order, never one with a banned word or opener
+(`RESUME_BANNED_WORDS`/`RESUME_BANNED_OPENERS`, which the revise prompt bans
+outright), at most TAILOR_REVISE_MAX_TERMS; `figuresNote` the code's sentence
+(`figuresNote`, its wording in the cache key) or ''. The call
+(`callSite: 'revise-resume-coverage'`, the seat's TAILOR timeout) runs on the
+resume's choice with `runChoiceWins` and the same signal, inside the queue's
+provider pin. `mergeRevision` reads only a non-empty `summary` (not the
+prompt's placeholder) and whole roles' bullets, the n-th returned (company,
+title) to the n-th draft role with that pair when the answer returned all of
+them - else, since the prompt lists only the roles it changed and the draft
+it reads has no dates, the stint whose bullets it repeats most
+(`stintSharingMost`; none shared, or a tie, and it is ignored) - and takes a line only when the
+finishing would print all of it (resumeService's `printsWhole`; the revise
+prompt has no pronoun rule, and the sanitiser drops a sentence with "we" or
+"our"): such a summary keeps the draft's, such a bullet - or a repeat - the
+draft's bullet at its place when the role came back with as many, else the
+role keeps its draft bullets; a part returned as the draft has it is no
+change. The result is finished by the same parse. An unparsable or empty answer changes nothing; a seat failure
+leaves the draft as the resume (`[tailor] The revise pass failed ...`, once
+per model and reason, and nothing cached); an abort is passed on. Nothing
+about a profile is in a posting's analysis, on purpose: the analysis reads the
+posting, not the profile, and one analysis serves every profile, for ever
+(below).
 
 **What a failure may tell whom** (`middleware/publicError.ts`). Most people
 using an install do not run its server, so a response never names a seat, CLI,
@@ -1513,27 +1738,39 @@ pinned by test/tailorCache.test.js). `tailorResume` and `generateCoverLetter`
 take an optional `TailorCacheContext { analysisId, templateId }` and look the
 answer up BEFORE their model call; every caller that has the posting's stored
 analysis passes one (the queue task, /resume/preview, /preview-all,
-/resume/generate). `tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION`, the
-kind, the profile as the call sees it (after `profileForTemplate`) minus
-`createdAt`/`updatedAt`, canonical JSON, the template id, the analysis id, the
-provider type, model record id and model name, the prompt record's id and the
-SHA-256 of its text, the SHA-256 of the rendered `promptValues` plus the
-`appendToUserBody` text (built BEFORE the lookup - they read the shared skill
-library, `buildLibraryAugmentedPromptLists`, so a library add or confirm that
-changes a posting's checklist is a miss, and so is any change to the code that
-builds them, with no TAILOR_CACHE_VERSION bump), and (cover letter) the company
-and role. No tailoring is cached without an analysis id. What is stored is the
-model's RAW answer, kept only once it parsed AND only when the asked-for model
-wrote it: `CompletionResult.fellBack` (types.ts; set by the Claude seat when
-`--fallback-model` answered - `answeredByFallback`, by model FAMILY, never a
-string compare, since an alias comes back as a full id - and by Gemini when
-another family answered, `geminiAnsweredByFallback`, `auto` never) makes
-`tailorResume` / `generateCoverLetter` use the answer and skip the write
-(`[tailor-cache] Not keeping this ...`); they call `createPromptCompletionResult`,
-the variant of `createPromptCompletion` that answers the whole result. A hit
-runs `parseTailoredResumeContent` against the profile again, and an answer that
-no longer parses is a miss. The charge never depends on it: a resume is priced
-at submission. Read and write failures are a miss, warned once. Every caller and
+/resume/generate). `tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION` (2:
+the model writes the skills block, roles are restored and capped, and a
+resume's answer may be its revised one), the kind, the profile as the call
+sees it (after `profileForTemplate`) minus `createdAt`/`updatedAt` AND
+`profileSettings` (`profileFingerprint`: the layout and the Soft Skills switch
+only decide how the answer is drawn, so flipping them is a hit; the Strengths
+switch reaches the key through `profileJson`, the chosen prompt and model
+through their own fields), canonical JSON, the template id, the analysis id,
+the provider type, model record id and model name, the prompt record's id and
+the SHA-256 of its text, the SHA-256 of the rendered `promptValues` plus any
+`appendToUserBody` text (built BEFORE the lookup, from the analysis alone - no
+skill library, so a library add or confirm changes no key - and any change to
+the code that builds them is a miss with no TAILOR_CACHE_VERSION bump), and
+`extra`: for a resume, the revise prompt's id and the SHA-256 of its text, the
+figures sentence's wording (`FIGURES_NOTE_WORDING`) and the
+TAILOR_REVISE_PASS / TAILOR_REVISE_MAX_TERMS values; for a cover letter, the
+company and role. No tailoring is cached without an analysis id. What is stored
+for a resume is the resume as the model ended it - the tailoring call's RAW
+answer, or, when the revise pass changed it, the parsed draft with the
+revision folded in - so a hit makes no tailoring call AND no revise call. It
+is kept only once it parsed, only when the asked-for model wrote it - the
+tailoring and the revision alike: `CompletionResult.fellBack` (types.ts; set by
+the Claude seat when `--fallback-model` answered - `answeredByFallback`, by
+model FAMILY, never a string compare, since an alias comes back as a full id -
+and by Gemini when another family answered, `geminiAnsweredByFallback`, `auto`
+never) makes `tailorResume` / `generateCoverLetter` use the answer and skip the
+write (`[tailor-cache] Not keeping this ...`) - and never when the revise call
+failed (the next build asks for the revision again). They call
+`createPromptCompletionResult`, the variant of `createPromptCompletion` that
+answers the whole result. A hit runs `parseTailoredResumeContent` against the
+profile again (idempotent on its own output), and an answer that no longer
+parses is a miss. The charge never depends on it: a resume is priced at
+submission. Read and write failures are a miss, warned once. Every caller and
 both rules are pinned by test/tailorCache.test.js through the real routes. `TAILOR_CACHE_DAYS` (operational.ts, default 30, 1-3650)
 prunes on `created_at` at boot and daily (`startTailorCachePrune` from
 index.ts, unref'd).
@@ -1541,11 +1778,13 @@ index.ts, unref'd).
 ## Job analysis runs once
 
 **A posting is analysed exactly once, ever** (owner decisions J0, J1, J3, J5,
-J8, P5, P7; PLAN check 1). `services/jobAnalysis/gate.ts`'s
+J8, O1, P5, P7; PLAN check 1). `services/jobAnalysis/gate.ts`'s
 `getOrCreateAnalysis({ jd, link, sheetRow?, requestedBy?, storedOnly?, signal? })`
-is the only function that runs the analysis prompt - test/analysisGate.test.js
-reads every source file and fails on any other that names
-`analyze-job-description`, builds or parses its completion, or keeps an
+is the only function that runs the analysis's two prompts -
+test/analysisGate.test.js reads every source file and fails on any other that
+names `analyze-job-description` or `filter-google-sheet-job`, builds or parses
+their completions (`build*PromptValues`, `parseJobAnalysisKeywords`,
+`parseJobFacts`, `composeJobAnalysis`), sends the job field line, or keeps an
 analysis path of its own. It answers, in order: (0) a Google Sheet row's own
 analysis, read BY THE SERVER from the row's protected Analysis cell: the
 STORED analysis the cell's id names (`SheetRowAnalysis` is `{ analysisId,
@@ -1569,18 +1808,38 @@ lower-cased, http/https and a default port folded, fragment, `utm_*`/`gclid`/
 folded) and `contentHash` (SHA-256 hex); (2) the analysis of the same posting
 already in flight in this process (a map keyed under both keys; one caller's
 abort releases that caller only, the call is aborted when the last waiter
-leaves); (3) ONE model call on the analysis model, stored with
-`INSERT ... ON CONFLICT DO NOTHING` and read back. A call that fails stores
-nothing - the only way a posting reaches a model twice, bar a stored row
+leaves); (3) ONE analysis on the analysis model: TWO calls in parallel (O1) -
+the analysis prompt (`callSite` `analyze-job-description`, the keywords) and
+the Job Facts (Filter) prompt (`callSite` `filter-google-sheet-job`, the
+facts, `temperature 0`, `maxTokens` 1000), both `runChoiceWins`,
+`useExactPromptId`, JSON - composed into one row, stored with
+`INSERT ... ON CONFLICT DO NOTHING` and read back. Either failing (a seat, an
+answer that does not parse) aborts the other (a controller of their own under
+the shared one, which the last waiter leaving still aborts) and stores
+nothing - the only way a posting reaches a model twice, bar a facts answer
+that names no job field at all (the key left out, null or blank - not
+`unclassified`, which is an answer): the facts call is asked ONCE more, then
+the posting is stored `unclassified` with an `[analysis] ... named no job
+field, asked twice` warning naming its content hash; and bar a stored row
 whose `analysis_json` cannot be read as an object (damaged outside the
-program): it reads as absent, so its posting is analysed once more and the
-answer written into THAT row (`repairUnreadableRow`, under an IMMEDIATE
-transaction), never once per request. Nothing about a
-model, a prompt, a profile or an account is part of a posting's identity, so
-a prompt edit or a new analysis model reaches only postings never analysed
-before, and there is no re-analyse anywhere (the admin Prompt Test page's
-`/resume/analyze-prompt-test` goes through the gate too, and ignores the
-`promptId` and `model` it is sent).
+program): it reads as absent, so its posting is analysed once more (both
+calls) and the answer written into THAT row (`repairUnreadableRow`, under an
+IMMEDIATE transaction), never once per request. The job field is the CODE's
+question, never a variable (services/jobAnalysis/jobFieldLine.ts):
+`JOB_FIELD_PREAMBLE` - "ONE MORE FIELD ... "job_field": exactly ONE id from
+the JOB FIELDS list" and `renderJobFieldListForPrompt()` - goes BEFORE the
+facts record's stable part through `CreatePromptCompletionInput.systemPreamble`
+(promptExecution.ts `runAssembled`, the same order in the fold for a seat
+without system blocks), so it is cached and no edit can drop it, and the
+one-line `JOB_FIELD_REMINDER` after the posting through `appendToUserBody`.
+`prompt_hash` is SHA-256 over both records' texts and those two constants.
+Nothing about a model, a prompt, a profile or an account is part of a
+posting's identity, so an edit of either prompt or a new analysis model
+reaches only postings never analysed before - a posting analysed by an older
+build keeps that analysis, and every reader takes both shapes - and there is
+no re-analyse anywhere (the admin Prompt Test page's
+`/resume/analyze-prompt-test` goes through the gate too, makes both calls, and
+ignores the `promptId` and `model` it is sent).
 
 **The store** is `job_analyses` (database/sqlite.ts; `jobAnalysisRepository.ts`,
 read and written only through the gate): `content_hash` UNIQUE, `link_key`
@@ -1615,20 +1874,34 @@ analysis prompts are gone (`profileSettings.analyzeJobPromptId` is dropped on
 save, a variant cannot be created or activated, an old one is listed but never
 active).
 
-**The analysis** (`JobAnalysis`, types/template.ts) gained `jobField` (one id
-from `config/jobFields.ts` - the owner's list at bullet level, areas 1-8, 10
-and 11; area 9 is not offered - else `unclassified`, checked in code by
-`normalizeJobFieldId`), `salary` `{ min, max, currency, period, raw }` (only
-what the posting states; `facts.ts`), and `filter` (the Job Filter's facts;
-seniority is `jobMeta.seniority`). An off-list filter word becomes
+**The analysis** (`JobAnalysis`, types/template.ts) is the keyword half -
+`parseJobAnalysisKeywords` / `normalizeJobAnalysisKeywords` (resumeService):
+lists cleaned, soft skills in the posting's own order (never re-sorted),
+responsibilities as the noun phrases the prompt wrote (never reworded around a
+leading verb; a trailing full stop dropped), an employer-voiced or meta phrase
+dropped - `RESUME_META_TAILORING_PATTERN` is "maps to", "target role",
+"keyword coverage", "for this role", "aligned with the job" and their kin,
+never the bare "ATS" or "job posting" - and `jobMeta.seniority` as answered
+(`unknown` included); a `jobField`, `industry`, `salary` or `filter` key in
+that answer is IGNORED - plus the facts half, `parseJobFacts` /
+facts.ts's `normalizeJobFacts` over the facts call's TOP-LEVEL snake_case
+answer (`_confidence` companions ignored), composed by `composeJobAnalysis`:
+`jobField` (one id from `config/jobFields.ts` - the owner's list at bullet
+level, areas 1-8, 10 and 11; area 9 is not offered - else `unclassified`,
+checked in code by `normalizeJobFieldId`), `salary` `{ min, max, currency,
+period, raw }` (only what the posting states; the facts prompt asks for no
+currency, so a new analysis's is null and never inferred - `formatSalary`
+then prints the bounds without one), and `filter` (the Job Filter's facts,
+with `seniority` - the facts call's word, one of `SENIORITY_VALUES` else
+`not_specified`; OPTIONAL on `JobFilterFacts` and never defaulted, so an
+analysis stored before has none). An off-list filter word becomes
 `not_specified` - except a clearance, which fails CLOSED (`normalizeClearance`:
 an unknown word is kept, and fails the filter; only an absent or empty one is
 `none`), and words are folded across spaces, `-` and `/` (`TS/SCI` is
-`ts_sci`). Since v6 it also has `industry` (one id from
+`ts_sci`). An analysis stored in v6 may carry `industry` (one id from
 `config/industries.ts`, or `not_specified`; `normalizeIndustry`: an id, a
-label, a known short form or a keyword, else `other`) - OPTIONAL, and set by
-`normalizeJobAnalysisResponse` ONLY when the answer has the key, so an analysis
-stored (or a sheet cell written) before it stays without one. Its industry,
+label, a known short form or a keyword, else `other`); a new one NEVER does -
+its industry is the facts call's company category, derived when read. Its industry,
 job type and clearance are derived when READ, by facts.ts's pure
 `industryOf` (its own `industry` whenever the key is there; else its filter's
 company category, `COMPANY_CATEGORY_INDUSTRY`; else keywords in its free-text
@@ -1638,32 +1911,44 @@ company category, `COMPANY_CATEGORY_INDUSTRY`; else keywords in its free-text
 `analysisFactsOf` is all three, and every place that shows them uses it.
 NOTHING re-asks a model for an older analysis's industry, and nothing is
 written back into one. The tailoring prompt is given none of the four
-(`jobField`, `industry`, `salary`, `filter` are stripped by
-`buildTailorResumePromptValues`, so its values and every tailor-cache key are
-what they were - pinned by test/tokenBudget.test.js; `jobMeta.industry`, the
-posting's own word, is in it as it always was). The analysis prompt's variables
-are `jobFieldList` and `industryList` (both stable, before `[[jobLink]]`, so
-the cached system part is byte-identical across postings - test pins it),
-`jobLink` and `jobDescription`, and the two lists are REQUIRED: an
-administrator's record without either is refused on save and, stored, is
-`needsUpdate` and never run - the shipped prompt runs in its place (see "Prompt
-variables are the code's, strictly" above), so the gate appends nothing to an
-analysis turn. The analysis model is
+(`jobField`, `industry`, `salary`, `filter` are left out of
+`jobAnalysisJson` by `buildTailorResumePromptValues`' projection,
+tailorContract.ts `analysisForPrompt`, so none of them changes its values or
+any tailor-cache key - pinned by test/tokenBudget.test.js; `jobMeta.industry`,
+the posting's own word, is in it as it always was, and `filter.seniority` goes
+with `filter` - the tailoring prompt sees only `jobMeta.seniority`). Both prompts' variables are `jobDescription` (REQUIRED) and
+`jobLink` (offered; the owner's texts use the posting alone, at the end, so
+each call's cached system part is byte-identical across postings - test
+pins it). An administrator's record without the posting, or naming the old
+`[[jobFieldList]]` / `[[industryList]]` / `[[jobContent]]`, is refused on save
+and, stored, is `needsUpdate` and never run - so is any stored edit of either
+saved before the owner's texts (`contractSince`), however few variables it
+names - the shipped prompt runs in its place (see "Prompt variables are the
+code's, strictly" above); the analysis
+turn carries no addendum. The analysis model is
 `analysisModelId` in the admin settings ('' = the app default model; a stale
 one falls back with a warning; a save CHANGING it to a model that cannot run
 is refused by name) - never in an ordinary account's payload.
 
 **The Job Filter** (routes/jobs.ts) makes no model call of its own (J8): a row
 whose link is stored is judged on that analysis with no page fetch; otherwise
-the page is fetched and handed to the gate. The verdict is
-`evaluateJobFilterAnalysis(jobFilterAnalysisOf(analysis))`. It runs on the
+the page is fetched and handed to the gate - whose facts call is the owner's
+filter prompt. The verdict is
+`evaluateJobFilterAnalysis(jobFilterAnalysisOf(analysis))`, seniority read as
+`filter.seniority ?? jobMeta.seniority` (only the facts call's list has intern,
+director and VP, which the filter fails; an older analysis's `jobMeta.seniority`
+was asked in those same words). It runs on the
 caller's own sheet only (the tab named, else All, a job tab only - 409
 `not-job-tab` otherwise), reads C:E once, judges EVERY row with a link and
 answers each to the page (`rows: [{ row, company, title, link, result:
 'Pass'|'Fail'|null, reason, reused, error? }]`), and writes NOTHING into the
 sheet - no verdict, no analysis cell (owner's default). The
-`filter-google-sheet-job` prompt is retired (an edited copy of it is not
-listed), and so are the `AI_*_TIMEOUT_MS_FILTER` budgets.
+`filter-google-sheet-job` prompt is back as the analysis's facts call, labelled
+"Job Facts (Filter)" (an edit an older build stored of it is listed as its
+built-in edit, flagged `needsUpdate` - it reads `[[jobContent]]` or was saved
+before the owner's texts); the
+`AI_*_TIMEOUT_MS_FILTER` budgets stay retired - the facts call takes the
+seat's default budget.
 
 **The account's own sheet** (owner decisions S1-S3;
 `services/sheets/accountSheet.ts`). Every job route - Build Resumes' sheet
@@ -1806,10 +2091,17 @@ sends its `analysisId` to preview, preview-all and every batch; a change of
 company, role, profile or model never asks again (the held analysis is NOT
 reset with the other outputs), an edited description is another posting, and
 a 400 from a request that named it lets it go (`dropsHeldAnalysis`).
-components/AnalysisFacts shows its title, job field label and salary
-(`formatSalary`, a copy of the server's) under the description, in both
-preview dialogs and on Prompt Test, which has no prompt or model select any
-more. The sheet panel sends `sheet: { tabName }` (the account's own sheet,
+components/AnalysisFacts shows its title, job field label, job type,
+seniority, clearance and salary - each only when the analysis says it
+(lib/jobAnalysis.ts `analysisFacts`: `formatSalary`, `JOB_TYPE_LABELS`,
+`clearanceRequiredOf` and `seniorityOf` - the facts call's
+`filter.seniority`, else an older analysis's `jobMeta.seniority`, what the
+Job Filter judges - each a copy of the server's, run against it by
+test/frontendAnalysis.test.js) under the description, in both preview
+dialogs and on Prompt Test, which has no prompt or model select any more,
+names both prompts, and marks in the posting only the keyword half
+(lib/analysisHighlights.ts `collectHighlightTerms`: never `jobField`,
+`industry`, `salary` or `filter`, which once marked every "us" in "join us"). The sheet panel sends `sheet: { tabName }` (the account's own sheet,
 the server's default - there is no other) and each row's `jobLink`, never a
 cell; it reads the rows' C:F, then G:L in a SECOND, best-effort range read (a
 job tab narrower than twelve columns refuses a range past its grid - the rows
@@ -1833,16 +2125,28 @@ verdict (lib/jobFilterDisplay.ts - its reason words are drift-checked against
 services/jobFilter.ts's reasons by the same test) and sends only `{ tabName,
 startRow, endRow? }`. Admin -> Settings ->
 General has the Analysis model select (its own Save; a stored model that
-stopped running stays listed as "cannot run here"); Admin -> Prompts offers no
-New Variant, Duplicate, Save Active or model override for the analysis
-feature; it marks a record the server sends `needsUpdate` (a *Needs update*
-pill and *Not run: it does not use [[...]].*), pills each required variable
+stopped running stays listed as "cannot run here"); Admin -> Prompts lists
+the features in the server's order (`FEATURE_ORDER`, held to
+`listPromptFeatureKeys`) and offers no New Variant, Duplicate, Save Active or
+model override for the four single-prompt features, saying why in each one's
+own sentences (`SINGLE_PROMPT_NOTES`: `about`, and `model` in the override's
+place); it marks a record the server sends `needsUpdate` (a *Needs update*
+pill and `notRunLine` - *Not run: it does not use [[...]]*, *... uses [[x]],
+which this version does not supply*, *... dates from an older version of this
+prompt* from the server's `savedForOlderVersion`, or several), pills each required variable
 *Required*, and in the editor says what runs in a flagged record's place and
-what the text as typed lacks - refusing Save, with no request sent, in the
-server's own sentence. Those decisions are lib/promptRequirements.ts
-(`requiredVariables` read from `allowedVariables[].required`,
-`missingRequiredVariables`, `missingVariablesSentence`, `needsUpdateNote`; no
-runtime import), which test/frontendAnalysis.test.js holds to
+what the text as typed lacks or names that it is not given - refusing Save,
+with no request sent, in the server's own sentence and order (`saveRefusal`:
+an unknown variable first, then a missing one; a feature's prompt only - an
+unattached one's variables are its own rows, which the server tidies first).
+Those decisions are lib/promptRequirements.ts (`SINGLE_PROMPT_FEATURES` /
+`isSinglePromptFeature`, a copy of the server's `listSinglePromptFeatures`;
+`requiredVariables` read from `allowedVariables[].required`,
+`missingRequiredVariables`, `unknownVariables`, `missingVariablesSentence`,
+`unknownVariablesSentence`, `needsUpdateNote` - which names what is missing,
+what the server no longer supplies and an older version's edit, which "saved
+again" clears; no runtime import), which
+test/frontendAnalysis.test.js holds to `listSinglePromptFeatures`,
 `listRequiredPromptVariables`, `validatePromptContent` and `updatePrompt`'s
 refusal. The page loads its model options with `adminApi.getSettings` (there
 is no `/api/admin/ai-models` any more). The profile

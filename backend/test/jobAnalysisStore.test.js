@@ -270,24 +270,32 @@ test("the industries are the owner's closed list with stable ids; an unknown wor
     assert.equal(facts.normalizeIndustry(answer), expected, String(answer));
   }
 
-  const list = industries.renderIndustryListForPrompt();
-  assert.equal(list, industries.renderIndustryListForPrompt(), 'the same text every time');
-  for (const entry of industries.INDUSTRIES) assert.ok(list.includes(`- ${entry.id}: ${entry.label}`), entry.id);
-  assert.match(list, /- not_specified: [^\n]+$/);
+  // The list reaches no model now: an analysis's industry is derived (below).
+  assert.equal(industries.renderIndustryListForPrompt, undefined);
   assert.deepEqual(industries.listIndustriesForClient().at(-1), { id: 'not_specified', label: 'Not specified' });
 });
 
-test('an analysis has an industry only when its answer had one: an older analysis or row stays without', () => {
+test('a new analysis never carries an industry - it is derived - and one stored with an industry keeps it', () => {
   useTempStorage('job-analyses-industry');
-  const { normalizeJobAnalysisResponse } = require('../dist/services/resumeService');
+  const { normalizeJobAnalysisKeywords, composeJobAnalysis } = require('../dist/services/resumeService');
+  const { normalizeJobFacts } = require('../dist/services/jobAnalysis/facts');
   const answer = analysis();
   delete answer.sourceJobDescription;
 
-  const older = normalizeJobAnalysisResponse(answer, 'A posting.');
-  assert.equal('industry' in older, false, 'no key, not a default');
-  assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: 'Insurance' }, 'A posting.').industry, 'insurance');
-  assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: null }, 'A posting.').industry, 'not_specified');
-  assert.equal(normalizeJobAnalysisResponse({ ...answer, industry: 'Asteroid farming' }, 'A posting.').industry, 'other');
+  // An analysis answer that still says an industry (an edit written for the
+  // older prompt) is not read for it, and the composed analysis has no key.
+  const made = composeJobAnalysis(
+    normalizeJobAnalysisKeywords({ ...answer, industry: 'Insurance' }, 'A posting.'),
+    normalizeJobFacts({ job_field: 'backend', company_category: 'insurtech' })
+  );
+  assert.equal('industry' in made, false, 'no key, not a default');
+  assert.equal(facts.industryOf(made), 'insurance', 'derived from the company category');
+
+  // An analysis stored while the prompt asked for one (v6) keeps its own,
+  // checked against the list when it was stored.
+  assert.equal(facts.normalizeIndustry('Insurance'), 'insurance');
+  assert.equal(facts.normalizeIndustry(null), 'not_specified');
+  assert.equal(facts.normalizeIndustry('Asteroid farming'), 'other');
 
   // Stored and read back, each as it was.
   const without = insert('A posting stored before industries.', undefined);

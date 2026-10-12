@@ -4,7 +4,9 @@ import type { AIProvider } from './template';
 export type PromptResponseFormat = 'json' | 'text';
 export type PromptFeatureKey =
   | 'analyze-job-description'
+  | 'filter-google-sheet-job'
   | 'tailor-resume'
+  | 'revise-resume-coverage'
   | 'generate-cover-letter'
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume';
@@ -56,12 +58,24 @@ export interface PromptSummary {
   allowedVariables: PromptVariableDefinition[];
   validation: PromptValidation;
   /**
-   * Present (true) only on a stored record that lacks one of its feature's
-   * required variables (`validation.missingVariables` names them). Such a
-   * record is never run: the feature's built-in prompt runs in its place
-   * until an administrator adds them under Admin -> Prompts.
+   * Present (true) only on a stored FEATURE record that lacks one of its
+   * feature's required variables (`validation.missingVariables` names them),
+   * uses one its feature's code does not supply
+   * (`validation.unknownVariables`), or was saved before its feature's
+   * prompt contract changed (`savedForOlderVersion`). Such a record is never
+   * run: the feature's built-in prompt runs in its place until an
+   * administrator fixes it under Admin -> Prompts. An unattached record is
+   * never flagged - it has no built-in to give way to.
    */
   needsUpdate?: true;
+  /**
+   * Present (true) on a stored feature record saved before its feature's
+   * current prompt contract took effect (services/promptService.ts
+   * `contractSince`) - always with `needsUpdate`. Its variables may all be
+   * ones the code still supplies: it is its date that says it was written for
+   * the older prompt. Saving it again clears it.
+   */
+  savedForOlderVersion?: true;
   isBuiltIn: boolean;
   isActiveForFeature?: boolean;
   usage?: string;

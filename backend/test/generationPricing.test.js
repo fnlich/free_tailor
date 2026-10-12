@@ -440,8 +440,12 @@ const ANALYSIS = {
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
 };
 
-/** A Claude seat that answers every tailoring with a summary naming the model that wrote it. */
-function claudeSeatNamingItsModel(calls) {
+/**
+ * A Claude seat that answers every tailoring with a summary naming the model
+ * that wrote it. `calls` gets each TAILORING's model; `sites` every call's
+ * call site, so a revise pass or any other call shows up.
+ */
+function claudeSeatNamingItsModel(calls, sites = []) {
   const ai = require('../dist/services/ai/index');
   ai.resetRegistryForTests();
   ai.registerAdapter('claude-cli', () => ({
@@ -453,7 +457,8 @@ function claudeSeatNamingItsModel(calls) {
     defaultModelName: () => 'sonnet',
     health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
     async complete(request) {
-      calls.push(request.modelName);
+      sites.push(request.callSite);
+      if (request.callSite === 'tailor-resume') calls.push(request.modelName);
       const text = JSON.stringify({ summary: `Written by ${request.modelName}.`, hardSkills: [], softSkills: [], experience: [] });
       return { text, resolvedModel: request.modelName, providerId: 'claude-cli', droppedParams: [], latencyMs: 1 };
     },
@@ -464,7 +469,8 @@ function claudeSeatNamingItsModel(calls) {
 test('a preview hands back a token naming the model that wrote it, and a re-render of supplied content gets none', async () => {
   const server = await serve('preview-token', { seeds: true });
   const calls = [];
-  const restore = claudeSeatNamingItsModel(calls);
+  const sites = [];
+  const restore = claudeSeatNamingItsModel(calls, sites);
   const { readPreviewToken } = require('../dist/services/credits/previewToken');
   // The page names the posting's stored analysis; an analysis object is not read.
   const analysisId = storeJobAnalysis(ANALYSIS);
@@ -496,6 +502,8 @@ test('a preview hands back a token naming the model that wrote it, and a re-rend
     assert.equal(rerender.status, 200);
     assert.equal(rerender.body.previewToken, undefined);
     assert.equal(calls.length, 1);
+    // Nor a revise pass: content a page sends back is re-read, never revised.
+    assert.deepEqual(sites, ['tailor-resume']);
 
     // The multi-profile preview runs each profile on the request's model when
     // it names one - and on the profile's own when it does not - and each

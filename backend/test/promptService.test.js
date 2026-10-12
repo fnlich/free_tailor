@@ -147,46 +147,85 @@ test('prompt service supports multiple prompt variants per feature and active se
   assert.equal(await promptService.getPromptById(variantA.id) !== null, true);
 });
 
-test('the job analysis has one prompt: no new variant, no activation, an old variant listed but never active', async () => {
+test('the analysis, the job facts, the revise pass and the cover letter have one prompt each: no new variant, no activation, an old variant listed but never active', async () => {
   // One analysis per posting for every profile (owner decision J0) needs one
-  // prompt to produce it - the built-in record, which an administrator edits.
-  const { staticDir } = useTempStorage('prompts-analysis-single');
-  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyse [[jobFieldList]] [[jobLink]] [[jobDescription]]');
+  // prompt per call to produce it; the revise pass and a cover letter run on
+  // the model the resume is charged at: each is its built-in record, which
+  // an administrator edits, run by its exact id.
+  const { staticDir } = useTempStorage('prompts-single');
+  writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyse [[jobLink]] [[jobDescription]]');
+  writeDefaultPrompt(staticDir, 'filter-google-sheet-job', 'Facts of [[jobDescription]]');
+  writeDefaultPrompt(staticDir, 'revise-resume-coverage', 'Revise [[draftJson]] for [[missingTermsJson]]');
+  writeDefaultPrompt(staticDir, 'generate-cover-letter', 'Write for [[profileJson]] at [[companyName]]');
   const promptService = loadFresh('../dist/services/promptService');
+  assert.deepEqual(promptService.listSinglePromptFeatures(), [
+    'analyze-job-description',
+    'filter-google-sheet-job',
+    'revise-resume-coverage',
+    'generate-cover-letter',
+  ]);
 
-  await assert.rejects(
-    promptService.createPrompt({
-      name: 'My analysis',
-      featureKey: 'analyze-job-description',
-      content: 'Mine [[jobDescription]]',
-    }),
-    /Job analysis has one prompt/
-  );
+  const refusals = {
+    'analyze-job-description': ['Mine [[jobDescription]]', /^Error: Job analysis has one prompt, the built-in Analyze Job Description\. Edit that prompt instead of adding another\.$/],
+    'filter-google-sheet-job': ['Mine [[jobDescription]]', /^Error: The job facts have one prompt, the built-in Job Facts \(Filter\), which every analysis runs beside Analyze Job Description\./],
+    'revise-resume-coverage': ['Mine [[draftJson]] [[missingTermsJson]]', /^Error: The revise pass has one prompt, the built-in Revise Resume Coverage, which runs after a tailoring that left checklist terms out or whose bullets carry fewer than five figures\. Edit that prompt instead of adding another\.$/],
+    'generate-cover-letter': ['Mine [[profileJson]]', /^Error: A cover letter has one prompt, the built-in Generate Cover Letter\./],
+  };
+  for (const [featureKey, [content, refusal]] of Object.entries(refusals)) {
+    await assert.rejects(promptService.createPrompt({ name: `My ${featureKey}`, featureKey, content }), refusal, featureKey);
+  }
 
   // A variant an older build created is the administrator's text: kept and
   // listed, but it cannot be activated, and the built-in stays the active one
   // even when the stored activation still names the variant.
-  const { saveStoredPrompt, writeActivePrompts } = require('../dist/database/promptRepository');
+  const { saveStoredPrompt, readActivePrompts, writeActivePrompts } = require('../dist/database/promptRepository');
   const now = new Date().toISOString();
-  saveStoredPrompt({
-    id: 'custom-old-analysis',
-    name: 'Old analysis variant',
-    featureKey: 'analyze-job-description',
-    content: 'Old [[jobDescription]]',
-    isBuiltIn: false,
-    createdAt: now,
-    updatedAt: now,
-  });
-  writeActivePrompts({ 'analyze-job-description': 'custom-old-analysis' });
+  const variants = {
+    'analyze-job-description': ['custom-old-analysis', 'Old [[jobDescription]]', /always runs the built-in Analyze Job Description/],
+    'filter-google-sheet-job': ['custom-old-facts', 'Old [[jobDescription]]', /^Error: Every analysis runs the built-in Job Facts \(Filter\) prompt\. Edit that prompt instead\.$/],
+    'revise-resume-coverage': ['custom-old-revise', 'Old [[draftJson]] [[missingTermsJson]]', /^Error: Every revise pass runs the built-in Revise Resume Coverage prompt\. Edit that prompt instead\.$/],
+    'generate-cover-letter': ['custom-old-letter', 'Old [[profileJson]]', /^Error: Every cover letter runs the built-in Generate Cover Letter prompt\. Edit that prompt instead\.$/],
+  };
+  for (const [featureKey, [id, content]] of Object.entries(variants)) {
+    saveStoredPrompt({ id, name: id, featureKey, content, isBuiltIn: false, createdAt: now, updatedAt: now });
+  }
+  writeActivePrompts(Object.fromEntries(Object.entries(variants).map(([featureKey, [id]]) => [featureKey, id])));
   const listed = await promptService.listPrompts();
-  const analysisPrompts = listed.filter((prompt) => prompt.featureKey === 'analyze-job-description');
-  assert.deepEqual(analysisPrompts.map((prompt) => prompt.id).sort(), ['analyze-job-description', 'custom-old-analysis']);
-  assert.equal(listed.find((prompt) => prompt.id === 'analyze-job-description').isActiveForFeature, true);
-  assert.equal(listed.find((prompt) => prompt.id === 'custom-old-analysis').isActiveForFeature, false);
-  await assert.rejects(promptService.activatePrompt('custom-old-analysis'), /always runs the built-in Analyze Job Description/);
+  for (const [featureKey, [id, , refusal]] of Object.entries(variants)) {
+    const ofFeature = listed.filter((prompt) => prompt.featureKey === featureKey);
+    assert.deepEqual(ofFeature.map((prompt) => prompt.id).sort(), [featureKey, id].sort(), featureKey);
+    assert.equal(listed.find((prompt) => prompt.id === featureKey).isActiveForFeature, true, featureKey);
+    assert.equal(listed.find((prompt) => prompt.id === id).isActiveForFeature, false, id);
+    await assert.rejects(promptService.activatePrompt(id), refusal, id);
+    // At run time by feature, the built-in - whatever the stale activation says.
+    assert.equal((await promptService.resolvePromptByRuntimeId(featureKey)).id, featureKey, featureKey);
+  }
+  // Moving another prompt INTO one of them is refused too.
+  const loose = await promptService.createPrompt({
+    name: 'Loose',
+    content: 'Hello [[name]]',
+    allowedVariables: [{ name: 'name' }],
+  });
+  await assert.rejects(
+    promptService.updatePrompt(loose.id, { featureKey: 'filter-google-sheet-job', content: 'Facts [[jobDescription]]' }),
+    /The job facts have one prompt/
+  );
+  // The next write of the activations drops the stale ones.
+  writeDefaultPrompt(staticDir, 'extract-profile-from-resume', 'Extract [[resumeText]]');
+  await promptService.activatePrompt('extract-profile-from-resume');
+  assert.deepEqual(readActivePrompts(), { 'extract-profile-from-resume': 'extract-profile-from-resume' });
+});
 
-  // The retired Job Filter prompt, edited by an administrator once, is not a
-  // stray "unattached" prompt now: nothing could run it.
+test("an edit of the job facts prompt stored before it was retired is its feature's built-in edit again: flagged and not run, never a failed analysis", async () => {
+  // Owner decision O1 brought the Job Filter's own prompt back as the
+  // analysis's second call. An administrator's edit an older build stored
+  // reads [[jobContent]], which nothing supplies now: it is listed as the
+  // feature's edit, marked, and the shipped text runs in its place.
+  const { staticDir } = useTempStorage('prompts-old-facts-edit');
+  writeDefaultPrompt(staticDir, 'filter-google-sheet-job', 'Shipped facts [[jobDescription]]');
+  const promptService = loadFresh('../dist/services/promptService');
+  const { saveStoredPrompt } = require('../dist/database/promptRepository');
+  const now = new Date().toISOString();
   saveStoredPrompt({
     id: 'filter-google-sheet-job',
     name: 'Filter Google Sheet Job',
@@ -196,7 +235,21 @@ test('the job analysis has one prompt: no new variant, no activation, an old var
     createdAt: now,
     updatedAt: now,
   });
-  assert.equal((await promptService.listPrompts()).some((prompt) => prompt.id === 'filter-google-sheet-job'), false);
+  const listed = (await promptService.listPrompts()).find((prompt) => prompt.id === 'filter-google-sheet-job');
+  assert.equal(listed.content, undefined, 'a summary, not the record');
+  assert.equal(listed.featureLabel, 'Job Facts (Filter)');
+  assert.equal(listed.category, 'extracting');
+  assert.equal(listed.needsUpdate, true);
+  assert.deepEqual(listed.validation.unknownVariables, ['jobContent']);
+  assert.deepEqual(listed.validation.missingVariables, ['jobDescription']);
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const segments = await promptService.renderPromptSegmentsByExactId('filter-google-sheet-job', { jobDescription: 'A posting.', jobLink: '' });
+    assert.equal(segments.map((segment) => segment.text).join(''), 'Shipped facts A posting.');
+  } finally {
+    console.warn = realWarn;
+  }
 });
 
 test('prompt validation rejects unknown variables', async () => {
@@ -229,7 +282,7 @@ test('feature-linked prompts may use only the variables their code supplies', as
   writeDefaultPrompt(
     staticDir,
     'tailor-resume',
-    'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]] [[includeStrengths]] [[includeSoftSkills]] [[technicalSkillsLayout]]'
+    'Tailor [[profileJson]] for [[jobAnalysisJson]] with [[customNote]], soft skills under [[softSkillGroupHeading]]'
   );
 
   const promptService = loadFresh('../dist/services/promptService');
@@ -241,7 +294,7 @@ test('feature-linked prompts may use only the variables their code supplies', as
     promptService.listPromptFeatureVariableNames('tailor-resume')
   );
   assert.deepEqual(prompt.validation, {
-    usedVariables: ['profileJson', 'jobAnalysisJson', 'customNote', 'includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout'],
+    usedVariables: ['profileJson', 'jobAnalysisJson', 'customNote', 'softSkillGroupHeading'],
     unknownVariables: ['customNote'],
     missingVariables: [],
   });
@@ -264,11 +317,21 @@ test('feature-linked prompts may use only the variables their code supplies', as
   const variant = await promptService.createPrompt({
     name: 'Tailor Variant',
     featureKey: 'tailor-resume',
-    content:
-      'Variant [[profileJson]] [[jobAnalysisJson]] [[includeStrengths]] [[includeSoftSkills]] [[technicalSkillsLayout]]',
+    content: 'Variant [[profileJson]] [[jobAnalysisJson]] [[topSkillsJson]] [[softSkillGroupHeading]]',
   });
   assert.deepEqual(variant.validation.unknownVariables, []);
   assert.deepEqual(variant.validation.missingVariables, []);
+  // The section switches are not variables any more: how the skills block is
+  // drawn is decided when the resume is rendered.
+  await assert.rejects(
+    () =>
+      promptService.createPrompt({
+        name: 'Old Variant',
+        featureKey: 'tailor-resume',
+        content: 'Old [[profileJson]] [[jobAnalysisJson]] [[softSkillGroupHeading]] [[includeStrengths]]',
+      }),
+    /Unknown prompt variables: includeStrengths/
+  );
 });
 
 test('editing a built-in prompt stores the edit in the database and keeps the static default untouched', async () => {

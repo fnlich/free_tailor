@@ -75,6 +75,8 @@ test('row 2: three profiles on three models - one analysis, the same analysisId 
   assert.equal(snapshot.completed, 3, JSON.stringify(snapshot.tasks.map((task) => task.error)));
 
   assert.equal(h.seats.analyses().length, 1, 'one analysis for the job, not one per model');
+  assert.equal(h.seats.facts().length, 1, 'and one facts call with it');
+  assert.equal(h.seats.facts()[0].provider, h.seats.analyses()[0].provider, 'on the analysis model, not a profile\'s');
   const ids = new Set(payloads(batchId).map((payload) => payload.analysisId));
   assert.equal(ids.size, 1);
   assert.ok([...ids][0]);
@@ -123,12 +125,14 @@ test('row 4: a 150-row order analyses each posting once, and a second order on t
   }
   assert.equal(perPosting.size, 150);
   assert.ok([...perPosting.values()].every((count) => count === 1), 'no posting analysed twice');
+  assert.equal(h.seats.facts().length, 150, 'nor its facts asked twice');
 
   // Placed again: every job starts with its analysis, so no task asks.
   const second = await submit(h, { jobs: jobs(150), profileIds: ['p-claude'] });
   assert.ok(payloads(second.batchId).every((payload) => payload.analysisId), 'resolved at submission');
   await untilFinished(second.batchId, 4000);
   assert.equal(h.seats.analyses().length, 150, 'the second order made no analysis call');
+  assert.equal(h.seats.facts().length, 150);
 });
 
 test('row 5: an analysis prompt edited between two builds does not analyse the posting again', async (t) => {
@@ -280,6 +284,7 @@ test('row 10: the Job Filter, then a build of the same posting - one analysis, w
   assert.equal(filtered.body.processedRows, 2);
   assert.equal(filtered.body.modelLabel, 'Claude Sonnet', 'the analysis model, by its display name');
   assert.equal(h.seats.analyses().length, 2, 'one analysis per posting');
+  assert.equal(h.seats.facts().length, 2, 'whose facts the filter judges');
   assert.deepEqual(
     filtered.body.rows.map((row) => [row.row, row.company, row.result, row.reason, row.reused]),
     [
@@ -344,5 +349,6 @@ test('a stored analysis damaged outside the program is analysed once more and re
     assert.equal(again.body.analysisId, other.body.analysisId);
   }
   assert.equal(h.seats.analyses().length, 4);
+  assert.equal(h.seats.facts().length, 4, 'the repair makes both calls again, once');
   assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM job_analyses').get().n, 2, 'never a second row');
 });

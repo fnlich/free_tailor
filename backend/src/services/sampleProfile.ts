@@ -1,5 +1,7 @@
 import { getProfileResumeSections } from './profileService';
+import { flattenSkillGroups } from './skillGroups';
 import type { Education, Experience, Profile, Strength } from '../types/profile';
+import type { SkillGroup, TailoredContent } from '../types/template';
 
 /**
  * The resume every template preview is rendered with.
@@ -15,10 +17,11 @@ import type { Education, Experience, Profile, Strength } from '../types/profile'
  * The names and companies are invented. Nothing here is anyone's real resume.
  *
  * Two readers, and only two: the template gallery (`generateTemplatePreviewHTML`)
- * draws all of it, and the profile editor's live preview borrows the parts a
- * draft has left empty (`withSampleDefaults`, below). Never a save, a
- * generation, a PDF, a DOCX or a prompt - test/sampleDefaults.test.js holds
- * that line.
+ * draws it tailored - its name, contact, education, strengths and soft skills
+ * with `SAMPLE_TAILORED_CONTENT` below in place of the summary, roles and
+ * skills - and the profile editor's live preview borrows the parts a draft has
+ * left empty (`withSampleDefaults`, below). Never a save, a generation, a PDF,
+ * a DOCX or a prompt - test/sampleDefaults.test.js holds that line.
  */
 export const SAMPLE_PROFILE: Profile = {
   id: 'preview',
@@ -138,6 +141,116 @@ export const SAMPLE_PROFILE: Profile = {
   ],
   createdAt: '',
   updatedAt: '',
+};
+
+/**
+ * The sample person's skills block as a model writes it for the tailoring
+ * prompt: its own headings, about thirty skills, and the posting's soft skills
+ * as the LAST group under the heading drawn for the resume, marked `soft` as
+ * the parse marks it.
+ */
+const SAMPLE_SKILL_GROUPS: SkillGroup[] = [
+  { category: 'Languages', skills: ['TypeScript', 'Python', 'Go', 'SQL', 'Java', 'JavaScript'] },
+  { category: 'Frameworks', skills: ['Node.js', 'React', 'Next.js', 'Express', 'Django', 'GraphQL'] },
+  { category: 'Data & Storage', skills: ['PostgreSQL', 'Redis', 'Kafka', 'DynamoDB', 'MongoDB', 'MySQL'] },
+  { category: 'Cloud & Infrastructure', skills: ['AWS', 'GCP', 'Docker', 'Kubernetes', 'Terraform'] },
+  { category: 'CI/CD & Monitoring', skills: ['GitHub Actions', 'Jenkins', 'Prometheus', 'Grafana', 'Datadog'] },
+  { category: 'Testing', skills: ['Jest', 'Playwright', 'pytest', 'Pact'] },
+  {
+    category: 'Professional Skills',
+    skills: ['Mentoring', 'Ownership', 'Communication skills', 'Collaboration', 'Problem solving'],
+    soft: true,
+  },
+];
+
+const SAMPLE_TECHNICAL_SKILLS = flattenSkillGroups(SAMPLE_SKILL_GROUPS.filter((group) => !group.soft));
+
+/**
+ * What the sample person's resume looks like once tailored, for the template
+ * gallery: the shape a generated resume has, so a template is judged on what
+ * it will actually print - a composed title, a summary and bullets in the
+ * tailoring prompt's voice, no role descriptions (the prompt has the model
+ * leave them empty, and the render prints none), at most eight bullets a
+ * role, and the model's own skill groups ending in the soft-skill group, which
+ * Soft Skills on moves into its section and off leaves in the block.
+ *
+ * Roles, employers, dates and places are SAMPLE_PROFILE's own. Drawn by the
+ * gallery and nothing else (test/sampleDefaults.test.js).
+ */
+export const SAMPLE_TAILORED_CONTENT: TailoredContent = {
+  title: 'Senior Software Engineer | Backend Engineer',
+  summary:
+    '9 years of backend engineering across payment and data platforms, most of it on the services that ' +
+    'move money and the pipelines that report on it. Day to day the work is TypeScript and Python services ' +
+    'on AWS, with Kafka for event streaming and PostgreSQL underneath, and ownership running from the design ' +
+    'review to the pager. Settlement, reconciliation and fraud checks are the domains known best, along with ' +
+    'the analytics ingestion beside them. Mentoring is a steady part of the job, and so is the written ' +
+    'communication that keeps product and SRE agreeing on what ships and when.',
+  experience: [
+    {
+      title: 'Senior Software Engineer',
+      company: 'Northwind Payments',
+      startDate: '03/2022',
+      endDate: 'Present',
+      location: 'San Francisco, CA',
+      description: '',
+      achievements: [
+        'Rebuilt the settlement pipeline in TypeScript on an event-sourced ledger in PostgreSQL, cutting end-of-day reconciliation from 6 hours to 18 minutes on a platform processing $2.4B a year',
+        'Cut p99 authorisation latency from 840ms to 120ms by replacing synchronous fraud lookups with a cached risk service on Redis, and took ownership of the rollout across 4 regions',
+        'Moved 14 services onto contract testing in GitHub Actions, taking integration failures in staging from roughly 30 a week to under 3',
+        'Wrote the Kafka consumer library the ledger and payout services share, with dead-letter handling and replay, so a poisoned message no longer blocked a partition',
+        'Mentored three engineers to senior through design reviews and paired on-call rotations; two now run teams of their own',
+      ],
+    },
+    {
+      title: 'Software Engineer II',
+      company: 'Cobalt Analytics',
+      startDate: '07/2019',
+      endDate: '02/2022',
+      location: 'Seattle, WA',
+      description: '',
+      achievements: [
+        'Built a columnar ingestion path in Go handling 8TB a day, reducing storage cost per event by 62% for 1,200 customer organisations',
+        'Shipped an incremental materialised-view engine in Python that brought dashboard loads under 2 seconds at the 95th percentile',
+        'Moved the query layer from a single Postgres instance to a sharded cluster with no customer-visible downtime, and wrote the cutover runbook the team still uses',
+        'Added Prometheus and Grafana alerts on ingestion lag, which caught 9 stalled partitions before a customer did',
+      ],
+    },
+    {
+      title: 'Software Engineer',
+      company: 'Harbourline Systems',
+      startDate: '08/2017',
+      endDate: '06/2019',
+      location: 'Remote',
+      description: '',
+      achievements: [
+        'Replaced a nightly batch scheduler with an incremental solver, improving on-time dispatch from 81% to 96%',
+        'Built the Jenkins CI pipeline the whole engineering group still uses, taking a release from half a day to 20 minutes',
+        'Rewrote the React planning board against the routing service API, so dispatchers saw a changed route within 5 seconds instead of on the next refresh',
+      ],
+    },
+    {
+      title: 'Junior Software Engineer',
+      company: 'Fairhaven Digital',
+      startDate: '06/2016',
+      endDate: '07/2017',
+      location: 'Boston, MA',
+      description: '',
+      achievements: [
+        'Automated the deployment process for 20 client sites, removing a recurring source of release errors',
+        'Wrote content migration tooling in Node.js that the agency ran on 6 client launches',
+        'Fixed accessibility defects across client web applications, with clear communication to account managers on what changed',
+      ],
+    },
+  ],
+  skillGroups: SAMPLE_SKILL_GROUPS,
+  softSkillGroupHeading: 'Professional Skills',
+  hardSkills: SAMPLE_TECHNICAL_SKILLS,
+  skills: SAMPLE_TECHNICAL_SKILLS,
+  softSkills: SAMPLE_SKILL_GROUPS[SAMPLE_SKILL_GROUPS.length - 1].skills,
+  unconfirmedSoftSkills: [],
+  unconfirmedHardSkills: [],
+  strengths: [],
 };
 
 /**

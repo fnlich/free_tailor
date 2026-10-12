@@ -25,12 +25,16 @@ import {
 } from '@/lib/api';
 import { formatDate } from '@/lib/format';
 import {
-  ANALYSIS_PROMPT_FEATURE,
+  isSinglePromptFeature,
   missingRequiredVariables,
   missingVariablesSentence,
   needsUpdateNote,
+  notRunLine,
   requiredVariables,
-  variableList,
+  saveRefusal,
+  SINGLE_PROMPT_NOTES,
+  unknownVariables,
+  unknownVariablesSentence,
 } from '@/lib/promptRequirements';
 import { Field, Notice, Pill, Spinner, StaticValue } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
@@ -63,9 +67,12 @@ type FeatureGroup = {
   category: PromptCategoryId;
 };
 
+/** The server's feature order (promptService.ts `PROMPT_FEATURES`): the order the app runs them in. */
 const FEATURE_ORDER: PromptFeatureKey[] = [
   'analyze-job-description',
+  'filter-google-sheet-job',
   'tailor-resume',
+  'revise-resume-coverage',
   'generate-cover-letter',
   'extract-template-from-pdf',
   'extract-profile-from-resume',
@@ -79,28 +86,28 @@ function isProfileScopedFeature(featureKey?: PromptFeatureKey | null): boolean {
   return Boolean(featureKey && PROFILE_SCOPED_FEATURES.has(featureKey));
 }
 
-/**
- * Job analysis has ONE prompt, the built-in Analyze Job Description, edited
- * in place: a posting is analysed once, ever, for every profile and model, so
- * there is nothing for a second prompt to do but disagree with the first. The
- * server refuses a new variant and refuses to make an older one live, so the
- * page offers neither; an older variant is still listed, and editable, since
- * its text is the administrator's own.
- */
-const SINGLE_PROMPT_FEATURE: PromptFeatureKey = ANALYSIS_PROMPT_FEATURE;
-
-function isSinglePromptFeature(featureKey?: PromptFeatureKey | null): boolean {
-  return featureKey === SINGLE_PROMPT_FEATURE;
-}
-
 /*
- * Some variables are required: the analysis prompt's job field and industry
- * lists, the tailoring prompt's three section words. A SAVED record without
- * them is flagged by the server (`needsUpdate`) and never run - the
- * feature's built-in prompt runs in its place - and a save without them is
- * refused. The editor reads the text as it is typed (lib/promptRequirements.ts,
- * which backend/test/frontendAnalysis.test.js holds to the server's rule and
- * its sentence), so it says so before Save and refuses in the server's words.
+ * Four features have ONE prompt each, the built-in one, edited in place
+ * (lib/promptRequirements.ts `SINGLE_PROMPT_FEATURES`, the server's own list):
+ * the job analysis's two calls - a posting is analysed once, ever, for every
+ * profile and model, so a second prompt could only disagree with the first -
+ * and the revise pass and the cover letter, which every profile runs. Each
+ * runs by its exact id on a model the server chooses, so the server refuses a
+ * new variant, refuses to make an older one live, and ignores an override:
+ * the page offers none of them, and says why in the feature's own words
+ * (`SINGLE_PROMPT_NOTES`). An older variant is still listed, and editable,
+ * since its text is the administrator's own.
+ *
+ * Some variables are required - each feature's contract markers - and some a
+ * stored edit may name are no longer supplied. A SAVED record that lacks one
+ * or names one is flagged by the server (`needsUpdate`) and never run - the
+ * feature's built-in prompt runs in its place - and a save that would be
+ * either is refused. So is a saved record the server dates from before its
+ * feature's prompt contract changed (`savedForOlderVersion`), until it is
+ * saved again. The editor reads the text as it is typed
+ * (lib/promptRequirements.ts, which backend/test/frontendAnalysis.test.js
+ * holds to the server's rule and its sentences), so it says so before Save
+ * and refuses in the server's words.
  */
 
 function emptyValidation(): PromptValidation {
@@ -524,17 +531,15 @@ function PromptsPageBody() {
 
   const handleSavePrompt = async () => {
     if (!draft) return;
-    // The server would refuse it; said here without sending anything, in its words.
-    const missing = missingRequiredVariables(draft.content, draft.allowedVariables);
-    if (missing.length > 0) {
+    // The server would refuse it; said here without sending anything, in its
+    // words. Only for a feature's prompt, whose variables are the server's: an
+    // unattached prompt's are its own rows, which the server tidies first.
+    const refusal = draft.featureKey
+      ? saveRefusal(draft.content, draft.allowedVariables, draft.featureLabel || draft.featureKey)
+      : '';
+    if (refusal) {
       setStatus('');
-      setError(
-        missingVariablesSentence(
-          draft.featureLabel || draft.featureKey || 'feature',
-          missing,
-          requiredVariables(draft.allowedVariables)
-        )
-      );
+      setError(refusal);
       return;
     }
     setIsSaving(true);
@@ -657,8 +662,11 @@ function PromptsPageBody() {
 
   /** The saved record the editor holds, as the list has it - with the server's `needsUpdate`. */
   const savedSummary = draft?.id ? prompts.find((prompt) => prompt.id === draft.id) ?? null : null;
-  /** The required variables the text as typed leaves out. */
+  /** The required variables the text as typed leaves out, and the ones it names that the prompt is not given. */
   const typedMissing = draft ? missingRequiredVariables(draft.content, draft.allowedVariables) : [];
+  const typedUnknown = draft?.featureKey ? unknownVariables(draft.content, draft.allowedVariables) : [];
+  const singleNote = selectedFeatureGroup ? SINGLE_PROMPT_NOTES[selectedFeatureGroup.key] : undefined;
+  const draftSingleNote = draft?.featureKey ? SINGLE_PROMPT_NOTES[draft.featureKey] : undefined;
 
   const selectedFeatureHasPendingChange =
     !!selectedFeatureGroup &&
@@ -765,13 +773,7 @@ function PromptsPageBody() {
               <div className="p-5 text-sm text-muted">No feature selected.</div>
             ) : (
               <div className="space-y-3 p-5">
-                {isSinglePromptFeature(selectedFeatureGroup.key) && (
-                  <p className="text-sm text-muted">
-                    Job analysis has one prompt, the built-in one: each posting is analysed once with it, on the
-                    analysis model chosen under Settings &gt; General, and never again. Editing it changes how
-                    postings never analysed before are read; stored analyses are kept as they are.
-                  </p>
-                )}
+                {singleNote && <p className="text-sm text-muted">{singleNote.about}</p>}
                 {selectedFeatureGroup.prompts.map((prompt) => (
                   <label
                     key={prompt.id}
@@ -799,9 +801,7 @@ function PromptsPageBody() {
                         <div className="mt-1 text-sm text-muted">{prompt.description}</div>
                       )}
                       {prompt.needsUpdate && (
-                        <div className="mt-1 text-sm text-muted">
-                          Not run: it does not use {variableList(prompt.validation.missingVariables)}.
-                        </div>
+                        <div className="mt-1 text-sm text-muted">{notRunLine(prompt.validation, prompt.savedForOlderVersion)}</div>
                       )}
                       {prompt.modelProvider && prompt.modelName && (
                         <div className="mt-2 text-xs text-subtle">
@@ -911,7 +911,16 @@ function PromptsPageBody() {
                         featureLabel: draft.featureLabel || draft.featureKey || 'feature',
                         isBuiltIn: draft.isBuiltIn,
                         missing: savedSummary.validation.missingVariables,
+                        unknown: savedSummary.validation.unknownVariables,
+                        savedForOlderVersion: savedSummary.savedForOlderVersion,
                       })}
+                    </Notice>
+                  )}
+                  {typedUnknown.length > 0 && (
+                    <Notice tone={savedSummary?.needsUpdate ? 'info' : 'warn'}>
+                      {unknownVariablesSentence(typedUnknown)}. This prompt is not given{' '}
+                      {typedUnknown.length === 1 ? 'it' : 'them'}: take {typedUnknown.length === 1 ? 'it' : 'them'} out
+                      before saving.
                     </Notice>
                   )}
                   {typedMissing.length > 0 && (
@@ -927,24 +936,23 @@ function PromptsPageBody() {
 
                   {/*
                     Said here because nothing else would: a resume is charged at
-                    the model its run chose, so its tailoring and cover letter
-                    always run on that one, override or not - and the analysis
-                    is the posting's, made once on the analysis model.
+                    the model its run chose, so its tailoring, the revise pass
+                    after it and its cover letter always run on that one,
+                    override or not - and the analysis is the posting's, both
+                    its calls made once on the analysis model.
                   */}
-                  {isSinglePromptFeature(draft.featureKey) ? (
-                    <p className="text-sm text-muted">
-                      Job analysis always runs on the analysis model chosen under Settings &gt; General, so
-                      that every posting is read the same way. An override here is not used.
-                    </p>
+                  {draftSingleNote ? (
+                    <p className="text-sm text-muted">{draftSingleNote.model}</p>
                   ) : (
                     <p className="text-sm text-muted">
                       An override decides the model for the Bid Assistant and the extractors. A resume&apos;s
-                      tailoring and cover letter always run on the model chosen for the run - the one it is
-                      charged at - so an override never changes what a resume costs or runs on. A
-                      posting&apos;s analysis runs once, on the analysis model.
+                      tailoring - and the revise pass and the cover letter that may follow it - always run on the
+                      model chosen for the run, the one it is charged at, so an override never changes what a
+                      resume costs or runs on. A posting&apos;s analysis - Analyze Job Description and Job Facts
+                      (Filter) - runs once, on the analysis model.
                     </p>
                   )}
-                  {/* No override for the analysis: it would never be used, so it is not offered. */}
+                  {/* No override for a single-prompt feature: it would never be used, so it is not offered. */}
                   {!isSinglePromptFeature(draft.featureKey) && (
                   <div className="grid gap-6 md:grid-cols-2">
                     <Field

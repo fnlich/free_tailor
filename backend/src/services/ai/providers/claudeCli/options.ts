@@ -139,6 +139,9 @@ export function readClaudeCliConfig(): ClaudeCliConfig {
     defaultTimeoutMs,
     timeoutMsByCallSite: {
       'tailor-resume': cliTimeoutMs('AI_CLI_TIMEOUT_MS_TAILOR'),
+      // The revise pass is the tailoring's second call, inside the same resume:
+      // the same budget.
+      'revise-resume-coverage': cliTimeoutMs('AI_CLI_TIMEOUT_MS_TAILOR'),
     },
     workdir: flag('AI_CLI_WORKDIR', '') || defaultWorkdir(),
     allowOverage: boolFlag('AI_CLI_ALLOW_OVERAGE', false),

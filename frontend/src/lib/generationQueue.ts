@@ -96,8 +96,6 @@ export type BatchSnapshot = {
   failures?: Array<{ profileId: string; profileName: string; companyName: string; error: string }>;
   failedCompanies?: string[];
   tailored?: boolean;
-  unconfirmedHardSkills?: string[];
-  unconfirmedSoftSkills?: string[];
 };
 
 export type SubmitBatchRequest = AiRequestOverrides & {

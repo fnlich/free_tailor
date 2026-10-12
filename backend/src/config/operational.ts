@@ -1,4 +1,5 @@
 import {
+  envBool,
   envInt,
   envRaw,
   envString,
@@ -78,6 +79,7 @@ export const OPERATIONAL_INT_BOUNDS = {
   JOB_LAKE_DUPLICATE_WINDOW_DAYS: { fallback: 60, min: 1, max: 3_650, unit: 'day(s)' },
   JOB_LAKE_PUSH_MAX_ROWS: { fallback: 1_000, min: 1, max: 5_000, unit: 'row(s)' },
   TAILOR_CACHE_DAYS: { fallback: 30, min: 1, max: 3_650, unit: 'day(s)' },
+  TAILOR_REVISE_MAX_TERMS: { fallback: 30, min: 1, max: 200, unit: 'term(s)' },
   // Frontend, server-only (read by the Next route handlers; listed for the record).
   CALENDAR_API_TIMEOUT_MS: { fallback: 12_000, min: 1_000, max: 120_000, unit: 'ms' },
   CALENDAR_DETAIL_CONCURRENCY: { fallback: 12, min: 1, max: 32, unit: 'request(s)' },
@@ -484,6 +486,32 @@ export function tailorCacheDays(env: EnvSource = process.env): number {
   return readInt('TAILOR_CACHE_DAYS', env);
 }
 
+/* ========================================================= the revise pass */
+
+/**
+ * Whether a freshly tailored resume gets the revise pass
+ * (`revise-resume-coverage`, services/reviseCoverage.ts): a second call, on
+ * the model the resume is charged at, that works the checklist terms the
+ * draft left out - and the figures it lacks - into its summary and bullets.
+ * On by default. Off, every resume is the tailoring call's draft, and a
+ * build makes one model call fewer. Never on a reused tailoring or on content
+ * a page sent back. Read at every tailoring.
+ */
+export function tailorRevisePass(env: EnvSource = process.env): boolean {
+  return envBool('TAILOR_REVISE_PASS', true, {}, env);
+}
+
+/**
+ * The most missing checklist terms one revise call is given, in the
+ * checklist's priority order (the posting's top five first). 30 by default,
+ * 1-200: the prompt asks for each "spelled EXACTLY", two or three to a
+ * bullet of at most 36 words, so a list longer than the bullets can hold
+ * only teaches the model to stuff them. Read at every tailoring.
+ */
+export function tailorReviseMaxTerms(env: EnvSource = process.env): number {
+  return readInt('TAILOR_REVISE_MAX_TERMS', env);
+}
+
 /* ================================================================== table */
 
 export type OperationalVariable = {
@@ -643,6 +671,17 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
 
   // Tailoring cache
   intEntry('TAILOR_CACHE_DAYS', 'per-call', 'services/tailorCache.ts (the boot and daily prune)', tailorCacheDays),
+
+  // The revise pass
+  {
+    name: 'TAILOR_REVISE_PASS',
+    defaultValue: 'on',
+    side: 'backend',
+    readAt: 'per-call',
+    readIn: 'services/resumeService.ts (tailorResume)',
+    current: (env) => (tailorRevisePass(env) ? 'on' : 'off'),
+  },
+  intEntry('TAILOR_REVISE_MAX_TERMS', 'per-call', 'services/resumeService.ts (tailorResume)', tailorReviseMaxTerms),
 ];
 
 /** `NAME=value`, quoted when the value has a space or a comma in it so the line still splits. */

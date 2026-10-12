@@ -54,9 +54,11 @@ export const PROMPT_CATEGORIES: Readonly<Record<PromptCategoryId, PromptCategory
 
 const BY_FEATURE: Readonly<Record<PromptFeatureKey, PromptCategoryId>> = Object.freeze({
   'analyze-job-description': 'extracting',
+  'filter-google-sheet-job': 'extracting',
   'extract-template-from-pdf': 'extracting',
   'extract-profile-from-resume': 'extracting',
   'tailor-resume': 'building',
+  'revise-resume-coverage': 'building',
   'generate-cover-letter': 'building',
 });
 

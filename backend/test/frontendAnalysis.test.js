@@ -163,24 +163,127 @@ test('only a 400 makes the page let go of the analysis it holds', () => {
   }
 });
 
-test('an analysis shows its title, its job field label and its salary - each only when it has one', () => {
+const NO_FACTS = { title: '', jobField: '', salary: '', jobType: '', seniority: '', clearance: '' };
+
+test('an analysis shows its title, job field, job type, seniority, clearance and salary - each only when it has one', () => {
   assert.deepEqual(
     held.analysisFacts({
-      jobMeta: { title: '  Senior Backend Engineer ' },
+      jobMeta: { title: '  Senior Backend Engineer ', seniority: 'unknown' },
       jobFieldLabel: 'Backend',
-      salary: { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null },
+      salary: { min: 120000, max: 140000, currency: null, period: 'annual', raw: null },
+      filter: { ...stored().analysis.filter, seniority: 'senior' },
     }),
-    { title: 'Senior Backend Engineer', jobField: 'Backend', salary: 'USD 120,000 - 140,000 / annual' }
+    {
+      title: 'Senior Backend Engineer',
+      jobField: 'Backend',
+      salary: '120,000 - 140,000 / annual',
+      jobType: 'Remote',
+      seniority: 'Senior',
+      clearance: 'No clearance',
+    }
   );
   // A posting that fits no field says so; one that states no salary shows none.
   assert.deepEqual(held.analysisFacts({ jobMeta: { title: '' }, jobFieldLabel: 'Unclassified', salary: null }), {
-    title: '',
+    ...NO_FACTS,
     jobField: 'Unclassified',
-    salary: '',
   });
-  // An analysis without a job field label or a salary shows neither.
-  assert.deepEqual(held.analysisFacts({ jobMeta: { title: 'Engineer' } }), { title: 'Engineer', jobField: '', salary: '' });
-  assert.deepEqual(held.analysisFacts(null), { title: '', jobField: '', salary: '' });
+  // An analysis without facts shows none of them - not a made-up "No clearance".
+  assert.deepEqual(held.analysisFacts({ jobMeta: { title: 'Engineer' } }), { ...NO_FACTS, title: 'Engineer' });
+  assert.deepEqual(held.analysisFacts(null), NO_FACTS);
+  // An analysis made before the facts call read a seniority shows its own.
+  assert.equal(held.analysisFacts({ jobMeta: { seniority: 'staff' }, filter: stored().analysis.filter }).seniority, 'Staff');
+  // Words that say nothing show nothing.
+  for (const word of ['not_specified', 'unknown', '', 'Not Specified']) {
+    assert.equal(held.seniorityLabel(word), '', word);
+  }
+  assert.equal(held.seniorityLabel('vp'), 'VP');
+  assert.equal(held.analysisFacts({ filter: { jobType: 'not_specified', clearanceRequired: 'ts_sci' } }).clearance, 'Clearance required');
+});
+
+test("the page's job type, seniority and clearance are the server's, for every word the facts call may answer", () => {
+  const { jobFilterAnalysisOf } = require('../dist/services/jobFilter');
+  // The server's labels, word for word.
+  for (const id of ['remote', 'hybrid', 'on_site', 'not_specified', '', 'Remote']) {
+    assert.equal(held.JOB_TYPE_LABELS[id] ?? '', facts.jobTypeLabel(id), id);
+  }
+  const answers = [
+    {},
+    { job_type: 'remote', clearance_required: 'none', seniority: 'senior' },
+    { job_type: 'Hybrid', clearance_required: 'secret', seniority: 'Staff' },
+    { job_type: 'on-site', clearance_required: 'not_specified', seniority: 'intern' },
+    { job_type: 'office', clearance_required: 'Q clearance', seniority: 'wizard' },
+    { job_type: 'not_specified', clearance_required: 'TS/SCI', seniority: 'vp' },
+  ];
+  for (const answer of answers) {
+    const read = facts.normalizeJobFacts(answer);
+    for (const jobMeta of [{ seniority: 'lead' }, { seniority: 'unknown' }, {}]) {
+      // A new analysis, as the gate composes it.
+      const analysis = { jobMeta, filter: read.filter, salary: read.salary };
+      const shown = held.analysisFacts(analysis);
+      assert.equal(shown.jobType, facts.jobTypeLabel(facts.jobTypeOf(analysis)), JSON.stringify(answer));
+      assert.equal(held.clearanceRequiredOf(analysis), facts.clearanceRequiredOf(analysis), JSON.stringify(answer));
+      assert.equal(held.seniorityOf(analysis), jobFilterAnalysisOf(analysis).seniority, JSON.stringify(answer));
+      // An older analysis, whose facts never had a seniority: the filter judges jobMeta's.
+      const { seniority: _new, ...olderFilter } = read.filter;
+      const older = { jobMeta, filter: olderFilter };
+      assert.equal(held.seniorityOf(older), jobFilterAnalysisOf(older).seniority, JSON.stringify(jobMeta));
+    }
+  }
+});
+
+// -- the Prompt Test page's marks -------------------------------------------- //
+
+test("Prompt Test marks the posting's keywords, never the facts the analysis read about it", () => {
+  const marks = loadFrontendModule('lib/analysisHighlights.ts');
+  const read = facts.normalizeJobFacts({
+    job_type: 'remote',
+    onsite_interview: 'no',
+    company_category: 'saas',
+    seniority: 'senior',
+    clearance_required: 'none',
+    salary: { min: 120000, max: 140000, period: 'annual', raw: '$120k - $140k' },
+    region: 'us',
+    us_state: null,
+    job_field: 'backend',
+  });
+  // What /resume/analyze-prompt-test answers, less the id and label beside it.
+  const analysis = {
+    jobMeta: { title: 'Senior Backend Engineer', seniority: 'senior', industry: 'SaaS', department: 'Platform' },
+    skills: { technical: ['API design'], tools: ['Docker'], soft: ['Ownership'] },
+    technologies: ['TypeScript'],
+    protocols: ['REST'],
+    methodologies: [],
+    architecturePatterns: ['microservices'],
+    responsibilities: ['backend service ownership'],
+    domainKnowledge: ['payments'],
+    keywords: { actionVerbs: ['built'], buzzwords: [], mustInclude: ['TypeScript'] },
+    jobField: read.jobField,
+    salary: read.salary,
+    filter: read.filter,
+    // An older analysis's industry is a fact too.
+    industry: 'technology',
+  };
+  const terms = marks.collectHighlightTerms(analysis);
+  const values = terms.map((term) => term.value);
+  for (const fact of ['us', 'remote', 'saas', 'none', 'no', 'backend', 'technology', '$120k - $140k', 'annual', 'not_specified']) {
+    assert.equal(values.includes(fact), false, `${fact} is a fact, not a term`);
+  }
+  for (const term of ['API design', 'Docker', 'Ownership', 'TypeScript', 'REST', 'microservices', 'payments', 'built', 'SaaS']) {
+    assert.ok(values.includes(term), term);
+  }
+  assert.equal(terms.find((term) => term.value === 'API design').kind, 'required');
+  assert.equal(terms.find((term) => term.value === 'Ownership').kind, 'soft');
+  assert.equal(terms.find((term) => term.value === 'payments').kind, 'domain');
+  // Longest first, so a longer term wins an overlap.
+  assert.deepEqual(values, [...values].sort((a, b) => b.length - a.length));
+  assert.deepEqual([...marks.ANALYSIS_FACT_KEYS], ['jobField', 'industry', 'salary', 'filter']);
+  // An older analysis's own lists are still read.
+  const older = marks.collectHighlightTerms({ skills: { required: ['Go'], preferred: ['Rust'], technologies: ['Kafka'] }, softSkills: ['Grit'] });
+  assert.deepEqual(
+    Object.fromEntries(older.map((term) => [term.value, term.kind])),
+    { Kafka: 'keyword', Rust: 'preferred', Grit: 'soft', Go: 'required' }
+  );
+  assert.deepEqual(marks.collectHighlightTerms(null), []);
 });
 
 // -- the sheet's analysis columns ----------------------------------------------- //
@@ -333,17 +436,21 @@ test('a loaded row says whether its build skips analysis, with the Job Field and
 
 // -- Admin -> Prompts: the variables a prompt must use ---------------------- //
 
-test('the server flags a saved prompt missing a required variable, names what is missing, and marks the required ones', async () => {
+test('the server flags a saved prompt missing a required variable or naming one it does not supply, and marks the required ones', async () => {
   // What Admin -> Prompts reads to draw its pill and note: `needsUpdate` on
   // the saved record, `validation.missingVariables` in the feature's own
-  // order, and `required: true` on those variables in `allowedVariables`.
+  // order and `validation.unknownVariables`, and `required: true` on the
+  // required variables in `allowedVariables`.
   const promptService = require('../dist/services/promptService');
-  assert.deepEqual(promptService.listRequiredPromptVariables('analyze-job-description'), ['jobFieldList', 'industryList']);
+  assert.deepEqual(promptService.listRequiredPromptVariables('analyze-job-description'), ['jobDescription']);
+  assert.deepEqual(promptService.listRequiredPromptVariables('filter-google-sheet-job'), ['jobDescription']);
+  assert.deepEqual(promptService.listRequiredPromptVariables('generate-cover-letter'), ['profileJson']);
   assert.deepEqual(promptService.listRequiredPromptVariables('tailor-resume'), [
-    'includeStrengths',
-    'includeSoftSkills',
-    'technicalSkillsLayout',
+    'profileJson',
+    'jobAnalysisJson',
+    'softSkillGroupHeading',
   ]);
+  assert.deepEqual(promptService.listRequiredPromptVariables('revise-resume-coverage'), ['draftJson', 'missingTermsJson']);
   assert.deepEqual(promptService.listRequiredPromptVariables('extract-profile-from-resume'), []);
 
   const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
@@ -358,27 +465,37 @@ test('the server flags a saved prompt missing a required variable, names what is
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
   const cases = [
-    ['Analyze.\n[[jobDescription]]', ['jobFieldList', 'industryList']],
-    ['Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]', ['industryList']],
-    ['Analyze.\n[[ jobFieldList ]]\n[[industryList]]\nJob link: [[jobLink]]\n[[jobDescription]]', []],
+    // [text, missing, unknown]
+    ['Analyze the posting at [[jobLink]].', ['jobDescription'], []],
+    ['Analyze.\n[[jobDescription]]', [], []],
+    ['Analyze.\n[[ jobDescription ]]\nJob link: [[jobLink]]', [], []],
     // Named in prose, never as a variable: not a use.
-    ['Analyze. Use the jobFieldList and the industryList.\n[[jobDescription]]', ['jobFieldList', 'industryList']],
-    ['Analyze.\n[[industryList]]\n[[jobDescription]]', ['jobFieldList']],
+    ['Analyze the jobDescription.\n[[jobLink]]', ['jobDescription'], []],
+    // An edit written for the older prompt: its lists are supplied no more.
+    ['Analyze.\n[[jobFieldList]]\n[[industryList]]\n[[jobDescription]]', [], ['jobFieldList', 'industryList']],
   ];
-  for (const [content, missing] of cases) {
+  for (const [content, missing, unknown] of cases) {
     write('analyze-job-description', content);
     write('tailor-resume', 'New.\n[[profileJson]]\nStrengths: [[ includeStrengths ]]');
+    write('revise-resume-coverage', 'Revise.\n[[draftJson]]');
     const listed = new Map((await loadFresh('../dist/services/promptService').listPrompts()).map((prompt) => [prompt.id, prompt]));
     const analysis = listed.get('analyze-job-description');
     assert.deepEqual(analysis.validation.missingVariables, missing, content);
-    assert.equal(analysis.needsUpdate === true, missing.length > 0, content);
+    assert.deepEqual(analysis.validation.unknownVariables, unknown, content);
+    assert.equal(analysis.needsUpdate === true, missing.length + unknown.length > 0, content);
     assert.deepEqual(
-      analysis.allowedVariables.filter((variable) => variable.required).map((variable) => variable.name).sort(),
-      ['industryList', 'jobFieldList']
+      analysis.allowedVariables.filter((variable) => variable.required).map((variable) => variable.name),
+      ['jobDescription']
     );
     const tailor = listed.get('tailor-resume');
-    assert.deepEqual(tailor.validation.missingVariables, ['includeSoftSkills', 'technicalSkillsLayout']);
+    // An edit written for the switches: missing the new markers, and naming
+    // one nothing supplies any more.
+    assert.deepEqual(tailor.validation.missingVariables, ['jobAnalysisJson', 'softSkillGroupHeading']);
+    assert.deepEqual(tailor.validation.unknownVariables, ['includeStrengths']);
     assert.equal(tailor.needsUpdate, true);
+    const revise = listed.get('revise-resume-coverage');
+    assert.deepEqual(revise.validation.missingVariables, ['missingTermsJson']);
+    assert.equal(revise.needsUpdate, true);
     for (const flag of ['predatesJobField', 'predatesIndustry', 'predatesSectionSwitches']) {
       assert.equal(flag in analysis || flag in tailor, false, `${flag} is gone`);
     }
@@ -395,7 +512,13 @@ test("the editor reads the text as typed exactly as the server does, and refuses
   }
   const promptService = loadFresh('../dist/services/promptService');
   const listed = new Map((await promptService.listPrompts()).map((prompt) => [prompt.featureKey, prompt]));
-  assert.equal(notes.ANALYSIS_PROMPT_FEATURE, 'analyze-job-description');
+  // The features the page offers no variant, activation or override for are the server's.
+  assert.deepEqual([...notes.SINGLE_PROMPT_FEATURES], promptService.listSinglePromptFeatures());
+  for (const featureKey of promptService.listPromptFeatureKeys()) {
+    assert.equal(notes.isSinglePromptFeature(featureKey), promptService.listSinglePromptFeatures().includes(featureKey), featureKey);
+  }
+  // The one set replaced the analysis's own constant (the page's copy named only the analysis).
+  assert.equal('ANALYSIS_PROMPT_FEATURE' in notes, false);
 
   // The page reads the required ones off the record the server lists, in the feature's order.
   for (const [featureKey, prompt] of listed) {
@@ -403,18 +526,25 @@ test("the editor reads the text as typed exactly as the server does, and refuses
   }
 
   const analysis = listed.get('analyze-job-description');
+  const facts = listed.get('filter-google-sheet-job');
+  const letter = listed.get('generate-cover-letter');
   const tailor = listed.get('tailor-resume');
+  const revise = listed.get('revise-resume-coverage');
   const texts = [
     'Analyze.\n[[jobDescription]]',
-    'Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
-    'Analyze.\n[[ jobFieldList ]]\n[[industryList]]\n[[jobDescription]]',
-    'Analyze. Use the jobFieldList and the industryList.\n[[jobDescription]]',
-    'Analyze.\n[jobFieldList]\n[[industryList]]\n[[jobDescription]]',
+    'Analyze the posting at [[jobLink]].',
+    'Analyze.\n[[ jobDescription ]]\n[[jobLink]]',
+    'Analyze the jobDescription.\n[[jobLink]]',
+    'Analyze.\n[jobDescription]\n[[jobLink]]',
+    'Write for [[profileJson]] at [[companyName]].',
+    'Write to [[companyName]] about [[role]].',
     'Tailor.\n[[profileJson]]\n[[jobAnalysisJson]]',
     'Tailor.\n[[profileJson]]\nStrengths: [[ includeStrengths ]] [[technicalSkillsLayout]]',
-    'Tailor.\n[[profileJson]]\n[[includeStrengths]] [[includeSoftSkills]] [[technicalSkillsLayout]]',
+    'Tailor.\n[[profileJson]]\n[[ jobAnalysisJson ]] [[softSkillGroupHeading]]',
+    'Revise.\n[[draftJson]]\n[[missingTermsJson]] [[figuresNote]]',
+    'Revise.\n[[draftJson]]',
   ];
-  for (const prompt of [analysis, tailor]) {
+  for (const prompt of [analysis, facts, letter, tailor, revise]) {
     for (const content of texts) {
       // The same names missing, in the same order, as the server's own validation.
       const server = promptService.validatePromptContent(content, prompt.allowedVariables).missingVariables;
@@ -426,9 +556,11 @@ test("the editor reads the text as typed exactly as the server does, and refuses
 
   // What Save says without sending is the server's refusal of that save, word for word.
   for (const [prompt, content] of [
-    [analysis, 'Analyze.\n[[jobDescription]]'],
-    [analysis, 'Analyze.\n[[jobFieldList]]\n[[jobDescription]]'],
-    [tailor, 'Tailor.\n[[profileJson]]\n[[includeSoftSkills]]'],
+    [analysis, 'Analyze the posting at [[jobLink]].'],
+    [facts, 'Facts of the posting at [[jobLink]].'],
+    [letter, 'Write to [[companyName]] about [[role]].'],
+    [tailor, 'Tailor.\n[[profileJson]]\n[[softSkillGroupHeading]]'],
+    [revise, 'Revise.\n[[draftJson]]\n[[figuresNote]]'],
   ]) {
     const missing = notes.missingRequiredVariables(content, prompt.allowedVariables);
     assert.ok(missing.length > 0, content);
@@ -439,25 +571,147 @@ test("the editor reads the text as typed exactly as the server does, and refuses
     assert.equal(notes.missingVariablesSentence(prompt.featureLabel, missing, notes.requiredVariables(prompt.allowedVariables)), refused);
   }
 
+  // Every single-prompt feature has its own sentences on the page, the analysis's still opening as it did.
+  assert.deepEqual(Object.keys(notes.SINGLE_PROMPT_NOTES), promptService.listSinglePromptFeatures());
+  for (const [featureKey, note] of Object.entries(notes.SINGLE_PROMPT_NOTES)) {
+    assert.ok(note.about && note.model, featureKey);
+  }
+  assert.match(notes.SINGLE_PROMPT_NOTES['analyze-job-description'].about, /^Job analysis has one prompt/);
+
+  // A variable the prompt is not given is read off the text as the server reads it...
+  const named = [
+    'Analyze.\n[[jobDescription]]',
+    'Analyze.\n[[jobDescription]]\n[[jobFieldList]] [[ industryList ]] [[jobFieldList]]',
+    'Facts of [[jobContent]].',
+    'Tailor.\n[[profileJson]] [[jobAnalysisJson]] [[softSkillGroupHeading]] [[includeStrengths]] [[hardSkillsJson]]',
+    'Revise [[draftJson]] [[missingTermsJson]] [[figuresNote]] [[profileJson]]',
+  ];
+  for (const prompt of [analysis, facts, letter, tailor, revise]) {
+    for (const content of named) {
+      assert.deepEqual(
+        notes.unknownVariables(content, prompt.allowedVariables),
+        promptService.validatePromptContent(content, prompt.allowedVariables).unknownVariables,
+        `${prompt.featureKey}: ${content}`
+      );
+    }
+  }
+  // ...and Save refuses it first, as the server does, in the server's words.
+  for (const [prompt, content] of [
+    [analysis, 'Analyze.\n[[jobDescription]]\n[[jobFieldList]] [[industryList]]'],
+    [facts, 'Facts of [[jobContent]].'],
+    [tailor, 'Tailor.\n[[profileJson]] [[includeSoftSkills]]'],
+    [revise, 'Revise [[draftJson]]'],
+    [letter, 'Write to [[companyName]].'],
+  ]) {
+    const refusal = notes.saveRefusal(content, prompt.allowedVariables, prompt.featureLabel);
+    assert.ok(refusal, content);
+    const refused = await promptService.updatePrompt(prompt.id, { content }).then(
+      () => assert.fail(`the server saved ${JSON.stringify(content)}`),
+      (error) => error.message
+    );
+    assert.equal(refusal, refused, content);
+  }
+  assert.equal(notes.saveRefusal('Analyze.\n[[jobDescription]] [[jobLink]]', analysis.allowedVariables, analysis.featureLabel), '');
+
+  // The list's line says why a flagged prompt is not run, whichever it is.
+  assert.equal(notes.notRunLine({ missingVariables: ['jobDescription'] }), 'Not run: it does not use [[jobDescription]].');
+  assert.equal(
+    notes.notRunLine({ missingVariables: [], unknownVariables: ['jobFieldList', 'industryList'] }),
+    'Not run: it uses [[jobFieldList]] and [[industryList]], which this version does not supply.'
+  );
+  assert.equal(
+    notes.notRunLine({ missingVariables: ['softSkillGroupHeading'], unknownVariables: ['includeStrengths'] }),
+    'Not run: it does not use [[softSkillGroupHeading]], and uses [[includeStrengths]], which this version does not supply.'
+  );
+  assert.equal(notes.notRunLine({ missingVariables: [], unknownVariables: [] }), 'Not run: it cannot run as it is.');
+  // A record the server dates from before its feature's contract changed - its variables all fine.
+  assert.equal(notes.notRunLine({ missingVariables: [], unknownVariables: [] }, true), 'Not run: it dates from an older version of this prompt.');
+  assert.equal(
+    notes.notRunLine({ missingVariables: [], unknownVariables: ['jobFieldList'] }, true),
+    'Not run: it uses [[jobFieldList]], which this version does not supply, and dates from an older version of this prompt.'
+  );
+
   assert.equal(notes.variableList(['a']), '[[a]]');
   assert.equal(notes.variableList(['a', 'b']), '[[a]] and [[b]]');
   assert.equal(notes.variableList(['a', 'b', 'c']), '[[a]], [[b]] and [[c]]');
 
-  // The note on a saved prompt the server will not run says what runs instead.
+  // The note on a saved prompt the server will not run says why, and what runs instead.
   assert.equal(
-    notes.needsUpdateNote({ featureLabel: 'Analyze Job Description', isBuiltIn: true, missing: ['industryList'] }),
-    'The saved prompt does not use [[industryList]], which every Analyze Job Description prompt must use, so the ' +
+    notes.needsUpdateNote({ featureLabel: 'Analyze Job Description', isBuiltIn: true, missing: ['jobDescription'] }),
+    'The saved prompt does not use [[jobDescription]], which every Analyze Job Description prompt must use, so the ' +
       'shipped Analyze Job Description prompt runs in its place until it is saved with it.'
   );
-  assert.match(
-    notes.needsUpdateNote({ featureLabel: 'Tailor Resume', isBuiltIn: false, missing: ['includeSoftSkills', 'technicalSkillsLayout'] }),
-    /\[\[includeSoftSkills\]\] and \[\[technicalSkillsLayout\]\], .* so the built-in Tailor Resume prompt runs in its place until it is saved with them\.$/
+  assert.equal(
+    notes.needsUpdateNote({ featureLabel: 'Analyze Job Description', isBuiltIn: true, missing: [], unknown: ['jobFieldList', 'industryList'] }),
+    'The saved prompt uses [[jobFieldList]] and [[industryList]], which this version does not supply, so the ' +
+      'shipped Analyze Job Description prompt runs in its place until it is saved without them.'
   );
+  assert.equal(
+    notes.needsUpdateNote({ featureLabel: 'Job Facts (Filter)', isBuiltIn: true, missing: ['jobDescription'], unknown: ['jobContent'] }),
+    'The saved prompt does not use [[jobDescription]], which every Job Facts (Filter) prompt must use, and uses ' +
+      '[[jobContent]], which this version does not supply, so the shipped Job Facts (Filter) prompt runs in its ' +
+      'place until it is saved with [[jobDescription]] and without [[jobContent]].'
+  );
+  assert.equal(
+    notes.needsUpdateNote({ featureLabel: 'Job Facts (Filter)', isBuiltIn: false, missing: [] }),
+    'The saved prompt cannot run as it is, so the built-in Job Facts (Filter) prompt runs in its place until it is updated.'
+  );
+  assert.match(
+    notes.needsUpdateNote({ featureLabel: 'Tailor Resume', isBuiltIn: false, missing: ['jobAnalysisJson', 'softSkillGroupHeading'] }),
+    /\[\[jobAnalysisJson\]\] and \[\[softSkillGroupHeading\]\], .* so the built-in Tailor Resume prompt runs in its place until it is saved with them\.$/
+  );
+  assert.equal(
+    notes.needsUpdateNote({ featureLabel: 'Analyze Job Description', isBuiltIn: true, missing: [], unknown: [], savedForOlderVersion: true }),
+    'The saved prompt dates from an older version of the Analyze Job Description prompt, so the shipped Analyze Job ' +
+      'Description prompt runs in its place until it is saved again.'
+  );
+  assert.equal(
+    notes.needsUpdateNote({ featureLabel: 'Job Facts (Filter)', isBuiltIn: true, missing: ['jobDescription'], unknown: ['jobContent'], savedForOlderVersion: true }),
+    'The saved prompt does not use [[jobDescription]], which every Job Facts (Filter) prompt must use, and uses ' +
+      '[[jobContent]], which this version does not supply, and dates from an older version of the Job Facts (Filter) ' +
+      'prompt, so the shipped Job Facts (Filter) prompt runs in its place until it is saved with [[jobDescription]] and ' +
+      'without [[jobContent]].'
+  );
+
+  // The flag is the server's, by the record's date: an edit saved before the
+  // owner's texts that names only [[jobDescription]] is listed with it, and
+  // the notes say why from what the list sends - and a save clears it.
+  const { saveStoredPrompt } = require('../dist/database/promptRepository');
+  saveStoredPrompt({
+    id: 'analyze-job-description',
+    featureKey: 'analyze-job-description',
+    content: 'OLD ADMIN ANALYSIS EDIT.\n[[jobDescription]]',
+    isBuiltIn: true,
+    createdAt: '2026-01-02T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+  });
+  const dated = (await promptService.listPrompts()).find((prompt) => prompt.id === 'analyze-job-description');
+  assert.equal(dated.needsUpdate, true);
+  assert.equal(dated.savedForOlderVersion, true);
+  assert.equal(notes.notRunLine(dated.validation, dated.savedForOlderVersion), 'Not run: it dates from an older version of this prompt.');
+  assert.match(
+    notes.needsUpdateNote({
+      featureLabel: dated.featureLabel,
+      isBuiltIn: dated.isBuiltIn,
+      missing: dated.validation.missingVariables,
+      unknown: dated.validation.unknownVariables,
+      savedForOlderVersion: dated.savedForOlderVersion,
+    }),
+    /dates from an older version of the Analyze Job Description prompt, so the shipped .* until it is saved again\.$/
+  );
+  await promptService.updatePrompt('analyze-job-description', { content: 'OLD ADMIN ANALYSIS EDIT.\n[[jobDescription]]' });
+  assert.equal((await promptService.listPrompts()).find((prompt) => prompt.id === 'analyze-job-description').savedForOlderVersion, undefined);
 
   // And the page draws the server's flag, never a rule of its own about prompt history.
   const page = fs.readFileSync(path.join(SRC, 'app', 'admin', 'prompts', 'page.tsx'), 'utf8');
   assert.match(page, /prompt\.needsUpdate && <Pill tone="amber">Needs update<\/Pill>/);
   assert.match(page, /missingVariablesSentence\(/);
+  assert.match(page, /notRunLine\(prompt\.validation, prompt\.savedForOlderVersion\)/);
+  assert.match(page, /unknown: savedSummary\.validation\.unknownVariables/);
+  assert.match(page, /savedForOlderVersion: savedSummary\.savedForOlderVersion/);
+  // The page's feature order is the server's.
+  const orderBlock = page.slice(page.indexOf('const FEATURE_ORDER'), page.indexOf('];', page.indexOf('const FEATURE_ORDER')));
+  assert.deepEqual([...orderBlock.matchAll(/'([a-z-]+)'/g)].map((match) => match[1]), promptService.listPromptFeatureKeys());
   assert.doesNotMatch(page, /predates|promptNotes|getAIModels/);
   assert.equal(fs.existsSync(path.join(SRC, 'lib', 'promptNotes.ts')), false);
 });

@@ -88,29 +88,38 @@ Coverage currently focuses on:
   (`userModelAccess.test.js`)
 - job analysis runs once (PLAN check 1): the ten cases that used to re-run it,
   each through the real routes and queue against a COUNTING stub seat that
-  must see exactly one analysis call, and a damaged stored row analysed once
-  more and repaired in place (`analysisOnce.test.js`); the store with
-  no window, cap or overwrite, the prompt edit, the analysis model and the
-  closed job-field list (`analysisCacheEndToEnd.test.js`); the in-flight join,
-  a caller's abort, a failed call storing nothing (`analysisInFlight.test.js`);
-  the gate as the only caller of the analysis prompt, its byte-identical
-  cached prefix holding the job field and industry lists ahead of the
-  posting, an administrator's analysis prompt that never names the lists not
-  run - the built-in is, and no turn carries an addendum - and a sheet row's
-  cell worth only the stored
+  must see exactly one analysis call and one facts call per posting, and a
+  damaged stored row analysed once more and repaired in place
+  (`analysisOnce.test.js`); the store with no window, cap or overwrite, an
+  edit of either prompt, the analysis model deciding both calls, the audit
+  hash over both prompts and the code's job field text, and the facts
+  answer's closed lists (`analysisCacheEndToEnd.test.js`); the in-flight
+  join, a caller's abort, a failed call storing nothing, across both calls
+  (`analysisInFlight.test.js`); the facts call itself - its snake_case answer,
+  seniority, a salary with no currency, the job field asked once more when
+  missing, the industry derived, the two calls side by side with either
+  failing stopping the other, the last caller leaving stopping both, and the
+  job field list before the prompt in a folded turn too (`jobFacts.test.js`);
+  the gate as the only caller of the two prompts, each one's byte-identical
+  cached part, the job field list the code's own text on the facts call, an
+  administrator's analysis edit run as written and an outdated one (the old
+  lists, `[[jobContent]]`, or saved before the owner's texts though it names
+  only `[[jobDescription]]`) not, with no edit able to drop the job field - and
+  a sheet row's cell worth only the stored
   analysis its id names for that posting - an unknown id never stored, and
   nothing in the code writing `source = 'sheet'` (`analysisGate.test.js`); the
   table, its UNIQUE
   indexes, the link and text identities, EXPLAIN QUERY PLAN on every lookup
   (and on the lake's two reads) and the repair of an unreadable row, the
-  closed industry list with stable ids (an unknown word Other), an industry
-  only when the answer had the key - an older analysis, row or sheet cell
-  stays without - and derived for such an analysis from its company category,
-  else its free-text industry, else not specified, and job type (Remote,
+  closed industry list with stable ids (an unknown word Other), no industry
+  on a new analysis - derived from its company category, else its free-text
+  industry, else not specified - and one stored with an industry keeping it,
+  and job type (Remote,
   Hybrid, Onsite or blank) and clearance (required unless the analysis says
   none or does not say) (`jobAnalysisStore.test.js`); the industry, like the
-  job field, salary and filter, never reaching the tailoring prompt nor
-  changing a tailoring cache key (`tokenBudget.test.js`); and the app sheet's
+  job field, salary and filter (the facts call's seniority included), never
+  reaching the tailoring prompt nor changing a tailoring cache key
+  (`tokenBudget.test.js`); and the app sheet's
   six
   analysis columns - sheet-first builds with one batched read, write-back once
   and RAW, the trust rule, row identity, a cell used only when it names its
@@ -121,15 +130,25 @@ Coverage currently focuses on:
   request shape and repair with the Analysis column cleared (a cell forged
   while unprotected never trusted), the grid grown past twelve columns and the
   429 backoff (`analysisSheets.test.js`). The Job Filter's verdict through the
-  analysis path, an unknown clearance failing closed (`jobFilter.test.js`).
-  `analysisHarness.js` is their shared install, stub seats and output stubs.
+  analysis path, an unknown clearance failing closed, seniority from the
+  facts call and an older analysis's `jobMeta.seniority` (`jobFilter.test.js`).
+  `analysisHarness.js` is their shared install, stub seats and output stubs:
+  its seats answer each prompt by its call site (a one-object analysis split
+  into the keywords and the snake_case facts, the revise pass `{}`) and fail
+  loudly on a call site they do not know.
   The pages' half (`frontendAnalysis.test.js`): the builder holding one
   analysis per posting (re-spaced text the same posting, edited text or
-  another link not, a 400 letting it go), the salary line, the posting
-  normalisation, the Analysis cell's states and the sheet panel's column
-  letters, and the prompt editor's required variables - which they are, what
-  a text lacks, the *Needs update* note and the refusal of a save in the
-  server's sentence - each run against the server's own code
+  another link not, a 400 letting it go), the salary line, the job type,
+  seniority (the facts call's, else an older analysis's own) and clearance a
+  page shows, Prompt Test marking only the keyword half and never a fact, the
+  posting normalisation, the Analysis cell's states and the sheet panel's
+  column letters, and the prompt editor - the features in the server's order,
+  the required variables, what a text lacks or names that is not supplied,
+  the *Needs update* note and the list's *Not run* line (an edit the server
+  dates from an older version included), the single-prompt
+  features and each one's sentences, and the refusal of a save (an unknown
+  variable first, as the server does) in the server's sentence - each run
+  against the server's own code
 - the Job Data Lake: the company normalisation and the versioned hash
   (`jobLakeIdentity.test.js`); the tables and exactly the planned indexes -
   `job_reports`' two among them - with EXPLAIN QUERY PLAN on the duplicate
@@ -241,9 +260,10 @@ Coverage currently focuses on:
   send read back whole; and no page outside the admin ones reaching the
   routes
 - the tailoring cache (`tailorCache.test.js`): a second identical build making
-  no tailoring call and charged again, a one-character profile change, another
-  model, an edited prompt, another template and a library skill the posting
-  names each a miss, the key's parts, a cover letter's own key, every caller
+  no tailoring or revise call and charged again, a one-character profile
+  change, another model, an edited prompt and another template each a miss, a
+  skill added to the library not one, the key's parts (the revise prompt and
+  settings in, the profile's settings out), a cover letter's own key, every caller
   passing its context (/resume/preview, /resume/generate and the queue's
   tailoring and cover letter), nothing cached without an analysis id, an
   answer that does not parse or that a fallback model wrote never stored, an
@@ -335,18 +355,50 @@ Coverage currently focuses on:
   or a prompt; and the editor's helpers - the pane width that stops the
   preview shaking, the "N kept" line, the sample-text notice and placeholders
   (`frontendEditorHelpers.test.js`)
+- what the pages send back of a tailoring (`frontendTailoring.test.js`): the
+  builder's *Manual Edits (JSON)* box offering only what an edit can change,
+  plus each role's company, title and dates to say which role its bullets are -
+  no role description or place, no derived skill list - and its edit finishing
+  through the server's own parse exactly as the whole content does, for every
+  switch and layout and for two stints under one company and title listed in
+  the other order; an edited bullet, summary, group or soft group surviving, a
+  role's place and dates the profile's whatever the edit says, an edited title
+  kept only without a headline, and the note under the box saying so; anything but
+  one JSON object refused before it is sent; and the profile editor saving and
+  previewing only settings the server reads (no skill ordering, no cover
+  letter prompt), its Experience section saying a tailored resume prints no
+  role description
 - a profile's two section switches and its own soft skills
   (`resumeSections.test.js`): off unless stored `true`, kept by a save that
   omits them; the soft-skill list cleaned, bounded and kept; the preview's
   profile builder never throwing and taking only the settings that change the
   render; the render gate - a switched-off section empty whatever the content
-  carries, a switched-on one showing the tailored list or, when that is empty,
-  the profile's own; the live preview grouping only the skills entered while
-  generation still pads; links reaching an `href` only as http(s); and the
-  DOCX carrying Strengths and Soft Skills exactly when the PDF does
+  carries, Strengths always the profile's own, Soft Skills the content's list
+  or, when that is empty, the profile's own; no render padding the skills
+  block, the preview and generation alike, in the order the person keeps
+  them; links reaching an `href` only as http(s); and the DOCX carrying
+  Strengths and Soft Skills exactly when the PDF does, the model's soft-skill
+  group staying in Technical Skills in both where the template has no section
+- a tailored resume as printed (`tailoredRender.test.js`): the model's
+  `skillGroups` verbatim when Grouped and flattened without repeats when
+  Plain, nothing from the library added, filtered or reordered; the soft-skill
+  group routed to the Soft Skills section only while the switch is on for the
+  template; the profile's own strengths; a block with nothing printable
+  falling back to the profile's own skills; older content's flat list printed
+  unpadded; the library filing and filtering only an untailored block and an
+  older content's Grouped list - never the model's, never an older Plain list,
+  never padding; no role description and no empty box where it was - and a
+  template whose `{{#if description}}` block crosses the element's edges
+  still rendering, the guard taking such a block whole or leaving it - at
+  most eight bullets, the title printed as composed with its separators - in every
+  built-in, each layout it offers and both switch states, in the DOCX, and in
+  the gallery's tailored sample; and a cover letter keeping its paragraphs
+  when the model separated them with single newlines. The shared reader of
+  the block itself - sanitising, the soft group's mark, drawn heading and
+  closed heading list, the Plain flattening - is `skillGroups.test.js`
 - the templates and the two skills layouts (`templateLayouts.test.js`): every
   built-in rendered in each layout it declares (one item per skill Plain,
-  headings Grouped) and with each switch on and off, its capability flags
+  headings Grouped, nothing padded) and with each switch on and off, its capability flags
   against its markup, the section-stripping regressions, layouts inferred for
   a template that states none and kept for one that does (stored, imported,
   manual), an administrator's reclassification and its refusal by name, the
@@ -380,25 +432,62 @@ Coverage currently focuses on:
   able to run, the layout and switches reaching the page, the template order
   and layout fallback, a disabled template a 404 for a user only, and a 503
   with a ref when no template is enabled
-- tailoring by the switches (`resumeSectionPrompts.test.js`): the three
-  prompt values as words outside `profileJson`, the shipped prompt and the
-  appended override saying what the switches say, strengths and soft skills
-  kept, replaced or emptied per switch with nothing invented, the summary's
-  `Working style:` sentence only while Soft Skills is off, a Plain list with
-  no library padding, job-relevance ordering that keeps every skill, and held
-  content - a builder preview, a queued task - finished against the profile as
-  it is now; and end to end, two profiles on one analysis each tailored by
-  their own switches through `/api/resume/preview-all`
+- tailoring by the switches (`resumeSectionPrompts.test.js`): no switch a
+  prompt value - the strengths in `profileJson` only while on, her own soft
+  skills never - the shipped prompt naming the drawn soft-skill heading, the
+  profile's own strengths while on, the model's soft-skill group in its
+  section while Soft Skills is on and in the block while off, Grouped and
+  Plain the same content, nothing added to the summary, held content - a
+  builder preview, a queued task - finished against the profile as it is now
+  with no model call, an answer with no skill groups falling back to her own,
+  and a template with no section reading as off; and end to end, two profiles
+  on one analysis each drawn by their own switches through
+  `/api/resume/preview-all`, a repeat reusing the tailoring and its revision
   (`sectionSwitchesEndToEnd.test.js`)
+- the tailoring prompt's promises (`tailorContract.test.js`): its values
+  exactly the declared variables, the posting's own lists (skills, prose
+  keywords with the banned verbs out, concepts) read from either analysis
+  shape, the five it leans on (requirements, must-include, early, Go as
+  spelled, topped up), the concept tools and soft-skill heading seeded per
+  profile and posting, the title's kind (levels taken off its edges only,
+  never the kind alone as a headline) and its six shapes, roles restored,
+  dropped and put back with no description, two stints at one company under
+  one title told apart by their dates (a profile typed oldest first, answered
+  newest first), the eight-bullet cap by checklist terms, numerals (a compound
+  past twenty, hyphenated or spaced, left as written) and the
+  dash backstop (a range beside a unit, a currency or a quarter kept a range;
+  the cover letter's too), the soft
+  group found by mark, heading or a soft heading last, and the parse
+  idempotent for every profile shape; the pure lists of
+  `profileExperienceSkills.test.js` alongside
+- the revise pass (`reviseCoverage.test.js`): the missing terms in priority
+  order with banned words out and the cap, what counts as a figure, the
+  figures sentence, the merge (summary, whole roles by the n-th company and
+  title - or, when only one of two such stints comes back, the one whose
+  bullets it repeats, through tailorResume too - nothing else, never a line
+  the finishing would cut - "our" keeps the draft's), when it runs and what
+  it is told, the revision
+  finished like the draft, a failure leaving the draft uncached and said
+  once, an abort passed on, the cache keeping the revised resume but never a
+  fallback's revision, the resume's model whatever the prompt overrides, and
+  content a page sends back never revised; the revision inside the queue's
+  provider pin is `providerQueues.test.js`
 - prompt variables (`promptVariables.test.js`): every feature declaring
   exactly the variables its code supplies, a typo refused on save and named
   on validate (also through the routes), the shipped prompts validating
-  clean, a save that leaves out a required variable refused naming it and the
-  rule, a stored record without one marked `needsUpdate` with the names and
-  never run - the built-in runs in its place, said once, and the shipped text
-  when the built-in's own edit needs updating too, by exact id, by runtime id
-  and rendered by feature - and the switches
-  stated on every tailoring turn whichever record runs, through a stub seat
+  clean with their required sets, a save that leaves out a required variable
+  refused naming it and the rule, a stored feature record without one - or
+  naming one no longer supplied, or saved before its feature's contract
+  changed whatever it names (`savedForOlderVersion`; never the shipped file,
+  never the cover letter, cleared by a save, and the shipped files' date the
+  contract's) - marked `needsUpdate` with the names and
+  never run (an unattached one never marked) - the built-in runs in its
+  place, said once, and the shipped text when the built-in's own edit needs
+  updating too, by exact id, by runtime id and rendered by feature - nothing
+  appended to a tailoring turn whichever record runs and the answer held to
+  the profile, through a stub seat, and a profile naming a deleted tailoring
+  prompt running the built-in, warned once, while a cover letter always runs
+  its built-in
 - the three CLI seats, each with no binary, no subprocess and no network:
   the Claude provider - argv, child environment, event reduction, failure
   classification, rate limits, outages and concurrency, and a sign-in hold

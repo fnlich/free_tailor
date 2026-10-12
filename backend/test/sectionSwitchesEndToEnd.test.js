@@ -15,9 +15,11 @@ const { useTempStorage } = require('./helpers');
  *
  * One profile has switched Strengths and Soft Skills on and lays its skills
  * out plain; the other is as every profile was before the switches. They are
- * previewed together - the builder's commonest shape - against a stub seat,
- * and this follows each one from the turn its model is sent to the HTML the
- * page draws.
+ * previewed together - the builder's commonest shape - against a stub seat
+ * that answers like the shipped prompt (the skills block in groups, the
+ * posting's soft skills last under the heading the turn names), and this
+ * follows each one from the turn its model is sent to the HTML the page
+ * draws: the same kind of answer, drawn by each profile's own switches.
  *
  * It also pins what is deliberately NOT per profile: the job analysis. It is
  * a reading of the posting alone, so it is made once and shared - in one
@@ -39,23 +41,57 @@ const ANALYSIS_ANSWER = JSON.stringify({
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
 });
 
-const TAILOR_ANSWER = JSON.stringify({
-  title: 'Senior Engineer',
-  summary: 'Engineer building reliable services.',
-  experience: [
-    {
-      title: 'Engineer',
-      company: 'Acme',
-      startDate: '01/2020',
-      endDate: 'Present',
-      location: 'Remote',
-      description: 'Built product services.',
-      achievements: ['Cut build time by 37% by caching container layers.'],
-    },
-  ],
-  strengths: [{ title: 'Container craft', description: 'Keeps builds fast and boring.' }],
-  coverLetter: 'I build things.',
+/** The analysis's second call: the Job Facts (Filter) prompt's facts, and the code's job field. */
+const FACTS_ANSWER = JSON.stringify({
+  job_type: 'remote',
+  onsite_interview: 'no',
+  company_category: 'saas',
+  seniority: 'senior',
+  clearance_required: 'none',
+  salary: { min: null, max: null, period: null, raw: null },
+  region: 'us',
+  us_state: null,
+  job_field: 'backend',
 });
+
+/** What each prompt answers, by its call site; one this test does not expect fails loudly. */
+const ANSWERS = {
+  'analyze-job-description': ANALYSIS_ANSWER,
+  'filter-google-sheet-job': FACTS_ANSWER,
+  'revise-resume-coverage': '{}',
+};
+
+/**
+ * The tailoring, as the shipped prompt asks: the skills block in groups, the
+ * last one the posting's soft skills under the heading this turn was told to
+ * use. A strength too - which the prompt never asks for, and nothing reads.
+ */
+function tailorAnswer(request) {
+  const heading = /Head it exactly (.+?) - that heading/.exec(request.userBody)?.[1];
+  if (!heading) throw new Error('stub seat: the turn names no soft-skill heading');
+  return JSON.stringify({
+    title: 'Senior Engineer',
+    summary: 'Engineer building reliable services.',
+    experience: [
+      {
+        title: 'Engineer',
+        company: 'Acme',
+        startDate: '01/2020',
+        endDate: 'Present',
+        location: 'Remote',
+        description: '',
+        achievements: ['Cut build time by 37% by caching container layers.'],
+      },
+    ],
+    skillGroups: [
+      { category: 'Languages', skills: ['TypeScript'] },
+      { category: 'Containers', skills: ['Docker'] },
+      { category: heading, skills: ['Adaptable', 'Teamwork'] },
+    ],
+    strengths: [{ title: 'Container craft', description: 'Keeps builds fast and boring.' }],
+    coverLetter: 'I build things.',
+  });
+}
 
 function profileInput(name, settings) {
   return {
@@ -107,7 +143,8 @@ async function serve() {
     health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
     async complete(request) {
       calls.push(request);
-      const text = request.callSite === 'tailor-resume' ? TAILOR_ANSWER : ANALYSIS_ANSWER;
+      const text = request.callSite === 'tailor-resume' ? tailorAnswer(request) : ANSWERS[request.callSite];
+      if (text === undefined) throw new Error(`stub seat: no answer for call site "${request.callSite}"`);
       return { text, resolvedModel: request.modelName, providerId: 'claude-cli', droppedParams: [], latencyMs: 1 };
     },
   }));
@@ -166,69 +203,83 @@ test("each profile is tailored by its own switches, on one analysis of the posti
   const response = await post('/resume/preview-all', { profileIds: ['p-on', 'p-off'], jobDescription: POSTING });
   assert.equal(response.status, 200, JSON.stringify(response.body));
 
-  const analyses = calls.filter((call) => call.callSite !== 'tailor-resume');
-  const tailorings = calls.filter((call) => call.callSite === 'tailor-resume');
-  assert.equal(analyses.length, 1, 'the posting is analysed once for both profiles');
+  const of = (site) => calls.filter((call) => call.callSite === site);
+  const tailorings = of('tailor-resume');
+  assert.equal(of('analyze-job-description').length, 1, 'the posting is analysed once for both profiles');
+  assert.equal(of('filter-google-sheet-job').length, 1, 'its facts asked once with it');
   assert.equal(tailorings.length, 2);
+  // Each draft leaves the posting's terms out, so each is revised once (the
+  // stub's revision changes nothing).
+  assert.equal(of('revise-resume-coverage').length, 2);
 
-  // What each model turn was told: the shipped prompt's variables and the
-  // appended override agree, and each turn says its own profile's choices.
-  const turnFor = (name) => tailorings.find((call) => call.userBody.includes(`"name":"${name}"`));
-  const on = turnFor('Ada').userBody;
-  const off = turnFor('Bea').userBody;
-  assert.match(on, /Strengths section: yes\n/, 'the shipped prompt filled [[includeStrengths]]');
-  assert.match(on, /Technical skills layout: plain\n/);
-  assert.match(on, /Strengths section: yes\. Return 2-4/, 'and the override says the same');
-  assert.match(off, /Strengths section: no\n/);
-  assert.match(off, /Soft skills section: no\n/);
-  assert.match(off, /Technical skills layout: grouped\n/);
-  assert.match(off, /Return "strengths": \[\]/);
+  // What each model turn was told: the same lists - the posting's - and no
+  // word about either profile's switches; a heading drawn for each resume.
+  const turnFor = (name) => tailorings.find((call) => call.userBody.includes(`"name":"${name}"`)).userBody;
+  const on = turnFor('Ada');
+  const off = turnFor('Bea');
+  for (const turn of [on, off]) {
+    assert.match(turn, /THE FIVE THIS POSTING LEANS ON:\n\["TypeScript","Docker"\]/);
+    assert.doesNotMatch(turn, /Strengths section|Soft skills section|Technical skills layout|FINAL SKILL OVERRIDE/);
+  }
+  // Strengths reach the model only as hers, only while the switch is on.
+  assert.match(on, /"strengths":\[\{"title":"Own strength"/);
+  assert.doesNotMatch(off, /Own strength/);
 
   // What came back, and what the page draws.
   const preview = (profileId) => response.body.previews.find((entry) => entry.profileId === profileId);
   const ada = preview('p-on');
   const bea = preview('p-off');
 
-  assert.equal(ada.tailoredContent.strengths[0].title, 'Container craft');
-  assert.equal(ada.tailoredContent.softSkills[0], 'Persistence');
-  assert.ok(ada.tailoredContent.hardSkills.includes('Docker'));
-  assert.equal(ada.tailoredContent.hardSkills.includes('Figma'), false, 'plain lists what is relevant, not everything');
+  // Ada: her OWN strength, never the model's; the posting's soft skills in
+  // their own section; the technical skills one plain list.
+  assert.deepEqual(ada.tailoredContent.strengths, [{ title: 'Own strength', description: 'In her own words.' }]);
+  assert.deepEqual(ada.tailoredContent.softSkills, ['Adaptable', 'Teamwork']);
+  assert.deepEqual(ada.tailoredContent.hardSkills, ['TypeScript', 'Docker']);
   assert.match(ada.html, /class="section-title">Strengths</);
-  assert.match(ada.html, /Container craft/);
+  assert.match(ada.html, /Own strength/);
+  assert.doesNotMatch(ada.html, /Container craft/);
   assert.match(ada.html, /class="section-title">Soft Skills</);
-  assert.match(ada.html, /Persistence/);
+  assert.equal(ada.html.split('Adaptable').length - 1, 1, 'the soft skills print once - in their section');
+  assert.doesNotMatch(ada.html, /Persistence/, "her own soft skills give way to the posting's");
 
+  // Bea: no Strengths, no Soft Skills section - the soft group stays the last
+  // group of her Technical Skills, under the heading drawn for her resume.
+  const beaHeading = /Head it exactly (.+?) - that heading/.exec(off)[1];
   assert.deepEqual(bea.tailoredContent.strengths, []);
   assert.deepEqual(bea.tailoredContent.softSkills, []);
-  assert.match(bea.tailoredContent.summary, /Working style: [^.]*Adaptable/);
-  assert.ok(bea.tailoredContent.hardSkills.length > ada.tailoredContent.hardSkills.length, 'grouped still fills its headings');
+  assert.equal(bea.tailoredContent.skillGroups.at(-1).category, beaHeading);
+  assert.equal(bea.tailoredContent.summary, 'Engineer building reliable services.', 'no sentence added');
   assert.doesNotMatch(bea.html, /Container craft|Persistence/);
   assert.doesNotMatch(bea.html, /class="section-title">(Strengths|Soft Skills)</);
+  assert.ok(bea.html.includes(beaHeading.replace(/&/g, '&amp;')), 'the soft group prints under its heading');
+  assert.equal(bea.html.split('Adaptable').length - 1, 1);
   // Nothing to confirm for a section the resume does not show.
   assert.deepEqual(bea.tailoredContent.unconfirmedSoftSkills, []);
 
   // The same posting again, for one profile at a time: the analysis comes
   // from the store whichever profile's switches ask, and - nothing about
-  // either profile, the model or the prompt having changed - so does each
-  // tailoring (owner decision P6), finished against its own switches again.
+  // either profile, the model or the prompts having changed - so does each
+  // tailoring, revision included (owner decision P6), drawn by its own
+  // switches again.
   for (const profileId of ['p-off', 'p-on']) {
     const again = await post('/resume/preview-all', { profileIds: [profileId], jobDescription: POSTING });
     assert.equal(again.status, 200, JSON.stringify(again.body));
     const repeat = again.body.previews[0];
-    assert.deepEqual(repeat.tailoredContent.strengths, preview(profileId).tailoredContent.strengths);
-    assert.deepEqual(repeat.tailoredContent.softSkills, preview(profileId).tailoredContent.softSkills);
+    assert.deepEqual(repeat.tailoredContent, preview(profileId).tailoredContent);
   }
-  assert.equal(calls.filter((call) => call.callSite !== 'tailor-resume').length, 1, 'still one analysis');
-  assert.equal(calls.filter((call) => call.callSite === 'tailor-resume').length, 2, 'and no second tailoring');
+  assert.equal(of('analyze-job-description').length, 1, 'still one analysis');
+  assert.equal(of('filter-google-sheet-job').length, 1);
+  assert.equal(of('tailor-resume').length, 2, 'and no second tailoring');
+  assert.equal(of('revise-resume-coverage').length, 2, 'nor a second revision');
 });
 
-test('a switch the template has no section for is off for the model and the summary too', async (t) => {
+test('a switch the template has no section for is off for the model and the content too', async (t) => {
   const { calls, post, close } = await serve();
   t.after(close);
 
   // Charcoal Sidebar prints neither section. With both switches on, the turn
-  // must not be told to write strengths into a section that never prints, and
-  // the posting's soft skills must stay in the summary rather than go to a
+  // is not given strengths for a section that never prints, and the
+  // posting's soft skills stay in the skills block rather than going to a
   // list that never prints - in the batch preview and the single one alike.
   for (const [route, body] of [
     ['/resume/preview-all', { profileIds: ['p-charcoal'], jobDescription: POSTING }],
@@ -237,14 +288,13 @@ test('a switch the template has no section for is off for the model and the summ
     const response = await post(route, body);
     assert.equal(response.status, 200, `${route}: ${JSON.stringify(response.body)}`);
     const turn = calls.filter((call) => call.callSite === 'tailor-resume').at(-1).userBody;
-    assert.match(turn, /Strengths section: no\n/, route);
-    assert.match(turn, /Soft skills section: no\n/, route);
-    assert.match(turn, /Return "strengths": \[\]/, route);
+    assert.doesNotMatch(turn, /Own strength/, route);
 
     const content = route === '/resume/preview' ? response.body.tailoredContent : response.body.previews[0].tailoredContent;
     assert.deepEqual(content.strengths, [], route);
     assert.deepEqual(content.softSkills, [], route);
     assert.deepEqual(content.unconfirmedSoftSkills, [], route);
-    assert.match(content.summary, /Working style: [^.]*Adaptable/, route);
+    assert.deepEqual(content.skillGroups.at(-1).skills, ['Adaptable', 'Teamwork'], route);
+    assert.equal(content.summary, 'Engineer building reliable services.', route);
   }
 });

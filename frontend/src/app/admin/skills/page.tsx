@@ -348,7 +348,9 @@ function SkillsPageBody() {
         <div className="min-w-0">
           <h2 className="text-2xl font-bold tracking-tight text-ink">Skill Library</h2>
           <p className="mt-1 text-sm text-muted">
-            The tech and soft skills every account&apos;s resumes draw on, shared across the installation.
+            The technical skills an untailored resume is filed under and filtered by, shared across the
+            installation. A tailored resume prints the skills the model wrote, and nothing reads the soft list
+            but this page.
           </p>
         </div>
         <button type="button" onClick={loadSkills} className="tl-button-quiet">

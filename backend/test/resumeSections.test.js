@@ -13,8 +13,10 @@ const { useTempStorage } = require('./helpers');
  *   - `softSkills` on the profile itself: trimmed, de-duplicated, bounded, kept
  *     when omitted - the editor's chip list, which used to be dropped on save;
  *   - the render gate: what the PDF, the preview and the DOCX are handed has
- *     the two sections exactly when the switches are on, from the tailored
- *     content or the profile's own lists;
+ *     the two sections exactly when the switches are on - Strengths always the
+ *     profile's own, Soft Skills the tailored content's (the model's soft-skill
+ *     group, test/tailoredRender.test.js) or the profile's own - and no render
+ *     pads the skills block from the library;
  *   - links the renderer puts in an href are http(s) only.
  */
 
@@ -47,6 +49,7 @@ function profile(settings = {}, extra = {}) {
   };
 }
 
+/** Tailored content as an older build held it: flat lists, and strengths the model wrote. */
 function tailored(extra = {}) {
   return {
     title: 'Engineer',
@@ -207,34 +210,49 @@ test("switched on, an untailored render shows the profile's own lists", () => {
   );
 });
 
-test("switched on, a tailored render shows the tailored lists, and the profile's when those are empty", () => {
+test("switched on, a tailored render shows the profile's own strengths, and the content's soft skills or the profile's", () => {
   seeded('gate-tailored');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const on = profile({ includeSoftSkills: true, includeStrengths: true });
+  const own = [{ title: 'Foresight', description: 'Sees the failure before it ships.' }];
 
+  // The tailoring prompt writes no strengths; one the content carries - an
+  // older build's, or a JSON edit's - is never printed.
   const fromTailoring = prepareResumeRenderData(on, tailored());
   assert.deepEqual(fromTailoring.softSkills, ['Negotiation']);
-  assert.deepEqual(fromTailoring.strengths, [{ title: 'Tailored strength', description: 'For this job.' }]);
+  assert.deepEqual(fromTailoring.strengths, own);
 
   // Content written while a switch was off - a held preview sent back with a
   // batch, a queued task - has nothing for the section.
   const stale = prepareResumeRenderData(on, tailored({ softSkills: [], strengths: [] }));
   assert.deepEqual(stale.softSkills, ['Persistence', 'Clear writing']);
-  assert.deepEqual(stale.strengths, [{ title: 'Foresight', description: 'Sees the failure before it ships.' }]);
+  assert.deepEqual(stale.strengths, own);
 });
 
-test('the live preview groups only the skills entered; generation still pads an inferred grouping', () => {
+test('no render pads the skills block: the live preview and generation show exactly the skills entered', () => {
   seeded('padding');
-  const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
+  const { prepareResumeRenderData, generateProfilePreviewHTML } = require('../dist/generators/pdfGenerator');
   const claimed = ['c#', 'python', 'docker'];
 
-  const preview = prepareResumeRenderData(profile(), undefined, undefined, undefined, { padSkillCategories: false });
-  const shown = preview.skillCategories.flatMap((group) => group.skills).map((skill) => skill.toLowerCase());
-  assert.deepEqual(shown.sort(), [...claimed].sort());
-  assert.ok(preview.skillCategories.every((group) => group.category), 'still under headings');
-
   const generated = prepareResumeRenderData(profile());
-  assert.ok(generated.skillCategories.flatMap((group) => group.skills).length > claimed.length, 'padded as before');
+  const shown = generated.skillCategories.flatMap((group) => group.skills).map((skill) => skill.toLowerCase());
+  assert.deepEqual(shown.sort(), [...claimed].sort());
+  assert.ok(generated.skillCategories.every((group) => group.category), 'still under headings');
+
+  // The editor's preview is the same render.
+  const template = shippedTemplate('default');
+  const preview = generateProfilePreviewHTML(profile(), template).html;
+  for (const padded of ['Java', 'Kubernetes', 'Django', 'Jenkins', 'Terraform']) {
+    assert.equal(bodyOf(preview).includes(`>${padded}<`) || bodyOf(preview).includes(`, ${padded}`), false, padded);
+  }
+
+  // In the order the person keeps them, not the library's priority order.
+  const ordered = prepareResumeRenderData(
+    profile({ technicalSkillsLayout: 'flat' }, { skills: ['Docker', 'Python', 'C#'] })
+  );
+  assert.deepEqual(ordered.hardSkills, ['Docker', 'Python', 'C#']);
+  const languages = prepareResumeRenderData(profile({}, { skills: ['Python', 'C#', 'Go'] })).skillCategories[0];
+  assert.deepEqual(languages, { category: 'Languages', skills: ['Python', 'C#', 'Go'] });
 });
 
 test('a link reaches an href only as http(s)', () => {
@@ -300,7 +318,8 @@ test('the DOCX has Strengths and Soft Skills exactly when the PDF does', () => {
   const on = buildResumeDocxHTML(
     prepareResumeRenderData(profile({ includeSoftSkills: true, includeStrengths: true }), tailored())
   );
-  assert.match(on, /<u>Key Strengths<\/u>[\s\S]*<strong>Tailored strength<\/strong>: For this job\./);
+  assert.match(on, /<u>Key Strengths<\/u>[\s\S]*<strong>Foresight<\/strong>: Sees the failure before it ships\./);
+  assert.equal(on.includes('Tailored strength'), false, "the content's strengths are never printed");
   assert.match(on, /<u>Soft Skills<\/u><\/p>\s*<p[^>]*>Negotiation<\/p>/);
   assert.ok(on.indexOf('Key Strengths') < on.indexOf('Technical Skills'), 'Strengths after the summary');
   assert.ok(on.indexOf('Technical Skills') < on.indexOf('Soft Skills'), 'Soft Skills after Technical Skills');
@@ -369,11 +388,30 @@ test('one generation prints the same optional sections in the PDF and the DOCX, 
     // generateResumeDOCX reads the profile through its template exactly so.
     const docx = buildResumeDocxHTML(prepareResumeRenderData(profileForTemplate(on, template), tailored()));
     const pdf = bodyOf(await generatePreviewHTML(on, template, tailored()));
-    assert.equal(pdf.includes('Tailored strength'), strengths, `${id}: Strengths in the PDF`);
+    assert.equal(pdf.includes('Foresight'), strengths, `${id}: Strengths in the PDF`);
     assert.equal(docx.includes('Key Strengths'), strengths, `${id}: Strengths in the DOCX`);
-    assert.equal(docx.includes('Tailored strength'), strengths, `${id}: Strengths in the DOCX`);
+    assert.equal(docx.includes('Foresight'), strengths, `${id}: Strengths in the DOCX`);
     assert.equal(pdf.includes('Negotiation'), softSkills, `${id}: Soft Skills in the PDF`);
     assert.equal(docx.includes('<u>Soft Skills</u>'), softSkills, `${id}: Soft Skills in the DOCX`);
+
+    // The model's block: where the template has no Soft Skills section the
+    // switch reads as off, and its soft-skill group stays in Technical Skills
+    // - in both files.
+    const block = tailored({
+      skillGroups: [
+        { category: 'Languages', skills: ['Go', 'Rust'] },
+        { category: 'Soft Skills', skills: ['Negotiation', 'Patience'] },
+      ],
+      softSkillGroupHeading: 'Soft Skills',
+    });
+    const blockDocx = buildResumeDocxHTML(prepareResumeRenderData(profileForTemplate(on, template), block));
+    const blockPdf = bodyOf(await generatePreviewHTML(on, template, block));
+    const skillsAt = blockDocx.indexOf('<u>Technical Skills</u>');
+    const technical = blockDocx.slice(skillsAt, blockDocx.indexOf('<u>', skillsAt + 1));
+    assert.equal(technical.includes('<strong>Soft Skills</strong><br>Negotiation, Patience'), !softSkills, `${id}: DOCX block`);
+    assert.equal(blockDocx.includes('<u>Soft Skills</u>'), softSkills, `${id}: DOCX section`);
+    assert.equal((blockPdf.match(/Patience/g) ?? []).length, 1, `${id}: printed once in the PDF`);
+    assert.equal(/>\s*Soft Skills\s*</.test(blockPdf), true, `${id}: under a heading either way`);
   }
 });
 

@@ -1451,7 +1451,8 @@ test('the settings default to the design\'s values, and a bad one warns once and
       queueWaitMs: 600_000,
       firstEventMs: 60_000,
       defaultTimeoutMs: 180_000,
-      timeoutMsByCallSite: { 'tailor-resume': 300_000 },
+      // The revise pass is the tailoring's second call, on the same budget.
+      timeoutMsByCallSite: { 'tailor-resume': 300_000, 'revise-resume-coverage': 300_000 },
       maxAttempts: 3,
       maxOutputBytes: 25_000_000,
       home: null,

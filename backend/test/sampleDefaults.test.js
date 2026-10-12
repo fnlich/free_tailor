@@ -264,7 +264,7 @@ test('an empty profile renders, prints and prompts as empty: the sample is the p
   const { getTemplateById } = require('../dist/extractors/templateExtractor');
   const { generatePreviewHTML, prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const { buildResumeDocxHTML } = require('../dist/generators/docxGenerator');
-  const { buildTailorResumePromptValues, buildCoverLetterPromptValues, parseJobAnalysisContent } =
+  const { buildTailorResumePromptValues, buildCoverLetterPromptValues, parseJobAnalysisKeywords } =
     require('../dist/services/resumeService');
   const template = await getTemplateById('default');
 
@@ -273,7 +273,7 @@ test('an empty profile renders, prints and prompts as empty: the sample is the p
     await generatePreviewHTML(empty, template),
     buildResumeDocxHTML(prepareResumeRenderData(empty)),
   ];
-  const analysis = parseJobAnalysisContent(
+  const analysis = parseJobAnalysisKeywords(
     JSON.stringify({ jobMeta: { title: 'Engineer' }, skills: { technical: ['Python'] } }),
     'A posting for an engineer who writes Python every day of the week.'
   );
@@ -290,7 +290,7 @@ test('withSampleDefaults is called from the preview route and nowhere else', () 
   // The behavioural tests above cover the paths that exist; this covers the
   // next one somebody writes. The sample is drawn in two places by design -
   // the gallery and the editor's preview - and any third is a leak.
-  const callers = { withSampleDefaults: [], SAMPLE_PROFILE: [] };
+  const callers = { withSampleDefaults: [], SAMPLE_PROFILE: [], SAMPLE_TAILORED_CONTENT: [] };
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
@@ -306,4 +306,6 @@ test('withSampleDefaults is called from the preview route and nowhere else', () 
   walk(SRC);
   assert.deepEqual(callers.withSampleDefaults.sort(), ['routes/profiles.ts', 'services/sampleProfile.ts']);
   assert.deepEqual(callers.SAMPLE_PROFILE.sort(), ['generators/pdfGenerator.ts', 'services/sampleProfile.ts']);
+  // The gallery's tailored sample: the gallery's alone.
+  assert.deepEqual(callers.SAMPLE_TAILORED_CONTENT.sort(), ['generators/pdfGenerator.ts', 'services/sampleProfile.ts']);
 });

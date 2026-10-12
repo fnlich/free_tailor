@@ -5,7 +5,6 @@ import {
   CreateProfileDTO,
   Education,
   Experience,
-  HardSkillOrdering,
   Profile,
   ProfileSettings,
   SkillCategoryGroup,
@@ -24,7 +23,6 @@ import { inferTemplateCapabilities } from './templateImport';
 
 export const DEFAULT_RESUME_PROMPT_ID = 'tailor-resume';
 export const DEFAULT_COVER_LETTER_PROMPT_ID = 'generate-cover-letter';
-export const DEFAULT_HARD_SKILL_ORDERING: HardSkillOrdering = 'library';
 /** Categories on, because that is how every built-in template renders today. */
 export const DEFAULT_TECHNICAL_SKILLS_LAYOUT: TechnicalSkillsLayout = 'categorized';
 
@@ -331,26 +329,11 @@ function normalizeCertifications(certifications: CreateProfileDTO['certification
     }));
 }
 
-export function isHardSkillOrdering(value: unknown): value is HardSkillOrdering {
-  return value === 'library' || value === 'job-priority';
-}
-
-/** Returns the hard-skill ordering configured for a profile, falling back to the default. */
-export function getProfileHardSkillOrdering(profile?: Pick<Profile, 'profileSettings'> | null): HardSkillOrdering {
-  const value = profile?.profileSettings?.hardSkillOrdering;
-  return isHardSkillOrdering(value) ? value : DEFAULT_HARD_SKILL_ORDERING;
-}
-
 export function normalizeProfileSettings(
   input: CreateProfileDTO['profileSettings'] | undefined,
   existing?: ProfileSettings
 ): ProfileSettings {
   const source = input && typeof input === 'object' ? input : undefined;
-  const hardSkillOrdering = isHardSkillOrdering(source?.hardSkillOrdering)
-    ? source.hardSkillOrdering
-    : isHardSkillOrdering(existing?.hardSkillOrdering)
-      ? existing.hardSkillOrdering
-      : DEFAULT_HARD_SKILL_ORDERING;
   const technicalSkillsLayout = isTechnicalSkillsLayout(source?.technicalSkillsLayout)
     ? source.technicalSkillsLayout
     : isTechnicalSkillsLayout(existing?.technicalSkillsLayout)
@@ -368,12 +351,13 @@ export function normalizeProfileSettings(
   return {
     resumePromptId:
       toSafeString(source?.resumePromptId, existing?.resumePromptId ?? DEFAULT_RESUME_PROMPT_ID) || DEFAULT_RESUME_PROMPT_ID,
-    // No `analyzeJobPromptId` any more: a posting is analysed once for every
-    // profile, by one prompt (owner decision J0). One a profile still stores
-    // is not read, and its next save drops it.
-    coverLetterPromptId:
-      toSafeString(source?.coverLetterPromptId, existing?.coverLetterPromptId ?? DEFAULT_COVER_LETTER_PROMPT_ID) ||
-      DEFAULT_COVER_LETTER_PROMPT_ID,
+    // No `analyzeJobPromptId` and no `coverLetterPromptId` any more: a
+    // posting is analysed once for every profile, by one prompt (owner
+    // decision J0), and a cover letter has one prompt too - the built-in, which
+    // no page ever let a profile replace. Nor `hardSkillOrdering`: the
+    // tailored skills block is printed in the order the model wrote it, and
+    // nothing reorders it. One a profile still stores is not read, and its
+    // next save drops it.
     resumeFileNameTemplate: validateOutputFileNameTemplate(
       source?.resumeFileNameTemplate ?? existing?.resumeFileNameTemplate,
       DEFAULT_RESUME_FILE_NAME_TEMPLATE
@@ -386,7 +370,6 @@ export function normalizeProfileSettings(
       source?.companyFolderNameTemplate ?? existing?.companyFolderNameTemplate,
       DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE
     ),
-    hardSkillOrdering,
     technicalSkillsLayout,
     includeSoftSkills,
     includeStrengths,
@@ -504,7 +487,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 /** The settings a preview renders with. Everything else is the stored value or the default. */
 const PREVIEW_SETTING_KEYS = [
   'technicalSkillsLayout',
-  'hardSkillOrdering',
   'includeSoftSkills',
   'includeStrengths',
 ] as const;

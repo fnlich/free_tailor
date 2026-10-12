@@ -74,13 +74,6 @@
   color: #f87171;
 }
 
-/* A text box in a dense row of them - the unregistered-skill list. */
-:global(.tl-input).compact {
-  min-height: 2rem;
-  padding: 0.25rem 0.625rem;
-  font-size: 0.875rem;
-}
-
 /* The JSON editor: monospace, and small enough to read a whole object. */
 :global(.tl-input).code {
   font-family: var(--font-geist-mono), ui-monospace, monospace;

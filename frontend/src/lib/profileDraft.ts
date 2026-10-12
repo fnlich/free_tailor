@@ -16,7 +16,6 @@ import type {
   CreateProfileDTO,
   Education,
   Experience,
-  HardSkillOrdering,
   Profile,
   ProfileSettings,
   SkillCategoryGroup,
@@ -96,11 +95,9 @@ export const FALLBACK_TEMPLATE_ID = 'default';
 
 export const DEFAULT_PROFILE_SETTINGS: DraftSettings = {
   resumePromptId: 'tailor-resume',
-  coverLetterPromptId: 'generate-cover-letter',
   resumeFileNameTemplate: '{{profile name}}',
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
   companyFolderNameTemplate: '{{row number}}_{{company name}}',
-  hardSkillOrdering: 'library',
   technicalSkillsLayout: 'categorized',
   // Off, which is what every resume printed before the switches existed - so a
   // profile nobody has touched comes out exactly as it did.
@@ -136,10 +133,6 @@ export function normalizeTechnicalSkillsLayout(value: unknown): TechnicalSkillsL
   return value === 'flat' ? 'flat' : 'categorized';
 }
 
-export function normalizeHardSkillOrdering(value: unknown): HardSkillOrdering {
-  return value === 'job-priority' ? 'job-priority' : 'library';
-}
-
 /** The model choice as stored: `modelId` when it is a non-empty string, nothing otherwise. */
 function readModelChoice(value: unknown): AiPreferences {
   const source = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
@@ -155,13 +148,11 @@ export function draftSettingsFrom(profile?: Pick<Profile, 'profileSettings'> | n
   const stored = profile?.profileSettings ?? {};
   return {
     resumePromptId: stored.resumePromptId || DEFAULT_PROFILE_SETTINGS.resumePromptId,
-    coverLetterPromptId: stored.coverLetterPromptId || DEFAULT_PROFILE_SETTINGS.coverLetterPromptId,
     resumeFileNameTemplate: stored.resumeFileNameTemplate || DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate,
     coverLetterFileNameTemplate:
       stored.coverLetterFileNameTemplate || DEFAULT_PROFILE_SETTINGS.coverLetterFileNameTemplate,
     companyFolderNameTemplate:
       stored.companyFolderNameTemplate || DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
-    hardSkillOrdering: normalizeHardSkillOrdering(stored.hardSkillOrdering),
     technicalSkillsLayout: normalizeTechnicalSkillsLayout(stored.technicalSkillsLayout),
     // Only `true` is on: absent, and anything that is not a boolean, read as
     // off on the server too.
@@ -352,14 +343,12 @@ export function draftToPayload(
     ...draftContent(draft, knownOrder),
     profileSettings: {
       resumePromptId: settings.resumePromptId || DEFAULT_PROFILE_SETTINGS.resumePromptId,
-      coverLetterPromptId: settings.coverLetterPromptId || DEFAULT_PROFILE_SETTINGS.coverLetterPromptId,
       resumeFileNameTemplate:
         settings.resumeFileNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate,
       coverLetterFileNameTemplate:
         settings.coverLetterFileNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.coverLetterFileNameTemplate,
       companyFolderNameTemplate:
         settings.companyFolderNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
-      hardSkillOrdering: normalizeHardSkillOrdering(settings.hardSkillOrdering),
       technicalSkillsLayout: normalizeTechnicalSkillsLayout(settings.technicalSkillsLayout),
       includeSoftSkills: settings.includeSoftSkills === true,
       includeStrengths: settings.includeStrengths === true,
@@ -382,7 +371,6 @@ export function draftToPreviewProfile(draft: ProfileDraft, knownOrder: readonly 
     ...draftContent(draft, knownOrder),
     profileSettings: {
       technicalSkillsLayout: normalizeTechnicalSkillsLayout(settings.technicalSkillsLayout),
-      hardSkillOrdering: normalizeHardSkillOrdering(settings.hardSkillOrdering),
       includeSoftSkills: settings.includeSoftSkills === true,
       includeStrengths: settings.includeStrengths === true,
     },

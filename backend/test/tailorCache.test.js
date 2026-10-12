@@ -125,10 +125,12 @@ test('the same resume generated again reuses its tailoring - no model call - and
 
   await h.build();
   assert.equal(h.seats.tailorings().length, 1, 'the first build asks the model');
+  assert.equal(h.seats.revisions().length, 1, 'and revises the draft, which left the posting\'s terms out');
   assert.equal(h.balance(), 990);
 
   await h.build();
   assert.equal(h.seats.tailorings().length, 1, 'the second asks it nothing: the tailoring comes from the cache');
+  assert.equal(h.seats.revisions().length, 1, 'nor revises it again: what is kept is the resume as it ended');
   assert.equal(h.seats.analyses().length, 1, 'and the posting was analysed once, as always');
   // Charged as usual: a resume costs its model's price whether or not a
   // model call happened.
@@ -180,8 +182,9 @@ test('the key covers everything the answer was made from, and nothing a save mov
     choice: { provider: 'claude-cli', modelId: 'claude-cli-sonnet', modelName: 'sonnet' },
     promptId: 'tailor-resume',
     promptText: 'Tailor [[profileJson]]',
-    promptValues: { profileJson: '{"name":"Ada"}', skillsJSON: '["TypeScript"]' },
+    promptValues: { profileJson: '{"name":"Ada"}', skillsJSON: '["TypeScript"]', softSkillGroupHeading: 'Soft Skills' },
     appendToUserBody: 'Strengths: no.',
+    extra: { revisePrompt: 'abc', figuresNote: 'FIGURES. {n} of the bullets', revisePass: 'on', reviseMaxTerms: '30' },
   };
   const key = cache.tailorCacheKey(base);
   assert.match(key, /^[0-9a-f]{64}$/);
@@ -191,22 +194,42 @@ test('the key covers everything the answer was made from, and nothing a save mov
     key,
     'key order inside the profile does not matter'
   );
+  // The settings are how the answer is DRAWN, which prompt and model run it,
+  // and whether strengths are sent - each of which reaches the key another
+  // way (the prompt id and text, the choice, profileJson). A layout or a Soft
+  // Skills switch flipped is the same question.
+  assert.equal(
+    cache.tailorCacheKey({
+      ...base,
+      profile: { ...base.profile, profileSettings: { includeStrengths: false, technicalSkillsLayout: 'flat', includeSoftSkills: true } },
+    }),
+    key,
+    'the settings are not the profile\'s part of the key'
+  );
 
   const variants = {
     'one character of the profile': { profile: { ...base.profile, summary: 'Ships!' } },
-    'a section switch': { profile: { ...base.profile, profileSettings: { includeStrengths: false } } },
+    // The Strengths switch, as it reaches the model: her strengths in profileJson.
+    'the profile as sent': { promptValues: { ...base.promptValues, profileJson: '{"name":"Ada","strengths":[]}' } },
     'the template': { context: { ...base.context, templateId: 'navy-rule' } },
     'the posting': { context: { ...base.context, analysisId: 'an-2' } },
     'the model record': { choice: { ...base.choice, modelId: 'claude-cli-opus' } },
     'the model name': { choice: { ...base.choice, modelName: 'opus' } },
     'the provider type': { choice: { ...base.choice, provider: 'codex-cli' } },
     'the prompt text': { promptText: 'Tailor [[profileJson]] briefly' },
-    // What carries the shared skill library: the posting's checklist.
+    // A rendered prompt value: the posting's checklist, as the code builds it.
     'a rendered prompt value': { promptValues: { ...base.promptValues, skillsJSON: '["TypeScript","Temporalio"]' } },
+    'the heading drawn for the soft-skill group': { promptValues: { ...base.promptValues, softSkillGroupHeading: 'Working Style' } },
     'the text appended to the user turn': { appendToUserBody: 'Strengths: yes.' },
+    'the revise prompt\'s text': { extra: { ...base.extra, revisePrompt: 'abd' } },
+    'the figures sentence': { extra: { ...base.extra, figuresNote: 'FIGURES. {n} bullets' } },
+    'the revise pass switched off': { extra: { ...base.extra, revisePass: 'off' } },
+    'how many terms a revision is given': { extra: { ...base.extra, reviseMaxTerms: '20' } },
     'the kind': { kind: 'cover-letter' },
     'a cover letter\'s role': { extra: { role: 'Lead' } },
   };
+  // What the version is for: what an answer MEANS changed in code.
+  assert.equal(cache.TAILOR_CACHE_VERSION, 2);
   for (const [what, change] of Object.entries(variants)) {
     assert.notEqual(cache.tailorCacheKey({ ...base, ...change }), key, `${what} is another key`);
   }
@@ -363,30 +386,26 @@ test('an answer a fallback model wrote is used for its build, never kept, and th
   assert.equal(letters(h.seats).length, 2, 'a fallback letter is written once more, then the kept one is reused');
 });
 
-test('a skill added to the library that changes the posting\'s checklist is a miss; one that does not is a hit', async (t) => {
+test('a skill added to the library changes no resume\'s question: a hit', async (t) => {
+  // The tailoring prompt's lists are the posting's analysis, in the posting's
+  // own spelling; the skill library reaches none of them (it used to add the
+  // skills it found in the posting text, which made every library change a
+  // possible miss). So an administrator's add, or anybody's POST
+  // /skills/confirm, asks the model nothing new.
   const h = await serve('library');
   t.after(h.close);
   const skills = require('../dist/database/skillsDatabase');
-  const resumeService = require('../dist/services/resumeService');
-  resumeService.refreshSkillCaches();
   const job = { companyName: 'Acme', role: 'Engineer', jobDescription: posting(9, 'Workflows run on Temporalio.') };
   assert.equal(skills.readSkills('hard').includes('Temporalio'), false, 'not in the shipped library');
 
   await h.build({ jobs: [job] });
   assert.equal(h.seats.tailorings().length, 1);
 
-  // What an administrator's add, or anybody's POST /skills/confirm, does.
   skills.addSkill('hard', 'Temporalio', { priority: 3, category: 'Frameworks and Libraries' });
-  resumeService.refreshSkillCaches();
   await h.build({ jobs: [job] });
-  assert.equal(h.seats.tailorings().length, 2, 'the model is now told to cover Temporalio: another question');
-  assert.match(JSON.stringify(h.seats.tailorings()[1]), /Temporalio/);
-
-  skills.addSkill('hard', 'Quuxlang', { priority: 3, category: 'Frameworks and Libraries' });
-  resumeService.refreshSkillCaches();
-  await h.build({ jobs: [job] });
-  assert.equal(h.seats.tailorings().length, 2, 'a skill this posting does not name asks it nothing new');
-  assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10, -10]);
+  assert.equal(h.seats.tailorings().length, 1, 'the same question: answered from the cache');
+  assert.doesNotMatch(JSON.stringify(h.seats.tailorings()[0]), /Temporalio/, 'the turn never named it');
+  assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10]);
 });
 
 test('the same resume built again reuses its tailoring from /resume/preview and /resume/generate too', async (t) => {
@@ -400,6 +419,7 @@ test('the same resume built again reuses its tailoring from /resume/preview and 
   assert.equal((await h.post('/resume/preview', preview)).status, 200);
   assert.equal((await h.post('/resume/preview', preview)).status, 200);
   assert.equal(h.seats.tailorings().length, 1, '/resume/preview asked once');
+  assert.equal(h.seats.revisions().length, 1, 'and revised once');
 
   const generate = {
     profileId: 'p-claude',
@@ -413,6 +433,7 @@ test('the same resume built again reuses its tailoring from /resume/preview and 
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal((await h.post('/resume/generate', generate)).status, 200);
   assert.equal(h.seats.tailorings().length, 2, '/resume/generate tailored its posting once');
+  assert.equal(h.seats.revisions().length, 2, 'revised it once');
   assert.equal(letters(h.seats).length, 1, 'and wrote its cover letter once');
 });
 
@@ -441,6 +462,7 @@ test('a queued build reuses its cover letter as well, and another template is a 
   await build();
   await build();
   assert.equal(h.seats.tailorings().length, 1, 'one tailoring');
+  assert.equal(h.seats.revisions().length, 1, 'one revision');
   assert.equal(letters(h.seats).length, 1, 'one cover letter, reused by the second build');
 
   // The same profile, posting and model, drawn with another template.

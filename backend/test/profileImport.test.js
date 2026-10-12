@@ -154,7 +154,9 @@ test('the profile content survives the round trip', () => {
   // Settings a file omits come back as the defaults rather than as undefined,
   // so an imported profile is usable without being opened and saved first.
   assert.equal(profile.profileSettings.resumePromptId, 'tailor-resume');
-  assert.equal(profile.profileSettings.hardSkillOrdering, 'library');
+  assert.equal(profile.profileSettings.technicalSkillsLayout, 'categorized');
+  // The skill ordering is gone: the tailored block prints in the model's order.
+  assert.equal('hardSkillOrdering' in profile.profileSettings, false);
 });
 
 test('a nonsense createdAt is ignored rather than stored', () => {

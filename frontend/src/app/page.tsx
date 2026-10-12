@@ -15,10 +15,11 @@ import {
   toAiRequestOverrides,
   Profile,
   Group,
-  TailoredContent,
   type AnalyzedJob,
+  type HeldTailoredContent,
 } from '@/lib/api';
 import { dropsHeldAnalysis, heldAnalysisFor, holdAnalysis, type HeldAnalysis } from '@/lib/jobAnalysis';
+import { readTailoredDraft, TAILORED_DRAFT_NOTE, tailoredDraftOf } from '@/lib/tailoredDraft';
 import AnalysisFacts from '@/components/AnalysisFacts';
 import {
   browserStorage,
@@ -120,13 +121,12 @@ const LEAVE_CONFIRM =
 const SUBSCRIPTION_PATH = '/settings/subscription';
 const ONE_PROFILE_NOTE = 'Your subscription supports one profile';
 
-type UnconfirmedSkill = { original: string; value: string };
-
 type MultiplePreview = {
   profileId: string;
   profileName: string;
   html: string;
-  tailoredContent?: TailoredContent;
+  /** The server's answer, or - after an edit in Manual Edits - the person's edit of it (lib/tailoredDraft.ts). */
+  tailoredContent?: HeldTailoredContent;
   /**
    * The server's word for which model wrote `tailoredContent`. Sent back when
    * finalising, so the resume is charged at the model that did the work rather
@@ -352,13 +352,11 @@ export default function Home() {
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewTailored, setPreviewTailored] = useState(false);
   const [isSinglePreviewOpen, setIsSinglePreviewOpen] = useState(false);
-  const [tailoredContent, setTailoredContent] = useState<TailoredContent | null>(null);
+  const [tailoredContent, setTailoredContent] = useState<HeldTailoredContent | null>(null);
   /** The single preview's token - see MultiplePreview.previewToken. */
   const [previewToken, setPreviewToken] = useState<string | null>(null);
   const [tailoredContentDraft, setTailoredContentDraft] = useState('');
   const [tailoredContentError, setTailoredContentError] = useState('');
-  const [unconfirmedHardSkills, setUnconfirmedHardSkills] = useState<UnconfirmedSkill[]>([]);
-  const [unconfirmedSoftSkills, setUnconfirmedSoftSkills] = useState<UnconfirmedSkill[]>([]);
   const [multiplePreviews, setMultiplePreviews] = useState<MultiplePreview[]>([]);
   const [multiplePreviewTailored, setMultiplePreviewTailored] = useState(false);
   const [multiplePreviewIndex, setMultiplePreviewIndex] = useState(0);
@@ -459,8 +457,6 @@ export default function Home() {
     setIsSinglePreviewOpen(false);
     resetTailoredEditor();
     setSuccessMessage('');
-    setUnconfirmedHardSkills([]);
-    setUnconfirmedSoftSkills([]);
     setMultiplePreviews([]);
     setMultiplePreviewTailored(false);
     setMultiplePreviewIndex(0);
@@ -558,9 +554,6 @@ export default function Home() {
       setIsLoadingData(false);
     }
   };
-
-  const toUnconfirmedItems = (skills?: string[]) =>
-    (skills ?? []).map((skill) => ({ original: skill, value: skill }));
 
   const getDefaultGenerationOptions = () => ({
     format: (modelSettings.defaultResumeDocxEnabled ? 'both' : 'pdf') as 'both' | 'pdf',
@@ -877,26 +870,6 @@ export default function Home() {
     return selectedProfiles;
   };
 
-  const aggregateUnconfirmedFromPreviews = (previews: MultiplePreview[]) => {
-    const hardMap = new Map<string, string>();
-    const softMap = new Map<string, string>();
-    for (const preview of previews) {
-      const content = preview.tailoredContent;
-      for (const skill of content?.unconfirmedHardSkills ?? []) {
-        const key = skill.trim().toLowerCase();
-        if (key && !hardMap.has(key)) hardMap.set(key, skill.trim());
-      }
-      for (const skill of content?.unconfirmedSoftSkills ?? []) {
-        const key = skill.trim().toLowerCase();
-        if (key && !softMap.has(key)) softMap.set(key, skill.trim());
-      }
-    }
-    return {
-      hard: toUnconfirmedItems(Array.from(hardMap.values())),
-      soft: toUnconfirmedItems(Array.from(softMap.values())),
-    };
-  };
-
   const clearGenerationProgress = () => {
     setGenerationProgress(null);
   };
@@ -968,7 +941,7 @@ export default function Home() {
   }: {
     targetProfiles: Profile[];
     analysis: HeldAnalysis<AnalyzedJob>;
-    tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
+    tailoredContentByProfileId?: Map<string, HeldTailoredContent | undefined>;
     previewTokenByProfileId?: Map<string, string | undefined>;
   }): SubmitBatchRequest => {
     const tailoredByProfileId: Record<string, unknown> = {};
@@ -1405,8 +1378,6 @@ export default function Home() {
       failures,
       unbuiltProfileIds: tasks.filter((task) => task.state !== 'done').map((task) => task.profileId),
       failedCompanies: [...new Set(failures.map((failure) => failure.companyName))],
-      unconfirmedHardSkills: snapshot?.unconfirmedHardSkills ?? [],
-      unconfirmedSoftSkills: snapshot?.unconfirmedSoftSkills ?? [],
     };
   };
 
@@ -1519,9 +1490,7 @@ export default function Home() {
 
       updateGenerationProgress(targetProfiles.length, 0, 'Queueing resumes', undefined, targetCompanyName);
       const snapshot = await runImmediate(request, { phase: 'Building resumes' });
-      const res = reportImmediateEnd(snapshot, targetCompanyName);
-      setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
+      reportImmediateEnd(snapshot, targetCompanyName);
     } catch (err) {
       forgetAnalysisOn(err);
       reportRunFailure(err, kind === 'order' ? 'Could not place that order.' : 'Failed to generate resume');
@@ -1645,10 +1614,8 @@ export default function Home() {
         setPreviewToken(preview.previewToken ?? null);
         if (preview.tailoredContent) {
           setTailoredContent(preview.tailoredContent);
-          setTailoredContentDraft(JSON.stringify(preview.tailoredContent, null, 2));
+          setTailoredContentDraft(tailoredDraftOf(preview.tailoredContent));
           setTailoredContentError('');
-          setUnconfirmedHardSkills(toUnconfirmedItems(preview.tailoredContent.unconfirmedHardSkills));
-          setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent.unconfirmedSoftSkills));
         }
         setSuccessMessage('Preview generated. Review, edit manually if needed, then click Generate Immediately to build it.');
         return;
@@ -1673,15 +1640,12 @@ export default function Home() {
       });
       const previewsWithDrafts = res.previews.map((preview) => ({
         ...preview,
-        draft: preview.tailoredContent ? JSON.stringify(preview.tailoredContent, null, 2) : '',
+        draft: tailoredDraftOf(preview.tailoredContent),
         error: '',
       }));
       setMultiplePreviews(previewsWithDrafts);
       setMultiplePreviewTailored(res.tailored);
       setMultiplePreviewIndex(0);
-      const aggregated = aggregateUnconfirmedFromPreviews(previewsWithDrafts);
-      setUnconfirmedHardSkills(aggregated.hard);
-      setUnconfirmedSoftSkills(aggregated.soft);
       setSuccessMessage(
         `Preview generated for ${res.previews.length} profile(s). Review, then Generate Immediately or Order to build them.`
       );
@@ -1705,290 +1669,16 @@ export default function Home() {
     void runManual('order');
   };
 
+  /**
+   * The single preview's Manual Edits: what an edit sends back is the box's
+   * editable part (lib/tailoredDraft.ts), which the server finishes against
+   * the profile. A blank box sends nothing, and the server tailors afresh.
+   */
   const handleTailoredContentChange = (value: string) => {
     setTailoredContentDraft(value);
-    if (!value.trim()) {
-      setTailoredContent(null);
-      setTailoredContentError('');
-      return;
-    }
-    try {
-      const parsed = JSON.parse(value) as TailoredContent;
-      setTailoredContent(parsed);
-      setTailoredContentError('');
-    } catch {
-      setTailoredContentError('Invalid JSON. Fix errors before generating.');
-    }
-  };
-
-  const handleUnconfirmedSkillEdit = (
-    type: 'hard' | 'soft',
-    original: string,
-    value: string
-  ) => {
-    const update = (items: UnconfirmedSkill[]) =>
-      items.map((item) => (item.original === original ? { ...item, value } : item));
-    if (type === 'hard') {
-      setUnconfirmedHardSkills(update);
-    } else {
-      setUnconfirmedSoftSkills(update);
-    }
-  };
-
-  const handleRemoveUnconfirmedSkill = (type: 'hard' | 'soft', skill: UnconfirmedSkill) => {
-    const remove = (items: UnconfirmedSkill[]) =>
-      items.filter((item) => item.original !== skill.original);
-    if (type === 'hard') {
-      setUnconfirmedHardSkills(remove);
-    } else {
-      setUnconfirmedSoftSkills(remove);
-    }
-
-    if (tailoredContent) {
-      const normalizedOriginal = skill.original.trim().toLowerCase();
-      const nextTailored: TailoredContent = {
-        ...tailoredContent,
-        unconfirmedHardSkills:
-          type === 'hard'
-            ? (tailoredContent.unconfirmedHardSkills ?? []).filter(
-                (item) => item.trim().toLowerCase() !== normalizedOriginal
-              )
-            : tailoredContent.unconfirmedHardSkills,
-        unconfirmedSoftSkills:
-          type === 'soft'
-            ? (tailoredContent.unconfirmedSoftSkills ?? []).filter(
-                (item) => item.trim().toLowerCase() !== normalizedOriginal
-              )
-            : tailoredContent.unconfirmedSoftSkills,
-      };
-      setTailoredContent(nextTailored);
-      const currentDraft = tailoredContentDraft.trim();
-      if (currentDraft && currentDraft === JSON.stringify(tailoredContent, null, 2)) {
-        setTailoredContentDraft(JSON.stringify(nextTailored, null, 2));
-      }
-    } else if (multiplePreviews.length > 0) {
-      const normalizedOriginal = skill.original.trim().toLowerCase();
-      const nextPreviews = multiplePreviews.map((item) => {
-        if (!item.tailoredContent) return item;
-        const nextTailored: TailoredContent = {
-          ...item.tailoredContent,
-          unconfirmedHardSkills:
-            type === 'hard'
-              ? (item.tailoredContent.unconfirmedHardSkills ?? []).filter(
-                  (value) => value.trim().toLowerCase() !== normalizedOriginal
-                )
-              : item.tailoredContent.unconfirmedHardSkills,
-          unconfirmedSoftSkills:
-            type === 'soft'
-              ? (item.tailoredContent.unconfirmedSoftSkills ?? []).filter(
-                  (value) => value.trim().toLowerCase() !== normalizedOriginal
-                )
-              : item.tailoredContent.unconfirmedSoftSkills,
-        };
-        return {
-          ...item,
-          tailoredContent: nextTailored,
-          draft: JSON.stringify(nextTailored, null, 2),
-        };
-      });
-      setMultiplePreviews(nextPreviews);
-      const aggregated = aggregateUnconfirmedFromPreviews(nextPreviews);
-      setUnconfirmedHardSkills(aggregated.hard);
-      setUnconfirmedSoftSkills(aggregated.soft);
-    }
-  };
-
-  const handleConfirmSkill = async (type: 'hard' | 'soft', skill: UnconfirmedSkill) => {
-    const cleaned = skill.value.trim();
-    if (!cleaned) {
-      setError('Skill cannot be empty');
-      return;
-    }
-
-    try {
-      setIsGenerating(true);
-      setError('');
-      await resumeApi.confirmSkill({ type, skill: cleaned });
-
-      const remove = (items: UnconfirmedSkill[]) =>
-        items.filter((item) => item.original !== skill.original);
-
-      if (type === 'hard') {
-        setUnconfirmedHardSkills(remove);
-      } else {
-        setUnconfirmedSoftSkills(remove);
-      }
-
-      if (tailoredContent) {
-        const normalizedOriginal = skill.original.trim().toLowerCase();
-        const currentHard = tailoredContent.hardSkills ?? [];
-        const currentSoft = tailoredContent.softSkills ?? [];
-        const nextHard =
-          type === 'hard'
-            ? Array.from(
-                new Set([
-                  ...currentHard,
-                  cleaned,
-                ].map((item) => item.trim()).filter(Boolean))
-              )
-            : currentHard;
-        const nextSoft =
-          type === 'soft'
-            ? Array.from(
-                new Set([
-                  ...currentSoft,
-                  cleaned,
-                ].map((item) => item.trim()).filter(Boolean))
-              )
-            : currentSoft;
-
-        const nextTailored: TailoredContent = {
-          ...tailoredContent,
-          hardSkills: nextHard,
-          softSkills: nextSoft,
-          unconfirmedHardSkills:
-            type === 'hard'
-              ? (tailoredContent.unconfirmedHardSkills ?? []).filter(
-                  (item) => item.trim().toLowerCase() !== normalizedOriginal
-                )
-              : tailoredContent.unconfirmedHardSkills,
-          unconfirmedSoftSkills:
-            type === 'soft'
-              ? (tailoredContent.unconfirmedSoftSkills ?? []).filter(
-                  (item) => item.trim().toLowerCase() !== normalizedOriginal
-                )
-              : tailoredContent.unconfirmedSoftSkills,
-        };
-        setTailoredContent(nextTailored);
-        const currentDraft = tailoredContentDraft.trim();
-        if (currentDraft && currentDraft === JSON.stringify(tailoredContent, null, 2)) {
-          setTailoredContentDraft(JSON.stringify(nextTailored, null, 2));
-        }
-        if (selectedProfileId) {
-          const profile = profiles.find((p) => p.id === selectedProfileId);
-          const templateId = profile?.preferredTemplate || 'default';
-          const refreshed = await resumeApi.preview({
-            ...aiRequestOverrides,
-            profileId: selectedProfileId!,
-            templateId,
-            ...postingFields(),
-            tailoredContent: nextTailored,
-          });
-          setPreviewHtml(refreshed.html);
-          setPreviewTailored(refreshed.tailored);
-          setIsSinglePreviewOpen(true);
-        }
-      }
-
-      if (!tailoredContent && multiplePreviews.length > 0) {
-        const normalizedOriginal = skill.original.trim().toLowerCase();
-        const updatedProfiles: Array<{ profileId: string; nextTailored: TailoredContent }> = [];
-        let nextPreviews = multiplePreviews.map((item) => {
-          if (!item.tailoredContent) return item;
-          const unconfirmedHard = item.tailoredContent.unconfirmedHardSkills ?? [];
-          const unconfirmedSoft = item.tailoredContent.unconfirmedSoftSkills ?? [];
-          const hasMatch =
-            (type === 'hard' && unconfirmedHard.some((value) => value.trim().toLowerCase() === normalizedOriginal)) ||
-            (type === 'soft' && unconfirmedSoft.some((value) => value.trim().toLowerCase() === normalizedOriginal));
-          if (!hasMatch) return item;
-
-          const currentHard = item.tailoredContent.hardSkills ?? [];
-          const currentSoft = item.tailoredContent.softSkills ?? [];
-          const nextHard =
-            type === 'hard'
-              ? Array.from(
-                  new Set(
-                    [...currentHard, cleaned].map((value) => value.trim()).filter(Boolean)
-                  )
-                )
-              : currentHard;
-          const nextSoft =
-            type === 'soft'
-              ? Array.from(
-                  new Set(
-                    [...currentSoft, cleaned].map((value) => value.trim()).filter(Boolean)
-                  )
-                )
-              : currentSoft;
-
-          const nextTailored: TailoredContent = {
-            ...item.tailoredContent,
-            hardSkills: nextHard,
-            softSkills: nextSoft,
-            unconfirmedHardSkills:
-              type === 'hard'
-                ? unconfirmedHard.filter(
-                    (value) => value.trim().toLowerCase() !== normalizedOriginal
-                  )
-                : unconfirmedHard,
-            unconfirmedSoftSkills:
-              type === 'soft'
-                ? unconfirmedSoft.filter(
-                    (value) => value.trim().toLowerCase() !== normalizedOriginal
-                  )
-                : unconfirmedSoft,
-          };
-
-          updatedProfiles.push({ profileId: item.profileId, nextTailored });
-
-          return {
-            ...item,
-            tailoredContent: nextTailored,
-            draft: JSON.stringify(nextTailored, null, 2),
-            error: item.error,
-          };
-        });
-
-        if (updatedProfiles.length > 0) {
-          const refreshedList = await Promise.all(
-            updatedProfiles.map(async ({ profileId, nextTailored }) => {
-              const profile = profiles.find((p) => p.id === profileId);
-              const templateId = profile?.preferredTemplate || 'default';
-              const refreshed = await resumeApi.preview({
-                ...aiRequestOverrides,
-                profileId,
-                templateId,
-                ...postingFields(),
-                tailoredContent: nextTailored,
-              });
-              return {
-                profileId,
-                html: refreshed.html,
-                tailored: refreshed.tailored,
-                tailoredContent: refreshed.tailoredContent ?? nextTailored,
-              };
-            })
-          );
-          if (refreshedList.some((item) => item.tailored)) {
-            setMultiplePreviewTailored(true);
-          }
-          const refreshedMap = new Map(refreshedList.map((item) => [item.profileId, item]));
-          nextPreviews = nextPreviews.map((item) => {
-            const refreshed = refreshedMap.get(item.profileId);
-            if (!refreshed) return item;
-            return {
-              ...item,
-              html: refreshed.html,
-              tailoredContent: refreshed.tailoredContent,
-              draft: JSON.stringify(refreshed.tailoredContent, null, 2),
-            };
-          });
-        }
-
-        setMultiplePreviews(nextPreviews);
-        const aggregated = aggregateUnconfirmedFromPreviews(nextPreviews);
-        setUnconfirmedHardSkills(aggregated.hard);
-        setUnconfirmedSoftSkills(aggregated.soft);
-      }
-      setSuccessMessage(`Added "${cleaned}" to ${type === 'hard' ? 'tech' : 'soft'} skills.`);
-    } catch (err) {
-      // Not `forgetAnalysisOn`: a 400 here is as likely the skill's own refusal,
-      // which says nothing about the analysis the page holds.
-      setError(err ?? 'Failed to confirm skill.');
-    } finally {
-      setIsGenerating(false);
-      setGenerationStep('');
-    }
+    const read = readTailoredDraft(value);
+    setTailoredContentError(read.error);
+    if (!read.error) setTailoredContent(read.content);
   };
 
   const handleUpdatePreview = async () => {
@@ -2023,8 +1713,6 @@ export default function Home() {
       setPreviewHtml(preview.html);
       setPreviewTailored(preview.tailored);
       setIsSinglePreviewOpen(true);
-      setUnconfirmedHardSkills(toUnconfirmedItems(preview.tailoredContent?.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent?.unconfirmedSoftSkills));
       setSuccessMessage('Preview updated.');
     } catch (err) {
       forgetAnalysisOn(err);
@@ -2079,9 +1767,7 @@ export default function Home() {
         }),
         { phase: 'Building resume' }
       );
-      const res = reportImmediateEnd(snapshot, targetCompanyName);
-      setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
+      reportImmediateEnd(snapshot, targetCompanyName);
     } catch (err) {
       forgetAnalysisOn(err);
       reportRunFailure(err, 'Failed to generate resume');
@@ -2093,26 +1779,17 @@ export default function Home() {
     }
   };
 
+  /** A multi-profile preview's Manual Edits, read as the single preview's are (lib/tailoredDraft.ts). */
   const handleMultipleDraftChange = (profileId: string, value: string) => {
     setMultiplePreviews((prev) =>
       prev.map((preview) => {
         if (preview.profileId != profileId) return preview;
-        let nextError = '';
-        let nextTailored = preview.tailoredContent;
-        if (!value.trim()) {
-          nextTailored = undefined;
-        } else {
-          try {
-            nextTailored = JSON.parse(value) as TailoredContent;
-          } catch {
-            nextError = 'Invalid JSON. Fix errors before updating preview.';
-          }
-        }
+        const read = readTailoredDraft(value);
         return {
           ...preview,
           draft: value,
-          error: nextError,
-          tailoredContent: nextTailored,
+          error: read.error,
+          tailoredContent: read.error ? preview.tailoredContent : read.content ?? undefined,
         };
       })
     );
@@ -2152,14 +1829,11 @@ export default function Home() {
           ...item,
           html: updated.html,
           tailoredContent: nextTailored,
-          draft: nextTailored ? JSON.stringify(nextTailored, null, 2) : '',
+          draft: tailoredDraftOf(nextTailored),
           error: '',
         };
       });
       setMultiplePreviews(nextPreviews);
-      const aggregated = aggregateUnconfirmedFromPreviews(nextPreviews);
-      setUnconfirmedHardSkills(aggregated.hard);
-      setUnconfirmedSoftSkills(aggregated.soft);
       setSuccessMessage(`Preview updated for ${preview.profileName}.`);
     } catch (err) {
       forgetAnalysisOn(err);
@@ -2249,9 +1923,6 @@ export default function Home() {
       // Only the previews that did NOT become a resume stay, so finalising
       // again builds - and charges for - just those.
       const remaining = keepUnbuiltPreviews(multiplePreviews, res.unbuiltProfileIds);
-      const aggregated = aggregateUnconfirmedFromPreviews(multiplePreviews);
-      setUnconfirmedHardSkills(aggregated.hard);
-      setUnconfirmedSoftSkills(aggregated.soft);
       setMultiplePreviews(remaining);
       setMultiplePreviewIndex(0);
       if (remaining.length === 0) setMultiplePreviewTailored(false);
@@ -2266,95 +1937,6 @@ export default function Home() {
   };
 
   const activeMultiplePreview = multiplePreviews[multiplePreviewIndex];
-
-  const unconfirmedPanel = (
-    <div className="tl-card">
-      <div className="tl-card-header">
-        <div className="text-sm font-semibold text-ink">Unregistered Skills</div>
-      </div>
-      <div className="space-y-5 p-4">
-        {unconfirmedHardSkills.length === 0 && unconfirmedSoftSkills.length === 0 && (
-          <div className="text-sm text-subtle">No unregistered skills found.</div>
-        )}
-        {unconfirmedHardSkills.length > 0 && (
-          <div className="space-y-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-subtle">Tech Skills</div>
-            <div className="grid gap-2 xl:grid-cols-2">
-              {unconfirmedHardSkills.map((skill) => (
-                <div key={`uh-${skill.original}`} className="flex min-w-0 items-center gap-2">
-                  <input
-                    type="text"
-                    value={skill.value}
-                    onChange={(e) =>
-                      handleUnconfirmedSkillEdit('hard', skill.original, e.target.value)
-                    }
-                    disabled={isGenerating}
-                    className={`tl-input ${styles.compact} min-w-0 flex-1`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleConfirmSkill('hard', skill)}
-                    disabled={isGenerating}
-                    className="tl-button-quiet"
-                    data-size="sm"
-                  >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveUnconfirmedSkill('hard', skill)}
-                    disabled={isGenerating}
-                    className="tl-button-quiet"
-                    data-size="sm"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {unconfirmedSoftSkills.length > 0 && (
-          <div className="space-y-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-subtle">Soft Skills</div>
-            <div className="grid gap-2 xl:grid-cols-2">
-              {unconfirmedSoftSkills.map((skill) => (
-                <div key={`us-${skill.original}`} className="flex min-w-0 items-center gap-2">
-                  <input
-                    type="text"
-                    value={skill.value}
-                    onChange={(e) =>
-                      handleUnconfirmedSkillEdit('soft', skill.original, e.target.value)
-                    }
-                    disabled={isGenerating}
-                    className={`tl-input ${styles.compact} min-w-0 flex-1`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleConfirmSkill('soft', skill)}
-                    disabled={isGenerating}
-                    className="tl-button-quiet"
-                    data-size="sm"
-                  >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveUnconfirmedSkill('soft', skill)}
-                    disabled={isGenerating}
-                    className="tl-button-quiet"
-                    data-size="sm"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 
   if (isLoadingData) {
     return (
@@ -2964,10 +2546,6 @@ export default function Home() {
           </div>
         ))}
 
-        {builderMode === 'manual' && generateMode === 'multiple' && autoGenerate && unconfirmedPanel && (
-          <div className="mt-6">{unconfirmedPanel}</div>
-        )}
-
         {builderMode === 'manual' && generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0 && activeMultiplePreview && (
           <div className="tl-backdrop">
             <div className={`tl-dialog ${styles.sheet}`}>
@@ -3056,8 +2634,6 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="space-y-6 p-4 sm:p-6 lg:h-full lg:overflow-y-auto">
-                  {unconfirmedPanel}
-
                   <div className="tl-card">
                     <div className="tl-card-header">
                       <div className="text-sm font-semibold text-ink">Manual Edits (JSON)</div>
@@ -3070,6 +2646,7 @@ export default function Home() {
                         className={`tl-input ${styles.code}`}
                         placeholder="Edit tailored content JSON here."
                       />
+                      <p className="mt-2 text-xs text-subtle">{TAILORED_DRAFT_NOTE}</p>
                       {activeMultiplePreview.error && (
                         <p className="tl-status mt-2" data-tone="error">{activeMultiplePreview.error}</p>
                       )}
@@ -3109,7 +2686,6 @@ export default function Home() {
             titleNote={<AnalysisFacts analysis={currentAnalysis?.analysis} />}
             sidebar={
               <>
-                {unconfirmedPanel}
                 <div className="tl-card">
                   <div className="tl-card-header">
                     <div className="text-sm font-semibold text-ink">Manual Edits (JSON)</div>
@@ -3122,6 +2698,7 @@ export default function Home() {
                       className={`tl-input ${styles.code}`}
                       placeholder="Edit tailored content JSON here."
                     />
+                    <p className="mt-2 text-xs text-subtle">{TAILORED_DRAFT_NOTE}</p>
                     {tailoredContentError && (
                       <p className="tl-status mt-2" data-tone="error">{tailoredContentError}</p>
                     )}

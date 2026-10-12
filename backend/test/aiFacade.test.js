@@ -210,7 +210,8 @@ test('a prompt with no variables at all still produces a non-empty user turn', a
 });
 
 test('appended instructions reach the model, in the user turn', async () => {
-  // tailorResume appends its skill override this way. It used to be
+  // The job facts call appends the code's job-field reminder this way (the
+  // tailoring once appended a skill override). It used to be
   // string-concatenated onto the rendered text, which only reached providers
   // taking a single flat string - so on the structured path the model never
   // saw it, while the code downstream assumed it had been obeyed.
@@ -237,9 +238,15 @@ test('appended instructions reach the model, in the user turn', async () => {
   assert.equal(requests[0].stableSystem.includes('FINAL SKILL OVERRIDE'), false);
 });
 
-test('tailorResume still delivers its skill override after the transport change', async () => {
+test('tailorResume appends nothing to the tailoring turn, and asks no revise pass of a posting with no checklist', async () => {
+  // It used to append a FINAL SKILL OVERRIDE telling the model not to write
+  // skills: the code decided them. The shipped prompt now has the model write
+  // the skills block, so nothing is appended - whatever the record says is
+  // the whole instruction. A posting whose analysis names nothing leaves no
+  // term missing, and a draft with no bullet has none to put a figure in: one
+  // call, no revise pass.
   const { staticDir } = useTempStorage('facade-tailor');
-  writePrompt(staticDir, 'tailor-resume', 'Tailor.\n[[profileJson]]\n[[jobAnalysisJson]]');
+  writePrompt(staticDir, 'tailor-resume', 'Tailor.\n[[profileJson]]\n[[jobAnalysisJson]]\n[[softSkillGroupHeading]]');
   writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]');
 
   const ai = loadAi();
@@ -248,16 +255,14 @@ test('tailorResume still delivers its skill override after the transport change'
       title: 'Engineer',
       summary: 'A summary.',
       experience: [],
-      strengths: [],
-      hardSkills: [],
-      softSkills: [],
+      skillGroups: [{ category: 'Languages', skills: ['TypeScript'] }],
       coverLetter: '',
     }),
   });
   ai.registerAdapter('claude-cli', () => adapter);
 
   const resumeService = loadFresh('../dist/services/resumeService');
-  await resumeService.tailorResume(
+  const content = await resumeService.tailorResume(
     { id: 'p1', name: 'Jane', experience: [], skills: [], education: [] },
     {
       jobMeta: { title: 'Engineer', seniority: '', industry: '', department: '' },
@@ -274,12 +279,10 @@ test('tailorResume still delivers its skill override after the transport change'
     'claude-cli'
   );
 
-  assert.equal(requests.length, 1);
-  assert.match(
-    requests[0].userBody,
-    /FINAL SKILL OVERRIDE/,
-    'the skill override must still reach the model on the structured path'
-  );
+  assert.deepEqual(requests.map((request) => request.callSite), ['tailor-resume']);
+  assert.doesNotMatch(requests[0].userBody, /FINAL SKILL OVERRIDE/);
+  assert.match(requests[0].userBody, /"name":"Jane"/);
+  assert.deepEqual(content.skillGroups, [{ category: 'Languages', skills: ['TypeScript'] }]);
 });
 
 test('a prompt record model override beats the caller', async () => {

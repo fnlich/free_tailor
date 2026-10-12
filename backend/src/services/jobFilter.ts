@@ -200,11 +200,16 @@ export function evaluateJobFilterAnalysis(analysis: JobFilterAnalysis): JobFilte
 /**
  * The facts the filter judges, read off the posting's ONE job analysis.
  *
- * The filter used to make an AI read of its own for these (a prompt of its
- * own, `filter-google-sheet-job`), on top of the analysis a build of the same
- * posting made. Now the analysis asks for them too (owner decision J8), so a
- * posting is read once whichever comes first - the filter, or a build - and
- * the verdict is code (`evaluateJobFilterAnalysis`) over what is stored.
+ * The filter makes no AI read of its own (owner decision J8): its facts
+ * prompt is the second call of the posting's one analysis (services/
+ * jobAnalysis/gate.ts, owner decision O1), so a posting is read once
+ * whichever comes first - the filter, or a build - and the verdict is code
+ * (`evaluateJobFilterAnalysis`) over what is stored.
+ *
+ * Seniority is the facts call's (`filter.seniority`): only its list has
+ * intern, director and VP, which the filter fails. An analysis stored before
+ * has none, and its `jobMeta.seniority` was asked in that same list, so it is
+ * read instead.
  */
 export function jobFilterAnalysisOf(analysis: JobAnalysis): JobFilterAnalysis {
   const facts = analysis.filter;
@@ -212,7 +217,7 @@ export function jobFilterAnalysisOf(analysis: JobAnalysis): JobFilterAnalysis {
     jobType: facts?.jobType ?? '',
     onsiteInterview: facts?.onsiteInterview ?? '',
     companyCategory: facts?.companyCategory ?? '',
-    seniority: analysis.jobMeta?.seniority ?? '',
+    seniority: facts?.seniority ?? analysis.jobMeta?.seniority ?? '',
     clearanceRequired: facts?.clearanceRequired ?? '',
     salary: formatSalary(analysis.salary),
     region: facts?.region ?? '',

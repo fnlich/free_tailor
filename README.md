@@ -37,7 +37,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates. Each says which Technical Skills layouts it can print, and a profile is offered only the ones that print its own |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
-| **Per-Profile Settings** | Each profile chooses its prompts, template, file naming and skill ordering, whether its Technical Skills print as one **Plain** list or **Grouped** under headings, and whether its resumes carry a **Soft Skills** and a **Strengths** section |
+| **Per-Profile Settings** | Each profile chooses its tailoring prompt, template and file naming, whether its Technical Skills print as one **Plain** list or **Grouped** under headings, and whether its resumes carry a **Soft Skills** and a **Strengths** section |
 | **Live preview** | Editing a profile shows the resume it makes beside the form, redrawn as you type or pick a template - free, untailored, and nothing is saved until you press Save |
 | **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and the AI models - each with a display name, a seat, a model picked from that seat's own list, and a price per resume |
 | **Plain messages** | A failure tells an ordinary account what it can do about it, never how the server is set up; anything else is a generic sentence with a reference such as `ERR-7F3A9C`, and the cause is in the server log under it. Administrators see the cause on the page as well |
@@ -51,6 +51,66 @@ Support for older builds - upgrading their databases, reading their data,
 rolling back to them - and the Apify Job Search are removed, and the server now
 refuses at startup a database an older build never finished upgrading (see
 [Upgrading](#4-upgrading)).
+
+**The owner's prompts are the shipped built-ins.** A posting's one analysis is
+now two calls made side by side - *Analyze Job Description* for its keywords,
+and *Job Facts (Filter)*, the job filter's own prompt back again, for its job
+type, onsite interview, company category (its industry), seniority,
+clearance, salary and location, plus the job field the code asks for itself.
+Still once per posting, ever: postings already analysed keep their analysis.
+A prompt edit saved for the older prompts - one naming a variable this
+version no longer supplies, or any edit of the analysis, job facts or
+tailoring prompts saved before this release - is marked *Needs update* and
+the shipped text runs in its place, with no migration; saving it again lets
+it run. The analysis, the job facts, the revise
+pass and the cover letter each have exactly one prompt.
+
+**Tailoring follows the owner's tailoring prompt, and a second pass fills its
+gaps.** The model is given the posting's own lists in the posting's spelling -
+its skills, the five it leans on, its prose keywords, its concepts and the
+tools they are built with - and nothing from the skill library; nothing is
+appended to its turn. Its answer is held to the prompt's promises: the
+candidate's headline with the kind of role composed on (left alone when it
+already says it), every role's facts from the profile (a role the model left
+out is put back, one the profile lacks dropped, and two stints at one company
+under one title kept apart by their dates), no role description, at most the
+eight bullets carrying the most checklist terms, spans of years as numerals
+and no em dashes (a range such as $5M–$10M becomes $5M-$10M, never a list). The summary is no longer rewritten into the
+"{Title} with about N years" opening, and no *Working style* sentence is
+added. Then **Revise Resume Coverage** - a second call on the same model,
+switched by `TAILOR_REVISE_PASS` - works the terms the draft left out, and
+figures when it has fewer than five, into the summary and bullets; a failure
+leaves the draft as the resume. A repeat build reuses the revised resume from
+the tailoring cache. The profile's hard-skill ordering setting is gone: the
+skills print in the model's order.
+
+**A tailored resume prints the skills block the model writes.** Grouped prints
+the model's own headings and skills exactly as returned, Plain the same skills
+as one list in the same order with repeats removed, and nothing from the
+skill library pads, filters or reorders a tailored resume's skills block any
+more. Nothing pads an untailored one either, but it still draws only the
+skills the library knows - in Plain, and in Grouped unless headings were
+assigned by hand, where it files them under the library's headings. The block's last group, the posting's soft skills, moves into the Soft Skills
+section while that switch is on and stays in the block, under its heading,
+while it is off. Strengths are always your own. A role prints no description
+and at most eight bullets, the title prints as tailoring composed it
+(`Senior Software Engineer | Cloud Engineer`), and the template gallery shows
+a tailored sample.
+
+**The pages say what the prompts now do.** Admin -> Prompts lists *Job Facts
+(Filter)* and *Revise Resume Coverage* in the order they run, says for each of
+the four single-prompt features why it has no variant and which model it runs
+on, and says of a flagged edit what it lacks or names that is no longer
+supplied - refusing such a save before it is sent. A preview's *Manual Edits
+(JSON)* box offers only what an edit can change - the title (when the profile
+has no headline), the summary, each role's bullets, `skillGroups` and the
+cover letter - plus each role's company, title and dates, which only say which
+role the bullets belong to and print as the profile has them - and the *Unregistered
+Skills* panel is gone (nothing a tailoring prints is checked against the skill
+library). The profile editor says what each switch does to a tailored resume.
+Prompt Test names both analysis prompts, shows the job type, seniority and
+clearance beside the job field and salary, and marks only the posting's
+keywords - never the facts.
 
 ---
 
@@ -188,18 +248,22 @@ Generating again for the **same unchanged profile, posting, model and tailoring
 prompt** reuses the tailored resume - and, separately, the cover letter - from
 the last time, with **no model call**; the resume is **charged as usual**. The
 key is everything the answer was made from: the whole profile (one character
-changed is another key), its section switches and layout as its template allows
-them, the template, the posting's stored analysis, the model record and its
-model name, the prompt's text, and what the prompt is filled in with - so an
-administrator's prompt edit, another model or an edited profile is asked
-afresh, and so is a posting whose skills checklist changed because somebody
-added or confirmed a skill in the shared library that it names (one it does not
-name changes nothing). Only the model's answer is stored, and only an answer
-the model asked for wrote: when the seat reports that a **fallback** model
-answered instead (Claude's `AI_CLI_FALLBACK_MODELS` taking an overloaded
-model's turn, Gemini switching Pro to Flash), that answer is used for that
-build and not kept - the log says `[tailor-cache] Not keeping this tailoring:
-it was written by ...` - and the next build asks again. Everything done with an
+changed is another key) but not its settings - flipping the layout or the Soft
+Skills switch only changes how the same answer is drawn, so it is reused - the
+template, the posting's stored analysis, the model record and its model name,
+the tailoring prompt's text, the revise prompt's text, and what the prompts are
+filled in with (the Strengths switch decides whether your strengths are in
+that, so flipping it asks afresh) - so an administrator's prompt edit, another
+model or an edited profile is asked afresh. Nothing in the shared skill library
+is part of it any more. What is stored is the resume as the model ended it -
+its first answer, or the revised one when the revise pass changed it - so a
+repeat makes no revise call either. Only an answer the model asked for wrote
+is kept: when the seat reports that a **fallback** model answered instead
+(Claude's `AI_CLI_FALLBACK_MODELS` taking an overloaded model's turn, Gemini
+switching Pro to Flash), for the tailoring or its revision, that answer is used
+for that build and not kept - the log says `[tailor-cache] Not keeping this
+tailoring: it was written by ...` (or `revised tailoring`) - and the next build
+asks again; so is a draft whose revise call failed. Everything done with an
 answer afterwards (the section switches, the skills) runs again each time. Rows
 are kept `TAILOR_CACHE_DAYS` (30 days by default) and pruned at startup and
 daily, in the `tailor_cache` table.
@@ -867,7 +931,7 @@ everybody but a reporter.
 | **Groups** | **Premium and above**, and administrators | an entitlement, checked on the subscription - a group is a way to build for several profiles at once |
 | **Building for several profiles** (Multiple, All profiles, Specific group, Select Group) | **Premium and above**, and administrators | a Default subscription supports one profile. The run, its quote and the multi-profile preview answer 403 `subscription-too-low`; a single-profile run - Generate Immediately or Order - is open to everybody |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
-| **Skill library** (adding, editing, deleting) | **administrators** | one library feeds every account's resumes. Confirming a skill found in use - the builder's prompt, a hard skill typed into a profile - adds it for any user |
+| **Skill library** (adding, editing, deleting) | **administrators** | one library is shared by every account: it files and filters the technical skills of an untailored resume (the profile editor's preview, a resume built without a posting); tailoring reads none of it. A hard skill typed into a profile is added to it for any user (`POST /api/resume/skills/confirm`) |
 | **Templates** (looking at them) | users | the gallery and the full-page preview of each, from the sidebar. Choosing a template is no use without seeing what it produces |
 | **Templates** (adding, editing, disabling, deleting) | **administrators** | a template is shared - editing one changes how everybody's resumes look. A *disabled* template is an administrator's staging state and is not listed to anybody else |
 | **Notifications** (reading them) | anybody signed in, reporters included | the bell in the top bar, with an unread dot until it is opened: every announcement, and the notices written for that account alone (its refund and payout requests, its payouts; for an administrator, new requests) - never anybody else's |
@@ -987,10 +1051,11 @@ What the preview is, exactly:
   printed into a PDF or DOCX, and never sent to a model - an empty field stays
   empty everywhere else.
 - **It shows what you entered.** A Grouped preview puts only your own skills
-  under the library's headings; a generated Grouped resume still fills those
-  headings out from the library for the job (see below). Plain, and Grouped
-  with no heading assigned by hand, draw only skills the shared skill library
-  knows. A skill you add in the editor is added to the library as you add it;
+  under the library's headings, in your order - exactly what a resume printed
+  without tailoring shows; nothing is added from the library. A tailored resume
+  prints the skills block the model wrote for the job instead (see below).
+  Plain, and Grouped with no heading assigned by hand, draw only skills the
+  shared skill library knows. A skill you add in the editor is added to the library as you add it;
   one that came in with an uploaded or imported profile and that the library
   has never heard of is left off - see Troubleshooting.
 
@@ -1011,17 +1076,42 @@ profile's own template is always selectable. Switching layout while the chosen
 template cannot print the new one moves the profile to one that can - its
 saved template if that fits, else `default` - and says so beside the control.
 
-On a **tailored** resume the two layouts list different skills:
+On a **tailored** resume the model writes the Technical Skills block - its own
+headings, about thirty skills, the posting's technologies inside the stack
+your history shows - and it is printed exactly as returned: nothing from the
+skill library pads it, filters it or reorders it.
 
 | Layout | What Technical Skills lists |
 |---|---|
-| **Grouped** | The posting's skills the library knows, under the library's headings, with those headings filled out from the library - as it always has |
-| **Plain** | The posting's skills the library knows, plus **your own** skills that the posting names or that share a library heading with one it names (a posting asking for PostgreSQL makes your other databases relevant). No padding, so it is usually shorter. A posting that names no skill the library knows (a management role, say) gets your own library-known skills, as the editor's preview shows them, rather than an empty section |
+| **Grouped** | The model's groups, each heading over its skills, in the order it wrote them |
+| **Plain** | The same skills as one list with no headings, in the same order; a skill the model put under two headings is listed once |
 
-Either way the code decides the list, never the model. *Job relevance*
-ordering (**Prompts and files → Hard skill ordering**) only reorders it; it
-used to drop names such as Node.js and Next.js and respell React as React.js,
-and does not any more.
+The model ends the block with the posting's own **soft skills**, under a
+heading drawn for the resume (*Soft Skills*, *Professional Skills*, *Working
+Style* ...). What happens to that group is the Soft Skills switch's to decide
+(below). A block with nothing printable in it - an answer with no technical
+group at all - prints your own skills, as the editor's preview shows them,
+rather than an empty section. Content tailored by an older release, which
+carries a flat list instead of groups, is re-read like an answer with no
+groups and prints your own skills (your grouping as typed, else one list);
+where it reaches the renderer without being re-read, its flat list, unpadded
+(Plain as it stands; Grouped under your headings, else under the library's,
+which keep only the skills it knows).
+
+**Editing a tailored resume before it is built.** A preview on Build Resumes
+has a *Manual Edits (JSON)* box beside the page. What it offers to change is
+only what an edit can change: the title, the summary, each role's bullets,
+`skillGroups` - the soft-skill group marked `"soft": true` - and the cover
+letter. Each role also carries its company, title and dates, but only to say
+which role its bullets are (the dates tell two stints at one company under one
+title apart); the note under the box says the rest. The rest is
+worked out again when the edit is sent: the title from your headline when the
+profile has one (an edited title counts only when it has none), each role's
+company, title, dates and place from the profile, the technical skill list
+and the Soft Skills section from `skillGroups`, Strengths from the profile. **Update Preview**
+redraws the page from the edit; Generate Immediately and Order build what the
+box holds, charged at the model that wrote it, with no new tailoring or revise
+call.
 
 **Soft Skills and Strengths are switches**, `includeSoftSkills` and
 `includeStrengths` in the profile's settings. Both are **off unless you tick
@@ -1033,17 +1123,18 @@ ticking the box brings them back to print and edit.
 
 | | On | Off |
 |---|---|---|
-| **Soft Skills** | A Soft Skills section: **your own list first**, in your order, then the soft skills the posting asks for that the library confirms, up to ten in all. A posting's skill already inside one of yours ("Communication" beside "Clear written communication") is left out. The stock list (Accountability, Adaptability, ...) only fills a profile that has none | No section, and the builder offers no soft skills to add to the library. The posting's soft skills that the library knows and the resume does not already mention go into the summary as one sentence, `Working style: ...` |
-| **Strengths** | A Strengths section: the ones the model writes for the job (it is asked for two to four), and if it writes none, **your own**, exactly as typed - and still as typed when that preview is generated. Never invented - a strength the model writes with no title is dropped, and a sentence written from the employer's side is removed on its own | No section. The model is told to return none and not to use strengths as an overflow for keywords, and anything it returns anyway is discarded |
+| **Soft Skills** | A Soft Skills section. Tailored: **the posting's soft skills** - the last group of the model's skills block moves here, and out of Technical Skills. Untailored (the editor's preview, a resume built without a posting): **your own list**, in your order | No section. Tailored, the posting's soft skills stay in Technical Skills as its last group, under their heading |
+| **Strengths** | A Strengths section: **your own**, exactly as typed, tailored or not. The model writes none, and a strength in tailored content - from an older release, or typed into the builder's JSON - is never printed | No section |
 
 A section with nothing in it prints no heading, in the PDF and the DOCX alike.
 Not every template has somewhere to put these: **Burgundy Rule, Navy Rule and
 Charcoal Sidebar have neither section, and Ink Ledger has no Soft Skills**. The
-editor says so under a ticked switch (*... has no Strengths section; ticking it
-changes nothing here*), and the **Template** section shows which it has. On such
-a template **the switch behaves exactly as off, everywhere**: the model is told
-the section is off, the posting's soft skills go into the summary as
-`Working style: ...`, and the DOCX leaves the section out too. The DOCX follows
+editor says so under a ticked switch (*... has no Strengths section, so it
+prints as if this were off: ...*), and the **Template** section shows which it
+has. On such
+a template **the switch behaves exactly as off, everywhere**: the posting's
+soft skills stay in Technical Skills as its last group, and the DOCX leaves
+the section out too. The DOCX follows
 one fixed layout whatever the template, but the template it is generated with
 decides its sections: it gains *Key Strengths* after the summary and *Soft
 Skills* after Technical Skills exactly when the PDF of the same generation has
@@ -1132,49 +1223,76 @@ template while the PDF prints another; when it falls back, the preview says
 *Drawn with ...* and why.
 
 The gallery's preview takes the same choices a profile makes:
-`GET /api/templates/:id/preview?layout=flat&softSkills=1&strengths=1`. With
-none it is the usual Grouped sample without either section. It is served under
+`GET /api/templates/:id/preview?layout=flat&softSkills=1&strengths=1`. It draws
+the sample person **tailored**, the way a generated resume prints: a composed
+title, a summary and bullets in the tailoring prompt's voice, no role
+descriptions, and a skills block of the model's shape whose last group,
+*Professional Skills*, moves to the Soft Skills section when `softSkills=1`
+and the template has one. With no choices it is Grouped, without either
+section. It is served under
 the same no-script policy as the profile preview, and a disabled template is a
 404 for anybody but an administrator.
 
 ### Prompts and the section switches
 
-The tailoring prompt (`tailor-resume`) is given the profile's three choices as
-words, in three variables of its own:
+The tailoring prompt (`tailor-resume`) is given the posting's lists, in the
+posting's own spelling, and nothing that depends on the section switches:
 
-| Variable | Values |
+| Variable | What it holds |
 |---|---|
-| `[[includeStrengths]]` | `yes` or `no` |
-| `[[includeSoftSkills]]` | `yes` or `no` |
-| `[[technicalSkillsLayout]]` | `grouped` or `plain` |
+| `[[profileJson]]` | The candidate - headline, years, roles and achievements, skills, education. Strengths only while the Strengths switch is on; your own soft skills never |
+| `[[jobAnalysisJson]]` | The posting's analysis in the analysis prompt's own shape - never the posting's text, salary or filter facts |
+| `[[targetRoleTitle]]`, `[[jobTitle]]` | The posting's own title |
+| `[[skillsJSON]]` | The abilities, tools, technologies and protocols it names |
+| `[[topSkillsJson]]` | The five it leans on most: named in its requirements, must-include, early and repeated |
+| `[[keywordsJson]]` | Its soft skills, must-include terms and past-tense action verbs (the banned ones left out) |
+| `[[conceptKeywordsJson]]` | Its architecture patterns, methodologies and buzzwords |
+| `[[conceptToolsJson]]` | For each concept it names that the code's table knows (CI/CD, observability, message queues ...), the tools it is built with, in an order drawn for the resume |
+| `[[keyResponsibilitiesJson]]`, `[[domainKnowledge]]` | Its responsibilities and domain knowledge |
+| `[[softSkillGroupHeading]]` | The heading the skills block's last group - the posting's soft skills - must carry, drawn for the resume from six (*Soft Skills*, *Professional Skills*, *Interpersonal Skills*, *Collaboration & Communication*, *Working Style*, *Core Competencies*) |
 
-They are never inside `[[profileJson]]` - that is the candidate's record, and
-these are how it is drawn - and the shipped prompt names them after it, in a
-*RESUME SECTIONS* block, so the long start of the prompt that is the same for
-every resume stays the same. Its strengths instructions apply only when the
-Strengths section is `yes`; on `no` it asks for `"strengths": []`.
+The three things drawn per resume - that heading, the tools' order and the
+shape the title is composed in - are drawn from the profile and the posting,
+not afresh on every call: two candidates on one posting get different draws,
+and the same resume asked again is the same question (so the cache can answer
+it). The layout and the Soft Skills switch are not sent: they decide how the
+model's answer is drawn (above). Nothing is appended to the turn - the prompt
+is the whole instruction.
 
-What the record holds does follow the switches: **with Strengths off, the
-profile's strengths are not sent to the model at all** - not in
-`[[profileJson]]` for tailoring, nor for the cover letter. They stay with the
-profile, unsent, until the box is ticked. The profile's own soft skills are
-never in it either way; the code lists them after the model has answered.
+**Every tailoring prompt must use `[[profileJson]]`, `[[jobAnalysisJson]]` and
+`[[softSkillGroupHeading]]`** - the code finds the soft-skill group by that
+heading. Saving a tailoring prompt - the built-in edited, or a variant a
+profile picks - that leaves one out is refused, *Missing required prompt
+variables: softSkillGroupHeading. Every Tailor Resume prompt must use
+[[profileJson]], [[jobAnalysisJson]] and [[softSkillGroupHeading]].* A record
+stored without them, or naming one of the variables an older version supplied
+(`[[includeStrengths]]`, `[[includeSoftSkills]]`, `[[technicalSkillsLayout]]`,
+`[[hardSkillsJson]]`), is never run: **Admin → Prompts** marks it *Needs
+update*, names what it lacks, and the built-in tailoring prompt runs in its
+place - the administrator's edit of it when that is usable, else the shipped
+text - until it is updated; the backend log says so once (*[prompts] The
+prompt "..." (...) does not use [[jobAnalysisJson]] and
+[[softSkillGroupHeading]], which every Tailor Resume prompt must, and uses
+[[includeStrengths]], which this version does not supply; the built-in Tailor
+Resume prompt runs instead until it is updated under Admin -> Prompts.*).
 
-**Every tailoring prompt must use all three.** They are the feature's
-*required* variables: saving a tailoring prompt - the built-in edited, or a
-variant a profile picks - that leaves one out is refused, *Missing required
-prompt variables: includeSoftSkills. Every Tailor Resume prompt must use
-[[includeStrengths]], [[includeSoftSkills]] and [[technicalSkillsLayout]].*
-A record stored without them (written before the rule, or by hand) is never
-run: **Admin → Prompts** marks it *Needs update*, names what it lacks, and the
-built-in tailoring prompt runs in its place - the administrator's edit of it
-when that is complete, else the shipped text - until it is updated; the
-backend log says so once (*[prompts] The prompt "..." (...) does not use
-[[includeStrengths]], which every Tailor Resume prompt must; the built-in
-Tailor Resume prompt runs instead until it is updated under Admin ->
-Prompts.*). Whichever record runs, the code also appends a *FINAL SKILL
-OVERRIDE* to every tailoring turn stating the same three facts, and the
-post-processing above enforces them again whatever the model returns.
+**The revise pass** (`revise-resume-coverage`, one prompt, edited under Admin →
+Prompts like the analysis) runs after a fresh tailoring that left checklist
+terms out, or whose bullets carry fewer than five figures. It is given
+`[[draftJson]]` (the draft's summary and each role's company, title and
+bullets), `[[missingTermsJson]]` (the terms it lacks, the posting's top five
+first, never one with a banned word in it, at most `TAILOR_REVISE_MAX_TERMS`)
+and `[[figuresNote]]` (a sentence asking for modest figures in the bullets, or
+empty); the first two are required. Its answer replaces only the summary and
+whole roles' bullets, matched by company and title (of two stints at one
+company under one title, when it returns only one, the stint whose bullets it
+repeats - else neither), and is finished like the
+draft - never with less: a revised line the finishing would cut (a sentence
+written from the employer's side, with *we* or *our* in it) leaves the
+draft's line in its place. It never runs on a reused tailoring or on content a page sent back,
+always runs on the model the resume is charged at, and a failure leaves the
+first draft as the resume (*[tailor] The revise pass failed on ..., so the
+resume is the first draft: ...*). `TAILOR_REVISE_PASS=off` turns it off.
 
 **A feature's prompt may use only the variables its code supplies.** Admin →
 Prompts lists every one a feature offers, and saving text that names any other
@@ -1182,20 +1300,34 @@ is refused - *Unknown prompt variables: includeSoftSkillz* - where it used to
 save cleanly and then fail every resume that used it. `POST
 /api/prompts/validate` and `/preview` name such a variable in
 `unknownVariables`; a draft not saved yet says which feature it is for with
-`featureKey`. A record that already holds one (written by hand into the
-database, say) fails every resume that uses it, and the server log names it
-under the reference: *Prompt "..." contains unknown variables: ...* - see
-Troubleshooting.
+`featureKey`. A feature's record that already holds one - an edit saved for an
+older version's prompt, say, naming `[[jobFieldList]]` - is marked *Needs
+update* and never runs: the built-in prompt of its feature runs in its place,
+exactly as for a missing required variable. So does any stored edit of the
+analysis, job facts or tailoring prompts - the built-in edited, or a variant -
+saved before this release's prompts, whatever variables it names: an analysis
+edit from before the job field lists, or a job filter edit from before it was
+retired, uses only `[[jobDescription]]`, as the new texts do, and only its
+date tells it apart (*Not run: it dates from an older version of this
+prompt.*). Saving it again under this version clears the mark. Only a prompt attached to no
+feature, with nothing to give way to, still fails when run, and the server log
+names it under the reference: *Prompt "..." contains unknown variables: ...* -
+see Troubleshooting.
 
 ### Job analysis: once per posting
 
-Every resume starts by reading the job posting - its keywords, its title, and
-now its **job field**, the **salary** it states and the facts the job filter
-judges. That reading is made **once per posting, ever**, and stored: not once
-per profile, per model, per run, per retry or per restart, and the job filter
-does not make a reading of its own. Whoever needs a posting's analysis first -
-Generate, an Order, Generate Immediately, the job filter - causes the one call;
-everybody after gets the stored one.
+Every resume starts by reading the job posting - its keywords, its title, its
+**job field**, the **salary** it states and the facts the job filter judges.
+That reading is made **once per posting, ever**, and stored: not once per
+profile, per model, per run, per retry or per restart, and the job filter does
+not make a reading of its own. It is two calls to the analysis model, made
+side by side and stored as one analysis: the **Analyze Job Description**
+prompt reads the keywords, and the **Job Facts (Filter)** prompt reads the job
+type, onsite interview, company category, seniority, clearance, salary,
+region and state - and, because the code adds the question itself, the job
+field. Whoever needs a posting's analysis first - Generate, an Order, Generate
+Immediately, the job filter - causes the one analysis; everybody after gets
+the stored one.
 
 - **What makes two postings the same.** Its job link (host case, `#fragment`,
   `utm_*`/`gclid`/`fbclid`/`ref`-style tracking and a trailing slash do not
@@ -1206,41 +1338,52 @@ everybody after gets the stored one.
   **analysis model** under **Admin → Settings → General**. Left empty it is
   the app's default model. A model chosen there that stops running (switched
   off, its seat locked) is replaced by the default with a warning in the log.
-- **Changing it, or editing the Analyze Job Description prompt, reaches only
-  postings never analysed before.** There is no "re-analyse": an analysis is
-  never replaced. The prompt has one version - a profile no longer chooses its
-  own analysis prompt, and a variant cannot be added or activated - and the
-  Prompt Test page shows the posting's stored analysis, or makes it.
+- **Changing it, or editing either prompt, reaches only postings never
+  analysed before.** There is no "re-analyse": an analysis is never replaced,
+  so a posting analysed by an older version keeps that analysis. Each prompt
+  has one version - a profile no longer chooses its own analysis prompt, and a
+  variant cannot be added or activated - and the Prompt Test page shows the
+  posting's stored analysis, or makes it (both calls).
 - **The builder holds the analysis it was given.** Under the job description
-  it says what the posting was analysed as - its title, job field and salary -
-  and so do the previews. Changing the company, the role, the profile or the
+  it says what the posting was analysed as - its title, job field, job type,
+  seniority, clearance and salary, each when the analysis says it - and so do
+  the previews and Prompt Test (which marks in the posting only the keywords
+  the analysis read out of it, never these facts). Changing the company, the role, the profile or the
   model builds on that same analysis, sent by its id, without asking for it
   again; editing the description itself is another posting.
 - **The job field** is one of the owner's list of software development fields
   at bullet level (Backend, DevOps, ML engineering...), by a fixed id; the
-  computer-science foundations are not offered. A posting that fits none - or
-  an answer that names a field not in the list - is **Unclassified**.
+  computer-science foundations are not offered. The code sends the list with
+  the Job Facts (Filter) prompt - before it, so no edit of the prompt can drop
+  it - and asks for `job_field` after the posting. A posting that fits none -
+  or an answer that names a field not in the list - is **Unclassified**; an
+  answer that names no job field at all is asked once more first.
   `GET /api/resume/job-fields` lists them.
-- **The salary** is only what the posting states - its numbers, currency,
-  period and words - never an estimate.
+- **The salary** is only what the posting states - its numbers, period and
+  words - never an estimate. The facts prompt asks for no currency, so a new
+  posting's salary shows without one (*120,000 - 140,000 / annual*) unless the
+  posting's own words are kept.
 - **The industry** is one of a closed list - Healthcare, Finance, Insurance,
   Military, Government, Education, Retail & E-commerce, Technology,
   Consulting, Media & Entertainment, Logistics & Transportation, Energy &
   Utilities, Manufacturing, Telecommunications, Legal, Real Estate,
-  Hospitality & Travel, Nonprofit, Other - by a fixed id. An answer that names
-  none of them is **Other**; a posting that gives nothing to tell it by has
-  none (a blank cell).
+  Hospitality & Travel, Nonprofit, Other - by a fixed id, worked out from the
+  company category the facts call answers (SaaS, AI/ML and enterprise software
+  are Technology, fintech is Finance...), else from the posting's own industry
+  word ("devtools", "Healthcare IT"), else none (a blank cell). No model is
+  asked for it, and nothing is written back into an analysis: one stored while
+  the analysis asked for an industry keeps the one it was given.
 - **Job type** (Remote, Hybrid, Onsite, or blank when the posting does not
   say) and **clearance** (required or not) come from the facts the job filter
   judges. A clearance counts as required unless the posting says none or says
   nothing - an unfamiliar clearance word included, as the filter treats it.
-- **A posting analysed before industries existed is not analysed again** for
-  one. Its industry is worked out from what its analysis already holds every
-  time it is read - its company category, else its own industry word
-  ("SaaS", "fintech", "Healthcare IT"), else none - and nothing is written
-  back into it.
-- **A call that fails stores nothing**, so the next request is the first real
-  analysis. That is the only way a posting is ever sent to a model twice.
+  The filter judges the facts call's **seniority**, whose words include intern,
+  director and VP; a posting analysed before keeps the seniority its analysis
+  read.
+- **A call that fails stores nothing** - either of the two, which stops the
+  other - so the next request is the first real analysis, both calls again.
+  That, and asking once more for a missing job field, are the only ways a
+  posting is ever sent to a model twice.
 
 **In your own job sheet**, the analysis is written into the row once - all
 six of G to L: Job Field, Salary, Job Type, Clearance (TRUE/FALSE), Industry
@@ -2511,7 +2654,7 @@ unique across the install, which settles all of it in one segment.
 | Section | Purpose |
 |---------|---------|
 | **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription and role - User, Reporter or Administrator - before they arrive; it is not a way in, since they still prove the address through Google or a code. A row whose address is in `ADMIN_EMAILS` (or is `SMTP_USER`'s, when `ADMIN_EMAILS` is empty) says so, naming the setting: it can be given another role, but becomes an administrator again at its next sign-in. A **Reporter** row has a **rate per job** (dollars, empty for the global rate) and **Record payout** - the amount paid outside the app and a note saying how, taken off the balance, never more than it; recording one while the reporter has a payout request open closes that request as paid (see [Roles](#roles)) |
-| **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts, file naming and hard-skill ordering - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
+| **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts and file naming - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
@@ -2519,13 +2662,13 @@ unique across the install, which settles all of it in one segment.
 | **Models** | Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0` to `$1,000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. **Set Default** refuses a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
 | **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
-| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis, a resume PDF into a profile) and **Building Prompts** (the tailored resume content and the cover letter). The job analysis has exactly one prompt - edit it, there are no variants. Some variables are **required**: `[[jobFieldList]]` and `[[industryList]]` in the analysis prompt, `[[includeStrengths]]`, `[[includeSoftSkills]]` and `[[technicalSkillsLayout]]` in a tailoring prompt. A save that leaves one out is refused in so many words, and a stored prompt without one is marked *Needs update* and never runs - the built-in prompt of its feature runs in its place until it is updated. The line is what a prompt produces, not what it reads. A prompt can pin its own model - a provider and a model name from the same lists as **Models**. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis and its facts, a resume PDF into a profile) and **Building Prompts** (the tailored resume content, its revise pass and the cover letter), in the order they run. The job analysis's two prompts (**Analyze Job Description** and **Job Facts (Filter)**), the tailoring's revise pass (**Revise Resume Coverage**) and the cover letter have exactly one prompt each - edit it, there are no variants, and the page says why and which model it runs on. Some variables are **required**: `[[jobDescription]]` in the two analysis prompts, `[[profileJson]]` in the cover letter, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in a tailoring prompt, `[[draftJson]]` and `[[missingTermsJson]]` in the revise prompt. A save that leaves one out is refused in so many words, and a stored prompt without one - or naming a variable this version no longer supplies - is marked *Needs update* and never runs - the built-in prompt of its feature runs in its place until it is updated; a stored edit of the analysis, job facts or tailoring prompts saved before this release is marked the same, whatever it names, until it is saved again; the list says why under it (*Not run: it does not use [[...]]*, *... uses [[...]], which this version does not supply* or *... dates from an older version of this prompt*), and the editor says it of the text as typed before Save. The line is what a prompt produces, not what it reads. A prompt of the other features can pin its own model - a provider and a model name from the same lists as **Models** - which decides the Bid Assistant and the extractors; a resume's tailoring always runs on the model it is charged at. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
 | **Job Lake** | The [Job Data Lake](#the-job-data-lake): search it (when it was updated, who reported it, job field, job type, clearance, industry, company, salary, free text), open a job and its history, delete one with or without taking its reward back; **Push to Google Sheet** - the jobs of a search into the *Temp For AI* tab of your own job sheet; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
 | **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only, and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the analysis prompt as it stands (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
+| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the Analyze Job Description and Job Facts (Filter) prompts as they stand (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
 
 ---
 
@@ -2642,6 +2785,7 @@ matching it.
 | `IMMEDIATE_TAB_GRACE_MS` | How long a **Generate Immediately** run outlives a page that went without saying so: when the run's tab stops following it (network gone, laptop asleep, browser killed), the run is cancelled after this long unless that tab reconnects - a short drop loses nothing. A connection that vanished without closing is counted gone within 20 s first (the server ends the run's stream every 20 s and a live page attaches again), so such a run stops within this plus 20 s. Resumes that had not started are refunded (default `30000`; range 5000-600000). A page that is closed, reloaded or left stops its run at once instead |
 | `IMMEDIATE_FILE_RETENTION_MS` | How long a Generate Immediately run's files stay on the server after the run ends, **downloaded or not** - the page downloads each resume as it lands, so the server copy only has to outlive that download (default `600000`, ten minutes; range 60000-86400000). Checked every minute. The resumes stay charged, and the run is never listed on **Orders** |
 | `TAILOR_CACHE_DAYS` | How long a tailored resume and a cover letter are kept for reuse (default `30`, range 1-3650): generating again for the same unchanged profile, posting, model and prompt reuses them with no model call, and the resume is charged as usual. Pruned at startup and daily - see [The tailoring cache](#the-tailoring-cache) |
+| `TAILOR_REVISE_PASS`, `TAILOR_REVISE_MAX_TERMS` | The revise pass after a fresh tailoring (default `on`): a second call, Revise Resume Coverage on the model the resume is charged at, that works the checklist terms the draft left out - and figures, when its bullets carry fewer than five - into its summary and bullets; `off` makes every resume the first draft. `TAILOR_REVISE_MAX_TERMS` (default `30`, range 1-200) is how many missing terms one call is given, the posting's top five first. Each revise call has the seat's `_TAILOR` budget |
 | `JOB_LAKE_DUPLICATE_WINDOW_DAYS` | The [Job Data Lake](#the-job-data-lake)'s duplicate window: a job reported again while its lake row was added or last replaced within this many days is a **duplicate** (red in the reporter's sheet, not paid); after it, the new report **replaces** the row and counts as added (default `60`, two months; range 1-3650). An administrator's value on **Admin → Job Lake** wins over this one, and that page says which is in effect |
 | `JOB_LAKE_PUSH_MAX_ROWS` | The most jobs one **Push to Google Sheet** on **Admin → Job Lake** writes into the pushing administrator's own *Temp For AI* tab, newest first (default `1000`, range 1-5000). A filter that matches more is cut at this many, and the page says so |
 | `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
@@ -2673,7 +2817,7 @@ file. Export them in the shell, for the install and the server alike:
 | Adding a provider under **Admin → Models → Providers** is refused: *must be an absolute path*, *does not exist on this server*, *is not executable by the user this server runs as*, *is inside ..., one of this app's own directories*, or *"..." already signs in at ...* | Each is the check it names. Paths are the SERVER's, absolute (`/srv/claude-b`, not `~/claude-b`), and must exist before the provider is added - create the folder and sign the CLI in there first, as the user the server runs as. A sign-in folder or binary inside the checkout, `DB_DIR`, the static directory or the output directory is refused so nothing the app writes, serves or deletes can reach it. Two providers of one type at one folder would be one account with two limits, so the second is refused; for the built-in provider with no folder set, that folder is the CLI's own default (`~/.claude`, `~/.codex`, or the home directory for Gemini). |
 | A provider added at an empty sign-in folder reports *Signed in* before anybody signed in there, or two providers of one type report the same account | The CLI found a sign-in outside the folder it was given - a wrapper script in front of the binary, a managed or system-wide sign-in, or a key or token the CLI reads from somewhere the app's environment strip cannot reach - so both providers are really one account with two limits. Run the check by hand as the service user, with only that folder set (`env -i PATH="$PATH" HOME=<folder> CLAUDE_CONFIG_DIR=<folder> claude auth status`; `CODEX_HOME` for Codex, `GEMINI_CLI_HOME` for Gemini): it should say signed out until you sign in there. Point the provider at a binary that keeps its sign-in in that folder (its own **binary** field), or remove the sign-in the CLI is finding instead. |
 | Removing a provider answers *This provider is building N resume(s) right now* | It is building those with its sign-in at this moment. Switch it **off** instead: nothing new reaches it, its waiting resumes move to another provider of its type at once, and what it is building finishes; remove it when its card shows nothing running. A built-in provider (`claude-cli`, `codex-cli`, `gemini-cli`) cannot be removed at all - only switched off - because every stored model names its type. |
-| Generating a resume again came back exactly as before, and the log says `Tailoring reused from the cache, no model call` | The tailoring cache: the same profile, posting, model and tailoring prompt as last time - and the same skills checklist from the shared library - so the stored answer was reused, and the resume charged as usual. Change any of them (an edit to the profile, another model, an edited prompt, a library skill the posting names) and the model is asked afresh. An answer a fallback model wrote is never kept (`[tailor-cache] Not keeping this tailoring: it was written by ...`), so a repeat of that one asks again. Answers are kept `TAILOR_CACHE_DAYS` (30 days by default); to empty the cache, `DELETE FROM tailor_cache;` with the server stopped. |
+| Generating a resume again came back exactly as before, and the log says `Tailoring reused from the cache, no model call` | The tailoring cache: the same profile, posting, model, tailoring prompt and revise prompt as last time, so the stored resume - revised, when the revise pass changed it - was reused with no tailoring or revise call, and the resume charged as usual. Change any of them (an edit to the profile, another model, an edited prompt, the Strengths switch) and the model is asked afresh; flipping Grouped/Plain or the Soft Skills switch reuses it, drawn the new way. An answer a fallback model wrote is never kept (`[tailor-cache] Not keeping this tailoring: it was written by ...`, or `revised tailoring`), nor a draft whose revise call failed, so a repeat of that one asks again. Answers are kept `TAILOR_CACHE_DAYS` (30 days by default); to empty the cache, `DELETE FROM tailor_cache;` with the server stopped. |
 | Somebody editing their job sheet gets Google's *You are trying to edit a protected cell or object* on the **Job Field** to **Analysis** columns | Working as intended: those six columns are written by the program alone, so a build can trust what they say and skip analysing the row again (see [Job analysis: once per posting](#job-analysis-once-per-posting)). Everything else in the row stays editable. To get a row analysed afresh there is nothing to clear - a posting is analysed once, ever; a different posting needs a different link or text. |
 | The backend log says `[sheets] The analysis columns of "<tab>" in <spreadsheet> were not protected` (or *protected wrongly*) *... restoring the protection ... and clearing the Analysis cells somebody else could have written meanwhile* | The protection over the six analysis columns (G to L) was missing - an empty tab being laid out as a job tab, which is normal once, or a job tab somebody headed by hand - or somebody with the owner's account removed or changed it. It is put back on the spot, and the **Analysis** column (L, only it) is emptied in the same step, since anybody with the link could have typed into it meanwhile. Nothing is lost: every analysis is in the database, so those rows are read from it, or analysed once, and their cells are written again on each row's next run. If it repeats on every run for the same tab, somebody is removing it: with `npm run sheets:login` that can only be the operator's own Google account. |
 | The log says `[sheets] Could not check the protection of the analysis columns ...` or `Google did not say which account this server's sign-in belongs to` | The server could not learn its own Google identity, which a protection must name as its only editor. With a `sheets:login` credential that is asked of Drive, so the **Drive API** must be enabled for the credential's project - `npm run sheets:doctor` in `backend/` checks it. Until it works, sheet runs still build, but they ignore the analysis cells and analyse from the database. |
@@ -2681,7 +2825,7 @@ file. Export them in the shell, for the install and the server alike:
 | The log says `[sheets] Google answered 429 (quota) to ...; retry n of 5 in ...ms`, or a page says *Google Sheets is busy right now* | Google's per-minute Sheets quota is per project and per user, and every account of this install is the same user - the server's one credential - so a big filter run, a few sheet orders and their write-backs share one budget. A 429 is waited out with growing, randomised delays (and Google's own `Retry-After`), up to five times and 32 s a wait; only then is it reported. If it keeps reaching people, raise the Sheets quota in the credential's Cloud project, or run fewer sheet jobs at once. |
 | **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 12` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a job tab somebody headed by hand narrower than twelve columns is widened to twelve the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
 | The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
-| Every new posting comes back **Unclassified** | A posting that fits none of the job fields is Unclassified by design; when every one is, the Analyze Job Description prompt's text is fighting the list - an instruction to return exactly some other JSON shape, say. Compare it with the shipped text, `backend/static/prompts/analyze-job-description.json` (there is no reset button), and paste that over it. A prompt that does not use `[[jobFieldList]]` and `[[industryList]]` at all is not the cause: it is marked *Needs update* and never runs, and the shipped prompt runs in its place (see *Needs update* below). Only postings analysed from then on are affected: a stored analysis is never redone. |
+| Every new posting comes back **Unclassified** | A posting that fits none of the job fields is Unclassified by design. The job field comes from the **Job Facts (Filter)** prompt's call, which the code asks for it itself (the list before the prompt, a reminder after the posting); when every posting is unclassified, that prompt's text is fighting it - an instruction to return exactly some other JSON shape and nothing else, say. The backend log then says `[analysis] The job facts answer for posting <hash> named no job field, asked twice; it is stored as unclassified` for each one. Compare the prompt with the shipped text, `backend/static/prompts/filter-google-sheet-job.json` (there is no reset button), and paste that over it. An edit that does not use `[[jobDescription]]`, or uses a variable this version does not supply, is not the cause: it is marked *Needs update* and never runs (see *Needs update* below). Only postings analysed from then on are affected: a stored analysis is never redone. |
 | The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A Job Description that ends *...[cut at 50,000 characters]* (Push to Google Sheet writes a longer one so) is read as its posting only exactly as it was cut: edit it and it is another posting, analysed once (the same line, saying *its Job Description, cut at 50,000 characters, is not that analysis's posting as it was cut (edited since)*). A row moved or sorted since loading (`no longer matches`) is neither read nor written. |
 | A row's Analysis cell is filled, yet its posting was found in the database or analysed again and the cell rewritten, and the log says `[analysis] Sheet row N's Analysis cell names an analysis this store does not have (<id>); it is ignored, the posting is found in the store or analysed once, and the cell is replaced.` | The cell names a stored analysis this database does not hold - copied from another install's sheet, left from a database restored from an older backup, or never written by the program. A cell is only ever a pointer into the database, never an analysis in itself, so the row is treated as if it were empty: its posting is found in the database (by link or text) or analysed once, and its six cells are written again. The Build Resumes table reads only the cell's shape and cannot tell; it says *Skips analysis* for such a row. |
 | The log says `[analysis] Stored analysis <id> is not readable; it is treated as absent` | A row of the `job_analyses` table holds analysis JSON the program cannot read - a hand edit, or a backup restored part way. The program only ever writes whole JSON objects. The next request for that posting analyses it once more and writes the answer into the same row (`... could not be read; the new analysis of its posting replaces it`); from then on it is read like any other. One extra analysis per damaged row, not one per request; nothing needs doing. |
@@ -2765,10 +2909,10 @@ file. Export them in the shell, for the install and the server alike:
 | Building for several profiles is refused with *Building for more than one profile needs a Premium subscription or higher* | The account is on the Default subscription, which supports one profile: Multiple, All profiles, Specific group and Select Group need Premium or higher, for Generate Immediately and Order alike (403 `subscription-too-low`). One profile at a time works on every subscription. Move the account up under **Admin → Accounts → Subscription**; administrators are never refused. |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut used to cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page keeps following until the server says the run is over: after twenty attaches in a row that brought nothing it slows from one attach a second to one every 10 s, and it stops at once only when the server answers that the batch is gone (404: restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the model's type can actually take: the slots of every switched-on provider of it, added together - the built-in one's `AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY` or `AI_GEMINI_CONCURRENCY` unless **Admin → Models → Providers** sets its limit, plus each added provider's own. The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
-| Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942. Nothing the prompt reads was removed. The three choices the prompt does need - the layout and the two section switches - travel as three words of their own, and the profile's own soft skills are not sent at all, because the code lists them. |
-| The same job posting is analysed over and over | It is not any more: a posting is analysed **once, ever**, and the analysis is stored in the database (`job_analyses`) - not for six hours, not per model, per prompt, per profile, per run or per restart. A posting is recognised by its link or its text, so a preview followed by a generate, a sheet re-run, an order of the same rows, a retry and the job filter all reuse the one analysis. Editing the analysis prompt or changing the analysis model reaches only postings never seen before - see [Job analysis: once per posting](#job-analysis-once-per-posting). The only repeat is after a call that failed, which stored nothing. |
+| Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942, and with the tailoring's lists taken from the posting alone (no skill library, no duplicate copy) 4,484 for the whole of a turn's values. Nothing the prompt reads was removed. The layout and the section switches are not sent at all: they decide how the answer is drawn. The profile's own soft skills are not sent either - a tailored resume prints the posting's. |
+| The same job posting is analysed over and over | It is not any more: a posting is analysed **once, ever**, and the analysis is stored in the database (`job_analyses`) - not for six hours, not per model, per prompt, per profile, per run or per restart. A posting is recognised by its link or its text, so a preview followed by a generate, a sheet re-run, an order of the same rows, a retry and the job filter all reuse the one analysis. Editing either analysis prompt or changing the analysis model reaches only postings never seen before - see [Job analysis: once per posting](#job-analysis-once-per-posting). The only repeats are after a call that failed, which stored nothing, and the facts call asked once more when its answer names no job field. |
 | Technical Skills shows headings you do not want | Choose **Plain** under **Technical skills → Layout** in the profile's editor. The headings you assigned are kept, not deleted, so switching back to **Grouped** restores them. If the profile's template prints Grouped only (Burgundy Rule, Navy Rule), the editor moves the profile to one that prints Plain and says which. |
-| A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. With the profile on **Grouped**, pick that skill's heading from the menu beside it under **Technical skills** instead of *Work it out*; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
+| A skill is filed under the wrong heading | On an untailored resume (the editor's preview, a resume built without a posting), the shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. With the profile on **Grouped**, pick that skill's heading from the menu beside it under **Technical skills** instead of *Work it out*; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. A TAILORED resume prints the headings the model wrote for the job instead: to change one before building, edit `skillGroups` in the preview's **Manual Edits (JSON)** and press **Update Preview**. |
 | A template is missing from a profile's template picker | The picker lists only templates that print the profile's Technical Skills layout, and the hint under it says how many it left out. **Burgundy Rule and Navy Rule print Grouped only**, so a Plain profile is not offered them; an uploaded template that reads only `{{#each skillCategories}}` is Grouped only the same way. A template an administrator disabled is not listed to anybody. An administrator who knows a template prints both can say so with `PATCH /api/templates/:id` and `{ "skillsLayouts": ["categorized", "flat"] }`. |
 | A template in the picker is greyed out with *(used by ...)* | Another of your profiles uses it, and the editor offers each template to one profile of an account at a time. Pick another, or move the other profile off it first. The profile's own current template is always selectable. |
 | The profile preview says *Drawn with ...: ... has no Plain layout* (or *Grouped*), or *the template this profile names is not offered any more* | The profile's template cannot print its layout - an administrator reclassified it - or was disabled or deleted. Resumes for it fall back exactly as the preview did: the profile's own template, then `default`, then any enabled template that prints the layout. Pick a template in the editor to choose for yourself. The backend logs the fallback once, as `[templates] Profile <id> uses the flat skills layout, which template "<id>" does not offer; drawing it with "<id>" instead.` |
@@ -2777,13 +2921,18 @@ file. Export them in the shell, for the install and the server alike:
 | The page in the profile preview shakes - shrinks and grows by a few percent, many times a second - with nothing being typed (it looked like every template but one) | An older build: a loop through a scrollbar. The page was scaled to the room beside it, and where scrollbars take space (Windows and Linux Chrome, macOS set to always show them) a one-page resume just taller than that room brought a scrollbar in, was scaled down to fit beside it, let the scrollbar go, grew back, and so on every frame. At 1920x937 that was every one-page document; a template whose page ran to a second page kept its scrollbar and stood still, which is why one looked fine. The same happened in the narrow layout's **Preview** tab through the window's scrollbar, in a window just the page's height. The pane and the window now keep the scrollbar's strip whether or not it is showing, and the scale is taken as if it always were. Still shaking: reload, since the page may be from before the upgrade; a browser without `scrollbar-gutter` (Chrome before 94, Firefox before 97, Safari before 18.2) settles after one step instead of none. `backend/test/e2e/preview-vibration.js` measures it. |
 | An unticked **Soft skills** or **Strengths** box shows only *N ... kept with the profile* | That is the switch working: off hides the list and keeps it. Nothing was deleted - tick the box to see, print and edit the entries again. |
 | The **Admin → Accounts** row marked *(you)* has its role, **Disable** and **Delete** greyed out | An administrator cannot demote, disable or delete the account they are signed in with; the server refuses all three, so the page does not offer them. Another administrator can - and the last enabled administrator cannot be removed by anybody. |
-| A skill on the profile does not show in the preview | The preview draws only skills the shared skill library knows - in Plain, and in Grouped unless you assigned headings by hand - and this one came in with an uploaded or imported profile the library has never heard of. A skill added in the editor goes into the library as it is added, so remove it and add it again, or ask an administrator to add it under **Admin → Skills**. A tailored Plain resume still lists it when the posting names it. |
-| Soft Skills or Strengths do not appear on a resume, although the profile has them (or the prompt asks for them) | In order: the switch is **off** - both are off until ticked under **Soft skills** and **Strengths** in the profile's editor, and an off switch empties the section whatever the prompt or the model says; the **template has no such section** - Burgundy Rule, Navy Rule and Charcoal Sidebar have neither, Ink Ledger has no Soft Skills, and the editor says so under the switch; the DOCX of that generation leaves it out too, since the template it was generated with decides both files; or **the list is empty** - a section with nothing in it prints no heading. With Strengths on, a resume whose model wrote none uses the profile's own, so a missing Strengths section with the switch on means the profile has none either. |
-| The summary ends with *Working style: ...* | The profile's **Soft Skills** switch is off - or on, with a template that has no Soft Skills section (Burgundy Rule, Navy Rule, Charcoal Sidebar, Ink Ledger), which counts as off - so the posting's soft skills that the resume does not already mention are worked into the summary instead of a section of their own. Tick the switch and the next resume lists them in its Soft Skills section instead, without the sentence. Content tailored before this release said *Strengths include ... across changing engineering contexts.*; finalising it now rewrites that the same way. |
-| A Plain Technical Skills list is shorter than the Grouped one for the same job | By design. Plain lists the posting's skills the library knows plus your own related skills, and pads nothing. Grouped fills the library's headings out from the library for the job, as it always has. |
-| Saving a prompt under **Admin → Prompts** says *Unknown prompt variables: ...* | The text names a `[[variable]]` the feature's code never supplies - often a typo. The variables it can use are listed beside the prompt; correct the name. This used to save, and then fail every resume that used the prompt. |
-| Every resume built with one prompt fails with a `Ref:`, and the backend log under it says *Prompt "..." contains unknown variables: ...* | The stored prompt names a variable nothing supplies - written straight into the database, or saved before saves were checked. Open it under **Admin → Prompts**, where the name is reported, and correct or remove it. |
-| **Admin → Prompts** marks a prompt *Needs update* (*Not run: it does not use [[...]].*), or saving one says *Missing required prompt variables: ...* | Some variables are required: `[[jobFieldList]]` and `[[industryList]]` in the Analyze Job Description prompt, so every posting is filed under a job field and an industry from the lists, and `[[includeStrengths]]`, `[[includeSoftSkills]]` and `[[technicalSkillsLayout]]` in every Tailor Resume prompt, so the profile's section switches reach the model. A save without them is refused. A stored prompt without them - edited before the rule, or written by hand - never runs: the built-in prompt of its feature runs in its place (an administrator's edit of it when that is complete, else the shipped text), and the backend log says so once: `[prompts] The prompt "..." (...) does not use [[industryList]], which every Analyze Job Description prompt must; the built-in Analyze Job Description prompt runs instead until it is updated under Admin -> Prompts.` Add the variables where the shipped prompt (`backend/static/prompts/<feature>.json`) has them - the analysis prompt names both lists under their own headings before `[[jobLink]]` and asks for `jobField` and `industry`; the tailoring prompt's *RESUME SECTIONS* block follows `[[profileJson]]` - and save; the mark goes. |
+| A skill on the profile does not show in the preview | The preview draws only skills the shared skill library knows - in Plain, and in Grouped unless you assigned headings by hand - and this one came in with an uploaded or imported profile the library has never heard of. A skill added in the editor goes into the library as it is added, so remove it and add it again, or ask an administrator to add it under **Admin → Skills**. A tailored resume prints whatever the model wrote in its skills block, library or not. |
+| Soft Skills or Strengths do not appear on a resume, although the profile has them (or the prompt asks for them) | In order: the switch is **off** - both are off until ticked under **Soft skills** and **Strengths** in the profile's editor, and an off switch empties the section whatever the prompt or the model says; the **template has no such section** - Burgundy Rule, Navy Rule and Charcoal Sidebar have neither, Ink Ledger has no Soft Skills, and the editor says so under the switch; the DOCX of that generation leaves it out too, since the template it was generated with decides both files; or **the list is empty** - a section with nothing in it prints no heading. With Strengths on, every resume prints the profile's own strengths (the model writes none), so a missing Strengths section with the switch on means the profile has none. With Soft Skills on, a tailored resume prints the posting's soft skills - the model's last skill group - and an untailored one the profile's own. |
+| The summary ends with *Working style: ...* | Content tailored by an older release: it appended that sentence when the Soft Skills switch was off. Nothing adds a sentence to a summary now - the posting's soft skills are the last group of the skills block, in its own section while the switch is on - so a resume tailored afresh has none. A preview held from before the upgrade keeps what it says; generate it again from the posting. |
+| A resume took two model calls, and the log says `Revise pass started: N missing term(s)` | The revise pass: the first draft left some of the posting's checklist terms out of the summary and bullets, or its bullets carry fewer than five figures, so **Revise Resume Coverage** was asked - on the same model - to work them in. It is what most fresh resumes get. It never runs on a resume reused from the cache or on a preview the page sent back. `TAILOR_REVISE_PASS=off` in `.env` turns it off (every resume is then the first draft); `TAILOR_REVISE_MAX_TERMS` caps how many terms it is given. |
+| A resume is missing a term the posting asked for, and the log has no `Revise pass started` for it | The revise pass did not run, which is expected when: `TAILOR_REVISE_PASS=off`; the resume came from the tailoring cache (`Tailoring reused from the cache` - it was revised, or not, when it was first made); it was built from a preview's content sent back by the page (Generate Immediately or Order from a preview, which never revises what you looked at); or no term was missing as the code counts it - a term with a banned word or opener in it (*scalable*, *Led* ...) is never sent to the revise pass, a term the prose carries in another form (*CI/CD pipelines* for *CI/CD*) counts as present, and only the summary and bullets are read, not the skills block. A term from an industry the candidate has not worked in may also be left out on purpose by both prompts. |
+| A resume is missing a term the posting asked for, and the log says `[tailor] The revise pass failed on ..., so the resume is the first draft: ...` | The revise call failed (the seat was busy, timed out, signed out ...) and the resume was built from the first draft, as it is meant to be - a revision is never worth failing a resume over. The cause is on that log line. Nothing is cached for it, so building the same resume again asks for the revision again. A revision that runs but leaves a term out did so on purpose: the revise prompt keeps out a term naming an industry the candidate has not worked in, and a term carrying one of the banned words (*scalable*, *cross-functional* ...) is never asked for. |
+| A Plain Technical Skills list is a little shorter than the Grouped one for the same job | Only by repeats: Plain prints the model's groups as one list, and a skill it put under two headings is listed once. Nothing pads either layout from the skill library any more. |
+| A tailored resume's Technical Skills ends with a *Soft Skills* (or *Professional Skills*, *Working Style* ...) heading | That is the posting's own soft skills, which the model writes as the block's last group. It stays there while the profile's **Soft Skills** switch is off - or on, with a template that has no Soft Skills section (Burgundy Rule, Navy Rule, Charcoal Sidebar, Ink Ledger), which counts as off. Tick the switch on a template that has the section and the group moves into it. |
+| A tailored resume prints no description under a role, only its bullets | By design: the tailoring prompt tells the model to leave a role's description empty and puts everything into the bullets, and the renderer prints none - not even an empty line - for any tailored role, in the PDF and the DOCX. A profile's own descriptions still print in the editor's preview. A role also prints at most eight bullets. |
+| Saving a prompt under **Admin → Prompts** says *Unknown prompt variables: ...* | The text names a `[[variable]]` the feature's code never supplies - often a typo, or one an older version's prompt used. The variables it can use are listed beside the prompt; correct the name. The editor says so under the text as you type, and Save refuses it without sending anything. This used to save, and then fail every resume that used the prompt. |
+| A run with one prompt fails with a `Ref:`, and the backend log under it says *Prompt "..." contains unknown variables: ...* | The stored prompt is attached to no feature and names a variable it does not declare - written straight into the database, or saved before saves were checked. Open it under **Admin → Prompts**, where the name is reported, and correct or remove it. (A feature's prompt in that state never runs - it is marked *Needs update*, below.) |
+| **Admin → Prompts** marks a prompt *Needs update* (*Not run: it does not use [[...]].*, *Not run: it uses [[...]], which this version does not supply.*, or *Not run: it dates from an older version of this prompt.*), or saving one says *Missing required prompt variables: ...* | Some variables are required: `[[jobDescription]]` in the Analyze Job Description and Job Facts (Filter) prompts, which cannot read a posting they are never shown, `[[profileJson]]` in the Generate Cover Letter prompt, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in every Tailor Resume prompt, and `[[draftJson]]` and `[[missingTermsJson]]` in the Revise Resume Coverage prompt. A save without them is refused. A stored prompt without them, or naming a variable this version no longer supplies - an edit saved for an older version's prompt, such as an analysis edit using `[[jobFieldList]]` and `[[industryList]]`, a job filter edit using `[[jobContent]]`, or a tailoring edit or variant using `[[includeStrengths]]`, `[[includeSoftSkills]]`, `[[technicalSkillsLayout]]` or `[[hardSkillsJson]]` - never runs: the built-in prompt of its feature runs in its place (an administrator's edit of it when that is usable, else the shipped text), and the backend log says so once: `[prompts] The prompt "..." (...) uses [[jobFieldList]] and [[industryList]], which this version does not supply; the built-in Analyze Job Description prompt runs instead until it is updated under Admin -> Prompts.` (for a missing one, *does not use [[...]], which every ... prompt must*). An edit of the Analyze Job Description, Job Facts (Filter) or Tailor Resume prompts - or a tailoring variant - saved before this release is marked too, whatever variables it names, because this release changed what those prompts are given and asked for, and an older analysis or job filter edit can name only `[[jobDescription]]`, as the new texts do: its date is the tell (*... dates from an older version of the Analyze Job Description prompt; the built-in Analyze Job Description prompt runs instead ...*). Start from the shipped prompt (`backend/static/prompts/<feature>.json`), keep your changes that still apply, and save; the mark goes - for a dated edit, saving it again as it is makes it run, so compare it with the shipped text first. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
 | A model is missing from the model menus | The menus list only models that can run right now. Under **Admin → Models**, it is either *Disabled*, on a provider switched off under Admin → Settings (*Provider off*) - or on a type whose every provider is switched off under **Admin → Models → Providers**, which reads the same - or on a seat locked in this installation (*🔒 Locked*, with the reason). Nothing is locked by default, so a lock means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart. |
@@ -2887,9 +3036,12 @@ each of the ten ways a posting used to be analysed again - the cache's window,
 three profiles on three models, a restart mid-order, a 150-row order, a prompt
 edit, a profile's own analysis prompt, Generate pressed twice, two requests at
 once, a retry, the job filter then a build - runs through the real routes and
-queue against a stub seat that must see exactly one analysis call. The store,
-its indexes and query plans are in `jobAnalysisStore.test.js`, the gate as the
-only caller of the analysis prompt in `analysisGate.test.js`, and the job
+queue against a stub seat that must see exactly one analysis call and one
+facts call. The store, its indexes and query plans are in
+`jobAnalysisStore.test.js`, the facts call - its answer, a missing job field
+asked once more, either call failing stopping the other - in
+`jobFacts.test.js`, the gate as the only caller of the two prompts in
+`analysisGate.test.js`, and the job
 sheet's six columns - sheet-first builds, write-back, the protection, the
 backoff - in `analysisSheets.test.js`.
 
@@ -2926,12 +3078,17 @@ with every key still stripped, holds and health per provider, the registry and
 the pool) and `aiProviders.test.js` (the `.env` defaults and an administrator's
 override, every path check on an add and an edit against the app's real
 directories, and the routes over HTTP). The tailoring cache is in
-`tailorCache.test.js`: a second identical build makes no tailoring call and is
-charged again, a one-character profile change makes one, every caller reuses
-(the queue, `/resume/preview`, `/resume/generate`, cover letters included),
-another template or a library skill the posting names is a miss, an answer that
-does not parse or that a fallback model wrote is never kept, the key, the
-one-seek lookup and the prune.
+`tailorCache.test.js`: a second identical build makes no tailoring or revise
+call and is charged again, a one-character profile change makes one, every
+caller reuses (the queue, `/resume/preview`, `/resume/generate`, cover letters
+included), another template is a miss and a skill added to the library is not,
+an answer that does not parse or that a fallback model wrote is never kept, the
+key (the settings out of it, the revise prompt in), the one-seek lookup and the
+prune. The tailoring prompt's promises - its values, the five a posting leans
+on, the seeded draws, the composed title, the restored roles, the eight-bullet
+cap, the dash backstop, idempotence - are `tailorContract.test.js`; the revise
+pass - when it runs, what it is told, the merge, a failure, an abort, the
+cache, the model it runs on - `reviseCoverage.test.js`.
 
 The three seats are covered by `backend/test/claudeCli.test.js`,
 `codexCli.test.js` and `geminiCli.test.js`, which replay event streams from the
@@ -3000,7 +3157,9 @@ by crypto).
 
 The frontend has no test runner, so its decisions that need no browser are
 small modules the backend suite transpiles and tests
-(`frontendHelpers.test.js`, `frontendEditorHelpers.test.js`). What does need
+(`frontendHelpers.test.js`, `frontendEditorHelpers.test.js`, and
+`frontendTailoring.test.js` - the builder's *Manual Edits* box run through the
+server's own parse). What does need
 one is in `backend/test/e2e/`, run by hand against servers that are already up:
 `shell.js` walks every page as each role, `preview-vibration.js` opens the
 profile editor with real scrollbars (puppeteer hides them by default) and

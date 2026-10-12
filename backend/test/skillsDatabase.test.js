@@ -36,6 +36,9 @@ test('skills database supports CRUD and duplicate protection', () => {
   });
 
   assert.deepEqual(skillsDb.readSkills('hard'), ['TypeScript', 'React']);
+  // A record keeps its priority, but nothing reads it to order a skills block
+  // any more: the reader that served the library ordering is gone with it.
+  assert.equal('readHardSkillPriorityMap' in skillsDb, false);
   assert.deepEqual(skillsDb.readHardSkillRecords()[0], {
     skill: 'TypeScript',
     priority: 1,

@@ -181,24 +181,26 @@ export default function JobFilterPage() {
 
           {/*
             Where the analysis is decided is for the person who can change it.
-            The filter has no prompt or model of its own any more: a row is
-            judged by rules in code on the facts its posting's one analysis
-            read, and a posting analysed by a build, or by an earlier run of
-            this filter, is not analysed again.
+            The filter makes no model call of its own: a row is judged by rules
+            in code on the facts its posting's one analysis read - the answer
+            of that analysis's Job Facts (Filter) call - and a posting analysed
+            by a build, or by an earlier run of this filter, is not analysed
+            again.
           */}
           {isAdmin && (
             <Notice tone="info">
-              Each posting is judged on its one job analysis: made by the{' '}
-              <span className="font-semibold">Analyze Job Description</span> prompt on the analysis model, once, the
-              first time anything needs it. Choose the model under{' '}
+              Each posting is judged on the facts of its one job analysis - job type, onsite interview, company
+              category, seniority, clearance, salary, region and state - read by the <span className="font-semibold">Job Facts (Filter)</span> prompt beside{' '}
+              <span className="font-semibold">Analyze Job Description</span>, on the analysis model, once, the first
+              time anything needs it. Choose the model under{' '}
               <Link href="/admin/settings" className="font-semibold underline underline-offset-2">
                 Settings &gt; General
               </Link>{' '}
-              and edit the prompt in{' '}
+              and edit the prompts in{' '}
               <Link href="/admin/prompts" className="font-semibold underline underline-offset-2">
                 Admin Prompts
               </Link>
-              ; either change applies to postings not analysed yet.
+              ; any change applies to postings not analysed yet.
             </Notice>
           )}
 

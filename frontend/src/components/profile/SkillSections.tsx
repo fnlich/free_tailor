@@ -32,11 +32,11 @@ import css from './profileEditor.module.css';
 const LAYOUT_CHOICES: Array<{ value: TechnicalSkillsLayout; description: string }> = [
   {
     value: 'categorized',
-    description: 'Skills under headings - Languages, Cloud and Infrastructure, and so on.',
+    description: 'Skills under headings. A tailored resume prints the groups written for the job, as written.',
   },
   {
     value: 'flat',
-    description: 'One list of skill names, with no headings over it.',
+    description: 'One list of skill names with no headings over it - a tailored resume\'s groups run together, repeats removed.',
   },
 ];
 
@@ -107,7 +107,7 @@ export function TechnicalSkillsSection({
   return (
     <Section
       title="Technical skills"
-      description="The skills the profile claims. Tailoring picks the ones each job asks for."
+      description="The skills the profile claims, in your order - what an untailored resume prints. A tailored resume prints the skill groups written for each job, from these and the posting."
     >
       <fieldset>
         <legend className="tl-label">Layout</legend>
@@ -155,7 +155,7 @@ export function TechnicalSkillsSection({
         htmlFor="profile-hard-skill-input"
         hint={
           grouped
-            ? 'A skill left on "Work it out" is filed by the shared skill library. Pick a heading when the library would put it somewhere else - it cannot know that your Vault is infrastructure rather than a library.'
+            ? 'The headings an untailored resume prints. A skill left on "Work it out" is filed by the shared skill library; pick a heading when the library would put it somewhere else - it cannot know that your Vault is infrastructure rather than a library.'
             : hasHeadings
               ? 'Plain prints no headings. The ones you assigned are kept, and come back if you switch to Grouped.'
               : undefined
@@ -222,12 +222,16 @@ function KeptLine({ note }: { note: string | null }) {
   );
 }
 
-/** The note under a section switch when the template has nowhere to print it. */
-function capabilityNote(on: boolean, supported: boolean | null, section: string, templateName: string) {
+/**
+ * The note under a section switch when the template has nowhere to print it:
+ * the switch then counts as off for this template, whatever the box says
+ * (`profileForTemplate` on the server) - `whenOff` is what that means.
+ */
+function capabilityNote(on: boolean, supported: boolean | null, section: string, templateName: string, whenOff: string) {
   if (!on || supported !== false) return null;
   return (
     <Notice tone="warn" role="status">
-      {templateName} has no {section} section; ticking it changes nothing here. Another template prints it.
+      {templateName} has no {section} section, so it prints as if this were off: {whenOff} Another template prints it.
     </Notice>
   );
 }
@@ -272,10 +276,16 @@ export function SoftSkillsSection({
         label="Print a Soft Skills section"
       >
         {on
-          ? 'Your soft skills print first, and tailoring adds the ones a job asks for.'
-          : 'Off: no Soft Skills section is printed, and tailoring works the soft skills a job asks for into the summary instead.'}
+          ? 'A tailored resume prints the soft skills the job asks for in this section; an untailored one, and the preview here, print your own below.'
+          : 'Off: no Soft Skills section is printed. A tailored resume prints the soft skills the job asks for as the last group of Technical Skills.'}
       </SectionSwitch>
-      {capabilityNote(on, templateSupports, 'Soft Skills', templateName)}
+      {capabilityNote(
+        on,
+        templateSupports,
+        'Soft Skills',
+        templateName,
+        "a tailored resume's soft skills are the last group of its Technical Skills."
+      )}
       {!on ? (
         <KeptLine note={keptNote(keptCount(draft, 'softSkills'), 'softSkills')} />
       ) : (
@@ -358,10 +368,10 @@ export function StrengthsSection({
         label="Print a Strengths section"
       >
         {on
-          ? 'Tailoring writes two to four strengths for each job, starting from yours.'
-          : 'Off: no Strengths section is printed or written, and tailoring is not given them.'}
+          ? 'Your strengths print as you write them here, tailored or not. Tailoring reads them, and never rewrites them.'
+          : 'Off: no Strengths section is printed, and tailoring is not given them.'}
       </SectionSwitch>
-      {capabilityNote(on, templateSupports, 'Strengths', templateName)}
+      {capabilityNote(on, templateSupports, 'Strengths', templateName, 'no Strengths section is printed.')}
       {!on && <KeptLine note={keptNote(keptCount(draft, 'strengths'), 'strengths')} />}
       {on && draft.strengths.map((row, index) => (
         <Card

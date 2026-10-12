@@ -1440,8 +1440,6 @@ export interface Certification {
   credentialId?: string;
 }
 
-export type HardSkillOrdering = 'library' | 'job-priority';
-
 /**
  * One heading in the Technical Skills block, and the skills under it.
  *
@@ -1451,6 +1449,16 @@ export type HardSkillOrdering = 'library' | 'job-priority';
 export interface SkillCategoryGroup {
   category: string;
   skills: string[];
+}
+
+/**
+ * One group of a TAILORED resume's Technical Skills block, as the model wrote
+ * it (backend types/template.ts `SkillGroup`). `soft` marks the posting's soft
+ * skills - the last group, under the heading drawn for the resume - which the
+ * Soft Skills section prints instead while that switch is on.
+ */
+export interface SkillGroup extends SkillCategoryGroup {
+  soft?: true;
 }
 
 /**
@@ -1507,11 +1515,9 @@ export const HARD_SKILL_CATEGORIES: HardSkillCategory[] = [
 
 export interface ProfileSettings {
   resumePromptId?: string;
-  coverLetterPromptId?: string;
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
-  hardSkillOrdering?: HardSkillOrdering;
   /** Categorized ("Grouped") or flat ("Plain") Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**
@@ -1658,7 +1664,9 @@ export interface Template {
 export type PromptResponseFormat = 'json' | 'text';
 export type PromptFeatureKey =
   | 'analyze-job-description'
+  | 'filter-google-sheet-job'
   | 'tailor-resume'
+  | 'revise-resume-coverage'
   | 'generate-cover-letter'
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume';
@@ -1668,10 +1676,10 @@ export interface PromptVariableDefinition {
   description?: string;
   sampleValue?: string;
   /**
-   * True on a variable every prompt of its feature must use - the analysis
-   * prompt's job field and industry lists, the tailoring prompt's three
-   * section words. The server refuses a save without them (lib/promptRequirements.ts
-   * says so first, in its words).
+   * True on a variable every prompt of its feature must use - the posting for
+   * the analysis and its facts call, the profile for the cover letter, the
+   * tailoring prompt's own set. The server refuses a save without them
+   * (lib/promptRequirements.ts says so first, in its words).
    */
   required?: true;
 }
@@ -1703,11 +1711,20 @@ export interface PromptSummary {
   createdAt: string;
   updatedAt: string;
   /**
-   * Set on a SAVED record that does not use one of its feature's required
-   * variables (`validation.missingVariables` names them). It is never run:
-   * the feature's built-in prompt runs in its place until it is updated here.
+   * Set on a SAVED feature record that does not use one of its feature's
+   * required variables (`validation.missingVariables` names them), uses one
+   * the server no longer supplies (`validation.unknownVariables`), or was
+   * saved before its feature's prompt contract changed
+   * (`savedForOlderVersion`). It is never run: the feature's built-in prompt
+   * runs in its place until it is updated here.
    */
   needsUpdate?: true;
+  /**
+   * Set, beside `needsUpdate`, on a saved feature record older than its
+   * feature's current prompt contract - the server's verdict, by the date it
+   * was saved; its variables may all be fine. Saving it again clears it.
+   */
+  savedForOlderVersion?: true;
 }
 
 export interface PromptRecord extends PromptSummary {
@@ -1732,11 +1749,12 @@ export interface JobAnalysis {
   };
   skills: {
     technical: string[];
-    required: string[];
-    preferred: string[];
     tools: string[];
     soft: string[];
-    technologies: string[];
+    /** Only on an analysis made before the current analysis prompt; kept as it was stored. */
+    required?: string[];
+    preferred?: string[];
+    technologies?: string[];
   };
   technologies: string[];
   protocols: string[];
@@ -1744,7 +1762,8 @@ export interface JobAnalysis {
   architecturePatterns: string[];
   responsibilities: string[];
   domainKnowledge: string[];
-  softSkills: string[];
+  /** Only on an analysis made before the current analysis prompt. */
+  softSkills?: string[];
   keywords: {
     actionVerbs: string[];
     buzzwords: string[];
@@ -1758,7 +1777,10 @@ export interface JobAnalysis {
   jobField?: string;
   /** What the posting states it pays; null when it states nothing. Never inferred. */
   salary?: JobSalary | null;
-  /** The facts the Job Filter judges a posting on, from the same one analysis. */
+  /**
+   * The facts the Job Filter judges a posting on: the analysis's second call,
+   * the Job Facts (Filter) prompt, made with it once.
+   */
   filter?: JobFilterFacts;
   sourceJobDescription?: string;
 }
@@ -1787,7 +1809,9 @@ export interface TailoredExperience {
   startDate: string;
   endDate: string;
   location: string;
+  /** Always '' on a tailored role: a role opens straight into its bullets. */
   description: string;
+  /** At most eight - the server keeps the eight that carry the most checklist terms. */
   achievements: string[];
 }
 
@@ -1796,18 +1820,48 @@ export interface TailoredStrength {
   description: string;
 }
 
+/**
+ * A tailored resume as the server answers it (backend types/template.ts).
+ * `skillGroups` is the Technical Skills block as the model wrote it; every
+ * other skill list here is worked out from it and the profile, again, each
+ * time the content is sent back - which is why the builder's Manual Edits box
+ * holds only the editable part (`TailoredContentEdit`).
+ */
 export interface TailoredContent {
+  /** The candidate's headline with the kind of role the posting is for, as the server composed it. */
   title: string;
   summary: string;
   experience: TailoredExperience[];
+  skillGroups?: SkillGroup[];
+  /** The heading the soft-skill group was asked for under, drawn per resume. */
+  softSkillGroupHeading?: string;
   skills: string[];
   hardSkills: string[];
   softSkills: string[];
+  /** The profile's own, while its Strengths switch is on. */
   strengths: TailoredStrength[];
-  unconfirmedHardSkills?: string[];
-  unconfirmedSoftSkills?: string[];
   coverLetter?: string;
 }
+
+/**
+ * The part of a tailored resume a person edits and sends back: what the
+ * builder's Manual Edits box holds (lib/tailoredDraft.ts). The server works
+ * everything else out from it and the profile - the title from the profile's
+ * headline when it has one, the skill lists, Soft Skills and Strengths. A
+ * role's company, title and dates are there only to say which role its
+ * bullets are (the dates tell two stints under one company and title apart);
+ * they, and its place, print as the profile has them.
+ */
+export interface TailoredContentEdit {
+  title: string;
+  summary: string;
+  experience: Array<Pick<TailoredExperience, 'title' | 'company' | 'startDate' | 'endDate' | 'achievements'>>;
+  skillGroups: SkillGroup[];
+  coverLetter?: string;
+}
+
+/** Tailored content a page holds and may send back: the server's whole answer, or a person's edit of it. */
+export type HeldTailoredContent = TailoredContent | TailoredContentEdit;
 
 // Profiles API
 export const profilesApi = {
@@ -2179,7 +2233,7 @@ export const resumeApi = {
     jobLink?: string;
     /** The stored analysis to build on; see `generate`. */
     analysisId?: string;
-    tailoredContent?: TailoredContent;
+    tailoredContent?: HeldTailoredContent;
     model?: string;
   }) =>
     apiFetch<{
@@ -2214,8 +2268,6 @@ export const resumeApi = {
       }>;
       tailored: boolean;
       analysisId?: string;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
     }>('/resume/preview-all', {
       method: 'POST',
       body: JSON.stringify(data),

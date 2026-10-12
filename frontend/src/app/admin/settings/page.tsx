@@ -908,7 +908,7 @@ function AdminSettingsPageBody() {
 
       <Section
         title="Job Analysis"
-        description="Each job posting is analysed once, by this model, and never again: every profile, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way."
+        description="Each job posting is analysed once, by this model, and never again - its keywords by the Analyze Job Description prompt and its facts, job field included, by the Job Facts (Filter) prompt: every profile, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way."
       >
         <Field
           label="Analysis model"

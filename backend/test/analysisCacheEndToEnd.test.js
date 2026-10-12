@@ -4,7 +4,7 @@ const test = require('node:test');
 // Every seat is a stub here. Set before any dist module loads.
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
 
-const { analysisAnswer, countingSeats, freshInstall, posting } = require('./analysisHarness');
+const { countingSeats, freshInstall, posting } = require('./analysisHarness');
 
 /**
  * A posting is analysed once, EVER - not once per window of a cache.
@@ -48,6 +48,7 @@ test('the same posting is analysed once, after "six hours" and after a hundred o
     Date.now = realNow;
   }
   assert.equal(seats.analyses().length, 102, 'the first posting was not analysed a second time');
+  assert.equal(seats.facts().length, 102, 'nor its facts asked for again');
 });
 
 test('whitespace does not make a new posting, and each caller gets its own object', async () => {
@@ -88,6 +89,19 @@ test('an edited analysis prompt reaches only postings never analysed before (row
   await gate.getOrCreateAnalysis({ jd: posting(4) });
   assert.equal(seats.analyses().length, 2);
   assert.match(seats.analyses()[1].stableSystem, /^An edited prompt\./, 'a new posting is read with the edited prompt');
+
+  // The facts prompt the same way: edited, it reaches only a new posting -
+  // after the code's job field list, which no edit touches.
+  const facts = await promptService.getPromptById('filter-google-sheet-job');
+  await promptService.updatePrompt('filter-google-sheet-job', { content: `Edited facts.\n${facts.content}` });
+  await gate.getOrCreateAnalysis({ jd: posting(3) });
+  assert.equal(seats.facts().length, 2, 'posting 3 is stored: no facts call');
+  await gate.getOrCreateAnalysis({ jd: posting(9) });
+  assert.equal(seats.facts().length, 3);
+  const turn = seats.facts()[2].stableSystem;
+  assert.match(turn, /^ONE MORE FIELD\./, 'the code\'s job field text first');
+  assert.ok(turn.indexOf('Edited facts.') > turn.indexOf('JOB FIELDS (id: label):'), 'then the edited prompt');
+  assert.match(seats.facts()[2].userBody, /Also return "job_field"/, 'and the reminder after the posting');
 });
 
 test('the analysis model decides - not the prompt record, not the model a resume is charged at', async () => {
@@ -99,22 +113,38 @@ test('the analysis model decides - not the prompt record, not the model a resume
     modelProvider: 'gemini-cli',
     modelName: 'auto',
   });
-  // Unset: the app default model.
-  await gate.getOrCreateAnalysis({ jd: posting(5) });
-  assert.deepEqual([seats.analyses()[0].provider, seats.analyses()[0].modelName], ['claude-cli', 'sonnet']);
+  // And on the facts prompt too.
+  const facts = await promptService.getPromptById('filter-google-sheet-job');
+  await promptService.updatePrompt('filter-google-sheet-job', {
+    content: facts.content,
+    modelProvider: 'gemini-cli',
+    modelName: 'auto',
+  });
+  const where = (call) => [call.provider, call.modelName];
+  // Unset: the app default model, for both calls.
+  const first = await gate.getOrCreateAnalysis({ jd: posting(5) });
+  assert.deepEqual(where(seats.analyses()[0]), ['claude-cli', 'sonnet']);
+  assert.deepEqual(where(seats.facts()[0]), ['claude-cli', 'sonnet']);
 
-  // Set: that model, recorded on the row.
+  // Set: that model, for both calls, recorded on the row.
   await config.updateAppSettings({ analysisModelId: 'codex-cli-default' });
   const row = await gate.getOrCreateAnalysis({ jd: posting(6) });
-  assert.deepEqual([seats.analyses()[1].provider, seats.analyses()[1].modelName], ['codex-cli', 'default']);
+  assert.deepEqual(where(seats.analyses()[1]), ['codex-cli', 'default']);
+  assert.deepEqual(where(seats.facts()[1]), ['codex-cli', 'default']);
   assert.equal(row.modelId, 'codex-cli-default');
+  // The audit hash covers both prompts' texts and the code's job field text.
   assert.match(row.promptHash, /^[0-9a-f]{64}$/);
+  assert.equal(row.promptHash, first.promptHash, 'the same texts, the same hash');
+  await promptService.updatePrompt('filter-google-sheet-job', { content: `Changed.\n${facts.content}` });
+  const changed = await gate.getOrCreateAnalysis({ jd: posting(10) });
+  assert.notEqual(changed.promptHash, row.promptHash, 'an edit of the facts prompt changes it');
 
   // A chosen model that stops running falls back to the default rather than
   // failing every analysis.
   await config.updateAIModel('codex-cli-default', { enabled: false });
   await gate.getOrCreateAnalysis({ jd: posting(7) });
-  assert.equal(seats.analyses()[2].provider, 'claude-cli');
+  assert.equal(seats.analyses().at(-1).provider, 'claude-cli');
+  assert.equal(seats.facts().at(-1).provider, 'claude-cli');
 
   // A full-form save re-sending the stored id is not refused for it...
   await config.updateAppSettings({ analysisModelId: 'codex-cli-default', defaultModelId: 'claude-cli-sonnet' });
@@ -139,18 +169,29 @@ test('the analysis model is the administrator\'s: in the admin payload, never in
 });
 
 test('a model answer outside the closed list is unclassified; a salary is only what it states', async () => {
+  // The facts call's answer as the Job Facts (Filter) prompt writes it: top
+  // level, snake_case, with the code's job_field and the confidence
+  // companions the prompt allows.
   const { seats } = setUp('normalised', {
-    answer: () =>
-      analysisAnswer({
-        jobField: 'data-structures-and-algorithms',
-        salary: { min: '140,000', max: 120000, currency: 'usd', period: 'yearly', raw: null },
-        filter: { jobType: 'Remote', clearanceRequired: 'maybe', region: 'US', usState: 'CA' },
+    factsAnswer: () =>
+      JSON.stringify({
+        job_field: 'data-structures-and-algorithms',
+        salary: { min: '140,000', max: 120000, period: 'yearly', raw: null, _confidence: 'low' },
+        job_type: 'Remote',
+        job_type_confidence: 'low',
+        clearance_required: 'maybe',
+        region: 'US',
+        us_state: 'CA',
+        seniority: 'VP',
+        _confidence: 'low',
       }),
   });
   const row = await gate.getOrCreateAnalysis({ jd: posting(8) });
   assert.equal(seats.analyses().length, 1);
+  assert.equal(seats.facts().length, 1);
   assert.equal(row.jobFieldId, 'unclassified', 'area 9 is not offered, so it is not a field');
-  assert.deepEqual(row.analysis.salary, { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null });
+  // No currency: the prompt asks for none, and one is never inferred.
+  assert.deepEqual(row.analysis.salary, { min: 120000, max: 140000, currency: null, period: 'annual', raw: null });
   assert.deepEqual(row.analysis.filter, {
     jobType: 'remote',
     onsiteInterview: 'not_specified',
@@ -160,7 +201,9 @@ test('a model answer outside the closed list is unclassified; a salary is only w
     clearanceRequired: 'maybe',
     region: 'us',
     usState: '',
+    seniority: 'vp',
   });
+  assert.equal('industry' in row.analysis, false, 'a new analysis carries no industry: it is derived');
   const stored = repository.getJobAnalysisById(row.id);
   assert.equal(stored.jobFieldId, 'unclassified');
 });

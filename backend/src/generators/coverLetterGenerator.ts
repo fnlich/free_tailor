@@ -22,13 +22,29 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * The letter's paragraphs, each as one line of text.
+ *
+ * A blank line separates paragraphs when the text has one; then a single
+ * line break inside a paragraph is only a wrap, and joins with a space. A
+ * letter with NO blank line - three or four paragraphs a model separated with
+ * single newlines - is split on every line break instead: joining those
+ * printed the whole letter as one paragraph.
+ */
+export function splitCoverLetterParagraphs(content: string): string[] {
+  const trimmed = content.trim();
+  if (!trimmed) return [];
+  const separator = /\n\s*\n/.test(trimmed) ? /\n\s*\n/ : /\r?\n/;
+  return trimmed
+    .split(separator)
+    .map((paragraph) => paragraph.trim().replace(/\s*\r?\n\s*/g, ' '))
+    .filter(Boolean);
+}
+
 /** Convert plain text content to HTML paragraphs */
 function contentToHtmlParagraphs(content: string): string {
-  const trimmed = content.trim();
-  if (!trimmed) return '';
-  const paragraphs = trimmed.split(/\n\s*\n/).filter((p) => p.trim());
-  return paragraphs
-    .map((p) => `<p style="margin: 0 0 12pt 0; line-height: 1.5;">${esc(p.trim().replace(/\n/g, ' '))}</p>`)
+  return splitCoverLetterParagraphs(content)
+    .map((p) => `<p style="margin: 0 0 12pt 0; line-height: 1.5;">${esc(p)}</p>`)
     .join('\n  ');
 }
 

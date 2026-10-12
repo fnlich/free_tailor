@@ -603,14 +603,14 @@ export function readSkills(type: SkillType): string[] {
     : store.soft;
 }
 
+/**
+ * Every hard skill with its metadata, as copies. No render or tailoring path
+ * reads it - they go through `readHardSkillIndex` - but it is the store's one
+ * whole read, which test/skillsDatabase.test.js checks a record's priority
+ * and category through. Nothing orders a skills block by `priority` any more.
+ */
 export function readHardSkillRecords(): HardSkillRecord[] {
   return readStore().hard.map((item) => ({ ...item }));
-}
-
-export function readHardSkillPriorityMap(): Map<string, number> {
-  return new Map(
-    readStore().hard.map((item) => [normalizeSkillValue(item.skill), item.priority] as const)
-  );
 }
 
 export function addSkill(type: SkillType, skill: string, metadata: HardSkillMetadata = {}): AddSkillResult {

@@ -91,11 +91,12 @@ export type AssembledPrompt = {
 
 /**
  * A segment that belongs to the stable part: literal prompt text, or a
- * variable whose value the CODE fixes and is the same on every call - the
- * analysis prompt's list of job fields (`STABLE_PROMPT_VARIABLES`). Such a
- * variable is a variable so there is one copy of the list, not because it
- * varies; keeping it in the system part is what lets a CLI's prompt cache
- * reuse it from one posting to the next.
+ * variable whose value the CODE fixes and is the same on every call
+ * (`STABLE_PROMPT_VARIABLES` - none today; the job field list the analysis
+ * prompt once carried this way is code-owned text on the facts call now,
+ * `systemPreamble`). Such a variable is a variable so there is one copy of
+ * its text, not because it varies; keeping it in the system part is what
+ * lets a CLI's prompt cache reuse it from one call to the next.
  */
 function isStableSegment(segment: RenderedPromptSegment): boolean {
   return !segment.variableName || STABLE_PROMPT_VARIABLES.has(segment.variableName);

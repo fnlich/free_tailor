@@ -318,7 +318,10 @@ test('the table: frontend entries are documentation, with no backend reader', ()
 });
 
 test('the table: no secret is in it, since the startup line prints every value', () => {
+  // TAILOR_REVISE_PASS is the revise PASS - a second model call - not a password.
+  const notSecrets = new Set(['TAILOR_REVISE_PASS']);
   for (const { name } of op.OPERATIONAL_VARIABLES) {
+    if (notSecrets.has(name)) continue;
     assert.doesNotMatch(name, /KEY|SECRET|TOKEN|PASS/, name);
   }
 });

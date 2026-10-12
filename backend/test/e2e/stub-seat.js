@@ -30,30 +30,48 @@ const ai = require(path.join(DIST, 'services', 'ai', 'index'));
 
 const DELAY = Number(process.env.E2E_STUB_DELAY_MS || 2500);
 
-// With the job field, salary and filter facts the analysis prompt asks for,
-// so a page that shows them (the builder's "Analysed as", the previews) has
-// something to show.
+// An analysis is two calls (services/jobAnalysis/gate.ts). The analysis
+// prompt answers the posting's keywords...
 const ANALYSIS = JSON.stringify({
   jobMeta: { title: 'Senior Engineer', seniority: 'senior', industry: 'SaaS', department: 'Platform' },
   skills: { technical: ['TypeScript', 'Docker'], tools: [], soft: ['Adaptable'] },
   responsibilities: ['container build pipeline delivery'],
   domainKnowledge: [],
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
-  jobField: 'backend',
-  salary: { min: 120000, max: 140000, currency: 'USD', period: 'annual', raw: null },
-  filter: {
-    jobType: 'remote',
-    onsiteInterview: 'not_specified',
-    companyCategory: 'saas',
-    clearanceRequired: 'none',
-    region: 'us',
-    usState: null,
-  },
 });
 
+// ...and the Job Facts (Filter) prompt its facts, top-level snake_case, plus
+// the job field the code asks for - so a page that shows them (the
+// builder's "Analysed as", the previews, a reporter's run) has something to
+// show: a remote Backend job at a SaaS company (Technology), no clearance.
+// No currency: that prompt asks for none.
+const FACTS = JSON.stringify({
+  job_type: 'remote',
+  onsite_interview: 'not_specified',
+  company_category: 'saas',
+  seniority: 'senior',
+  clearance_required: 'none',
+  salary: { min: 120000, max: 140000, period: 'annual', raw: null },
+  region: 'us',
+  us_state: null,
+  job_field: 'backend',
+});
+
+const ANSWERS = {
+  'analyze-job-description': ANALYSIS,
+  'filter-google-sheet-job': FACTS,
+  'generate-cover-letter': 'Dear team, I build things.',
+  // The revise pass (the tailoring's second call): no change.
+  'revise-resume-coverage': '{}',
+};
+
+// The tailoring, in the shape the shipped prompt asks for: no description, the
+// skills block in groups with the posting's soft skills last. Its summary
+// carries every term of the analysis above, so a profile whose role this is
+// gets no revise pass - the run takes the calls it always took.
 const TAILORED = JSON.stringify({
   title: 'Senior Engineer',
-  summary: 'Engineer building reliable services.',
+  summary: 'Adaptable engineer building reliable TypeScript services shipped with Docker.',
   experience: [
     {
       title: 'Engineer',
@@ -61,9 +79,14 @@ const TAILORED = JSON.stringify({
       startDate: '01/2020',
       endDate: 'Present',
       location: 'Remote',
-      description: 'Built product services.',
+      description: '',
       achievements: ['Cut build time by 37% by caching container layers.'],
     },
+  ],
+  skillGroups: [
+    { category: 'Languages', skills: ['TypeScript', 'JavaScript'] },
+    { category: 'Cloud & Infrastructure', skills: ['Docker', 'AWS'] },
+    { category: 'Soft Skills', skills: ['Adaptable', 'Communication'] },
   ],
   coverLetter: 'I build things.',
 });
@@ -108,12 +131,10 @@ ai.registerAdapter('claude-cli', () => ({
       }, DELAY);
       request.signal?.addEventListener('abort', onAbort, { once: true });
     });
-    const text =
-      request.callSite === 'tailor-resume'
-        ? TAILORED
-        : request.callSite === 'generate-cover-letter'
-          ? 'Dear team, I build things.'
-          : ANALYSIS;
+    // Answered by call site; one this seat does not know fails loudly, so a
+    // new model call is never answered with another prompt's text unnoticed.
+    const text = request.callSite === 'tailor-resume' ? TAILORED : ANSWERS[request.callSite];
+    if (text === undefined) throw new Error(`[e2e stub] no answer for call site "${request.callSite}"`);
     return { text, resolvedModel: request.modelName, providerId: 'claude-cli', droppedParams: [], latencyMs: DELAY };
   },
 }));

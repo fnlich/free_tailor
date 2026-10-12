@@ -56,11 +56,16 @@ test('the flat layout does not pad the list with skills the profile never claime
   }
 });
 
-test('the categorized layout is unchanged, and does pad', () => {
+test('the categorized layout puts each skill under its library heading, and adds none', () => {
+  // It used to fill an inferred block out to five headings of five from the
+  // library. Nothing pads a block now, on any path.
   const data = prepareResumeRenderData(profile());
   assert.ok(data.skillCategories.length > 1);
   assert.equal(data.skillCategories[0].category, 'Languages');
   assert.match(data.hardSkills[0], /^Languages: /);
+  const claimed = profile().skills.map((skill) => skill.toLowerCase()).sort();
+  const shown = data.skillCategories.flatMap((group) => group.skills).map((skill) => skill.toLowerCase()).sort();
+  assert.deepEqual(shown, claimed);
 });
 
 test("a profile's own grouping beats the library's guess", () => {
@@ -80,6 +85,31 @@ test("a profile's own grouping beats the library's guess", () => {
   );
   const placed = authored.skillCategories.find((group) => group.skills.includes('Vault'));
   assert.equal(placed.category, 'Cloud and Infrastructure');
+});
+
+test("a tailored resume's own skill groups beat the profile's grouping", () => {
+  // The model writes the block for the posting; the author's headings decide
+  // an untailored render only.
+  const authored = profile({ skillCategories: [{ category: 'Languages', skills: ['C#', 'Python', 'C'] }] });
+  const data = prepareResumeRenderData(authored, {
+    title: 'Engineer',
+    summary: 'S',
+    experience: [],
+    skills: [],
+    hardSkills: [],
+    softSkills: [],
+    unconfirmedSoftSkills: [],
+    unconfirmedHardSkills: [],
+    strengths: [],
+    skillGroups: [
+      { category: 'Back End', skills: ['Python', 'Go'] },
+      { category: 'Security', skills: ['Vault'] },
+    ],
+  });
+  assert.deepEqual(data.skillCategories, [
+    { category: 'Back End', skills: ['Python', 'Go'] },
+    { category: 'Security', skills: ['Vault'] },
+  ]);
 });
 
 test('a skill the author never placed still reaches the resume', () => {

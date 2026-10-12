@@ -841,6 +841,9 @@ test("a queued resume's model calls go to the provider whose lane it holds, not 
   // to list order - and the added provider's lane slot would buy nothing.
   const tailoredBy = answered.filter((call) => call.callSite === 'tailor-resume').map((call) => call.by).sort();
   assert.deepEqual(tailoredBy, lanes, 'each tailored on the provider it ran on');
+  // The revise pass is the same resume's second call: inside the same pin.
+  const revisedBy = answered.filter((call) => call.callSite === 'revise-resume-coverage').map((call) => call.by).sort();
+  assert.deepEqual(revisedBy, lanes, 'and revised there too');
 });
 
 test('work no provider can take asks again on its own after the re-check interval', async (t) => {

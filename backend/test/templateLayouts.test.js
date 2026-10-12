@@ -38,8 +38,12 @@ function shippedTemplates() {
     .map((file) => JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf8')));
 }
 
-/** Eight skills the library knows, three of them languages. */
-const SKILLS = ['C#', 'Python', 'TypeScript', 'React', 'Docker', 'PostgreSQL', 'AWS', 'Kubernetes'];
+/**
+ * Eleven skills the library knows, three of them languages, and at least two
+ * under every heading it gives them: with no padding, a heading over one
+ * skill draws it as `<br>React</li>`, which reads as an item of its own.
+ */
+const SKILLS = ['C#', 'Python', 'TypeScript', 'React', 'Node.js', 'Docker', 'PostgreSQL', 'Redis', 'AWS', 'GCP', 'Kubernetes'];
 
 function profile(settings = {}, extra = {}) {
   return {
@@ -473,11 +477,16 @@ test('the gallery preview can show a layout and the sections, under a no-script 
     );
     const body = bodyOf(plain.body.slice(0, plain.body.indexOf('<style id="resume-preview-page">')));
     assert.equal(wholeItems(body, 'TypeScript'), 1, 'flat: one item per skill');
-    assert.ok(body.includes('Mentoring'), 'the sample soft skills');
+    assert.equal(wholeItems(body, 'Mentoring'), 1, "the sample's soft skills, once, in their section");
     assert.ok(body.includes('Systems Design'), 'the sample strengths');
 
+    // The usual sample is tailored with neither section: its soft-skill group
+    // is the last heading of the skills block, as on a generated resume.
     const usual = await server.call('alice', 'GET', '/classic-serif/preview');
-    assert.equal(usual.body.includes('Mentoring'), false, 'the usual sample shows neither section');
+    const usualBody = bodyOf(usual.body.slice(0, usual.body.indexOf('<style id="resume-preview-page">')));
+    assert.match(usualBody, /<strong>Professional Skills<\/strong><br>Mentoring, /);
+    assert.equal(usualBody.includes('Systems Design'), false, 'no Strengths section');
+    assert.doesNotMatch(usualBody, />\s*Soft Skills\s*</, 'no Soft Skills section');
 
     await server.call('admin', 'PATCH', '/classic-serif', { disabled: true });
     assert.equal((await server.call('alice', 'GET', '/classic-serif/preview')).status, 404);

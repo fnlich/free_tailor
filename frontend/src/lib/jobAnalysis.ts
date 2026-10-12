@@ -27,7 +27,10 @@ export type JobSalary = {
   raw: string | null;
 };
 
-/** The facts the Job Filter judges a posting on, read by the same one analysis. */
+/**
+ * The facts the Job Filter judges a posting on: the answer of the analysis's
+ * second call (the Job Facts (Filter) prompt), made with it once.
+ */
 export type JobFilterFacts = {
   jobType: string;
   onsiteInterview: string;
@@ -35,14 +38,21 @@ export type JobFilterFacts = {
   clearanceRequired: string;
   region: string;
   usState: string;
+  /**
+   * One of the facts prompt's seniority words, or `not_specified`. Absent on
+   * an analysis made before the facts call read it - the filter then judges
+   * `jobMeta.seniority` instead (`seniorityOf`).
+   */
+  seniority?: string;
 };
 
 /** The parts of an analysis this module reads; the rest is the page's business. */
 export type AnalysisFactsSource = {
-  jobMeta?: { title?: string } | null;
+  jobMeta?: { title?: string; seniority?: string } | null;
   /** The job field's label, which the server sends beside its id. */
   jobFieldLabel?: string;
   salary?: JobSalary | null;
+  filter?: Partial<JobFilterFacts> | null;
 };
 
 /** One analysis held by a page, with the posting it is the analysis of. */
@@ -124,17 +134,82 @@ export function formatSalary(salary: JobSalary | null | undefined): string {
 }
 
 /**
+ * The words the server shows a job type by (services/jobAnalysis/facts.ts
+ * `JOB_TYPE_LABELS`, which backend/test/frontendAnalysis.test.js holds this
+ * to); any other value, `not_specified` included, shows nothing.
+ */
+export const JOB_TYPE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  remote: 'Remote',
+  hybrid: 'Hybrid',
+  on_site: 'Onsite',
+});
+
+function filterOf(analysis: AnalysisFactsSource | null | undefined): Partial<JobFilterFacts> | null {
+  const filter = analysis?.filter;
+  return filter && typeof filter === 'object' && !Array.isArray(filter) ? filter : null;
+}
+
+/**
+ * The seniority word the Job Filter judges (services/jobFilter.ts
+ * `jobFilterAnalysisOf`): the facts call's, else - on an analysis made before
+ * the facts call read one - the analysis's own `jobMeta.seniority`. '' when
+ * neither says.
+ */
+export function seniorityOf(analysis: AnalysisFactsSource | null | undefined): string {
+  const facts = filterOf(analysis)?.seniority;
+  const word = facts ?? analysis?.jobMeta?.seniority ?? '';
+  return typeof word === 'string' ? word.trim() : '';
+}
+
+/** A seniority word as a page shows it: "Senior", "VP"; '' for one that says nothing (`not_specified`, `unknown`). */
+export function seniorityLabel(word: string): string {
+  const text = word.trim();
+  const key = text.toLowerCase().replace(/[\s-]+/g, '_');
+  if (!text || key === 'not_specified' || key === 'unknown') return '';
+  if (key === 'vp') return 'VP';
+  const spaced = text.replace(/_/g, ' ');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/**
+ * Whether the posting requires a clearance, as the server decides it
+ * (facts.ts `clearanceRequiredOf`): required for every clearance it names,
+ * an off-list word included, and not for `none` or `not_specified`. Null
+ * when the analysis has no facts to say it with.
+ */
+export function clearanceRequiredOf(analysis: AnalysisFactsSource | null | undefined): boolean | null {
+  const filter = filterOf(analysis);
+  if (!filter) return null;
+  const clearance = typeof filter.clearanceRequired === 'string' ? filter.clearanceRequired.trim() : '';
+  return clearance !== '' && clearance !== 'none' && clearance !== 'not_specified';
+}
+
+/**
  * What a page shows of an analysis: the posting's title, its job field's
- * label and its salary - each '' when the analysis has none. "Unclassified"
- * is a label like any other: it says the posting fits no field.
+ * label, its salary, its job type, its seniority and whether it needs a
+ * clearance - each '' when the analysis does not say. "Unclassified" is a
+ * label like any other: it says the posting fits no field.
  */
 export function analysisFacts(analysis: AnalysisFactsSource | null | undefined): {
   title: string;
   jobField: string;
   salary: string;
+  jobType: string;
+  seniority: string;
+  clearance: string;
 } {
-  if (!analysis) return { title: '', jobField: '', salary: '' };
+  if (!analysis) return { title: '', jobField: '', salary: '', jobType: '', seniority: '', clearance: '' };
   const title = typeof analysis.jobMeta?.title === 'string' ? analysis.jobMeta.title.trim() : '';
   const jobField = typeof analysis.jobFieldLabel === 'string' ? analysis.jobFieldLabel.trim() : '';
-  return { title, jobField, salary: formatSalary(analysis.salary ?? null) };
+  const jobTypeId = filterOf(analysis)?.jobType;
+  const jobType = typeof jobTypeId === 'string' && Object.prototype.hasOwnProperty.call(JOB_TYPE_LABELS, jobTypeId) ? JOB_TYPE_LABELS[jobTypeId] : '';
+  const required = clearanceRequiredOf(analysis);
+  return {
+    title,
+    jobField,
+    salary: formatSalary(analysis.salary ?? null),
+    jobType,
+    seniority: seniorityLabel(seniorityOf(analysis)),
+    clearance: required === null ? '' : required ? 'Clearance required' : 'No clearance',
+  };
 }

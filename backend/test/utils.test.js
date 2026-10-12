@@ -1,8 +1,8 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { moveCaseInsensitiveMatches, uniqueCaseInsensitive } = require('../dist/utils/array');
 const { extractJSON } = require('../dist/utils/json');
 const {
   ORDER_OUTPUT_PATH_TEMPLATE,
@@ -20,21 +20,35 @@ const {
   validateOutputPathTemplate,
 } = require('../dist/utils/outputStorage');
 
-test('uniqueCaseInsensitive keeps the first item for each lowercase key', () => {
-  assert.deepEqual(
-    uniqueCaseInsensitive(['React', 'react', 'Node.js', 'NODE.JS', 'TypeScript']),
-    ['React', 'Node.js', 'TypeScript']
-  );
-});
-
-test('moveCaseInsensitiveMatches moves matching candidates in reverse scan order', () => {
-  const candidates = ['React', 'Node.js', 'SQL', 'node.js'];
-  const matched = [];
-
-  moveCaseInsensitiveMatches(['NODE.JS'], candidates, matched);
-
-  assert.deepEqual(candidates, ['React', 'SQL']);
-  assert.deepEqual(matched, ['node.js', 'Node.js']);
+/**
+ * A helper module no source imports is dead weight the suite keeps compiling
+ * and testing: utils/array.ts outlived the library ordering it served by a
+ * whole release, its only reader a test of its own. Read from the sources,
+ * because tsc never deletes a module's old output from dist.
+ */
+test('every module under src/utils is imported by the code, not only by a test', () => {
+  const src = path.join(__dirname, '..', 'src');
+  const sources = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.ts$/.test(entry.name)) sources.push(full);
+    }
+  };
+  walk(src);
+  const utilsDir = path.join(src, 'utils');
+  for (const file of fs.readdirSync(utilsDir).filter((name) => name.endsWith('.ts'))) {
+    const stem = file.replace(/\.ts$/, '');
+    const importers = sources.filter((source) => {
+      if (path.dirname(source) === utilsDir && path.basename(source) === file) return false;
+      const wanted = path.join(utilsDir, stem);
+      return [...fs.readFileSync(source, 'utf8').matchAll(/from\s+'(\.{1,2}\/[^']+)'/g)].some(
+        (match) => path.resolve(path.dirname(source), match[1]) === wanted
+      );
+    });
+    assert.ok(importers.length > 0, `src/utils/${file} is imported by nothing under src`);
+  }
 });
 
 test('extractJSON reads direct JSON, fenced JSON, and balanced JSON inside text', () => {

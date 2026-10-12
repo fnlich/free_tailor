@@ -246,6 +246,9 @@ export function readGeminiCliConfig(env: EnvSource = process.env): GeminiCliConf
     defaultTimeoutMs: geminiCliTimeoutMs('AI_GEMINI_TIMEOUT_MS', env),
     timeoutMsByCallSite: {
       'tailor-resume': geminiCliTimeoutMs('AI_GEMINI_TIMEOUT_MS_TAILOR', env),
+      // The revise pass is the tailoring's second call, inside the same resume:
+      // the same budget.
+      'revise-resume-coverage': geminiCliTimeoutMs('AI_GEMINI_TIMEOUT_MS_TAILOR', env),
     },
     maxAttempts: readInt('AI_GEMINI_MAX_ATTEMPTS', env),
     maxOutputBytes: readInt('AI_GEMINI_MAX_OUTPUT_BYTES', env),

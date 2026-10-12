@@ -14,7 +14,8 @@ import {
   profileForTemplate,
   type ResumeSectionChoices,
 } from '../services/profileService';
-import { SAMPLE_PROFILE } from '../services/sampleProfile';
+import { SAMPLE_PROFILE, SAMPLE_TAILORED_CONTENT } from '../services/sampleProfile';
+import { findSoftSkillGroup, flattenSkillGroups, sanitizeSkillGroups } from '../services/skillGroups';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getResumeOutputFilename } from '../utils/generatedPath';
@@ -24,8 +25,6 @@ import {
   type HardSkillRecord,
   hardSkillIndexKey,
   readHardSkillIndex,
-  readHardSkillPriorityMap,
-  readSkills,
 } from '../database/skillsDatabase';
 const MAX_ROLE_BRIEF_LENGTH = 1200;
 /** CSS absolute length units expressed in px at 96 DPI. */
@@ -385,8 +384,9 @@ type SkillCategory = HardSkillCategory;
  * One rendered heading and the skills under it.
  *
  * `category` is a plain string, not the library's closed set: a profile may
- * carry headings its author invented, and the flat layout carries the empty
- * string - which is not a missing heading but the statement that there is none.
+ * carry headings its author invented, a tailored resume prints the model's
+ * own, and the flat layout carries the empty string - which is not a missing
+ * heading but the statement that there is none.
  */
 type SkillCategoryGroup = {
   category: string;
@@ -395,12 +395,6 @@ type SkillCategoryGroup = {
 
 const SKILL_CATEGORY_ORDER: SkillCategory[] = [...HARD_SKILL_CATEGORIES];
 const SKILL_CATEGORY_LANGUAGE_CATEGORY: SkillCategory = 'Languages';
-const SKILL_CATEGORY_MIN_LANGUAGE_SKILLS = 3;
-const SKILL_CATEGORY_MAX_LANGUAGE_SKILLS = 5;
-const SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY = 5;
-const SKILL_CATEGORY_MAX_SKILLS_PER_CATEGORY = 10;
-const SKILL_CATEGORY_MIN_CATEGORY_COUNT = 5;
-const SKILL_CATEGORY_LANGUAGE_FILL_EXCLUDED_SKILLS = new Set(['bash', 'c#', 'html', 'css']);
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -627,90 +621,6 @@ const SKILL_CATEGORY_TOOL_PRACTICE_SKILLS = new Set([
   'tdd',
 ]);
 
-const SKILL_CATEGORY_CATEGORY_FALLBACK_SKILLS: Record<SkillCategory, string[]> = {
-  Languages: ['Python', 'Java', 'JavaScript', 'TypeScript', 'Go', 'Ruby', 'PHP', 'SQL', 'Swift', 'Kotlin', 'Rust'],
-  'Frameworks and Libraries': [
-    'React',
-    'Vue',
-    'Django',
-    'Flask',
-    'Spring Boot',
-    'Node.js',
-    'Next.js',
-    'Express',
-    'Redux',
-    'GraphQL',
-  ],
-  'Software Architecture & Design': ['Microservices', 'System Design', 'Distributed Systems', 'Caching', 'Design Patterns'],
-  Security: ['OAuth', 'JWT', 'SAML', 'AWS IAM', 'API Security'],
-  'Cloud and Infrastructure': [
-    'AWS',
-    'Docker',
-    'Kubernetes',
-    'Terraform',
-    'Azure',
-    'GCP',
-    'Linux',
-    'GitHub Actions',
-    'Jenkins',
-  ],
-  'Databases and Storage': ['PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'DynamoDB', 'Elasticsearch', 'Snowflake'],
-  'DevOps and CI/CD': ['GitHub Actions', 'Jenkins', 'CI/CD', 'Docker', 'Kubernetes', 'Terraform', 'ArgoCD'],
-  'Observability and Monitoring': ['Grafana', 'Prometheus', 'Datadog', 'CloudWatch', 'New Relic', 'ELK Stack'],
-  'Testing and Quality': ['Jest', 'Pytest', 'Cypress', 'Playwright', 'Selenium', 'JUnit', 'TestNG'],
-  'APIs and Integration': ['REST API', 'GraphQL', 'OpenAPI', 'OAuth', 'JWT', 'Kafka', 'RabbitMQ'],
-  'Engineering Practices & Methodology': ['Agile', 'Scrum', 'Kanban', 'Technical Documentation', 'Pair Programming'],
-  'Data Engineering & Streaming': ['Kafka', 'RabbitMQ', 'Amazon Kinesis', 'Apache Kafka', 'ETL Pipelines'],
-  'AI/ML & Data Science': ['PyTorch', 'TensorFlow', 'scikit-learn', 'Pandas', 'NumPy'],
-  'Version Control & Collaboration': ['Git', 'GitHub', 'GitLab', 'Bitbucket', 'Code Review'],
-  'Operating Systems & Platforms': ['Linux', 'Unix/Linux', 'Nginx', 'Windows', 'Network Security'],
-  'Frontend & UI/UX Development': ['Tailwind CSS', 'CSS Grid', 'CSS Modules', 'Figma', 'Responsive Design'],
-  'Mobile Development': ['React Native', 'Flutter', 'iOS', 'Android', 'SwiftUI'],
-};
-
-const SKILL_CATEGORY_LANGUAGE_FRAMEWORK_SKILLS: Array<{ languages: string[]; frameworks: string[] }> = [
-  {
-    languages: ['javascript', 'typescript'],
-    frameworks: ['React', 'Node.js', 'Next.js', 'Express', 'Vue.js', 'Angular', 'NestJS', 'Fastify'],
-  },
-  {
-    languages: ['php'],
-    frameworks: ['Laravel', 'Symfony', 'CodeIgniter'],
-  },
-  {
-    languages: ['python'],
-    frameworks: ['Django', 'FastAPI', 'Flask', 'Django REST Framework', 'Pandas', 'NumPy'],
-  },
-  {
-    languages: ['java'],
-    frameworks: ['Spring Boot', 'Spring MVC', 'Spring Security', 'JUnit', 'TestNG'],
-  },
-  {
-    languages: ['go', 'golang'],
-    frameworks: ['Gin', 'Echo', 'gRPC'],
-  },
-  {
-    languages: ['ruby'],
-    frameworks: ['Ruby on Rails', 'Rails'],
-  },
-  {
-    languages: ['c#'],
-    frameworks: ['ASP.NET Core', 'ASP.NET'],
-  },
-  {
-    languages: ['kotlin'],
-    frameworks: ['Ktor', 'Spring Boot'],
-  },
-  {
-    languages: ['swift'],
-    frameworks: ['SwiftUI'],
-  },
-  {
-    languages: ['dart'],
-    frameworks: ['Flutter'],
-  },
-];
-
 // Register Handlebars helpers
 Handlebars.registerHelper('join', function(array: string[], separator: string) {
   if (!Array.isArray(array)) return '';
@@ -858,281 +768,20 @@ function normalizeLibraryHardSkills(skills: string[]): string[] {
   return result;
 }
 
-function getRelatedFrameworkSkillsForLanguages(languageSkills: string[]): string[] {
-  const related: string[] = [];
-  const seen = new Set<string>();
-  const normalizedLanguages = languageSkills.map(normalizeHardSkillAlias);
-
-  for (const language of normalizedLanguages) {
-    const rule = SKILL_CATEGORY_LANGUAGE_FRAMEWORK_SKILLS.find((candidateRule) =>
-      candidateRule.languages.some((candidate) => matchesSkillTerm(language, candidate))
-    );
-    if (!rule) continue;
-
-    for (const framework of rule.frameworks) {
-      const key = normalizeHardSkillAlias(framework);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      related.push(framework);
-    }
-  }
-
-  return related;
-}
-
-function prioritizeRelatedFrameworkCandidates(
-  languageSkills: string[],
-  frameworkCandidates: string[],
-  used: Set<string>
-): string[] {
-  const existingByKey = new Map(
-    frameworkCandidates.map((skill) => [normalizeHardSkillAlias(skill), skill] as const)
-  );
-  const prioritized: string[] = [];
-  const prioritizedKeys = new Set<string>();
-
-  for (const skill of getRelatedFrameworkSkillsForLanguages(languageSkills)) {
-    const key = normalizeHardSkillAlias(skill);
-    if (!key || used.has(key) || prioritizedKeys.has(key)) continue;
-    prioritizedKeys.add(key);
-    prioritized.push(existingByKey.get(key) ?? skill);
-  }
-
-  return [
-    ...prioritized,
-    ...frameworkCandidates.filter((skill) => !prioritizedKeys.has(normalizeHardSkillAlias(skill))),
-  ];
-}
-
-type SkillCategoryBuildOptions = {
-  forceAllCategories?: boolean;
-  relateFrameworksToLanguages?: boolean;
-};
-
-function buildSkillCategories(
-  skills: string[],
-  supplementalSkills: string[] = [],
-  options: SkillCategoryBuildOptions = {}
-): SkillCategoryGroup[] {
-  const grouped = new Map<SkillCategory, string[]>(
-    SKILL_CATEGORY_ORDER.map((category) => [category, []])
-  );
-  const used = new Set<string>();
-
-  for (const skill of normalizeLibraryHardSkills(skills)) {
-    const key = normalizeHardSkillAlias(skill);
-    if (used.has(key)) continue;
-    used.add(key);
-    grouped.get(getSkillCategory(skill))?.push(skill);
-  }
-
-  const candidateByCategory = new Map<SkillCategory, string[]>(
-    SKILL_CATEGORY_ORDER.map((category) => [category, []])
-  );
-  const candidateSeen = new Set<string>();
-
-  const addFillCandidate = (skill: string) => {
-    const record = getLibraryHardSkillRecord(skill);
-    if (!record) return;
-    const key = normalizeHardSkillAlias(record.skill);
-    if (!key || used.has(key) || candidateSeen.has(key)) return;
-    candidateSeen.add(key);
-    candidateByCategory.get(record.category)?.push(record.skill);
-  };
-
-  for (const skill of sortHardSkillsByPriority(supplementalSkills)) {
-    addFillCandidate(skill);
-  }
-
-  for (const category of SKILL_CATEGORY_ORDER) {
-    for (const skill of SKILL_CATEGORY_CATEGORY_FALLBACK_SKILLS[category]) {
-      if (getSkillCategory(skill) === category) {
-        addFillCandidate(skill);
-      }
-    }
-  }
-
-  for (const skill of sortHardSkillsByPriority(readSkills('hard'))) {
-    addFillCandidate(skill);
-  }
-
-  const includedCategories = new Set<SkillCategory>([SKILL_CATEGORY_LANGUAGE_CATEGORY]);
-  for (const category of SKILL_CATEGORY_ORDER) {
-    if (category !== SKILL_CATEGORY_LANGUAGE_CATEGORY && (grouped.get(category)?.length ?? 0) > 0) {
-      includedCategories.add(category);
-    }
-  }
-
-  if (includedCategories.size === 1 && options.forceAllCategories) {
-    includedCategories.add('Frameworks and Libraries');
-    includedCategories.add('Cloud and Infrastructure');
-  }
-
-  if (options.forceAllCategories) {
-    for (const category of SKILL_CATEGORY_ORDER) {
-      if (includedCategories.size >= SKILL_CATEGORY_MIN_CATEGORY_COUNT) break;
-      if (category !== SKILL_CATEGORY_LANGUAGE_CATEGORY) {
-        includedCategories.add(category);
-      }
-    }
-  }
-
-  for (const category of SKILL_CATEGORY_ORDER) {
-    if (!includedCategories.has(category)) continue;
-    const categorySkills = grouped.get(category) ?? [];
-    if (category === SKILL_CATEGORY_LANGUAGE_CATEGORY) {
-      for (const skill of candidateByCategory.get(category) ?? []) {
-        const targetCount = options.forceAllCategories
-          ? SKILL_CATEGORY_MIN_LANGUAGE_SKILLS
-          : SKILL_CATEGORY_MAX_LANGUAGE_SKILLS;
-        if (categorySkills.length >= targetCount) break;
-        const key = normalizeHardSkillAlias(skill);
-        if (SKILL_CATEGORY_LANGUAGE_FILL_EXCLUDED_SKILLS.has(key)) continue;
-        if (used.has(key)) continue;
-        used.add(key);
-        categorySkills.push(skill);
-      }
-
-      if (!options.forceAllCategories) {
-        categorySkills.splice(SKILL_CATEGORY_MAX_LANGUAGE_SKILLS);
-      }
-      if (options.relateFrameworksToLanguages) {
-        candidateByCategory.set(
-          'Frameworks and Libraries',
-          prioritizeRelatedFrameworkCandidates(
-            categorySkills,
-            candidateByCategory.get('Frameworks and Libraries') ?? [],
-            used
-          )
-        );
-      }
-      continue;
-    }
-
-    if (
-      categorySkills.length >= SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY ||
-      (!options.forceAllCategories && categorySkills.length === 0)
-    ) {
-      continue;
-    }
-
-    for (const skill of candidateByCategory.get(category) ?? []) {
-      if (categorySkills.length >= SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY) break;
-      const key = normalizeHardSkillAlias(skill);
-      if (used.has(key)) continue;
-      used.add(key);
-      categorySkills.push(skill);
-    }
-  }
-
-  return SKILL_CATEGORY_ORDER
-    .filter((category) => includedCategories.has(category))
-    .map((category) => ({
-      category,
-      skills: grouped.get(category) ?? [],
-    }))
-    .filter((group) => group.skills.length > 0);
-}
-
-function passesPromptHardSkillGate(skill: string): boolean {
-  const normalized = normalizeHardSkillAlias(skill);
-  if (!normalized) return false;
-
-  const rejectedConcepts = new Set([
-    'agile',
-    'scrum',
-    'kanban',
-    'ci/cd',
-    'cicd',
-    'system design',
-    'systems design',
-    'microservices',
-    'microservice architecture',
-    'backend development',
-    'frontend development',
-    'full-stack development',
-    'full stack development',
-    'project management',
-  ]);
-
-  return !rejectedConcepts.has(normalized);
-}
-
-function enforcePromptSkillCategoryCounts(
-  skills: string[],
-  supplementalSkills: string[] = []
-): SkillCategoryGroup[] {
-  const promptHardSkills = normalizeSkills(skills).filter(passesPromptHardSkillGate);
-  const promptSupplementalSkills = normalizeSkills(supplementalSkills).filter(passesPromptHardSkillGate);
-  const groups = buildSkillCategories(promptHardSkills, promptSupplementalSkills, {
-    forceAllCategories: true,
-    relateFrameworksToLanguages: true,
-  });
-
-  return groups.map((group) => ({
-    ...group,
-    skills: group.skills.slice(
-      0,
-      group.category === SKILL_CATEGORY_LANGUAGE_CATEGORY ? SKILL_CATEGORY_MAX_LANGUAGE_SKILLS : SKILL_CATEGORY_MAX_SKILLS_PER_CATEGORY
-    ),
-  }));
-}
-
-const ALLOWED_TECH_SKILLS = new Set<string>();
-let hardSkillPriorityMap = readHardSkillPriorityMap();
-
-function loadAllowedTechSkills() {
-  ALLOWED_TECH_SKILLS.clear();
-  for (const skill of readSkills('hard')) {
-    ALLOWED_TECH_SKILLS.add(normalizeHardSkillAlias(skill));
-  }
-  hardSkillPriorityMap = readHardSkillPriorityMap();
-}
-
-loadAllowedTechSkills();
-
-export function refreshAllowedTechSkills() {
-  loadAllowedTechSkills();
-}
-
-
-function sortHardSkillsByPriority(skills: string[]): string[] {
-  return [...normalizeSkills(skills)].sort((a, b) => {
-    const aPriority = hardSkillPriorityMap.get(normalizeHardSkillAlias(a)) ?? Number.MAX_SAFE_INTEGER;
-    const bPriority = hardSkillPriorityMap.get(normalizeHardSkillAlias(b)) ?? Number.MAX_SAFE_INTEGER;
-
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority;
-    }
-
-    return a.localeCompare(b, undefined, { sensitivity: 'base' });
-  });
-}
-
 type SkillsData = {
+  /** Tailored content's flat list, from content that carries no `skillGroups`. */
   hardSkills?: string[];
   softSkills?: string[];
   strengths?: Array<{ title?: unknown; description?: unknown }>;
+  /** The profile's own skills, in the order the person keeps them. */
   skills?: string[];
-  skillInventory?: string[];
+  /** The model's Technical Skills block; when it has a group it is the printed block. */
+  skillGroups?: unknown;
+  softSkillGroupHeading?: string;
   /** The author's own grouping, when the profile carries one. */
   skillCategories?: ProfileSkillCategoryGroup[];
   profileSettings?: Profile['profileSettings'];
 };
-
-/** How a resume's render data is prepared, beyond what the profile itself says. */
-export interface ResumeRenderOptions {
-  /**
-   * Fill an INFERRED categorized block from the skill library - five headings
-   * of five - as generation always has. Off for the live profile preview, which
-   * shows the person the skills they entered and nothing they did not: a
-   * preview listing Kubernetes under a heading they never wrote, on a profile
-   * that never claimed it, reads as a bug in the editor. Flat and an authored
-   * grouping never pad, so this changes only the categorized, uncategorized,
-   * untailored case.
-   */
-  padSkillCategories?: boolean;
-}
 
 /** A strength a template can show: one with a title or a description, as text. */
 type RenderStrength = { title: string; description: string };
@@ -1229,10 +878,14 @@ function buildAuthoredSkillCategories(
  * that predates `skillCategories` has always shown them. Flat, each line is one
  * skill, so a template rendering a chip per entry produces a chip per skill
  * rather than one enormous chip holding the whole list behind a stray colon.
+ * A group with no heading among headed ones (a model block, or one edited in
+ * the builder, can carry one) is its skills alone, never ": a, b".
  */
 function renderSkillLines(groups: SkillCategoryGroup[]): string[] {
   if (groups.length === 1 && !groups[0].category) return [...groups[0].skills];
-  return groups.map((group) => `${group.category}: ${group.skills.join(', ')}`);
+  return groups.map((group) =>
+    group.category ? `${group.category}: ${group.skills.join(', ')}` : group.skills.join(', ')
+  );
 }
 
 type SkillsLimitedData<T> = Omit<T, 'strengths' | 'softSkills'> & {
@@ -1244,9 +897,10 @@ type SkillsLimitedData<T> = Omit<T, 'strengths' | 'softSkills'> & {
 };
 
 /**
- * The skills a person entered, each under the library's heading for it, and
- * nothing more - the categorized block without the padding. For the live
- * preview; see `ResumeRenderOptions.padSkillCategories`.
+ * The skills a person entered, each under the library's heading for it, in
+ * the order they entered them, and nothing more. There is no padding: a block
+ * listing Kubernetes under a heading the person never wrote, on a profile that
+ * never claimed it, is a claim on their resume they did not make.
  *
  * Library-known skills only, as the flat layout keeps: the two layouts of one
  * profile must show the same skills, and the editor adds an unknown skill to
@@ -1264,26 +918,73 @@ function groupClaimedSkills(skills: string[]): SkillCategoryGroup[] {
     .filter((group) => group.skills.length > 0);
 }
 
-function applySkillsLimit<T extends SkillsData>(data: T, options: ResumeRenderOptions = {}): SkillsLimitedData<T> {
-  const sections = getProfileResumeSections({ profileSettings: data.profileSettings });
-  const layout: TechnicalSkillsLayout = sections.layout;
-  const authored = (data.skillCategories ?? []).filter(
+/** The author's own headings, when the profile has any with something under them. */
+function authoredGroups(data: SkillsData): ProfileSkillCategoryGroup[] {
+  return (data.skillCategories ?? []).filter(
     (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
   );
+}
 
-  const finish = (skillCategories: SkillCategoryGroup[]): SkillsLimitedData<T> => {
+/**
+ * The profile's OWN skills as a block - an untailored render, or the fallback
+ * when tailored content has nothing printable. Unpadded. Grouped: the author's
+ * own grouping as they typed it, else `groupClaimedSkills` - the library's
+ * heading for each skill they claimed, the headings in the library's order and
+ * the person's order under each, library-known skills only. Flat: the
+ * library-known skills as one list, in the person's order and the library's
+ * spelling.
+ */
+function ownSkillCategories(data: SkillsData, layout: TechnicalSkillsLayout): SkillCategoryGroup[] {
+  const skills = normalizeSkills(data.skills ?? []);
+  if (layout === 'flat') return flattenSkillCategories(normalizeLibraryHardSkills(skills));
+  const authored = authoredGroups(data);
+  return authored.length > 0 ? buildAuthoredSkillCategories(skills, authored) : groupClaimedSkills(skills);
+}
+
+/**
+ * THE RENDER GATE. Every path - the builder's preview, the PDF, the DOCX, the
+ * queue, the gallery, the profile editor's preview - prepares its data
+ * through here, so whatever the caller handed in (a profile, fresh tailoring,
+ * content a page held from a preview and sent back, a queued payload from
+ * before a deploy) is decided once, the same way, on every render.
+ *
+ * The Technical Skills block, in order of precedence:
+ *
+ * 1. The model's `skillGroups`, when any group survives sanitising - printed
+ *    as returned (the tailoring prompt promises "Nothing reorders it, merges
+ *    it, spell-checks it or fills it out"). Grouped: the groups verbatim.
+ *    Plain: one headless list of the same skills, same order, repeats
+ *    removed. The soft-skill group goes to the Soft Skills section while that
+ *    switch is on - as `profileForTemplate` left it, so a template with no
+ *    Soft Skills section keeps the group in the block - and stays in the
+ *    block, under its heading, while it is off. A block left empty (only the
+ *    soft group came back, and it was routed) is the profile's own skills.
+ * 2. Older tailored content with only `hardSkills`, unpadded. Plain: that
+ *    list, unfiltered, in its own order. Grouped: under the author's headings
+ *    when the profile has any (every skill; one they never placed goes under
+ *    the library's heading), else regrouped by `groupClaimedSkills` - the
+ *    library's headings in the library's order, library-known skills only.
+ * 3. Otherwise the profile's own skills (`ownSkillCategories`), which also
+ *    draws only library-known skills except under the author's own headings.
+ *
+ * Nothing is padded from the skill library on any path, and nothing is
+ * reordered by its priority; only (2) and (3) are filed or filtered by it,
+ * and the model's block in (1) never is.
+ */
+function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
+  const sections = getProfileResumeSections({ profileSettings: data.profileSettings });
+  const layout: TechnicalSkillsLayout = sections.layout;
+
+  const finish = (skillCategories: SkillCategoryGroup[], softSkills: unknown = data.softSkills): SkillsLimitedData<T> => {
     const lines = renderSkillLines(skillCategories);
     return {
       ...data,
       hardSkills: lines,
-      // THE RENDER GATE for the two optional sections. Whatever the caller
-      // handed in - a profile's own lists, freshly tailored content, or content
-      // a client held from an earlier preview and sent back with a batch,
-      // never re-parsed - a section the profile has switched off renders
-      // nothing, and one switched on renders what it was given. Decided here,
-      // on every render, because this is the one step every path (preview,
-      // PDF, DOCX, the queue) goes through.
-      softSkills: sections.softSkills ? normalizeSkills(data.softSkills ?? []) : [],
+      // The two optional sections. A section the profile has switched off
+      // renders nothing, whatever the content carries; one switched on renders
+      // what it was given. The compile step strips or guards the same sections
+      // independently (see `normalizeTemplateSkillsSections`).
+      softSkills: sections.softSkills ? normalizeSkills(softSkills ?? []) : [],
       // The same lines under both names, because templates disagree about
       // which one they read and neither is more correct than the other.
       skills: lines,
@@ -1292,52 +993,30 @@ function applySkillsLimit<T extends SkillsData>(data: T, options: ResumeRenderOp
     } as SkillsLimitedData<T>;
   };
 
-  const hasTailoredHardSkills = Array.isArray(data.hardSkills) && data.hardSkills.length > 0;
-  const selected = hasTailoredHardSkills
-    ? normalizeSkills(data.hardSkills ?? [])
-    : sortHardSkillsByPriority(data.skills ?? []);
-
-  // Flat is decided before any of the category machinery runs, and that is the
-  // point of it: the padding rules below exist to make a CATEGORIZED block look
-  // right - five per heading, at least five headings - and a list with no
-  // headings has no such shape to fill. Running them anyway would pad the list
-  // with skills the profile never claimed, to satisfy a layout it is not using.
-  if (layout === 'flat') {
+  const groups = sanitizeSkillGroups(data.skillGroups);
+  if (groups.length > 0) {
+    const softAt = findSoftSkillGroup(groups, data.softSkillGroupHeading);
+    const routed = sections.softSkills && softAt !== -1;
+    const block = routed ? groups.filter((_, index) => index !== softAt) : groups;
+    const printed =
+      layout === 'flat'
+        ? flattenSkillCategories(flattenSkillGroups(block))
+        : block.map(({ category, skills }) => ({ category, skills }));
     return finish(
-      flattenSkillCategories(
-        hasTailoredHardSkills
-          ? selected.filter(passesPromptHardSkillGate)
-          : normalizeLibraryHardSkills(selected)
-      )
+      printed.length > 0 ? printed : ownSkillCategories(data, layout),
+      routed ? groups[softAt].skills : data.softSkills
     );
   }
 
-  // The author's grouping replaces the inference, not the selection. It has no
-  // counts to enforce either: the headings are theirs, and padding them to five
-  // apiece would put skills under headings they did not choose for them.
-  if (authored.length > 0) {
-    return finish(
-      buildAuthoredSkillCategories(
-        hasTailoredHardSkills ? selected.filter(passesPromptHardSkillGate) : selected,
-        authored
-      )
-    );
+  const tailored = normalizeSkills(data.hardSkills ?? []);
+  if (tailored.length > 0) {
+    if (layout === 'flat') return finish(flattenSkillCategories(tailored));
+    const authored = authoredGroups(data);
+    const grouped = authored.length > 0 ? buildAuthoredSkillCategories(tailored, authored) : groupClaimedSkills(tailored);
+    return finish(grouped.length > 0 ? grouped : ownSkillCategories(data, layout));
   }
 
-  if (hasTailoredHardSkills) {
-    return finish(enforcePromptSkillCategoryCounts(selected, data.skillInventory));
-  }
-
-  if (options.padSkillCategories === false) {
-    return finish(groupClaimedSkills(selected));
-  }
-
-  return finish(
-    buildSkillCategories(selected, data.skillInventory, {
-      forceAllCategories: true,
-      relateFrameworksToLanguages: true,
-    })
-  );
+  return finish(ownSkillCategories(data, layout));
 }
 
 function getResumeTitle(profile: Profile): string {
@@ -1347,10 +1026,19 @@ function getResumeTitle(profile: Profile): string {
   return lastRole || 'Professional';
 }
 
-/** Sanitize title for ATS: remove hyphens, periods, commas, and other symbols */
+/**
+ * The headline as an ATS reads it: letters, digits, spaces and the
+ * punctuation a title is written with - `| ( ) / , . & + # · -` - and nothing
+ * else. Those are kept because tailoring composes the printed title from the
+ * profile's headline and the kind of role ("Senior Software Engineer | Cloud
+ * Engineer", "Software Engineer (AI/ML Engineer)"), and because "C#",
+ * "C++", "Node.js" and "R&D" are names. Any other symbol (quotes, colons,
+ * brackets, `@`, `%`, arrows, emoji) becomes a space. The same rule for an
+ * untailored title and a tailored one.
+ */
 function sanitizeTitleForATS(title: string): string {
   return title
-    .replace(/[-.,;:'"()\[\]\/\\@#$%&*+=<>]/g, ' ')
+    .replace(/[^\p{L}\p{M}\p{N}\s|()/,.&+#·-]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1460,10 +1148,15 @@ function rewriteLinkedInAnchorDisplay(html: string): string {
  * skill "Tools: Jira" lost its own markup and styling for a skills heading.
  * A class cannot tell the sections apart (default.json draws hard and soft
  * skills in the same `skill-box`), the text can.
+ *
+ * The headings looked for are this render's own (`skillCategories`), escaped
+ * as the template printed them. They used to be a fixed list of the library's,
+ * which turned "Languages: a, b" into a heading block and left a model's
+ * "CI/CD & Automation: a, b" beside it as one plain line.
  */
 function enforceSkillCategoryLineBreaks(
   html: string,
-  renderData: { hardSkills?: unknown; skills?: unknown }
+  renderData: { hardSkills?: unknown; skills?: unknown; skillCategories?: unknown }
 ): string {
   const skillLines = new Set(
     [renderData.hardSkills, renderData.skills]
@@ -1471,11 +1164,18 @@ function enforceSkillCategoryLineBreaks(
       .filter((line): line is string => typeof line === 'string')
       .map((line) => Handlebars.escapeExpression(line).trim())
   );
-  if (skillLines.size === 0) return html;
-  const categoryPattern = '(Programming &(?:amp;)? Scripting Languages|Languages|Frameworks (?:and|&(?:amp;)?) Libraries|Software Architecture &(?:amp;)? Design|Security|Cloud (?:and|&(?:amp;)?) Infrastructure|Infrastructure &(?:amp;)? Cloud|Databases (?:and|&(?:amp;)?) Storage|DevOps (?:and|&(?:amp;)?) CI/CD|Observability (?:and|&(?:amp;)?) Monitoring|Testing (?:and|&(?:amp;)?) Quality|APIs (?:and|&(?:amp;)?) Integration|Engineering Practices &(?:amp;)? Methodology|Data Engineering &(?:amp;)? Streaming|AI/ML &(?:amp;)? Data Science|Version Control &(?:amp;)? Collaboration|Operating Systems &(?:amp;)? Platforms|Frontend &(?:amp;)? UI/UX Development|Mobile Development|Cloud &(?:amp;)? DevOps|Databases|Tools &(?:amp;)? Practices|Tools|Methods)';
+  const headings = [
+    ...new Set(
+      (Array.isArray(renderData.skillCategories) ? renderData.skillCategories : [])
+        .map((group: { category?: unknown }) => (typeof group?.category === 'string' ? group.category.trim() : ''))
+        .filter(Boolean)
+        .map((category: string) => escapeRegExp(Handlebars.escapeExpression(category)))
+    ),
+  ];
+  if (skillLines.size === 0 || headings.length === 0) return html;
   const categoryTextPattern = new RegExp(
-    `<(span|div)\\b([^>]*)>\\s*${categoryPattern}:\\s*([^<]*?)\\s*(?:[•·]|â€¢)?\\s*<\\/\\1>`,
-    'gi'
+    `<(span|div)\\b([^>]*)>\\s*(${headings.join('|')}):\\s*([^<]*?)\\s*(?:[•·]|â€¢)?\\s*<\\/\\1>`,
+    'g'
   );
 
   return html.replace(categoryTextPattern, (match, _tagName, attributes, category, skills) => {
@@ -2028,6 +1728,8 @@ function rewritePerItemSkillLoops(html: string): string {
  *   list - the shipped markup was already the right flat design.
  * - Any element around `{{category}}` is guarded, so the flat layout's one
  *   headless group draws no empty heading in either.
+ * - Any element holding only `{{description}}` is guarded, so a role with no
+ *   description (every tailored one) leaves no empty box behind.
  */
 function normalizeTemplateSkillsSections(
   html: string,
@@ -2044,7 +1746,47 @@ function normalizeTemplateSkillsSections(
   if (choices.layout === 'categorized') {
     output = rewritePerItemSkillLoops(output);
   }
-  return guardEmptyCategoryHeadings(output);
+  return guardEmptyDescriptions(guardEmptyCategoryHeadings(output));
+}
+
+/**
+ * Makes an element that holds only a description disappear when there is no
+ * description.
+ *
+ * Tailored roles print none - the tailoring prompt tells the model the role
+ * description "is discarded before the resume is printed", and the render
+ * blanks it - but every built-in draws one in a wrapper of its own: seventeen
+ * as `<div class="experience-desc">{{#if description}}{{description}}{{/if}}</div>`,
+ * guarding the TEXT and keeping the element, and `default` and `azure-stack`
+ * as `<div class="description">{{description}}</div>`, not guarded at all.
+ * Most of those wrappers carry a margin, so each role opened with a visible
+ * gap above its bullets.
+ *
+ * Applied to the markup rather than to the nineteen files, so uploaded,
+ * extracted and manual templates get it too; the stored file is never
+ * rewritten. It decides from the markup alone, so the compile cache needs no
+ * new key. Idempotent: the lookbehind leaves an element somebody already
+ * guarded - the strength descriptions in default and azure-stack - alone,
+ * rather than nesting a second `{{#if}}` around it.
+ *
+ * The inner guard is taken WHOLE or not at all. A Handlebars block need not
+ * follow the HTML - `<p>{{#if description}}{{description}}</p>{{/if}}` is valid
+ * Handlebars - and taking its opening half without its closing one left a
+ * stray `{{/if}}` that failed every render of the template, tailored or not
+ * (the section fallbacks in `compilableMarkup` cannot help: every one of them
+ * runs this guard too). Such an element is left as it is written. A cut can
+ * still go wrong through a block opened inside the element's own tag, so a
+ * result that stops parsing markup that parsed is dropped for the markup as it
+ * was: an empty box is a blemish, a template that will not compile is every
+ * resume on it failing.
+ */
+function guardEmptyDescriptions(html: string): string {
+  const guarded = html.replace(
+    /(?<!\{\{#if description\}\}\s*)(<(\w+)\b[^>]*>)\s*(?:\{\{#if description\}\}\s*\{\{description\}\}\s*\{\{\/if\}\}|\{\{description\}\})\s*(<\/\2>)/g,
+    '{{#if description}}$1{{description}}$3{{/if}}'
+  );
+  if (guarded === html || parsesAsHandlebars(guarded) || !parsesAsHandlebars(html)) return guarded;
+  return html;
 }
 
 /**
@@ -2083,19 +1825,43 @@ function guardEmptyCategoryHeadings(html: string): string {
   );
 }
 
+/**
+ * The most bullets a tailored role prints. The tailoring prompt promises
+ * "anything past the eighth bullet is DISCARDED before the resume is
+ * printed"; the parse keeps the eight carrying the most checklist terms, and
+ * this is the backstop for content that reaches a render without it - a
+ * preview with no analysis, a held preview whose re-parse failed.
+ */
+const MAX_TAILORED_BULLETS = 8;
+
+/**
+ * Tailored roles as they print: no description (the prompt tells the model
+ * it is discarded, so whatever an older build or a JSON edit left there is
+ * not shown) and at most `MAX_TAILORED_BULLETS` bullets, strings only.
+ */
+function tailoredRoles(experience: unknown): TailoredContent['experience'] {
+  if (!Array.isArray(experience)) return [];
+  return experience
+    .filter((role): role is TailoredContent['experience'][number] => Boolean(role) && typeof role === 'object')
+    .map((role) => ({
+      ...role,
+      description: '',
+      achievements: (Array.isArray(role.achievements) ? role.achievements : [])
+        .filter((bullet): bullet is string => typeof bullet === 'string' && bullet.trim() !== '')
+        .slice(0, MAX_TAILORED_BULLETS),
+    }));
+}
+
 export function prepareResumeRenderData(
   profile: Profile,
   tailoredContent?: TailoredContent,
   companyName?: string,
-  role?: string,
-  options: ResumeRenderOptions = {}
+  role?: string
 ) {
   const linkedinHref = normalizeExternalUrl(profile.contact?.linkedin);
   const linkedinDisplay = getExternalUrlDisplay(profile.contact?.linkedin);
-  const tailoredHardSkills = tailoredContent?.hardSkills ?? [];
-  const tailoredSkills = tailoredContent?.skills ?? [];
+  const tailoredTitle = typeof tailoredContent?.title === 'string' ? tailoredContent.title.trim() : '';
   const tailoredSoftSkills = normalizeSkills(tailoredContent?.softSkills);
-  const tailoredStrengths = renderableStrengths(tailoredContent?.strengths);
   const data = {
     ...profile,
     contact: {
@@ -2110,31 +1876,34 @@ export function prepareResumeRenderData(
     },
     companyName: companyName || '',
     role: role || '',
-    title: sanitizeTitleForATS(getResumeTitle(profile)),
-    skillInventory: normalizeSkills([
-      ...(profile.skills ?? []),
-      ...tailoredHardSkills,
-      ...tailoredSkills,
-    ]),
-    // The profile's own lists, for an untailored render. Whether either is
-    // shown at all is the profile's switch, decided in `applySkillsLimit`.
+    // Tailored, the title exactly as tailoring composed it; else the
+    // profile's own headline.
+    title: sanitizeTitleForATS(tailoredTitle || getResumeTitle(profile)),
+    // The profile's own lists. Strengths stay the profile's own on every
+    // render, tailored or not: the tailoring prompt writes none, and one an
+    // older build or a JSON edit put in the content is not printed. Whether
+    // either section is shown at all is the profile's switch, decided in
+    // `applySkillsLimit`.
     softSkills: profile.softSkills ?? [],
     strengths: profile.strengths ?? [],
     ...(tailoredContent && {
       summary: tailoredContent.summary,
-      experience: tailoredContent.experience,
-      skills: tailoredSkills,
-      hardSkills: tailoredHardSkills,
-      // The tailored lists when they have anything in them, and the profile's
-      // own when they do not. Tailored content can predate the switch being
-      // turned on - a preview held by the page and sent back with a batch, or
-      // a queued task - and then carries nothing for the section; showing the
-      // person's own entries beats an empty section they asked for.
+      experience: tailoredRoles(tailoredContent.experience),
+      // The printed block when it has any group; see `applySkillsLimit`.
+      skillGroups: tailoredContent.skillGroups,
+      softSkillGroupHeading: tailoredContent.softSkillGroupHeading,
+      // Content from before the model wrote the block carries only the flat
+      // list, under either name.
+      hardSkills: tailoredContent.hardSkills?.length ? tailoredContent.hardSkills : (tailoredContent.skills ?? []),
+      // Used only when no soft-skill group is routed: the content's own list
+      // when it has anything in it, else the profile's. Content can predate
+      // the switch being turned on - a held preview, a queued task - and then
+      // carries nothing for the section; the person's own entries beat an
+      // empty section they asked for.
       softSkills: tailoredSoftSkills.length > 0 ? tailoredSoftSkills : (profile.softSkills ?? []),
-      strengths: tailoredStrengths.length > 0 ? tailoredStrengths : (profile.strengths ?? []),
-    })
+    }),
   };
-  return normalizeExperienceDescriptions(applySkillsLimit(data, options));
+  return normalizeExperienceDescriptions(applySkillsLimit(data));
 }
 
 /** The render data a template is compiled against. */
@@ -2178,7 +1947,9 @@ const warnedSectionFallbacks = new Set<string>();
  * did, with its own error.
  *
  * Handlebars compiles lazily, so this parse is the one place a broken cut can
- * be caught before a render; it runs only on a compile-cache miss.
+ * be caught before a render; it runs only on a compile-cache miss. (The
+ * description guard makes the same check of its own cut, since every rung
+ * here runs it.)
  */
 function compilableMarkup(template: Template, choices: ResumeSectionChoices): string {
   const markup = normalizeTemplateSkillsSections(template.htmlContent, choices);
@@ -2423,13 +2194,19 @@ function previewPageChrome(box: ResumePageBox): string {
 }
 
 /**
- * A template rendered with the sample resume (`SAMPLE_PROFILE`, in
- * services/sampleProfile.ts), for the gallery.
+ * A template rendered with the sample resume, for the gallery: the sample
+ * person (`SAMPLE_PROFILE`) TAILORED (`SAMPLE_TAILORED_CONTENT`, both in
+ * services/sampleProfile.ts), through the same tailored branch a generated
+ * resume takes - a model's skill groups, no role descriptions, a composed
+ * title - so the gallery shows what a generated resume looks like rather
+ * than a block no generation prints.
  *
- * With no choices it is what the gallery has always shown: categorized, no
- * Soft Skills or Strengths. A caller may ask for the flat layout or either
- * section, so a template can be shown the way a particular profile would get
- * it.
+ * With no choices: Grouped, no Soft Skills or Strengths section, so the
+ * sample's soft-skill group is the block's last heading. A caller may ask for
+ * the flat layout or either section, so a template can be shown the way a
+ * particular profile would get it; read through `profileForTemplate`, as
+ * every generation is, so a switch the template has no section for keeps the
+ * soft-skill group in the block.
  */
 export function generateTemplatePreviewHTML(
   template: Template,
@@ -2443,7 +2220,7 @@ export function generateTemplatePreviewHTML(
       includeStrengths: choices.strengths === true,
     },
   };
-  const renderData = prepareResumeRenderData(sample);
+  const renderData = prepareResumeRenderData(profileForTemplate(sample, template), SAMPLE_TAILORED_CONTENT);
   const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
   return `${document}${previewPageChrome(resolveTemplatePageBox(template))}`;
 }
@@ -2495,15 +2272,13 @@ export interface ProfilePreview {
  * compile choices, post-processing and document), untailored, with the
  * gallery's page chrome so it is as wide as the printed page.
  *
- * Two differences from generation, both deliberate. A categorized block is not
- * padded from the library (see `ResumeRenderOptions.padSkillCategories`). And
- * the document carries a Content-Security-Policy, because it contains whatever
- * is in the editor at that moment.
+ * One difference from generation, and a deliberate one: the document carries a
+ * Content-Security-Policy, because it contains whatever is in the editor at
+ * that moment. Its skills are the profile's own, unpadded - as every
+ * untailored render's are (see `applySkillsLimit`).
  */
 export function generateProfilePreviewHTML(profile: Profile, template: Template): ProfilePreview {
-  const renderData = prepareResumeRenderData(profileForTemplate(profile, template), undefined, undefined, undefined, {
-    padSkillCategories: false,
-  });
+  const renderData = prepareResumeRenderData(profileForTemplate(profile, template));
   const box = resolveTemplatePageBox(template);
   const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
   const shrunkOntoA4 = box.mediaScale !== 1;

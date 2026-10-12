@@ -26,8 +26,6 @@ import {
   PromptVariableDefinition,
 } from '../types/prompt';
 import { normalizePromptModelOverride, readStoredPromptModelSelection } from './aiModelCatalog';
-import { renderIndustryListForPrompt } from '../config/industries';
-import { renderJobFieldListForPrompt } from '../config/jobFields';
 import type { AIProvider } from '../types/template';
 
 const CUSTOM_PROMPT_PREFIX = 'custom-';
@@ -36,34 +34,102 @@ const PROFILE_SCOPED_PROMPT_FEATURES = new Set<PromptFeatureKey>([
   'tailor-resume',
 ]);
 
+/** What Admin -> Prompts and the refusals say about a single-prompt feature. */
+type SinglePromptRule = {
+  /** The refusal of a new variant (`createPrompt`, or moving a prompt into the feature). */
+  variant: string;
+  /** The refusal of activating one an older build created. */
+  activation: string;
+};
+
 /**
- * The job analysis has ONE prompt, the built-in Analyze Job Description an
- * administrator may edit, and it is never chosen per profile or activated
- * from a variant: one analysis per posting for every profile (owner decision
- * J0) needs one prompt to produce it. A variant written before this is kept
- * and listed - it is the administrator's text - but nothing runs it.
+ * Features with ONE prompt: the built-in record an administrator may edit,
+ * run by its exact id on a model the CODE chooses (`runChoiceWins`). So a
+ * variant would never run, an activation would change nothing and a model
+ * override would be ignored - none is offered, and a stale `activePrompts`
+ * entry an older build wrote for one is ignored. A variant written before is
+ * kept and listed - it is the administrator's text - but nothing runs it.
+ *
+ * - The analysis and the job facts are the two calls of a posting's ONE
+ *   analysis, for every profile (owner decisions J0, O1), on the analysis
+ *   model.
+ * - The revise pass is the tailoring's second call, run by its exact id on
+ *   the model the resume is charged at, whichever tailoring prompt the
+ *   profile chose.
+ * - A cover letter runs on the model the resume is charged at. Its
+ *   activation was inert even before: the call always named the built-in
+ *   (or a per-profile id no page ever set), so an activated variant showed
+ *   "Live" and never ran.
  */
-const ANALYSIS_PROMPT_FEATURE: PromptFeatureKey = 'analyze-job-description';
+const SINGLE_PROMPT_FEATURES: ReadonlyMap<PromptFeatureKey, SinglePromptRule> = new Map<PromptFeatureKey, SinglePromptRule>([
+  [
+    'analyze-job-description',
+    {
+      variant: 'Job analysis has one prompt, the built-in Analyze Job Description. Edit that prompt instead of adding another.',
+      activation: 'Job analysis always runs the built-in Analyze Job Description prompt. Edit that prompt instead.',
+    },
+  ],
+  [
+    'filter-google-sheet-job',
+    {
+      variant:
+        'The job facts have one prompt, the built-in Job Facts (Filter), which every analysis runs beside Analyze Job ' +
+        'Description. Edit that prompt instead of adding another.',
+      activation: 'Every analysis runs the built-in Job Facts (Filter) prompt. Edit that prompt instead.',
+    },
+  ],
+  [
+    'revise-resume-coverage',
+    {
+      variant:
+        'The revise pass has one prompt, the built-in Revise Resume Coverage, which runs after a tailoring that left ' +
+        'checklist terms out or whose bullets carry fewer than five figures. Edit that prompt instead of adding ' +
+        'another.',
+      activation: 'Every revise pass runs the built-in Revise Resume Coverage prompt. Edit that prompt instead.',
+    },
+  ],
+  [
+    'generate-cover-letter',
+    {
+      variant:
+        'A cover letter has one prompt, the built-in Generate Cover Letter. Edit that prompt instead of adding another.',
+      activation: 'Every cover letter runs the built-in Generate Cover Letter prompt. Edit that prompt instead.',
+    },
+  ],
+]);
+
+function isSinglePromptFeature(featureKey?: PromptFeatureKey): boolean {
+  return Boolean(featureKey && SINGLE_PROMPT_FEATURES.has(featureKey));
+}
+
+/** The single-prompt features, in the feature list's order - for the tests that hold the page's copy to it. */
+export function listSinglePromptFeatures(): PromptFeatureKey[] {
+  return PROMPT_FEATURES.map((feature) => feature.key).filter(isSinglePromptFeature);
+}
 
 /**
  * Variables whose value the CODE fixes and is the same on every call, so
  * promptAssembly keeps them in the cacheable stable part of the prompt rather
- * than starting the call's data at them. The analysis prompt's lists of job
- * fields and of industries are the two: variables so there is one copy of
- * each list (config/jobFields.ts, config/industries.ts), not because they vary.
+ * than starting the call's data at them. None today: the analysis prompt's
+ * job field and industry lists were the two, and neither reaches a model as a
+ * variable any more - the job field list is code-owned text on the facts call
+ * (services/jobAnalysis/jobFieldLine.ts) and the industry is derived. Kept,
+ * with `isStableSegment`, for the next code constant a prompt carries.
  */
-export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set(['jobFieldList', 'industryList']);
+export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set<string>();
 
 /**
- * Built-in prompt ids whose feature was retired. An administrator's edited
- * copy of one may still be stored; it is not listed as a stray custom prompt,
- * because nothing could run it or attach it to anything.
- *
- * `filter-google-sheet-job` was the Job Filter's own reading of a posting.
- * The filter now judges the job analysis (owner decision J8), whose prompt
- * asks for the same facts, so a posting is read once whichever comes first.
+ * When the prompt contract of the owner's texts took effect (owner decision
+ * O1): the `updatedAt` of the shipped analysis, job facts and tailoring files,
+ * which test/promptVariables.test.js holds equal to it. A STORED record of
+ * those features saved before then was written for an older contract, and
+ * some of those name only variables that are still supplied - an analysis
+ * edit from before the job field lists asked for "bare infinitive verbs" and
+ * used just `[[jobDescription]]`, as did the Job Filter's prompt before it was
+ * retired - so no reading of its variables can tell it from the owner's new
+ * text. Its date can: see `contractSince`.
  */
-const RETIRED_BUILT_IN_PROMPT_IDS: ReadonlySet<string> = new Set(['filter-google-sheet-job']);
+export const OWNER_PROMPTS_CONTRACT = '2026-10-12T00:00:00.000Z';
 
 type PromptFeatureDefinition = {
   key: PromptFeatureKey;
@@ -78,14 +144,26 @@ type PromptFeatureDefinition = {
   allowedVariables: PromptVariableDefinition[];
   /**
    * Variables every record of this feature must use, by name - each one of
-   * `allowedVariables`. A prompt without them would run and quietly do the
-   * wrong thing (an analysis that files no posting under a job field or an
-   * industry, a tailoring that ignores the profile's section switches), so a
-   * save without them is refused (`assertValidPromptDraft`), and a stored
+   * `allowedVariables`. Contract markers: a record without them cannot
+   * produce what the code parses (an analysis or a facts call that never
+   * shows the model the posting, a cover letter written from no profile), so
+   * a save without them is refused (`assertValidPromptDraft`), and a stored
    * record without them is marked `needsUpdate` and never run: the
-   * feature's built-in prompt runs in its place (`usableAtRuntime`).
+   * feature's built-in prompt runs in its place (`usableAtRuntime`). So does
+   * a stored record naming a variable the code no longer supplies - which is
+   * how an edit written for an older contract gives way to the shipped text.
    */
   requiredVariables?: readonly string[];
+  /**
+   * When this feature's prompt contract last changed - what the code sends
+   * the prompt and what it reads back - as an ISO time. A record of the
+   * feature STORED (an administrator's edit of the built-in, or a variant)
+   * with an earlier `updatedAt` is `needsUpdate` whatever variables it uses,
+   * `savedForOlderVersion` on the way out, and the built-in runs in its place
+   * until it is saved again; the shipped file itself never is. Absent for a
+   * feature whose contract an older edit still meets.
+   */
+  contractSince?: string;
 };
 
 type StoredPromptMeta = {
@@ -109,6 +187,8 @@ type StoredPromptSource = {
   parsed: StoredPromptJson;
   content: string;
   timestamps: { createdAt: string; updatedAt: string } | null;
+  /** The shipped default file, or a record in the database - only the second can be written for an older contract. */
+  origin: 'shipped' | 'stored';
 };
 
 type PromptLibraryConfig = {
@@ -126,40 +206,16 @@ const PROMPT_FEATURES: PromptFeatureDefinition[] = [
     id: 'analyze-job-description',
     name: 'Analyze Job Description',
     description:
-      'Reads a job posting once: ATS keywords, role metadata, soft-skill signals, its one job field, ' +
-      'the salary it states, and the facts the Job Filter judges it on.',
+      'Reads a job posting once for its keywords: role metadata, skills, technologies, protocols, methods, ' +
+      'architecture, responsibilities, domain knowledge and the ATS keywords a resume is checked against.',
     usage:
-      'The one job analysis. Every posting is analysed once, ever, on the analysis model chosen under ' +
-      'Admin -> Settings; an edit here reaches only postings never analysed before.',
+      'The first of the two calls of the one job analysis (the second is Job Facts (Filter)). Every posting is ' +
+      'analysed once, ever, on the analysis model chosen under Admin -> Settings; an edit here reaches only ' +
+      'postings never analysed before.',
     responseFormat: 'json',
-    requiredVariables: ['jobFieldList', 'industryList'],
+    contractSince: OWNER_PROMPTS_CONTRACT,
+    requiredVariables: ['jobDescription'],
     allowedVariables: [
-      {
-        name: 'jobFieldList',
-        description:
-          'The closed list of job fields, one "id: Label" line each under its area, ending with "unclassified". ' +
-          'The same text for every posting, so keep it BEFORE the posting: that part of the prompt is cached.',
-        sampleValue: `Building software (by platform or target):
-- frontend: Frontend / web UI (HTML, CSS, JavaScript/TypeScript, frameworks like React, Vue, Angular and Svelte)
-- backend: Backend (APIs, business logic, databases, authentication, queues)
-- unclassified: none of the above fits`,
-      },
-      {
-        name: 'industryList',
-        description:
-          'The closed list of industries, one "id: Label" line each, ending with "not_specified". ' +
-          'The same text for every posting, so keep it BEFORE the posting, beside the job fields: that part is cached.',
-        sampleValue: `- healthcare: Healthcare
-- finance: Finance
-- technology: Technology
-- other: Other
-- not_specified: the posting gives nothing to tell its industry by`,
-      },
-      {
-        name: 'jobLink',
-        description: 'The posting\'s own link, or empty when it has none.',
-        sampleValue: 'https://jobs.example.com/openings/senior-software-engineer',
-      },
       {
         name: 'jobDescription',
         description: 'Raw job description text pasted by the user.',
@@ -171,6 +227,43 @@ You will design scalable APIs, collaborate cross-functionally, improve reliabili
 
 Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced startup environments.`,
       },
+      {
+        name: 'jobLink',
+        description: 'The posting\'s own link, or empty when it has none.',
+        sampleValue: 'https://jobs.example.com/openings/senior-software-engineer',
+      },
+    ],
+  },
+  {
+    key: 'filter-google-sheet-job',
+    label: 'Job Facts (Filter)',
+    id: 'filter-google-sheet-job',
+    name: 'Job Facts (Filter)',
+    description:
+      'Reads the facts of a posting: job type, onsite interview, company category (its industry), seniority, ' +
+      'clearance, salary, region and state - what the Job Filter judges and the sheet and the lake show. The ' +
+      'code adds the job field to it.',
+    usage:
+      'The second of the two calls of the one job analysis, beside Analyze Job Description, on the same analysis ' +
+      'model. The code adds the job field list and asks for "job_field" itself, so no edit here can drop it; an ' +
+      'edit reaches only postings never analysed before.',
+    responseFormat: 'json',
+    contractSince: OWNER_PROMPTS_CONTRACT,
+    requiredVariables: ['jobDescription'],
+    allowedVariables: [
+      {
+        name: 'jobDescription',
+        description: 'Raw job description text, the same the analysis prompt reads.',
+        sampleValue: `Senior Software Engineer (Remote, US)
+
+We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL and AWS.
+5+ years of experience. Interviews are held over video. $150k - $180k a year.`,
+      },
+      {
+        name: 'jobLink',
+        description: 'The posting\'s own link, or empty when it has none.',
+        sampleValue: 'https://jobs.example.com/openings/senior-software-engineer',
+      },
     ],
   },
   {
@@ -178,113 +271,134 @@ Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced s
     label: 'Tailor Resume',
     id: 'tailor-resume',
     name: 'Tailor Resume',
-    description: 'Rewrites a profile against structured job analysis data and returns tailored resume content.',
-    usage: 'Prompt variant available for profile-specific resume generation.',
+    description:
+      'Writes the tailored resume from a profile and a posting\'s analysis: the headline the code builds on, the ' +
+      'summary, every role\'s bullets, the Technical Skills block in groups (the posting\'s soft skills last) and a ' +
+      'cover letter.',
+    usage:
+      'Runs for every resume, on the model it is charged at; a profile may choose a variant of its own. The code ' +
+      'composes the title, restores each role\'s facts from the profile, keeps eight bullets a role and prints the ' +
+      'skill groups as written. Revise Resume Coverage may follow it.',
     responseFormat: 'json',
-    requiredVariables: ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout'],
+    contractSince: OWNER_PROMPTS_CONTRACT,
+    requiredVariables: ['profileJson', 'jobAnalysisJson', 'softSkillGroupHeading'],
     allowedVariables: [
       {
         name: 'profileJson',
-        description: 'Serialized candidate profile JSON.',
-        sampleValue: `{
-  "name": "Jane Doe",
-  "title": "Senior Software Engineer",
-  "totalYearsExperience": 7,
-  "summary": "Backend-focused engineer with experience in scalable systems.",
-  "skills": ["Node.js", "TypeScript", "PostgreSQL", "AWS"],
-  "experience": [
-    {
-      "title": "Senior Software Engineer",
-      "company": "Acme",
-      "startDate": "01/2022",
-      "endDate": "Present",
-      "location": "Remote",
-      "description": "Builds backend services and platform tooling.",
-      "skills": ["Node.js", "TypeScript", "PostgreSQL", "AWS"],
-      "achievements": [
-        "Reduced API latency by 35%.",
-        "Led migration to TypeScript."
-      ]
-    }
-  ]
-}`,
+        description:
+          'The candidate as the model needs them: name, headline, years, summary, roles with their achievements, ' +
+          'skills, education and certifications - strengths only while the Strengths switch is on. No contact ' +
+          'details and no settings.',
+        sampleValue: `{"name":"Jane Doe","title":"Senior Software Engineer","totalYearsExperience":7,"summary":"Backend engineer.","experience":[{"title":"Senior Software Engineer","company":"Acme","startDate":"01/2022","endDate":"Present","location":"Remote","companyContext":"Builds backend services.","achievements":["Cut API latency from 180ms to 118ms."],"skills":["Node.js","TypeScript"]}],"skills":["Node.js","TypeScript","PostgreSQL","AWS"],"education":[],"certifications":[]}`,
       },
       {
         name: 'jobAnalysisJson',
-        description: 'Serialized job analysis JSON produced from the target job description.',
-        sampleValue: `{
-  "jobMeta": {
-    "title": "Senior Backend Engineer",
-    "seniority": "Senior",
-    "industry": "Software",
-    "department": "Engineering"
-  },
-  "skills": {
-    "required": ["Node.js", "TypeScript", "PostgreSQL", "AWS"],
-    "preferred": ["GraphQL", "Docker"],
-    "tools": ["Docker"],
-    "technologies": ["microservices", "CI/CD"]
-  },
-  "responsibilities": [
-    "design and implement scalable backend services",
-    "collaborate with product and design teams"
-  ],
-  "domainKnowledge": ["backend platforms", "distributed systems"],
-  "softSkills": ["high ownership mentality", "excellent written communication"],
-  "keywords": {
-    "actionVerbs": ["design", "collaborate"],
-    "buzzwords": ["scalable systems", "ownership mindset"],
-    "mustInclude": ["Node.js", "TypeScript"]
-  }
-}`,
+        description:
+          'The posting\'s analysis in the analysis prompt\'s own schema: jobMeta, skills (technical, tools, soft), ' +
+          'technologies, protocols, methodologies, architecturePatterns, responsibilities, domainKnowledge and ' +
+          'keywords. Never the posting\'s text, salary or filter facts.',
+        sampleValue: `{"jobMeta":{"title":"Senior Backend Engineer","seniority":"senior","industry":"SaaS","department":"engineering"},"skills":{"technical":["API design","code review"],"tools":["Docker","Datadog"],"soft":["Communication skills","Ownership"]},"technologies":["Node.js","TypeScript","PostgreSQL","AWS"],"protocols":["REST"],"methodologies":["CI/CD"],"architecturePatterns":["microservices"],"responsibilities":["backend service development","incident response ownership"],"domainKnowledge":["payments"],"keywords":{"actionVerbs":["built","migrated"],"buzzwords":["cloud-native"],"mustInclude":["Node.js","TypeScript"]}}`,
       },
       {
         name: 'jobTitle',
-        description: 'Exact job title extracted from job analysis.',
+        description: 'The posting\'s own title, as the analysis read it (the same as targetRoleTitle).',
+        sampleValue: 'Senior Backend Engineer',
+      },
+      {
+        name: 'targetRoleTitle',
+        description:
+          'The posting\'s own title - the role this resume is aimed at. The code also composes the KIND of role ' +
+          'onto the candidate\'s headline from it.',
         sampleValue: 'Senior Backend Engineer',
       },
       {
         name: 'skillsJSON',
-        description: 'Serialized technical skills extracted from the job analysis, including skills, tools, technologies, protocols, methodologies, and architecture patterns.',
-        sampleValue: `["Node.js", "TypeScript", "PostgreSQL", "AWS", "GraphQL", "Docker"]`,
+        description:
+          'What the posting named, in its own spelling: its technical abilities, tools, technologies and ' +
+          'protocols. Repeats dropped, nothing from the skill library.',
+        sampleValue: `["API design","code review","Docker","Datadog","Node.js","TypeScript","PostgreSQL","AWS","REST"]`,
       },
       {
-        name: 'hardSkillsJson',
-        description: 'Backward-compatible alias for skillsJSON. Serialized flat array of code-decided technical skill names.',
-        sampleValue: `["TypeScript", "Python", "JavaScript", "SQL", "Go", "React", "Node.js", "Next.js", "Express", "Django"]`,
-      },
-      {
-        name: 'domainKnowledge',
-        description: 'Serialized domain knowledge and industry terms array.',
-        sampleValue: `["backend platforms", "distributed systems", "Software"]`,
+        name: 'topSkillsJson',
+        description:
+          'The five technologies, tools or protocols the posting leans on most - named in its requirements, first, ' +
+          'and repeated - scored by the code.',
+        sampleValue: `["Node.js","TypeScript","PostgreSQL","AWS","Docker"]`,
       },
       {
         name: 'keywordsJson',
-        description: 'Serialized unified ATS keyword array, including action terms, tools, technologies, domain terms, and soft skills.',
-        sampleValue: `["scalable systems", "cross-functional collaboration", "ownership mindset", "written communication"]`,
+        description:
+          'The prose targets: the posting\'s soft skills, its must-include terms and its past-tense action verbs ' +
+          '(the banned ones left out) - minus anything already in skillsJSON or conceptKeywordsJson.',
+        sampleValue: `["Communication skills","Ownership","built","migrated"]`,
+      },
+      {
+        name: 'conceptKeywordsJson',
+        description:
+          'The architecture patterns, methodologies and buzzwords the posting named, minus anything in skillsJSON.',
+        sampleValue: `["microservices","CI/CD","cloud-native"]`,
+      },
+      {
+        name: 'conceptToolsJson',
+        description:
+          'For each concept the posting named that the code\'s table knows (CI/CD, observability, message queues ' +
+          '...), the tools it is built with - their order shuffled for each resume.',
+        sampleValue: `[{"concept":"CI/CD","tools":["GitHub Actions","Jenkins","GitLab CI","CircleCI"]},{"concept":"microservices","tools":["Docker","Kubernetes","gRPC"]}]`,
       },
       {
         name: 'keyResponsibilitiesJson',
-        description: 'Serialized job responsibilities array.',
-        sampleValue: `[
-  "design and implement scalable backend services",
-  "collaborate with product and design teams"
-]`,
+        description: 'The posting\'s responsibilities, as the analysis wrote them.',
+        sampleValue: `["backend service development","incident response ownership"]`,
       },
       {
-        name: 'includeStrengths',
-        description: 'Whether the profile shows a Strengths section: "yes" or "no". On "no" the code discards any strengths returned.',
-        sampleValue: 'yes',
+        name: 'domainKnowledge',
+        description: 'The domain knowledge the posting asks for, as the analysis wrote it.',
+        sampleValue: `["payments","billing systems"]`,
       },
       {
-        name: 'includeSoftSkills',
-        description: 'Whether the profile shows a Soft Skills section: "yes" or "no". The list itself is decided by code, from the profile first.',
-        sampleValue: 'no',
+        name: 'softSkillGroupHeading',
+        description:
+          'The heading the last skill group - the posting\'s soft skills - must carry, drawn per resume from a ' +
+          'fixed list. The code finds the soft-skill group by it, and prints it in the Soft Skills section while ' +
+          'that switch is on.',
+        sampleValue: 'Professional Skills',
+      },
+    ],
+  },
+  {
+    key: 'revise-resume-coverage',
+    label: 'Revise Resume Coverage',
+    id: 'revise-resume-coverage',
+    name: 'Revise Resume Coverage',
+    description:
+      'Works the checklist terms a tailored draft left out - and the figures its bullets lack - into its summary ' +
+      'and bullets, changing as little as possible.',
+    usage:
+      'Runs after a fresh tailoring that left checklist terms out, or whose bullets carry fewer than five figures, ' +
+      'on the model the resume is charged at. Never on a reused tailoring or on content a page sent back. ' +
+      'TAILOR_REVISE_PASS turns it off.',
+    responseFormat: 'json',
+    requiredVariables: ['draftJson', 'missingTermsJson'],
+    allowedVariables: [
+      {
+        name: 'draftJson',
+        description: 'The tailored draft as it would print: its summary, and each role\'s company, title and bullets.',
+        sampleValue: `{"summary":"7 years of backend engineering across payment platforms.","experience":[{"company":"Acme","title":"Senior Software Engineer","achievements":["Rewrote the settlement endpoints in Node.js, taking approval time from 9s to 1.4s."]}]}`,
       },
       {
-        name: 'technicalSkillsLayout',
-        description: 'How the profile lays out Technical Skills: "grouped" (under category headings) or "plain" (one list). The skills themselves are decided by code.',
-        sampleValue: 'grouped',
+        name: 'missingTermsJson',
+        description:
+          'The checklist terms the summary and bullets do not carry, in priority order (TAILOR_REVISE_MAX_TERMS at ' +
+          'most). Never a term with a banned word in it.',
+        sampleValue: `["incident response","Datadog","Communication skills"]`,
+      },
+      {
+        name: 'figuresNote',
+        description:
+          'A sentence asking for more figures in the bullets when they carry fewer than five, or empty.',
+        sampleValue:
+          'FIGURES. 3 of the bullets carry a figure and a resume needs at least five. Add a figure to 2 more ' +
+          'bullets, never to the summary.',
       },
     ],
   },
@@ -294,8 +408,11 @@ Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced s
     id: 'generate-cover-letter',
     name: 'Generate Cover Letter',
     description: 'Generates a concise cover letter body using the profile and application details.',
-    usage: 'Prompt variant available for profile-specific cover letter generation.',
+    usage:
+      'Writes the cover letter when the tailoring answer brought none (or there is no posting to tailor to), ' +
+      'on the model the resume is charged at.',
     responseFormat: 'text',
+    requiredVariables: ['profileJson'],
     allowedVariables: [
       { name: 'profileJson', description: 'Serialized candidate profile JSON.' },
       { name: 'companyName', description: 'Target company name.', sampleValue: 'Acme' },
@@ -504,6 +621,11 @@ function featureAllowedVariables(featureKey: PromptFeatureKey): PromptVariableDe
   );
 }
 
+/** Every prompt feature, in the order Admin -> Prompts lists them - which the page's copy is held to. */
+export function listPromptFeatureKeys(): PromptFeatureKey[] {
+  return PROMPT_FEATURES.map((feature) => feature.key);
+}
+
 /** The names a feature's code supplies to its prompt, for the drift test and the docs. */
 export function listPromptFeatureVariableNames(featureKey: PromptFeatureKey): string[] {
   return getPromptFeatureDefinition(featureKey).allowedVariables.map((variable) => variable.name);
@@ -532,9 +654,38 @@ function missingVariablesSentence(featureKey: PromptFeatureKey, missing: readonl
   );
 }
 
-/** `needsUpdate` for a stored record missing a required variable, spread onto it. */
-function promptFlags(validation: PromptValidation) {
-  return validation.missingVariables.length > 0 ? { needsUpdate: true as const } : {};
+/**
+ * Whether a STORED record of a feature was saved before the feature's
+ * current prompt contract (`contractSince`). An `updatedAt` that is no time
+ * at all counts as before: a record nobody can date is not trusted over the
+ * shipped text.
+ */
+function predatesContract(featureKey: PromptFeatureKey, updatedAt: string): boolean {
+  const since = getPromptFeatureDefinition(featureKey).contractSince;
+  if (!since) return false;
+  const saved = Date.parse(updatedAt);
+  return !(saved >= Date.parse(since));
+}
+
+/**
+ * `needsUpdate`, spread onto a stored record: for a FEATURE record, one that
+ * lacks a required variable, names one its feature's code does not supply
+ * (an edit written for an older contract - an analysis asking for the lists,
+ * a filter reading `[[jobContent]]`), or was saved before its feature's
+ * contract changed (`savedForOlderVersion` - an older edit naming only
+ * variables still supplied). Any of them, and the feature's built-in runs in
+ * its place (`usableAtRuntime`). An unattached record is never flagged: it
+ * has nothing to give way to, and its unknown variables fail its run as they
+ * always did.
+ */
+function promptFlags(validation: PromptValidation, featureKey: PromptFeatureKey | undefined, savedForOlderVersion: boolean) {
+  const older = featureKey !== undefined && savedForOlderVersion;
+  const outdated =
+    validation.missingVariables.length > 0 || (featureKey !== undefined && validation.unknownVariables.length > 0) || older;
+  return {
+    ...(outdated ? { needsUpdate: true as const } : {}),
+    ...(older ? { savedForOlderVersion: true as const } : {}),
+  };
 }
 
 function buildSampleValue(variableName: string): string {
@@ -554,22 +705,24 @@ Looking for a backend-leaning engineer with Node.js, TypeScript, PostgreSQL, Doc
       return `{
   "jobMeta": {
     "title": "Senior Backend Engineer",
-    "seniority": "Senior",
-    "industry": "Software",
-    "department": "Engineering"
+    "seniority": "senior",
+    "industry": "SaaS",
+    "department": "engineering"
   },
   "skills": {
-    "required": ["Node.js", "TypeScript", "PostgreSQL", "AWS"],
-    "preferred": ["GraphQL", "Docker"],
+    "technical": ["API design"],
     "tools": ["Docker"],
-    "technologies": ["microservices", "CI/CD"]
+    "soft": ["Ownership"]
   },
-  "responsibilities": ["design scalable backend services"],
-  "domainKnowledge": ["backend platforms", "distributed systems"],
-  "softSkills": ["ownership mindset"],
+  "technologies": ["Node.js", "TypeScript", "PostgreSQL", "AWS"],
+  "protocols": ["REST"],
+  "methodologies": ["CI/CD"],
+  "architecturePatterns": ["microservices"],
+  "responsibilities": ["backend service development"],
+  "domainKnowledge": ["payments"],
   "keywords": {
-    "actionVerbs": ["design"],
-    "buzzwords": ["scalable systems"],
+    "actionVerbs": ["built"],
+    "buzzwords": ["cloud-native"],
     "mustInclude": ["Node.js", "TypeScript"]
   }
 }`;
@@ -582,16 +735,6 @@ Looking for a backend-leaning engineer with Node.js, TypeScript, PostgreSQL, Doc
       return 'Sample resume text content for preview.';
     case 'templateName':
       return 'Imported Template';
-    case 'includeStrengths':
-      return 'yes';
-    case 'includeSoftSkills':
-      return 'no';
-    case 'technicalSkillsLayout':
-      return 'grouped';
-    case 'jobFieldList':
-      return renderJobFieldListForPrompt();
-    case 'industryList':
-      return renderIndustryListForPrompt();
     case 'jobLink':
       return 'https://jobs.example.com/openings/senior-software-engineer';
     default:
@@ -746,6 +889,7 @@ async function readDefaultPromptFile(id: string): Promise<StoredPromptSource | n
       parsed,
       content,
       timestamps: await safeStat(filePath),
+      origin: 'shipped',
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -770,6 +914,7 @@ function toStoredPromptSource(record: StoredPrompt): StoredPromptSource | null {
     },
     content,
     timestamps: null,
+    origin: 'stored',
   };
 }
 
@@ -802,7 +947,15 @@ function normalizePromptLibraryConfig(input: unknown): PromptLibraryConfig {
 
   for (const feature of PROMPT_FEATURES) {
     const value = rawActivePrompts[feature.key];
-    if (!isProfileScopedPromptFeature(feature.key) && typeof value === 'string' && value.trim()) {
+    // Nothing is activated for a feature that runs one prompt per profile or
+    // one prompt in all: a stale entry an older build wrote is dropped here,
+    // and with it on the next write.
+    if (
+      !isProfileScopedPromptFeature(feature.key) &&
+      !isSinglePromptFeature(feature.key) &&
+      typeof value === 'string' &&
+      value.trim()
+    ) {
       activePrompts[feature.key] = value.trim();
     }
   }
@@ -833,6 +986,7 @@ function toPromptSummary(record: PromptRecord): PromptSummary {
     allowedVariables: record.allowedVariables,
     validation: record.validation,
     ...(record.needsUpdate ? { needsUpdate: true as const } : {}),
+    ...(record.savedForOlderVersion ? { savedForOlderVersion: true as const } : {}),
     isBuiltIn: record.isBuiltIn,
     isActiveForFeature: record.isActiveForFeature,
     usage: record.usage,
@@ -868,6 +1022,10 @@ function builtInRecordFrom(definition: PromptFeatureDefinition, stored: StoredPr
   );
   const allowedVariables = featureAllowedVariables(definition.key);
   const validation = validatePromptContent(stored.content, allowedVariables);
+  const updatedAt = typeof stored.parsed.updatedAt === 'string'
+    ? stored.parsed.updatedAt
+    : stored.timestamps?.updatedAt ?? new Date().toISOString();
+  const older = stored.origin === 'stored' && predatesContract(definition.key, updatedAt);
 
   return {
     id: definition.id,
@@ -882,16 +1040,14 @@ function builtInRecordFrom(definition: PromptFeatureDefinition, stored: StoredPr
     modelName: modelSelection?.modelName,
     allowedVariables,
     validation,
-    ...promptFlags(validation),
+    ...promptFlags(validation, definition.key, older),
     isBuiltIn: true,
     isActiveForFeature: false,
     usage: definition.usage,
     createdAt: typeof stored.parsed.createdAt === 'string'
       ? stored.parsed.createdAt
       : stored.timestamps?.createdAt ?? new Date().toISOString(),
-    updatedAt: typeof stored.parsed.updatedAt === 'string'
-      ? stored.parsed.updatedAt
-      : stored.timestamps?.updatedAt ?? new Date().toISOString(),
+    updatedAt,
     content: stored.content,
   };
 }
@@ -945,7 +1101,7 @@ function readCustomPromptRecord(id: string): PromptRecord | null {
     modelName: prompt.modelName,
     allowedVariables: prompt.allowedVariables,
     validation,
-    ...promptFlags(validation),
+    ...promptFlags(validation, prompt.featureKey, Boolean(prompt.featureKey && predatesContract(prompt.featureKey, prompt.updatedAt))),
     isBuiltIn: false,
     isActiveForFeature: false,
     usage: prompt.featureKey ? getPromptFeatureDefinition(prompt.featureKey).usage : undefined,
@@ -976,7 +1132,7 @@ async function listAllPromptRecords(): Promise<PromptRecord[]> {
     .filter((record): record is PromptRecord => record !== null);
 
   const customRecords = listCustomPrompts()
-    .filter((prompt) => !getPromptFeatureDefinitionById(prompt.id) && !RETIRED_BUILT_IN_PROMPT_IDS.has(prompt.id))
+    .filter((prompt) => !getPromptFeatureDefinitionById(prompt.id))
     .map((prompt) => readCustomPromptRecord(prompt.id))
     .filter((record): record is PromptRecord => record !== null);
 
@@ -989,9 +1145,9 @@ async function listAllPromptRecords(): Promise<PromptRecord[]> {
     }
 
     const variants = [...builtInRecords, ...customRecords].filter((record) => record.featureKey === feature.key);
-    // The analysis runs its built-in record and nothing else, whatever an
-    // older build recorded as activated.
-    const configuredId = feature.key === ANALYSIS_PROMPT_FEATURE ? undefined : config.activePrompts[feature.key];
+    // A single-prompt feature runs its built-in record and nothing else,
+    // whatever an older build recorded as activated.
+    const configuredId = isSinglePromptFeature(feature.key) ? undefined : config.activePrompts[feature.key];
     const activeId = configuredId && variants.some((record) => record.id === configuredId)
       ? configuredId
       : variants.some((record) => record.id === feature.id)
@@ -1092,13 +1248,10 @@ function resolveCreateDraftContext(input: PromptCreateInput): {
   };
 }
 
-/** A new prompt for the analysis feature would never run: there is one analysis prompt. */
-function assertNotAnalysisVariant(featureKey: PromptFeatureKey | undefined): void {
-  if (featureKey === ANALYSIS_PROMPT_FEATURE) {
-    throw new Error(
-      'Job analysis has one prompt, the built-in Analyze Job Description. Edit that prompt instead of adding another.'
-    );
-  }
+/** A new prompt for a single-prompt feature would never run: it has one prompt, its built-in. */
+function assertNotSinglePromptVariant(featureKey: PromptFeatureKey | undefined): void {
+  const rule = featureKey ? SINGLE_PROMPT_FEATURES.get(featureKey) : undefined;
+  if (rule) throw new Error(rule.variant);
 }
 
 export async function createPrompt(input: PromptCreateInput): Promise<PromptRecord> {
@@ -1114,7 +1267,7 @@ export async function createPrompt(input: PromptCreateInput): Promise<PromptReco
   if (!content) {
     throw new Error('Prompt content is required');
   }
-  assertNotAnalysisVariant(draftContext.featureKey);
+  assertNotSinglePromptVariant(draftContext.featureKey);
 
   // For a feature prompt, the variables its code supplies (see
   // `featureAllowedVariables`); otherwise the ones the author declared.
@@ -1210,8 +1363,8 @@ export async function updatePrompt(id: string, input: PromptUpdateInput): Promis
   const description = normalizePromptDescription(input.description ?? current.description);
   const draftContext = resolveUpdateDraftContext(input, current);
   // A variant written before keeps its feature; moving another prompt INTO
-  // the analysis feature would make one more that never runs.
-  if (draftContext.featureKey !== current.featureKey) assertNotAnalysisVariant(draftContext.featureKey);
+  // a single-prompt feature would make one more that never runs.
+  if (draftContext.featureKey !== current.featureKey) assertNotSinglePromptVariant(draftContext.featureKey);
   const modelSelection = normalizePromptModelOverride(
     input.modelProvider ?? current.modelProvider,
     input.modelName ?? current.modelName,
@@ -1253,12 +1406,11 @@ export async function activatePrompt(id: string): Promise<PromptActivationResult
     throw new Error('Only feature-linked prompts can be activated');
   }
   if (isProfileScopedPromptFeature(prompt.featureKey)) {
-    throw new Error('Resume and cover letter prompts are selected per profile');
+    throw new Error('Resume prompts are selected per profile');
   }
-  if (prompt.featureKey === ANALYSIS_PROMPT_FEATURE && prompt.id !== ANALYSIS_PROMPT_FEATURE) {
-    throw new Error(
-      'Job analysis always runs the built-in Analyze Job Description prompt. Edit that prompt instead.'
-    );
+  const single = SINGLE_PROMPT_FEATURES.get(prompt.featureKey);
+  if (single && prompt.id !== prompt.featureKey) {
+    throw new Error(single.activation);
   }
 
   const config = readPromptLibraryConfig();
@@ -1364,11 +1516,40 @@ export async function validatePromptDraft(input: PromptPreviewInput): Promise<Pr
 const warnedNeedsUpdate = new Set<string>();
 
 /**
- * The record a run uses in place of `record`: itself, unless it lacks one of
- * its feature's required variables (`needsUpdate`) - then the feature's
- * built-in prompt, as an administrator edited it when that edit is complete,
- * else as it shipped. Said once per record and text, naming what is missing,
- * so the administrator knows their edit is not what runs.
+ * Why a flagged record is not run, as the log line says it: the required
+ * variables it leaves out, the variables it names that this version's code
+ * does not supply, and whether it was saved before its feature's contract
+ * changed - each a sign of an edit written for an older prompt contract.
+ */
+function needsUpdateReason(record: PromptRecord, label: string): string {
+  const reasons: string[] = [];
+  if (record.validation.missingVariables.length > 0) {
+    reasons.push(`does not use ${variableList(record.validation.missingVariables)}, which every ${label} prompt must`);
+  }
+  if (record.validation.unknownVariables.length > 0) {
+    reasons.push(`uses ${variableList(record.validation.unknownVariables)}, which this version does not supply`);
+  }
+  if (record.savedForOlderVersion) {
+    reasons.push(`dates from an older version of the ${label} prompt`);
+  }
+  return reasons.join(', and ');
+}
+
+/**
+ * The record a run uses in place of `record`: itself, unless it is flagged
+ * `needsUpdate` - it lacks one of its feature's required variables, names
+ * one its feature's code no longer supplies, or was saved before its
+ * feature's contract changed - then the feature's built-in prompt, as an
+ * administrator edited it when that edit is usable, else as it shipped. Said
+ * once per record and text, naming the reason, so the administrator knows
+ * their edit is not what runs.
+ *
+ * This is how an edit made for an older contract gives way to the shipped
+ * text with no migration: an analysis edit asking for the old job field and
+ * industry lists, a filter edit reading `[[jobContent]]`, a tailoring
+ * variant written before its required variables - and, by its date, an
+ * analysis or job facts edit older than the lists that names nothing but
+ * `[[jobDescription]]`, as the owner's new texts do too.
  *
  * Only the runtime asks this; Admin -> Prompts lists and edits the stored
  * record as it is, flagged.
@@ -1382,8 +1563,7 @@ async function usableAtRuntime(record: PromptRecord | null): Promise<PromptRecor
   if (!warnedNeedsUpdate.has(key)) {
     warnedNeedsUpdate.add(key);
     console.warn(
-      `[prompts] The prompt "${record.name}" (${record.id}) does not use ` +
-        `${variableList(record.validation.missingVariables)}, which every ${definition.label} prompt must; ` +
+      `[prompts] The prompt "${record.name}" (${record.id}) ${needsUpdateReason(record, definition.label)}; ` +
         `the built-in ${definition.label} prompt runs instead until it is updated under Admin -> Prompts.`
     );
   }

@@ -237,13 +237,17 @@ test('an AI failure on a route is one public sentence; the seat, the command and
   const server = await serve('ai-route', (app) => {
     app.use('/api/resume', require('../dist/routes/resume').default);
   });
-  writeStaticJson(server.staticDir, 'prompts/analyze-job-description.json', {
-    id: 'analyze-job-description',
-    content: 'Analyse [[jobDescription]]',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-    allowedVariables: [{ name: 'jobDescription' }],
-  });
+  // Both of an analysis's prompts: its two calls run side by side, and the
+  // first to fail is the one the caller hears about.
+  for (const id of ['analyze-job-description', 'filter-google-sheet-job']) {
+    writeStaticJson(server.staticDir, `prompts/${id}.json`, {
+      id,
+      content: 'Analyse [[jobDescription]]',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      allowedVariables: [{ name: 'jobDescription' }],
+    });
+  }
   const ai = require('../dist/services/ai/index');
   ai.resetRegistryForTests();
   ai.registerAdapter('claude-cli', () => ({

@@ -15,18 +15,22 @@ const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
  * A feature prompt is rendered from values its feature's code builds - the
  * tailoring call's `buildTailorResumePromptValues`, the analysis's
  * `buildAnalyzeJobDescriptionPromptValues` and so on. A variable outside that set cannot
- * be filled, so a record naming one fails every run that uses it. These pin:
- * the declared list and the builders never drift apart; a typo is refused when
- * a prompt is saved, not discovered when a resume fails; a record must use its
- * feature's REQUIRED variables - the analysis's two lists, the tailoring's
- * three section switches - to be saved; and a stored record without them is
- * marked `needsUpdate` and never run: the built-in prompt runs in its place.
+ * be filled. These pin: the declared list and the builders never drift apart;
+ * a typo is refused when a prompt is saved, not discovered when a resume
+ * fails; a record must use its feature's REQUIRED variables - the posting for
+ * the analysis and the facts call, the profile for the cover letter, the
+ * tailoring's own set - to be saved; and a stored feature record without
+ * them, or naming one the code no longer supplies, is marked `needsUpdate`
+ * and never run: the built-in prompt runs in its place.
  */
 
 const shipped = path.join(__dirname, '..', 'static');
 
-/** The tailoring prompt's three switches, as a record must name them. */
-const SWITCHES = 'Strengths: [[includeStrengths]]. Soft: [[includeSoftSkills]]. Layout: [[technicalSkillsLayout]].';
+/**
+ * What a tailoring record must name besides `[[profileJson]]`: the analysis,
+ * and the heading the code finds the soft-skill group by.
+ */
+const MARKERS = '[[jobAnalysisJson]]\nHead the soft skills [[softSkillGroupHeading]].';
 
 function seeded(name, { prompts = false } = {}) {
   const storage = useTempStorage(`prompt-variables-${name}`);
@@ -85,10 +89,17 @@ test('every feature declares exactly the variables its code supplies', () => {
   seeded('drift');
   const promptService = loadFresh('../dist/services/promptService');
   const resumeService = loadFresh('../dist/services/resumeService');
+  const reviseCoverage = loadFresh('../dist/services/reviseCoverage');
 
   const supplied = {
     'analyze-job-description': resumeService.buildAnalyzeJobDescriptionPromptValues('A posting.', 'https://jobs.example.com/1'),
+    'filter-google-sheet-job': resumeService.buildJobFactsPromptValues('A posting.', 'https://jobs.example.com/1'),
     'tailor-resume': resumeService.buildTailorResumePromptValues(profile(), ANALYSIS),
+    'revise-resume-coverage': reviseCoverage.buildReviseResumeCoveragePromptValues(
+      { summary: 'Engineer.', experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Built it.'] }] },
+      ['Docker'],
+      { carried: 0, wanted: 1 }
+    ),
     'generate-cover-letter': resumeService.buildCoverLetterPromptValues(profile(), 'Acme', 'Engineer'),
     'extract-template-from-pdf': resumeService.buildExtractTemplatePromptValues('PDF text', 'Imported'),
     'extract-profile-from-resume': resumeService.buildExtractProfilePromptValues('Resume text'),
@@ -102,17 +113,15 @@ test('every feature declares exactly the variables its code supplies', () => {
     );
   }
 
-  // The two lists are the code's own constants: the same text for any
-  // posting, kept in the cacheable stable part.
-  const { renderIndustryListForPrompt } = require('../dist/config/industries');
-  const analysis = supplied['analyze-job-description'];
-  assert.equal(analysis.industryList, renderIndustryListForPrompt());
-  assert.equal(resumeService.buildAnalyzeJobDescriptionPromptValues('Another.', '').industryList, analysis.industryList);
-  assert.deepEqual([...promptService.STABLE_PROMPT_VARIABLES].sort(), ['industryList', 'jobFieldList']);
-  // Every value the analysis prompt is given before [[jobLink]] is stable.
-  for (const name of Object.keys(analysis)) {
-    if (name === 'jobLink' || name === 'jobDescription') continue;
-    assert.ok(promptService.STABLE_PROMPT_VARIABLES.has(name), `${name} is the same for every posting`);
+  // Every feature is listed, and nothing is supplied that no feature declares.
+  assert.deepEqual(Object.keys(supplied).sort(), promptService.listPromptFeatureKeys().sort());
+
+  // No value is a code constant kept in the cached part any more: the job
+  // field list travels as code-owned text on the facts call, not a variable,
+  // and no analysis variable is a list.
+  assert.deepEqual([...promptService.STABLE_PROMPT_VARIABLES], []);
+  for (const feature of ['analyze-job-description', 'filter-google-sheet-job']) {
+    assert.deepEqual(Object.keys(supplied[feature]).sort(), ['jobDescription', 'jobLink'], feature);
   }
 });
 
@@ -127,7 +136,7 @@ test('a typo in a feature prompt is refused when it is saved, and named when it 
   assert.deepEqual(await promptService.validatePromptDraft({ id: 'tailor-resume', content: typo }), {
     usedVariables: ['profileJson', 'includeSoftSkillz'],
     unknownVariables: ['includeSoftSkillz'],
-    missingVariables: ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout'],
+    missingVariables: ['jobAnalysisJson', 'softSkillGroupHeading'],
   });
   await assert.rejects(
     () => promptService.updatePrompt('tailor-resume', { content: typo }),
@@ -143,13 +152,19 @@ test('a typo in a feature prompt is refused when it is saved, and named when it 
   assert.deepEqual(
     await promptService.validatePromptDraft({
       featureKey: 'tailor-resume',
-      content: '[[profileJson]] [[includeStrengths]] [[technicalSkillsLayout]]',
+      content: '[[profileJson]] [[topSkillsJson]] [[softSkillGroupHeading]]',
     }),
     {
-      usedVariables: ['profileJson', 'includeStrengths', 'technicalSkillsLayout'],
+      usedVariables: ['profileJson', 'topSkillsJson', 'softSkillGroupHeading'],
       unknownVariables: [],
-      missingVariables: ['includeSoftSkills'],
+      missingVariables: ['jobAnalysisJson'],
     }
+  );
+  // The section switches are not variables now: an edit written for them names three nothing supplies.
+  assert.deepEqual(
+    (await promptService.validatePromptDraft({ featureKey: 'tailor-resume', content: '[[includeStrengths]] [[technicalSkillsLayout]]' }))
+      .unknownVariables,
+    ['includeStrengths', 'technicalSkillsLayout']
   );
   // An unattached prompt still declares its own.
   assert.deepEqual(
@@ -159,7 +174,7 @@ test('a typo in a feature prompt is refused when it is saved, and named when it 
   assert.deepEqual((await promptService.validatePromptDraft({ content: '[[profileJson]]' })).unknownVariables, ['profileJson']);
 
   // The new variables are as good as the old ones.
-  const saved = await promptService.updatePrompt('tailor-resume', { content: `Tailor.\n[[profileJson]]\n${SWITCHES}` });
+  const saved = await promptService.updatePrompt('tailor-resume', { content: `Tailor.\n[[profileJson]]\n${MARKERS}` });
   assert.deepEqual(saved.validation.unknownVariables, []);
   assert.deepEqual(saved.validation.missingVariables, []);
   assert.equal(saved.needsUpdate, undefined);
@@ -170,75 +185,112 @@ test('the shipped prompts validate clean against what their code supplies', asyn
   const promptService = loadFresh('../dist/services/promptService');
   const prompts = await promptService.listPrompts();
 
-  // Five features since the Job Filter's own prompt was retired into the
-  // analysis (owner decision J8).
-  assert.equal(prompts.length, 5);
+  // Seven features: the analysis's two calls (owner decision O1), the
+  // tailoring and its revise pass, the cover letter and the two extractors.
+  assert.equal(prompts.length, 7);
   for (const prompt of prompts) {
     assert.deepEqual(prompt.validation.unknownVariables, [], `${prompt.id} names a variable nothing supplies`);
   }
   const tailor = prompts.find((prompt) => prompt.id === 'tailor-resume');
-  for (const name of ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout']) {
-    const variable = tailor.allowedVariables.find((entry) => entry.name === name);
-    assert.ok(variable?.description, `${name} is documented for the editor`);
-    assert.ok(variable.sampleValue, `${name} has a sample for previews`);
+  for (const variable of tailor.allowedVariables) {
+    assert.ok(variable.description, `${variable.name} is documented for the editor`);
+    assert.ok(variable.sampleValue, `${variable.name} has a sample for previews`);
   }
-  assert.equal(tailor.needsUpdate, undefined, 'the shipped text knows about the switches');
+  assert.equal(tailor.needsUpdate, undefined, 'the shipped text names every marker');
   assert.deepEqual(tailor.validation.missingVariables, []);
   assert.deepEqual(
     tailor.allowedVariables.filter((entry) => entry.required).map((entry) => entry.name),
-    ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout'],
+    ['profileJson', 'jobAnalysisJson', 'softSkillGroupHeading'],
     'the editor is told which are required'
   );
-  const analysis = prompts.find((prompt) => prompt.id === 'analyze-job-description');
-  assert.equal(analysis.needsUpdate, undefined, 'the shipped analysis asks for a job field and an industry from the lists');
-  assert.deepEqual(analysis.validation.missingVariables, []);
+  // The owner's tailoring text uses every list the code builds for it; jobTitle is offered, not used.
   assert.deepEqual(
-    analysis.allowedVariables.filter((entry) => entry.required).map((entry) => entry.name),
-    ['jobFieldList', 'industryList']
+    [...tailor.validation.usedVariables].sort(),
+    [
+      'conceptKeywordsJson', 'conceptToolsJson', 'domainKnowledge', 'jobAnalysisJson', 'keyResponsibilitiesJson',
+      'keywordsJson', 'profileJson', 'skillsJSON', 'softSkillGroupHeading', 'targetRoleTitle', 'topSkillsJson',
+    ]
   );
-  for (const prompt of prompts.filter((entry) => !['tailor-resume', 'analyze-job-description'].includes(entry.id))) {
-    assert.equal(prompt.allowedVariables.some((entry) => entry.required), false, `${prompt.id} requires nothing`);
+  // The contract markers of the other features, each used by its shipped text.
+  const required = {
+    'analyze-job-description': ['jobDescription'],
+    'filter-google-sheet-job': ['jobDescription'],
+    'revise-resume-coverage': ['draftJson', 'missingTermsJson'],
+    'generate-cover-letter': ['profileJson'],
+    'extract-template-from-pdf': [],
+    'extract-profile-from-resume': [],
+  };
+  for (const [id, names] of Object.entries(required)) {
+    const prompt = prompts.find((entry) => entry.id === id);
+    assert.equal(prompt.needsUpdate, undefined, `${id} ships complete`);
+    assert.deepEqual(prompt.validation.missingVariables, [], id);
+    assert.deepEqual(prompt.allowedVariables.filter((entry) => entry.required).map((entry) => entry.name), names, id);
+    for (const variable of prompt.allowedVariables) assert.ok(variable.description, `${id}: ${variable.name} is documented`);
   }
-  for (const name of ['jobFieldList', 'industryList', 'jobLink', 'jobDescription']) {
-    assert.ok(analysis.validation.usedVariables.includes(name), `the shipped analysis prompt uses [[${name}]]`);
-    assert.ok(analysis.allowedVariables.find((entry) => entry.name === name)?.description, `${name} is documented`);
+  // The owner's analysis and facts texts read the posting alone; the link is offered, not used.
+  for (const id of ['analyze-job-description', 'filter-google-sheet-job']) {
+    assert.deepEqual(prompts.find((entry) => entry.id === id).validation.usedVariables, ['jobDescription'], id);
   }
 
+  assert.deepEqual(
+    prompts.find((entry) => entry.id === 'revise-resume-coverage').validation.usedVariables,
+    ['draftJson', 'missingTermsJson', 'figuresNote']
+  );
+
   const preview = await promptService.previewPrompt({ id: 'tailor-resume' });
-  assert.equal(preview.sampleValues.includeStrengths, 'yes');
-  assert.equal(preview.sampleValues.includeSoftSkills, 'no');
-  assert.equal(preview.sampleValues.technicalSkillsLayout, 'grouped');
-  assert.match(preview.renderedContent, /Strengths section: yes/);
+  assert.equal(preview.sampleValues.softSkillGroupHeading, 'Professional Skills');
+  assert.match(preview.renderedContent, /Head it exactly Professional Skills - that heading/);
   assert.doesNotMatch(preview.renderedContent, /\[\[/);
+  const revisePreview = await promptService.previewPrompt({ id: 'revise-resume-coverage' });
+  assert.match(revisePreview.renderedContent, /^THE DRAFT/m);
+  assert.doesNotMatch(revisePreview.renderedContent, /\[\[/);
 });
 
 test('a save that leaves out a required variable is refused, naming it and the rule', async () => {
   const { staticDir } = seeded('required');
-  writePrompt(staticDir, 'tailor-resume', `Tailor.\n[[profileJson]]\n${SWITCHES}`);
-  writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobFieldList]]\n[[industryList]]\n[[jobDescription]]');
+  writePrompt(staticDir, 'tailor-resume', `Tailor.\n[[profileJson]]\n${MARKERS}`);
+  writePrompt(staticDir, 'revise-resume-coverage', 'Revise.\n[[draftJson]]\n[[missingTermsJson]]');
+  writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]');
+  writePrompt(staticDir, 'generate-cover-letter', 'Write.\n[[profileJson]]');
   const promptService = loadFresh('../dist/services/promptService');
 
   await assert.rejects(
-    () => promptService.updatePrompt('tailor-resume', { content: 'Tailor.\n[[profileJson]]\nStrengths: [[includeStrengths]]' }),
+    () => promptService.updatePrompt('tailor-resume', { content: 'Tailor.\n[[profileJson]]\n[[softSkillGroupHeading]]' }),
     (error) =>
       error.message ===
-      'Missing required prompt variables: includeSoftSkills, technicalSkillsLayout. Every Tailor Resume prompt must use ' +
-        '[[includeStrengths]], [[includeSoftSkills]] and [[technicalSkillsLayout]].'
+      'Missing required prompt variables: jobAnalysisJson. Every Tailor Resume prompt must use ' +
+        '[[profileJson]], [[jobAnalysisJson]] and [[softSkillGroupHeading]].'
   );
   await assert.rejects(
     () => promptService.createPrompt({ name: 'Old Variant', featureKey: 'tailor-resume', content: 'Old.\n[[profileJson]]' }),
-    /Missing required prompt variables: includeStrengths, includeSoftSkills, technicalSkillsLayout\./
+    /Missing required prompt variables: jobAnalysisJson, softSkillGroupHeading\./
   );
   await assert.rejects(
-    () => promptService.updatePrompt('analyze-job-description', { content: 'Analyze.\n[[jobFieldList]]\n[[jobDescription]]' }),
+    () => promptService.updatePrompt('revise-resume-coverage', { content: 'Revise.\n[[draftJson]]\n[[figuresNote]]' }),
     (error) =>
       error.message ===
-      'Missing required prompt variables: industryList. Every Analyze Job Description prompt must use ' +
-        '[[jobFieldList]] and [[industryList]].'
+      'Missing required prompt variables: missingTermsJson. Every Revise Resume Coverage prompt must use ' +
+        '[[draftJson]] and [[missingTermsJson]].'
+  );
+  await assert.rejects(
+    () => promptService.updatePrompt('analyze-job-description', { content: 'Analyze the posting at [[jobLink]].' }),
+    (error) =>
+      error.message ===
+      'Missing required prompt variables: jobDescription. Every Analyze Job Description prompt must use [[jobDescription]].'
+  );
+  await assert.rejects(
+    () => promptService.updatePrompt('generate-cover-letter', { content: 'Write to [[companyName]] about [[role]].' }),
+    /^Error: Missing required prompt variables: profileJson\. Every Generate Cover Letter prompt must use \[\[profileJson\]\]\.$/
+  );
+  // A variable the code no longer supplies is refused by name, before the rule.
+  await assert.rejects(
+    () => promptService.updatePrompt('analyze-job-description', { content: 'Analyze.\n[[jobFieldList]]\n[[jobDescription]]' }),
+    /^Error: Unknown prompt variables: jobFieldList$/
   );
   // Nothing was stored by the refusals.
   const listed = new Map((await promptService.listPrompts()).map((prompt) => [prompt.id, prompt]));
-  assert.match((await promptService.getPromptById('tailor-resume')).content, /Layout/);
+  assert.match((await promptService.getPromptById('tailor-resume')).content, /Head the soft skills/);
+  assert.equal((await promptService.getPromptById('analyze-job-description')).content, 'Analyze.\n[[jobDescription]]');
   assert.equal([...listed.keys()].some((id) => id.startsWith('custom-')), false);
 
   // A feature with no required variables saves without them, and an unattached prompt has none.
@@ -250,9 +302,9 @@ test('a save that leaves out a required variable is refused, naming it and the r
   assert.deepEqual(extract.validation.missingVariables, []);
 });
 
-test('a stored record missing a required variable is marked, with the names, and only that', async () => {
+test('a stored record missing a required variable, or naming one nothing supplies, is marked, with the names, and only that', async () => {
   const { staticDir } = seeded('needs-update');
-  writePrompt(staticDir, 'tailor-resume', `Tailor.\n[[profileJson]]\n${SWITCHES}`);
+  writePrompt(staticDir, 'tailor-resume', `Tailor.\n[[profileJson]]\n${MARKERS}`);
   writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobFieldList]]\nJob link: [[jobLink]]\n[[jobDescription]]');
   const promptService = loadFresh('../dist/services/promptService');
   const { saveStoredPrompt } = require('../dist/database/promptRepository');
@@ -269,33 +321,55 @@ test('a stored record missing a required variable is marked, with the names, and
   });
 
   const listed = new Map((await promptService.listPrompts()).map((prompt) => [prompt.id, prompt]));
+  // A variant written for the section switches: it lacks the new markers and
+  // names a switch the code no longer supplies.
   assert.equal(listed.get('custom-tailor-resume-old').needsUpdate, true);
-  assert.deepEqual(listed.get('custom-tailor-resume-old').validation.missingVariables, ['includeSoftSkills', 'technicalSkillsLayout']);
+  assert.deepEqual(listed.get('custom-tailor-resume-old').validation.missingVariables, ['jobAnalysisJson', 'softSkillGroupHeading']);
+  assert.deepEqual(listed.get('custom-tailor-resume-old').validation.unknownVariables, ['includeStrengths']);
   assert.equal(listed.get('tailor-resume').needsUpdate, undefined);
-  // The shipped analysis file here predates the industry: marked too.
+  // The analysis file here asks for the job field list, which no version
+  // supplies now: marked too, naming it as unknown and nothing as missing.
   assert.equal(listed.get('analyze-job-description').needsUpdate, true);
-  assert.deepEqual(listed.get('analyze-job-description').validation.missingVariables, ['industryList']);
+  assert.deepEqual(listed.get('analyze-job-description').validation.unknownVariables, ['jobFieldList']);
+  assert.deepEqual(listed.get('analyze-job-description').validation.missingVariables, []);
 
-  // Saved with the list, the mark goes; [[industryList]] is a variable it may use.
+  // Saved without it, the mark goes.
   const saved = await promptService.updatePrompt('analyze-job-description', {
-    content: 'Analyze.\n[[jobFieldList]]\n[[industryList]]\nJob link: [[jobLink]]\n[[jobDescription]]',
+    content: 'Analyze.\nJob link: [[jobLink]]\n[[jobDescription]]',
   });
   assert.deepEqual(saved.validation.unknownVariables, []);
   assert.equal(saved.needsUpdate, undefined);
   const preview = await promptService.previewPrompt({ id: 'analyze-job-description' });
-  assert.match(preview.renderedContent, /- healthcare: Healthcare/, 'the preview shows the real list');
+  assert.match(preview.renderedContent, /^Analyze\.\nJob link: https:\/\//, 'the preview fills the samples');
   assert.doesNotMatch(preview.renderedContent, /\[\[/);
+
+  // An UNATTACHED prompt naming a variable it does not declare is not marked:
+  // it has no built-in to give way to, and its run fails as it always did.
+  saveStoredPrompt({
+    id: 'custom-loose',
+    name: 'Loose',
+    content: 'Hello [[name]] and [[stray]]',
+    allowedVariables: [{ name: 'name' }],
+    isBuiltIn: false,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const loose = (await promptService.listPrompts()).find((prompt) => prompt.id === 'custom-loose');
+  assert.deepEqual(loose.validation.unknownVariables, ['stray']);
+  assert.equal(loose.needsUpdate, undefined);
+  await assert.rejects(promptService.renderPrompt('custom-loose', { name: 'x' }), /contains unknown variables: stray/);
 });
 
 test('a record that needs updating is never run: the built-in prompt runs in its place, said once', async () => {
   const { staticDir } = seeded('needs-update-runtime');
-  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${SWITCHES}`);
-  writePrompt(staticDir, 'analyze-job-description', 'Shipped analysis.\n[[jobFieldList]]\n[[industryList]]\n[[jobDescription]]');
+  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
+  writePrompt(staticDir, 'analyze-job-description', 'Shipped analysis.\n[[jobDescription]]');
   const promptService = loadFresh('../dist/services/promptService');
   const { saveStoredPrompt } = require('../dist/database/promptRepository');
   const at = '2026-01-01T00:00:00.000Z';
-  // An administrator's edit of the built-in analysis that never names the industries,
-  // and a tailoring variant that never names the switches - both stored before the rule.
+  // An administrator's edit of the built-in analysis written for the older
+  // contract (the job field list), and a tailoring variant that never names
+  // the analysis or the soft-skill heading - both stored before the rules.
   saveStoredPrompt({ id: 'analyze-job-description', featureKey: 'analyze-job-description', content: 'Edited.\n[[jobFieldList]]\n[[jobDescription]]', isBuiltIn: true, createdAt: at, updatedAt: at });
   saveStoredPrompt({ id: 'custom-tailor-resume-mine', name: 'Mine', featureKey: 'tailor-resume', content: 'Mine.\n[[profileJson]]', isBuiltIn: false, createdAt: at, updatedAt: at });
 
@@ -307,12 +381,10 @@ test('a record that needs updating is never run: the built-in prompt runs in its
     assert.match(analysis.content, /^Shipped analysis/, 'the shipped text, not the edit');
     assert.equal(analysis.needsUpdate, undefined);
     const segments = await promptService.renderPromptSegmentsByExactId('analyze-job-description', {
-      jobFieldList: 'FIELDS',
-      industryList: 'INDUSTRIES',
       jobLink: '',
       jobDescription: 'A posting.',
     });
-    assert.match(segments.map((segment) => segment.text).join(''), /^Shipped analysis\.\nFIELDS\nINDUSTRIES\nA posting\.$/);
+    assert.match(segments.map((segment) => segment.text).join(''), /^Shipped analysis\.\nA posting\.$/);
 
     const variant = await promptService.resolvePromptByExactId('custom-tailor-resume-mine');
     assert.equal(variant.id, 'tailor-resume', 'the feature\'s built-in runs for the variant');
@@ -321,15 +393,100 @@ test('a record that needs updating is never run: the built-in prompt runs in its
 
     const said = (id) => warnings.filter((line) => line.includes(`(${id})`) && line.includes('runs instead'));
     assert.equal(said('analyze-job-description').length, 1, 'said once, however often it is asked');
-    assert.match(said('analyze-job-description')[0], /does not use \[\[industryList\]\]/);
+    assert.match(
+      said('analyze-job-description')[0],
+      /\(analyze-job-description\) uses \[\[jobFieldList\]\], which this version does not supply, and dates from an older version of the Analyze Job Description prompt; the built-in/
+    );
     assert.equal(said('custom-tailor-resume-mine').length, 1);
-    assert.match(said('custom-tailor-resume-mine')[0], /\[\[includeStrengths\]\], \[\[includeSoftSkills\]\] and \[\[technicalSkillsLayout\]\]/);
+    assert.match(said('custom-tailor-resume-mine')[0], /does not use \[\[jobAnalysisJson\]\] and \[\[softSkillGroupHeading\]\], which every Tailor Resume prompt must/);
   } finally {
     console.warn = realWarn;
   }
 
   // Admin -> Prompts still shows - and edits - the stored record as it is.
   assert.match((await promptService.getPromptById('analyze-job-description')).content, /^Edited/);
+});
+
+/*
+ * The owner's analysis and job facts texts name nothing but
+ * `[[jobDescription]]` (and the optional `[[jobLink]]`) - and so did an
+ * analysis edit saved before the job field lists, and an edit of the Job
+ * Filter's prompt before it was retired. No reading of a record's variables
+ * can tell those apart from a valid edit of today, so a stored record of a
+ * feature whose contract changed is dated: saved before `contractSince`, it
+ * is `needsUpdate` and `savedForOlderVersion`, and the built-in runs in its
+ * place until it is saved again. The shipped file is never dated.
+ */
+test('a stored edit saved before its feature\'s contract changed gives way by its date, whatever variables it uses', async () => {
+  const { staticDir } = seeded('older-contract', { prompts: true });
+  const promptService = loadFresh('../dist/services/promptService');
+  const { saveStoredPrompt } = require('../dist/database/promptRepository');
+  const before = '2026-01-02T00:00:00.000Z';
+  saveStoredPrompt({ id: 'analyze-job-description', featureKey: 'analyze-job-description', content: 'OLD ADMIN ANALYSIS EDIT. Extract keywords as JSON.\n\n[[jobDescription]]', isBuiltIn: true, createdAt: before, updatedAt: before });
+  saveStoredPrompt({ id: 'filter-google-sheet-job', featureKey: 'filter-google-sheet-job', content: 'OLD ADMIN FILTER EDIT.\n[[jobDescription]]', isBuiltIn: true, createdAt: before, updatedAt: before });
+  saveStoredPrompt({ id: 'custom-tailor-resume-dated', name: 'Dated', featureKey: 'tailor-resume', content: `Dated variant.\n[[profileJson]]\n${MARKERS}`, isBuiltIn: false, createdAt: before, updatedAt: before });
+  // A cover letter edit meets the contract it was written for, which has not changed: never dated.
+  saveStoredPrompt({ id: 'generate-cover-letter', featureKey: 'generate-cover-letter', content: 'MY LETTER EDIT.\n[[profileJson]]', isBuiltIn: true, createdAt: before, updatedAt: before });
+
+  const listed = new Map((await promptService.listPrompts()).map((prompt) => [prompt.id, prompt]));
+  for (const id of ['analyze-job-description', 'filter-google-sheet-job', 'custom-tailor-resume-dated']) {
+    const prompt = listed.get(id);
+    assert.deepEqual(prompt.validation.missingVariables, [], id);
+    assert.deepEqual(prompt.validation.unknownVariables, [], id);
+    assert.equal(prompt.needsUpdate, true, id);
+    assert.equal(prompt.savedForOlderVersion, true, id);
+  }
+  assert.equal(listed.get('generate-cover-letter').needsUpdate, undefined);
+  assert.equal(listed.get('generate-cover-letter').savedForOlderVersion, undefined);
+
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    const analysis = await promptService.resolvePromptByExactId('analyze-job-description');
+    assert.doesNotMatch(analysis.content, /OLD ADMIN ANALYSIS EDIT/);
+    assert.equal(analysis.content, JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', 'analyze-job-description.json'), 'utf8')).content.trim());
+    assert.equal(analysis.needsUpdate, undefined, 'the shipped file is never dated');
+    const facts = await promptService.renderPromptSegmentsByExactId('filter-google-sheet-job', { jobDescription: 'A posting.', jobLink: '' });
+    assert.doesNotMatch(facts.map((segment) => segment.text).join(''), /OLD ADMIN FILTER EDIT/);
+    assert.equal((await promptService.resolvePromptByExactId('custom-tailor-resume-dated')).id, 'tailor-resume');
+    assert.match((await promptService.resolvePromptByExactId('generate-cover-letter')).content, /^MY LETTER EDIT/);
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.ok(
+    warnings.some((line) =>
+      line.includes('(analyze-job-description) dates from an older version of the Analyze Job Description prompt; the built-in Analyze Job Description prompt runs instead')
+    )
+  );
+  assert.ok(warnings.some((line) => line.includes('(custom-tailor-resume-dated) dates from an older version of the Tailor Resume prompt;')));
+
+  // Saved again - under this version, the same text or another - it is the
+  // administrator's choice of today, and runs.
+  const saved = await promptService.updatePrompt('analyze-job-description', { content: 'OLD ADMIN ANALYSIS EDIT. Extract keywords as JSON.\n\n[[jobDescription]]' });
+  assert.equal(saved.needsUpdate, undefined);
+  assert.equal(saved.savedForOlderVersion, undefined);
+  assert.match((await promptService.resolvePromptByExactId('analyze-job-description')).content, /^OLD ADMIN ANALYSIS EDIT/);
+
+  // A record no time can be read off is not trusted over the shipped text either.
+  saveStoredPrompt({ id: 'filter-google-sheet-job', featureKey: 'filter-google-sheet-job', content: 'UNDATED.\n[[jobDescription]]', isBuiltIn: true, createdAt: 'x', updatedAt: 'sometime' });
+  assert.equal((await promptService.listPrompts()).find((prompt) => prompt.id === 'filter-google-sheet-job').savedForOlderVersion, true);
+
+  // A shipped file with an old date of its own is never dated: it IS the contract.
+  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
+  const shippedTailor = (await loadFresh('../dist/services/promptService').listPrompts()).find((prompt) => prompt.id === 'tailor-resume');
+  assert.equal(shippedTailor.updatedAt, '2026-01-01T00:00:00.000Z');
+  assert.equal(shippedTailor.needsUpdate, undefined);
+});
+
+test("the features whose contract changed are dated from the shipped files' own updatedAt", () => {
+  const promptService = require('../dist/services/promptService');
+  // Each shipped file of a dated feature carries the contract's time exactly,
+  // so the next change to a contract moves the two together.
+  for (const featureKey of ['analyze-job-description', 'filter-google-sheet-job', 'tailor-resume']) {
+    const file = JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', `${featureKey}.json`), 'utf8'));
+    assert.equal(file.updatedAt, promptService.OWNER_PROMPTS_CONTRACT, featureKey);
+  }
 });
 
 /*
@@ -341,7 +498,7 @@ test('a record that needs updating is never run: the built-in prompt runs in its
  */
 test('when the built-in edit needs updating as well, the shipped prompt runs, by every road', async () => {
   const { staticDir } = seeded('needs-update-both');
-  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${SWITCHES}`);
+  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
   const promptService = loadFresh('../dist/services/promptService');
   const { saveStoredPrompt } = require('../dist/database/promptRepository');
   const at = '2026-01-01T00:00:00.000Z';
@@ -361,23 +518,18 @@ test('when the built-in edit needs updating as well, the shipped prompt runs, by
       assert.equal(byRuntimeId.needsUpdate, undefined);
     }
 
-    const values = {
-      profileJson: 'PROFILE',
-      jobAnalysisJson: '',
-      includeStrengths: 'yes',
-      includeSoftSkills: 'no',
-      technicalSkillsLayout: 'grouped',
-    };
+    const values = { profileJson: 'PROFILE', jobAnalysisJson: 'ANALYSIS', softSkillGroupHeading: 'Working Style' };
     const segments = await promptService.renderPromptSegments('tailor-resume', values);
-    assert.match(segments.map((segment) => segment.text).join(''), /^Shipped tailoring\.\nPROFILE\nStrengths: yes\./);
+    assert.match(segments.map((segment) => segment.text).join(''), /^Shipped tailoring\.\nPROFILE\nANALYSIS\nHead the soft skills Working Style\./);
     assert.match(await promptService.renderPrompt('tailor-resume', values), /^Shipped tailoring\.\nPROFILE\n/);
   } finally {
     console.warn = realWarn;
   }
 });
 
-/* -------------------------------------------- the backstop, through a seat */
+/* ------------------------------------------- the contract, through a seat */
 
+/** One canned answer for the tailoring (and anything else), and no change from a revise pass. */
 function stubSeat(answer) {
   const ai = loadFresh('../dist/services/ai/index');
   ai.resetRegistryForTests();
@@ -392,28 +544,31 @@ function stubSeat(answer) {
     health: async () => ({ ok: true, detail: 'stub', checkedAt: new Date().toISOString() }),
     async complete(request) {
       requests.push(request);
-      return { text: answer, resolvedModel: request.modelName, providerId: 'claude-cli', droppedParams: [], latencyMs: 1 };
+      const text = request.callSite === 'revise-resume-coverage' ? '{}' : answer;
+      return { text, resolvedModel: request.modelName, providerId: 'claude-cli', droppedParams: [], latencyMs: 1 };
     },
   }));
   return requests;
 }
 
+const tailorings = (requests) => requests.filter((request) => request.callSite === 'tailor-resume');
+
 const CHOICE = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'm', modelLabel: 'Stub' };
 
-test('the switches are stated on every tailoring turn, whichever record runs', async () => {
+test('whichever record runs, nothing is appended to its turn, and the answer is held to the profile', async () => {
   const { staticDir } = seeded('backstop');
-  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n[[jobAnalysisJson]]\n${SWITCHES}`);
+  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
   const promptService = loadFresh('../dist/services/promptService');
 
   // An edit stored as the built-in's row, and a per-profile custom variant -
-  // both naming the switches, and both telling the model to write strengths anyway.
+  // both complete, and both telling the model to write strengths anyway.
   await promptService.updatePrompt('tailor-resume', {
-    content: `My own tailoring prompt.\n[[profileJson]]\n[[jobAnalysisJson]]\n${SWITCHES}\nAlways write 2-4 strengths; they are the overflow bucket.`,
+    content: `My own tailoring prompt.\n[[profileJson]]\n${MARKERS}\nAlways write 2-4 strengths; they are the overflow bucket.`,
   });
   const custom = await promptService.createPrompt({
     name: 'Per Profile',
     featureKey: 'tailor-resume',
-    content: `Per-profile prompt.\n[[profileJson]]\n${SWITCHES}\nWrite strengths and soft skills.`,
+    content: `Per-profile prompt.\n[[profileJson]]\n${MARKERS}\nWrite strengths and soft skills.`,
   });
 
   // A model that does what those prompts say, not what the profile says.
@@ -423,6 +578,10 @@ test('the switches are stated on every tailoring turn, whichever record runs', a
       experience: [],
       hardSkills: ['Anything'],
       softSkills: ['Model Soft'],
+      skillGroups: [
+        { category: 'Languages', skills: ['TypeScript'] },
+        { category: 'Soft Skills', skills: ['Model Soft'] },
+      ],
       strengths: [{ title: 'Model strength', description: 'Written because the prompt asked.' }],
       coverLetter: 'I build.',
     })
@@ -430,17 +589,18 @@ test('the switches are stated on every tailoring turn, whichever record runs', a
   const resumeService = loadFresh('../dist/services/resumeService');
 
   const off = await resumeService.tailorResume(profile(), ANALYSIS, CHOICE);
-  assert.equal(requests.length, 1);
-  assert.match(requests[0].userBody, /Strengths section: no\. Return "strengths": \[\]/);
-  assert.match(requests[0].userBody, /Soft skills section: no/);
-  assert.match(requests[0].userBody, /Technical skills layout: grouped/);
-  // The edited row is what rendered: its opening line as the cacheable
-  // instruction prefix, the rest with the data.
-  assert.match(requests[0].stableSystem, /My own tailoring prompt/);
-  assert.match(requests[0].userBody, /Always write 2-4 strengths/);
-  assert.equal(requests[0].stableSystem.includes('Strengths section'), false, 'an instruction about the data, with the data');
-  assert.deepEqual(off.strengths, [], 'and enforced on the answer, whatever the model sent');
-  assert.deepEqual(off.softSkills, []);
+  assert.equal(tailorings(requests).length, 1);
+  const [first] = tailorings(requests);
+  // The edited row is what rendered, with nothing after it: the prompt is the
+  // whole instruction (there is no skill override any more).
+  assert.match(first.stableSystem, /My own tailoring prompt/);
+  assert.doesNotMatch(first.userBody, /FINAL SKILL OVERRIDE|Strengths section|Technical skills layout/);
+  assert.match(first.userBody, /Always write 2-4 strengths; they are the overflow bucket\.\s*$/, "the record's own text ends the turn");
+  // And the answer is held to the profile, whatever the model sent.
+  assert.deepEqual(off.strengths, [], 'Strengths off: none');
+  assert.deepEqual(off.softSkills, [], 'Soft Skills off: the soft group stays in the skills block');
+  assert.deepEqual(off.skillGroups.map((group) => group.category), ['Languages', 'Soft Skills']);
+  assert.deepEqual(off.hardSkills, ['TypeScript'], "the model's groups, never its hardSkills field");
   assert.deepEqual(off.unconfirmedSoftSkills, []);
 
   const on = await resumeService.tailorResume(
@@ -448,15 +608,12 @@ test('the switches are stated on every tailoring turn, whichever record runs', a
     ANALYSIS,
     CHOICE
   );
-  assert.equal(requests.length, 2);
-  assert.match(requests[1].stableSystem, /Per-profile prompt/);
-  assert.match(requests[1].userBody, /Strengths section: yes/);
-  assert.match(requests[1].userBody, /Soft skills section: yes/);
-  assert.match(requests[1].userBody, /Technical skills layout: plain/);
-  assert.equal(on.strengths[0].title, 'Model strength');
-  assert.equal(on.softSkills[0], 'Persistence', "the profile's own soft skills lead, not the model's");
-  assert.equal(on.softSkills.includes('Model Soft'), false, 'a model-invented soft skill is not confirmed');
+  assert.equal(tailorings(requests).length, 2);
+  assert.match(tailorings(requests)[1].stableSystem, /Per-profile prompt/);
+  assert.deepEqual(on.strengths, [{ title: 'Own strength', description: 'Hers.' }], "the profile's own, never the model's");
+  assert.deepEqual(on.softSkills, ['Model Soft'], 'Soft Skills on: the soft group goes to its section');
   assert.equal(on.hardSkills.includes('Anything'), false);
+  assert.equal(on.hardSkills.includes('Model Soft'), false);
 });
 
 /* -------------------------------------------------------------- the routes */
@@ -503,17 +660,79 @@ test('the prompt routes refuse a variable nothing supplies, and say which', asyn
   assert.equal(created.status, 400);
   assert.match(created.body.error, /Unknown prompt variables: includeSoftSkillz/);
 
-  // A save without the required switches is refused, naming them.
-  const incomplete = await call('PUT', '/tailor-resume', { content: 'Tailor.\n[[profileJson]]\nStrengths: [[includeStrengths]]' });
+  // A save without a required variable is refused, naming it.
+  const incomplete = await call('PUT', '/tailor-resume', { content: 'Tailor.\n[[profileJson]]\n[[softSkillGroupHeading]]' });
   assert.equal(incomplete.status, 400);
-  assert.match(incomplete.body.error, /Missing required prompt variables: includeSoftSkills, technicalSkillsLayout\./);
+  assert.match(incomplete.body.error, /Missing required prompt variables: jobAnalysisJson\./);
 
   // An administrator's list says which text needs updating, and what it lacks.
   const listed = await call('GET', '/');
   const shippedRow = listed.body.find((prompt) => prompt.id === 'tailor-resume');
   assert.equal(shippedRow.needsUpdate, true);
-  assert.deepEqual(shippedRow.validation.missingVariables, ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout']);
-  const fixed = await call('PUT', '/tailor-resume', { content: `Tailor.\n[[profileJson]]\n${SWITCHES}` });
+  assert.deepEqual(shippedRow.validation.missingVariables, ['jobAnalysisJson', 'softSkillGroupHeading']);
+  const fixed = await call('PUT', '/tailor-resume', { content: `Tailor.\n[[profileJson]]\n${MARKERS}` });
   assert.equal(fixed.status, 200);
   assert.equal(fixed.body.needsUpdate, undefined);
+});
+
+/* ------------------------------------------- which record a profile runs */
+
+test("a profile naming a tailoring prompt that is gone runs the built-in, said once; a cover letter always runs the built-in", async () => {
+  const { staticDir } = seeded('profile-prompt');
+  writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
+  writePrompt(staticDir, 'generate-cover-letter', 'Shipped letter.\n[[profileJson]]\n[[companyName]] [[role]]');
+  writePrompt(staticDir, 'extract-profile-from-resume', 'Extract [[resumeText]]');
+  const promptService = loadFresh('../dist/services/promptService');
+  const { saveStoredPrompt } = require('../dist/database/promptRepository');
+  const at = '2026-01-01T00:00:00.000Z';
+  const variant = await promptService.createPrompt({
+    name: 'Per Profile',
+    featureKey: 'tailor-resume',
+    content: `Per-profile prompt.\n[[profileJson]]\n${MARKERS}`,
+  });
+  // A cover-letter variant an older build saved, and a profile naming it in
+  // the setting no page ever set.
+  saveStoredPrompt({ id: 'custom-generate-cover-letter-mine', name: 'Mine', featureKey: 'generate-cover-letter', content: 'My letter.\n[[profileJson]]', isBuiltIn: false, createdAt: at, updatedAt: at });
+
+  const requests = stubSeat(JSON.stringify({ summary: 'Engineer.', experience: [], coverLetter: 'I build.' }));
+  const resumeService = loadFresh('../dist/services/resumeService');
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  try {
+    // Its own variant: run.
+    await resumeService.tailorResume(profile({ resumePromptId: variant.id }), ANALYSIS, CHOICE);
+    assert.match(tailorings(requests).at(-1).stableSystem, /^Per-profile prompt/);
+
+    // A variant deleted since: the built-in, not `Prompt "..." not found` on every build.
+    await promptService.deletePrompt(variant.id);
+    await resumeService.tailorResume(profile({ resumePromptId: variant.id }), ANALYSIS, CHOICE);
+    assert.match(tailorings(requests).at(-1).stableSystem, /^Shipped tailoring/);
+    await resumeService.tailorResume(profile({ resumePromptId: variant.id }), ANALYSIS, CHOICE);
+    const gone = warnings.filter((line) => line.includes(`"${variant.id}"`));
+    assert.equal(gone.length, 1, 'said once per profile and id');
+    assert.match(gone[0], /does not exist; the built-in Tailor Resume prompt runs instead/);
+
+    // A prompt of another feature is no tailoring prompt either.
+    await resumeService.tailorResume(profile({ resumePromptId: 'extract-profile-from-resume' }), ANALYSIS, CHOICE);
+    assert.match(tailorings(requests).at(-1).stableSystem, /^Shipped tailoring/);
+    assert.ok(warnings.some((line) => /"extract-profile-from-resume", which is not a Tailor Resume prompt/.test(line)));
+
+    // The cover letter: its built-in, whatever the profile once stored.
+    await resumeService.generateCoverLetter(
+      profile({ coverLetterPromptId: 'custom-generate-cover-letter-mine' }),
+      'Acme',
+      'Engineer',
+      CHOICE
+    );
+    assert.equal(requests.at(-1).callSite, 'generate-cover-letter');
+    assert.match(requests.at(-1).stableSystem, /^Shipped letter/);
+  } finally {
+    console.warn = realWarn;
+  }
+
+  // And a profile save drops the setting nothing reads.
+  const { normalizeProfileSettings } = require('../dist/services/profileService');
+  assert.equal('coverLetterPromptId' in normalizeProfileSettings({ coverLetterPromptId: 'custom-generate-cover-letter-mine' }), false);
+  assert.equal('coverLetterPromptId' in normalizeProfileSettings({}, { coverLetterPromptId: 'generate-cover-letter' }), false);
 });

@@ -44,13 +44,6 @@ export interface Certification {
 }
 
 /**
- * How hard skills are ordered on the rendered resume:
- * - `library`: by the priority stored in the skill library (default)
- * - `job-priority`: by relevance to the analyzed job description
- */
-export type HardSkillOrdering = 'library' | 'job-priority';
-
-/**
  * One heading in the Technical Skills block, and the skills under it.
  *
  * `category` may be empty, and that is not a missing value - it is the flat
@@ -78,11 +71,9 @@ export type TechnicalSkillsLayout = 'categorized' | 'flat';
 
 export interface ProfileSettings {
   resumePromptId?: string;
-  coverLetterPromptId?: string;
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
-  hardSkillOrdering?: HardSkillOrdering;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**

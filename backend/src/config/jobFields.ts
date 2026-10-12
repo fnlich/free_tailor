@@ -14,10 +14,11 @@
  * may be edited freely. A field that is retired keeps its id out of use for
  * ever, for the same reason an analysis migration never reuses a number.
  *
- * The list reaches the model as the analysis prompt's `[[jobFieldList]]`
- * (`renderJobFieldListForPrompt`), which is stable text: the prompt carries it
- * BEFORE the posting so a CLI's prompt cache can reuse it from one posting to
- * the next. The answer is checked against this list in code
+ * The list reaches the model as code-owned text on the analysis's job facts
+ * call (`renderJobFieldListForPrompt`, through
+ * services/jobAnalysis/jobFieldLine.ts), which is stable text: it sits in the
+ * system part, BEFORE the posting, so a CLI's prompt cache can reuse it from
+ * one posting to the next. The answer is checked against this list in code
  * (`normalizeJobFieldId`), so a field the model invents - or one from area 9 -
  * is stored as `unclassified`, never as itself.
  */
@@ -218,8 +219,8 @@ export function jobFieldLabel(id: unknown): string {
 }
 
 /**
- * The list as the analysis prompt shows it: one `id: Label - what it covers`
- * line per field, under its area's heading.
+ * The list as the job facts call shows it (services/jobAnalysis/jobFieldLine.ts):
+ * one `id: Label (what it covers)` line per field, under its area's heading.
  *
  * A pure function of this module, so it is byte-identical for every posting -
  * which is what lets it sit in the cached part of the prompt.

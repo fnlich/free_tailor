@@ -139,11 +139,17 @@ ${strengthsHtml}${technicalSkillsSection}${softSkillsHtml}
         const bullets = (exp.achievements ?? [])
           .map((a: string) => `<p style="font-size: 9pt; color: #1A1A1A; line-height: 1.35;">- ${esc(a)}</p>`)
           .join('\n  ');
+        // No paragraph for a role with no description - every tailored one.
+        // An empty paragraph is a whole blank row in Word, between the dates
+        // and the first bullet.
+        const description = (exp.description ?? '').trim();
+        const descriptionHtml = description
+          ? `\n  <p style="font-size: 9pt; color: #1A1A1A; line-height: 1.35;">${esc(description)}</p>`
+          : '';
         return `
   <p style="font-weight: bold; font-size: 11pt; color: #1A1A1A;">${esc(exp.company ?? '')}</p>
   <p style="font-size: 10pt; color: ${accentColor}; font-style: italic;">${esc(exp.title ?? '')}</p>
-  <p style="font-size: 8pt; color: #555555;">${esc(dates)}${esc(loc)}</p>
-  <p style="font-size: 9pt; color: #1A1A1A; line-height: 1.35;">${esc(exp.description ?? '')}</p>
+  <p style="font-size: 8pt; color: #555555;">${esc(dates)}${esc(loc)}</p>${descriptionHtml}
   ${bullets}`;
       }
     )

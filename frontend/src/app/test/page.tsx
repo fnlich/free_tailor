@@ -13,16 +13,10 @@ import { AdminOnly } from '@/components/auth/AuthGate';
 import AnalysisFacts from '@/components/AnalysisFacts';
 import { Card, Field, Notice, Pill, Section } from '@/components/ui/kit';
 import { formatDate } from '@/lib/format';
+import { collectHighlightTerms, type HighlightKind, type KeywordEntry } from '@/lib/analysisHighlights';
 import { messageWithDetail } from '@/lib/userMessage';
 
 import styles from './test.module.css';
-
-type HighlightKind = 'required' | 'preferred' | 'keyword' | 'industry' | 'domain' | 'soft';
-
-type KeywordEntry = {
-  value: string;
-  kind: HighlightKind;
-};
 
 type HighlightMatch = KeywordEntry & {
   start: number;
@@ -87,100 +81,8 @@ function splitPromptTestResult(result: PromptTestAnalysis): {
   return { analysis, meta: { analysisId, jobFieldLabel, source, createdAt } };
 }
 
-function normalizeTerm(value: string): string {
-  return value.trim().replace(/\s+/g, ' ');
-}
-
-function addTerms(
-  entries: KeywordEntry[],
-  seen: Set<string>,
-  values: string[] | undefined,
-  kind: HighlightKind
-) {
-  for (const rawValue of values ?? []) {
-    const value = normalizeTerm(rawValue);
-    const key = value.toLowerCase();
-    if (!value || seen.has(key)) continue;
-    seen.add(key);
-    entries.push({ value, kind });
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function getStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-}
-
-function collectStringValues(value: unknown, output: string[] = []): string[] {
-  if (typeof value === 'string') {
-    output.push(value);
-    return output;
-  }
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectStringValues(item, output);
-    }
-    return output;
-  }
-
-  if (isRecord(value)) {
-    for (const item of Object.values(value)) {
-      collectStringValues(item, output);
-    }
-  }
-
-  return output;
-}
-
-function collectHighlightTerms(analysis: unknown): KeywordEntry[] {
-  if (!analysis) return [];
-
-  const seen = new Set<string>();
-  const entries: KeywordEntry[] = [];
-
-  if (isRecord(analysis)) {
-    const skills = isRecord(analysis.skills) ? analysis.skills : {};
-    const keywords = isRecord(analysis.keywords) ? analysis.keywords : {};
-    const jobMeta = isRecord(analysis.jobMeta) ? analysis.jobMeta : {};
-
-    addTerms(entries, seen, [
-      ...getStringArray(skills.technical),
-      ...getStringArray(skills.required),
-    ], 'required');
-    addTerms(entries, seen, getStringArray(skills.preferred), 'preferred');
-    addTerms(entries, seen, [
-      ...getStringArray(keywords.actionVerbs),
-      ...getStringArray(keywords.buzzwords),
-      ...getStringArray(keywords.mustInclude),
-      ...getStringArray(skills.tools),
-      ...getStringArray(analysis.technologies),
-      ...getStringArray(skills.technologies),
-      ...getStringArray(analysis.protocols),
-      ...getStringArray(analysis.methodologies),
-      ...getStringArray(analysis.architecturePatterns),
-      ...getStringArray(analysis.skills),
-      ...getStringArray(analysis.keywords),
-    ], 'keyword');
-    addTerms(entries, seen, [
-      typeof jobMeta.industry === 'string' ? jobMeta.industry : '',
-      typeof jobMeta.department === 'string' ? jobMeta.department : '',
-      typeof analysis.industry === 'string' ? analysis.industry : '',
-      typeof analysis.department === 'string' ? analysis.department : '',
-    ], 'industry');
-    addTerms(entries, seen, getStringArray(analysis.domainKnowledge), 'domain');
-    addTerms(entries, seen, [
-      ...getStringArray(analysis.softSkills),
-      ...getStringArray(skills.soft),
-    ], 'soft');
-  }
-
-  addTerms(entries, seen, collectStringValues(analysis), 'keyword');
-
-  return entries.sort((a, b) => b.value.length - a.value.length);
 }
 
 function countJsonItems(value: unknown): number {
@@ -284,8 +186,9 @@ function TestPageBody() {
   const [jobDescription, setJobDescription] = useState('');
   /*
    * The posting's ONE analysis, as the server stores it. There is no prompt or
-   * model to pick: a posting is analysed once, ever, with the Analyze Job
-   * Description prompt on the analysis model, and testing is no exception - a
+   * model to pick: a posting is analysed once, ever - the Analyze Job
+   * Description prompt for its keywords and the Job Facts (Filter) prompt for
+   * its facts, both on the analysis model - and testing is no exception: a
    * posting analysed before answers with what it was analysed as, and an
    * edited prompt shows on a posting never analysed before.
    */
@@ -356,11 +259,11 @@ function TestPageBody() {
     <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-2xl font-bold tracking-tight text-ink">Job Keyword Prompt Test</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Job Analysis Prompt Test</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted">
-            Paste a job description, run the analyzer, and compare the raw JSON against highlighted extracted terms.
-            Each posting is analysed once, ever: one analysed before answers with its stored analysis, and an edited
-            prompt shows on a posting never analysed before.
+            Paste a job description, run the analysis, and compare the raw JSON against the extracted terms marked in
+            the posting. Each posting is analysed once, ever: one analysed before answers with its stored analysis, and
+            an edited prompt shows on a posting never analysed before.
           </p>
         </div>
         <Pill tone={analysis ? 'sky' : 'grey'}>
@@ -370,7 +273,7 @@ function TestPageBody() {
 
       <Section
         title="Analyzer"
-        description="The job description to analyse, with the Analyze Job Description prompt on the analysis model (Settings > General)."
+        description="The job description to analyse: the Analyze Job Description prompt reads its keywords and the Job Facts (Filter) prompt its facts, both on the analysis model (Settings > General)."
       >
         <form onSubmit={handleAnalyze} className="space-y-6">
           <Field label="Job description" htmlFor="prompt-test-description">
@@ -419,7 +322,10 @@ function TestPageBody() {
         </form>
       </Section>
 
-      <Section title="Results" description="The description with every extracted term marked, beside the JSON the analyzer returned.">
+      <Section
+        title="Results"
+        description="The description with every extracted keyword marked, beside the JSON the analysis returned. The facts - job field, job type, seniority, clearance, salary - are shown above it rather than marked."
+      >
         {split && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted">
             <span>

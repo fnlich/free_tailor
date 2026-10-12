@@ -246,8 +246,9 @@ router.post('/analyze', async (req: Request, res: Response) => {
  * gate as everything else: a posting is analysed once, ever, and an
  * administrator testing a prompt is no exception (owner decision J0). So it
  * answers the posting's analysis - stored, or made now on the analysis model
- * with the analysis prompt as it stands - and an edited prompt is tried on a
- * posting never analysed before. `promptId` and `model` are not read.
+ * with the analysis and Job Facts (Filter) prompts as they stand (its two
+ * calls) - and an edited prompt is tried on a posting never analysed before.
+ * `promptId` and `model` are not read.
  */
 router.post('/analyze-prompt-test', requireAdmin, async (req: Request, res: Response) => {
   try {
@@ -735,8 +736,9 @@ router.post('/generate', async (req: Request, res: Response) => {
       throw noTemplateAvailable();
     }
 
-    // If job description provided, tailor the resume. Existing/manual content still
-    // gets normalized so skills remain code-decided from the library.
+    // If job description provided, tailor the resume. Existing/manual content is
+    // re-read against the profile as it is now (parseTailoredResumeContent) -
+    // never tailored or revised again: a model call is what was paid for.
     let tailoredContent = (req.body as GenerateResumeRequest).tailoredContent as TailoredContent | undefined;
     // The analysis the page names, else the posting's own - stored, or made
     // now, once, on the analysis model (not the model this resume is charged
@@ -904,8 +906,9 @@ router.post('/preview', async (req: Request, res: Response) => {
       throw noTemplateAvailable();
     }
 
-    // If job description provided, tailor the resume. Existing/manual content still
-    // gets normalized so skills remain code-decided from the library.
+    // If job description provided, tailor the resume. Existing/manual content is
+    // re-read against the profile as it is now (parseTailoredResumeContent) -
+    // never tailored or revised again: a model call is what was paid for.
     let tailoredContent = manualTailoredContent;
     const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
     const analysis = storedAnalysis?.analysis;

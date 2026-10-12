@@ -9,8 +9,6 @@ import {
   readSkills,
   updateSkill,
 } from '../database/skillsDatabase';
-import { refreshAllowedTechSkills } from '../generators/pdfGenerator';
-import { refreshSkillCaches } from '../services/resumeService';
 
 type SkillBody = {
   type?: unknown;
@@ -47,13 +45,6 @@ function sendSkillError(req: Request, res: Response, error: unknown, fallbackMes
   sendPublicError(req, res, error, fallbackMessage);
 }
 
-function refreshCachesForType(type: 'hard' | 'soft'): void {
-  refreshSkillCaches();
-  if (type === 'hard') {
-    refreshAllowedTechSkills();
-  }
-}
-
 export function listSkills(req: Request, res: Response): void {
   try {
     const { type } = req.query;
@@ -76,12 +67,7 @@ export function confirmSkill(req: Request, res: Response): void {
       return;
     }
 
-    const result = addSkill(type, parseSkillValue(skill));
-    if (result.added) {
-      refreshCachesForType(type);
-    }
-
-    res.json(result);
+    res.json(addSkill(type, parseSkillValue(skill)));
   } catch (error) {
     sendSkillError(req, res, error, 'Failed to confirm skill');
   }
@@ -102,12 +88,7 @@ export function createSkill(req: Request, res: Response): void {
       return;
     }
 
-    const result = addSkill(type, parseSkillValue(skill), metadata ?? undefined);
-    if (result.added) {
-      refreshCachesForType(type);
-    }
-
-    res.json(result);
+    res.json(addSkill(type, parseSkillValue(skill), metadata ?? undefined));
   } catch (error) {
     sendSkillError(req, res, error, 'Failed to add skill');
   }
@@ -130,9 +111,7 @@ export function updateSkillHandler(req: Request, res: Response): void {
       return;
     }
 
-    const result = updateSkill(type, parseSkillValue(original), parseSkillValue(skill), metadata ?? undefined);
-    refreshCachesForType(type);
-    res.json(result);
+    res.json(updateSkill(type, parseSkillValue(original), parseSkillValue(skill), metadata ?? undefined));
   } catch (error) {
     sendSkillError(req, res, error, 'Failed to update skill');
   }
@@ -146,9 +125,7 @@ export function deleteSkillHandler(req: Request, res: Response): void {
       return;
     }
 
-    const result = deleteSkill(type, parseSkillValue(skill));
-    refreshCachesForType(type);
-    res.json(result);
+    res.json(deleteSkill(type, parseSkillValue(skill)));
   } catch (error) {
     sendSkillError(req, res, error, 'Failed to delete skill');
   }

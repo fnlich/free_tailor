@@ -25,34 +25,47 @@ import type { Profile } from '../types/profile';
  *
  * The key (`tailorCacheKey`) is the SHA-256 of:
  *
- *   - the profile as the call sees it - its whole content, its section
- *     switches and skills layout as its template allows them
- *     (`profileForTemplate`), minus the two timestamps a save moves without
- *     changing a word - so one character changed anywhere is another key;
+ *   - the profile as the call sees it (`profileForTemplate`) - its whole
+ *     content minus the two timestamps a save moves without changing a word,
+ *     and minus its settings (`profileFingerprint`) - so one character changed
+ *     anywhere is another key. The settings are not what a model is told: the
+ *     layout and the Soft Skills switch decide how the model's skills block is
+ *     DRAWN, which the parse and the render work out again on a hit; the
+ *     Strengths switch decides whether the profile's strengths are in
+ *     `profileJson`, which the values below carry; the prompt and the model a
+ *     profile chose are keyed on their own;
  *   - the template it is drawn with;
  *   - the posting's stored analysis (`job_analyses.id`, which is never
  *     rewritten - services/jobAnalysis/gate.ts);
  *   - the model record's id AND the model name it runs (a record re-pointed at
  *     another model is another key), and the provider type;
  *   - the prompt's text, hashed - an administrator's edit is a miss;
- *   - the values the prompt is rendered with and the text appended to its
- *     user turn, hashed as the call would send them - which is what carries
- *     the shared skill library: the posting's skills are matched against it,
- *     so a skill an administrator adds, or anybody confirms, that changes
- *     this posting's checklist is a miss (one that changes nothing for it is
- *     still a hit);
- *   - for a cover letter, the company and the role it is addressed to;
+ *   - the values the prompt is rendered with and any text appended to its
+ *     user turn, hashed as the call would send them - so whatever code builds
+ *     them changing what a posting is asked (its lists, the concept-tools
+ *     table, the heading drawn for the soft-skill group) is a miss with no
+ *     version bump. They are built from the analysis alone, never the skill
+ *     library, so a skill an administrator adds or anybody confirms changes
+ *     no resume's key;
+ *   - `extra`: for a resume, what its revise pass was made of - the revise
+ *     prompt's id and text (hashed), the figures sentence the code writes into
+ *     it, and the TAILOR_REVISE_PASS / TAILOR_REVISE_MAX_TERMS settings - and
+ *     for a cover letter, the company and the role it is addressed to;
  *   - and `TAILOR_CACHE_VERSION`, bumped when the code around the prompt
  *     changes what an answer means.
  *
- * What is stored is the model's ANSWER, as it came; every step after it - the
- * parse, the section switches, the skills - runs again on a hit, against the
- * profile as it is, exactly as on a fresh answer. A stored answer that no
- * longer parses is a miss, never a failure. Only an answer the asked-for
- * model wrote is stored: one the seat says a FALLBACK wrote (Claude's
- * `--fallback-model`, Gemini switching Pro to Flash - `CompletionResult.
- * fellBack`) is used for that build and asked again by the next, never kept
- * as the asked-for model's for TAILOR_CACHE_DAYS.
+ * What is stored for a resume is the resume as the model wrote it: the
+ * tailoring call's answer, or - when the revise pass changed it - the draft
+ * with the revised summary and bullets folded in. So a hit makes no tailoring
+ * call AND no revise call. Every step after the answer - the parse, the
+ * section switches, the skills - runs again on a hit, against the profile as
+ * it is, exactly as on a fresh answer; it is idempotent on its own output. A
+ * stored answer that no longer parses is a miss, never a failure. Only an
+ * answer the asked-for model wrote is stored: one the seat says a FALLBACK
+ * wrote (Claude's `--fallback-model`, Gemini switching Pro to Flash -
+ * `CompletionResult.fellBack`), the tailoring's or its revision's, is used for
+ * that build and asked again by the next, never kept as the asked-for model's
+ * for TAILOR_CACHE_DAYS - and neither is a draft whose revise pass failed.
  *
  * Rows older than TAILOR_CACHE_DAYS (30 by default) are pruned at boot and
  * once a day. The cache never fails a resume: a read or a write that cannot
@@ -63,8 +76,12 @@ import type { Profile } from '../types/profile';
  * Bumped when what an answer means changes in code; every older row is then a
  * miss. A change to what the prompt is SENT needs no bump - the rendered
  * values are part of the key.
+ *
+ * 2: the model writes the skills block (`skillGroups`), the role facts come
+ * from the profile, bullets are capped at eight, and a resume's stored answer
+ * may be its revised one.
  */
-export const TAILOR_CACHE_VERSION = 1;
+export const TAILOR_CACHE_VERSION = 2;
 
 /** What a caller knows about the generation beyond the profile and the model. */
 export type TailorCacheContext = {
@@ -95,10 +112,14 @@ function sha256(text: string): string {
 
 /**
  * The profile's part of a key: everything in it but `createdAt` and
- * `updatedAt`, which a save moves without changing what a model is told.
+ * `updatedAt`, which a save moves without changing what a model is told, and
+ * `profileSettings` - how the answer is drawn, which prompt and model run it,
+ * and whether strengths are sent, each of which reaches the key another way
+ * (see the module note). A Grouped/Plain flip, or a Soft Skills switch, is
+ * the same question: a hit, drawn the new way.
  */
 export function profileFingerprint(profile: Profile): string {
-  const { createdAt: _created, updatedAt: _updated, ...content } = profile as Profile & {
+  const { createdAt: _created, updatedAt: _updated, profileSettings: _settings, ...content } = profile as Profile & {
     createdAt?: unknown;
     updatedAt?: unknown;
   };
@@ -114,15 +135,14 @@ export function tailorCacheKey(input: {
   promptText: string;
   /**
    * The values the prompt is rendered with, as the call is about to send them,
-   * and the text appended to its user turn. Most of what they say is in the
-   * key already (the profile, the analysis); what is not is the shared skill
-   * library they are matched against - a skill added or confirmed since makes
-   * the checklist the model writes to another one - and whatever code builds
-   * them, which may change without anybody remembering TAILOR_CACHE_VERSION.
+   * and any text appended to its user turn. Most of what they say is in the
+   * key already (the profile, the analysis); what is not is whatever code
+   * builds them, which may change without anybody remembering
+   * TAILOR_CACHE_VERSION.
    */
   promptValues: Record<string, string>;
   appendToUserBody?: string;
-  /** What else the answer was made from: a cover letter's company and role. */
+  /** What else the answer was made from: a resume's revise pass, a cover letter's company and role. */
   extra?: Record<string, string>;
 }): string {
   return sha256(

@@ -8,14 +8,19 @@ import {
   OTHER_INDUSTRY_ID,
   INDUSTRIES,
 } from '../../config/industries';
+import { normalizeJobFieldId } from '../../config/jobFields';
 import type { JobFilterFacts, JobSalary, JobSalaryPeriod } from '../../types/template';
 
 /**
  * The facts a job analysis reads off a posting beside its keywords: what it
- * pays, and what the Job Filter judges it on. Pure functions over the model's
- * answer, so a value the analysis prompt never offered is stored as "not
- * specified" rather than as itself - bar a clearance, where "not specified"
- * would PASS a posting the filter exists to fail, so an off-list word is kept.
+ * pays, and what the Job Filter judges it on. Since owner decision O1 they are
+ * the answer of the analysis's SECOND call, the Job Facts (Filter) prompt,
+ * whose keys are top-level snake_case; an
+ * analysis stored before kept them under `filter` in camelCase, and every
+ * reader here takes either spelling. Pure functions over the model's answer,
+ * so a value the prompt never offered is stored as "not specified" rather
+ * than as itself - bar a clearance, where "not specified" would PASS a posting
+ * the filter exists to fail, so an off-list word is kept.
  */
 
 /**
@@ -48,7 +53,13 @@ export const FILTER_FACT_VALUES = {
   region: ['us', 'not_us', 'not_specified'],
 } as const;
 
-/** The seniority words `jobMeta.seniority` is asked for, which the filter also judges on. */
+/**
+ * The seniority words the facts call is asked for (`seniority`), which the
+ * filter judges on - and the words an analysis stored before asked
+ * `jobMeta.seniority` for. The keyword analysis asks `jobMeta.seniority` in a
+ * shorter list of its own (no intern, director or VP; "unknown"), which is
+ * why the filter reads the facts call's word first.
+ */
 export const SENIORITY_VALUES = [
   'intern',
   'junior',
@@ -107,14 +118,25 @@ export function normalizeClearance(value: unknown): string {
 }
 
 /**
- * A seniority as the analysis states it: one of `SENIORITY_VALUES` when it is
- * one (case forgiven), otherwise the text as given - an analysis stored before
- * the vocabulary was fixed said "Staff" or "unknown", and those still read.
+ * The keyword analysis's `jobMeta.seniority` as it answered: one of
+ * `SENIORITY_VALUES` when it is one (case forgiven), otherwise the text as
+ * given - the analysis prompt's own "unknown" included, and an older
+ * analysis's "Staff". Never what the filter judges a new analysis on: that is
+ * the facts call's `filter.seniority` (`normalizeFactsSeniority`).
  */
 export function normalizeSeniority(value: unknown): string {
   const text = typeof value === 'string' ? value.trim() : '';
   const word = enumWord(text);
   return (SENIORITY_VALUES as readonly string[]).includes(word) ? word : text;
+}
+
+/**
+ * The facts call's seniority: one of `SENIORITY_VALUES` (case, spaces and
+ * hyphens forgiven), anything else `not_specified` - a closed list, unlike
+ * `normalizeSeniority`, because this word is what the filter judges.
+ */
+export function normalizeFactsSeniority(value: unknown): string {
+  return oneOf(value, SENIORITY_VALUES, 'not_specified');
 }
 
 /** A two-letter US state code, upper case, or '' for anything else (null included). */
@@ -160,6 +182,41 @@ export function normalizeFilterFacts(raw: unknown): JobFilterFacts {
     region: oneOf(source.region, FILTER_FACT_VALUES.region, 'not_specified'),
     // A remote job has no state, whatever office the posting also mentions.
     usState: jobType === 'remote' ? '' : usStateCode(pick(source, 'usState', 'us_state')),
+  };
+}
+
+/**
+ * The job facts call's answer (the Job Facts (Filter) prompt plus the code's
+ * job field line), as the analysis stores it.
+ *
+ * `jobField` is null when the answer names no job field at all - the key left
+ * out, null or blank - as opposed to `unclassified`, which is the model saying
+ * none fits: the gate asks once more before it stores such a posting as
+ * unclassified for ever.
+ */
+export type JobFactsAnswer = {
+  jobField: string | null;
+  salary: JobSalary | null;
+  filter: JobFilterFacts;
+};
+
+/**
+ * The facts out of the facts call's parsed answer. Its keys are top-level and
+ * snake_case (`job_type`, `clearance_required`, `us_state`...), read by the
+ * same normalisers as an older analysis's `filter`, plus the seniority (its
+ * presence on `filter` is what tells a new analysis from an older one, so it
+ * is set here and nowhere else) and the code's `job_field`. `_confidence`
+ * companions, and any other key, are ignored. The salary has no currency: the
+ * prompt asks for none, and one is never inferred.
+ */
+export function normalizeJobFacts(raw: unknown): JobFactsAnswer {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const jobFieldWord = pick(source, 'jobField', 'job_field');
+  const namesJobField = typeof jobFieldWord === 'string' ? jobFieldWord.trim() !== '' : jobFieldWord !== undefined && jobFieldWord !== null;
+  return {
+    jobField: namesJobField ? normalizeJobFieldId(jobFieldWord) : null,
+    salary: normalizeSalary(source.salary),
+    filter: { ...normalizeFilterFacts(source), seniority: normalizeFactsSeniority(source.seniority) },
   };
 }
 
@@ -297,7 +354,8 @@ export function clearanceRequiredOf(analysis: unknown): boolean {
 }
 
 /**
- * An industry as the analysis prompt's list spells it: an id or a label
+ * An industry as the industry list spells it - what an analysis stored in v6,
+ * when the analysis prompt asked for one, is read through: an id or a label
  * (case, spacing and `&` forgiven), a known short form ("fintech", "SaaS",
  * a company category), or free text naming one by keyword. Nothing, or a word
  * meaning "not stated", is `not_specified`; any other word is `other` - never
@@ -340,13 +398,15 @@ export const COMPANY_CATEGORY_INDUSTRY: Readonly<Record<string, string>> = Objec
 /**
  * A stored analysis's industry, in this order:
  *
- *   1. its own `industry`, whenever the analysis has the key - one made since
- *      the prompt asked for it, whatever it answered;
- *   2. otherwise (an analysis from before) its filter facts' company category;
+ *   1. its own `industry`, whenever the analysis has the key - one stored
+ *      while the analysis prompt asked for it (v6), whatever it answered;
+ *   2. otherwise its filter facts' company category - every analysis made
+ *      since the facts call (owner decision O1), which never carries the
+ *      key, and every older one that had facts;
  *   3. otherwise keywords in its free-text `jobMeta.industry`;
  *   4. otherwise `not_specified`.
  *
- * Never a model call: an older analysis's industry is worked out from what it
+ * Never a model call: an analysis's industry is worked out from what it
  * already holds, every time it is read, and nothing is written back into it.
  */
 export function industryOf(analysis: unknown): string {

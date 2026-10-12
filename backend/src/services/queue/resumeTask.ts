@@ -219,13 +219,12 @@ export const __analysisForTests = analysisFor;
  * as it is NOW - what /resume/generate does with the same content.
  *
  * The preview was tailored for whatever the profile said then, and the person
- * can flip a section switch or the skills layout before pressing Generate. A
- * switch turned off is covered at render either way; the rest is not: a
- * grouped skills list padded from the library would render as a plain one,
- * padding and all, and a Soft Skills section turned on would show the
- * posting's list rather than the candidate's own first. Running the same
- * post-processing the tailoring call ends with puts all of it right, and it
- * is idempotent on content it already produced.
+ * can flip a section switch or edit their headline, roles or strengths before
+ * pressing Generate. Running the same post-processing the tailoring call ends
+ * with puts all of it right - the soft-skill group to its section or back
+ * into the block, the profile's own strengths, its role facts and headline -
+ * and it is idempotent on content it already produced. It makes no model
+ * call: content a page sends back is never revised again.
  *
  * Never fatal: this content was charged for, and the render gate still holds
  * the switches if it cannot be re-read - so a failure here renders it as sent.

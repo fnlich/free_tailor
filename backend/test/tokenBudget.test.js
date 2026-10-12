@@ -173,47 +173,51 @@ test('the analysed posting is not echoed back inside the tailoring prompt', () =
 });
 
 test("what a posting pays and how the filter judges it never reach the tailoring prompt", () => {
-  // The analysis carries its job field, salary and filter facts for the
-  // sheet, the lake and the Job Filter. Tailoring a resume needs none of
-  // them, and a model told what the job pays has one more thing to echo.
-  const { parseJobAnalysisContent } = require('../dist/services/resumeService');
-  const analysis = parseJobAnalysisContent(
-    JSON.stringify({
-      ...ANALYSIS,
-      sourceJobDescription: undefined,
-      jobField: 'backend',
-      salary: { min: 150000, max: 190000, currency: 'USD', period: 'annual', raw: '$150k-$190k' },
-      filter: { jobType: 'remote', onsiteInterview: 'no', companyCategory: 'saas', clearanceRequired: 'none', region: 'us', usState: null },
-    }),
-    'The original posting text.'
+  // The analysis carries its job field, salary and filter facts - its
+  // second call's answer - for the sheet, the lake and the Job Filter.
+  // Tailoring a resume needs none of them, and a model told what the job
+  // pays has one more thing to echo.
+  const { parseJobAnalysisKeywords, parseJobFacts, composeJobAnalysis } = require('../dist/services/resumeService');
+  const analysis = composeJobAnalysis(
+    parseJobAnalysisKeywords(JSON.stringify({ ...ANALYSIS, sourceJobDescription: undefined }), 'The original posting text.'),
+    parseJobFacts(
+      JSON.stringify({
+        job_field: 'backend',
+        salary: { min: 150000, max: 190000, period: 'annual', raw: '$150k-$190k' },
+        job_type: 'remote',
+        onsite_interview: 'no',
+        company_category: 'saas',
+        seniority: 'principal',
+        clearance_required: 'none',
+        region: 'us',
+        us_state: null,
+      })
+    )
   );
-  assert.equal(analysis.jobField, 'backend', 'the parsed analysis does carry them');
+  assert.equal(analysis.jobField, 'backend', 'the composed analysis does carry them');
   assert.equal(analysis.salary.min, 150000);
   assert.equal(analysis.filter.jobType, 'remote');
+  assert.equal(analysis.filter.seniority, 'principal');
 
   const values = buildTailorResumePromptValues(profileFixture(), analysis);
   assert.doesNotMatch(values.jobAnalysisJson, /"jobField"|"salary"|"filter"/);
-  assert.doesNotMatch(values.jobAnalysisJson, /150000|150k|"remote"|clearance/);
+  assert.doesNotMatch(values.jobAnalysisJson, /150000|150k|"remote"|clearance|principal/);
 });
 
-test('the industry the analysis files a posting under never reaches the tailoring prompt, nor changes a tailoring cache key', () => {
-  // v6 added `industry` to the analysis, for the lake and the sheet. The
-  // tailoring input must be byte for byte what it was before: the same
-  // values, so the same prompt and the same cache key for every profile and
-  // posting the cache already holds.
-  const { parseJobAnalysisContent } = require('../dist/services/resumeService');
+test('the industry an older analysis was filed under never reaches the tailoring prompt, nor changes a tailoring cache key', () => {
+  // v6 stored an `industry` on the analysis, for the lake and the sheet; a
+  // new analysis carries none (it is derived). Either way the tailoring input
+  // is byte for byte the same: the same values, so the same prompt and the
+  // same cache key for every profile and posting the cache already holds.
   const { tailorCacheKey } = require('../dist/services/tailorCache');
-  const answer = {
+  const without = {
     ...ANALYSIS,
-    sourceJobDescription: undefined,
+    sourceJobDescription: 'The original posting text.',
     jobField: 'backend',
     salary: null,
     filter: { jobType: 'hybrid', onsiteInterview: 'no', companyCategory: 'fintech', clearanceRequired: 'secret', region: 'us', usState: 'NY' },
   };
-  const without = parseJobAnalysisContent(JSON.stringify(answer), 'The original posting text.');
-  const withIndustry = parseJobAnalysisContent(JSON.stringify({ ...answer, industry: 'Insurance' }), 'The original posting text.');
-  assert.equal(without.industry, undefined);
-  assert.equal(withIndustry.industry, 'insurance', 'the parsed analysis does carry it');
+  const withIndustry = { ...without, industry: 'insurance' };
 
   const before = buildTailorResumePromptValues(profileFixture(), without);
   const after = buildTailorResumePromptValues(profileFixture(), withIndustry);
@@ -239,33 +243,57 @@ test('the industry the analysis files a posting under never reaches the tailorin
 test('the whole tailoring payload stays under budget', () => {
   // A ceiling rather than an exact figure, so ordinary edits do not fail this -
   // but a change that puts the whole profile record back would sail past it.
-  // Measured at 6,942 characters for this fixture shape, down from 9,365.
-  // Every value counts, the section switches' included.
-  for (const sections of [{}, { includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat' }]) {
+  // Measured at 4,484 characters for this fixture (4,561 with strengths), down
+  // from 6,942 when the skill library's matches went too, twice over (as
+  // `skillsJSON` and its alias `hardSkillsJson`). Every value counts.
+  for (const settings of [{}, { includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat' }]) {
     const fixture = profileFixture();
     const values = buildTailorResumePromptValues(
-      { ...fixture, profileSettings: { ...fixture.profileSettings, ...sections } },
+      { ...fixture, profileSettings: { ...fixture.profileSettings, ...settings } },
       ANALYSIS
     );
     const total = Object.values(values).reduce((sum, value) => sum + value.length, 0);
-    assert.ok(total < 8_000, `the tailoring payload has grown to ${total} characters`);
+    assert.ok(total < 6_000, `the tailoring payload has grown to ${total} characters`);
   }
 });
 
-test('the section switches travel as their own words, never as profile settings', () => {
-  // They are how the operator wants the resume drawn, which is exactly the
-  // kind of thing `profileSettings` holds and the model is not sent - so they
-  // go as three short variables instead, after [[profileJson]], and the
-  // profile projection stays what it was.
+test('the layout and the Soft Skills switch are not sent at all, and the Strengths switch only as the strengths', () => {
+  // How the model's skills block is DRAWN - grouped or plain, the soft-skill
+  // group in its own section or not - is decided when the resume is rendered,
+  // so the model is asked the same question either way, and the tailoring
+  // cache answers both from one answer. The Strengths switch decides whether
+  // the profile's own strengths are context in profileJson, and nothing else.
   const fixture = profileFixture({ softSkills: ['Persistence'] });
-  const values = buildTailorResumePromptValues(
-    { ...fixture, profileSettings: { ...fixture.profileSettings, includeStrengths: true, includeSoftSkills: true } },
-    ANALYSIS
-  );
-  assert.equal(values.includeStrengths, 'yes');
-  assert.equal(values.includeSoftSkills, 'yes');
-  assert.equal(values.technicalSkillsLayout, 'grouped');
-  assert.doesNotMatch(values.profileJson, /includeStrengths|includeSoftSkills|technicalSkillsLayout/);
-  // The list itself is decided by code, so it does not travel either.
-  assert.doesNotMatch(values.profileJson, /Persistence/);
+  const values = (settings) =>
+    buildTailorResumePromptValues({ ...fixture, profileSettings: { ...fixture.profileSettings, ...settings } }, ANALYSIS);
+  const plain = values({});
+  for (const name of ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout', 'hardSkillsJson']) {
+    assert.equal(name in plain, false, `${name} is no prompt value now`);
+  }
+  assert.deepEqual(values({ technicalSkillsLayout: 'flat', includeSoftSkills: true }), plain);
+  const withStrengths = values({ includeStrengths: true });
+  assert.notEqual(withStrengths.profileJson, plain.profileJson);
+  assert.deepEqual({ ...withStrengths, profileJson: '' }, { ...plain, profileJson: '' });
+  assert.doesNotMatch(plain.profileJson, /includeStrengths|includeSoftSkills|technicalSkillsLayout/);
+  // The person's own soft skills never travel: a tailored resume prints the
+  // posting's, the last group of the model's block.
+  assert.doesNotMatch(withStrengths.profileJson, /Persistence/);
+});
+
+test('an older analysis is sent in the current schema: its duplicate lists once, and nothing it no longer has', () => {
+  // This fixture is an analysis stored before the current analysis prompt:
+  // `skills.required` beside `skills.technical`, `skills.technologies` beside
+  // `technologies`, a top-level `softSkills` and `skills.preferred`. A posting
+  // is analysed once, ever, so such analyses are what most resumes are still
+  // tailored from - read the same way, and each term sent once.
+  const sent = JSON.parse(buildTailorResumePromptValues(profileFixture(), ANALYSIS).jobAnalysisJson);
+  assert.deepEqual(Object.keys(sent), [
+    'jobMeta', 'skills', 'technologies', 'protocols', 'methodologies', 'architecturePatterns',
+    'responsibilities', 'domainKnowledge', 'keywords',
+  ]);
+  assert.deepEqual(Object.keys(sent.skills), ['technical', 'tools', 'soft']);
+  assert.deepEqual(sent.skills.technical, ['C#', 'Python']);
+  assert.deepEqual(sent.technologies, ['Azure', 'Kafka']);
+  assert.deepEqual(sent.skills.soft, ['Communication']);
+  assert.equal('softSkills' in sent, false);
 });

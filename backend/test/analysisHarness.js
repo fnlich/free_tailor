@@ -16,7 +16,13 @@ const { useTempStorage, useAdminEmails } = require('./helpers');
 
 const SHIPPED = path.join(__dirname, '..', 'static');
 
-/** An analysis answer as the model writes it, with the job field and facts the prompt asks for. */
+/**
+ * A posting's analysis in ONE object - the keywords AND the job field, salary
+ * and filter facts - which is also the shape an analysis is stored in. A
+ * stored-shape fixture as it is; through `countingSeats` it is split into
+ * the two answers the two calls of an analysis get (`splitAnswer`), so a test
+ * that wants a particular job field or fact still writes it here.
+ */
 function analysisAnswer(overrides = {}) {
   return JSON.stringify({
     jobMeta: { title: 'Senior Backend Engineer', seniority: 'senior', industry: 'SaaS', department: 'Platform' },
@@ -42,11 +48,53 @@ function analysisAnswer(overrides = {}) {
   });
 }
 
+/** The job facts call's site: the Job Facts (Filter) prompt, the analysis's second call. */
+const FACTS_CALL_SITE = 'filter-google-sheet-job';
+/** The revise pass's site (the tailoring's second call). */
+const REVISE_CALL_SITE = 'revise-resume-coverage';
+
+/**
+ * A one-object analysis split as its two calls answer: the keyword half for
+ * the analysis prompt (what its shipped text asks for), and the Job Facts
+ * (Filter) prompt's top-level snake_case facts plus the `job_field` the code
+ * asks for. No currency - that prompt asks for none. The seniority is the
+ * one-object answer's `filter.seniority`, else its `jobMeta.seniority`; a
+ * `jobField` of `undefined` leaves `job_field` out (a model ignoring the
+ * code's line).
+ */
+function splitAnswer(combinedJson) {
+  const { jobField, salary, filter = {}, industry: _industry, ...analysis } = JSON.parse(combinedJson);
+  const facts = {
+    job_type: filter.jobType ?? 'not_specified',
+    onsite_interview: filter.onsiteInterview ?? 'not_specified',
+    company_category: filter.companyCategory ?? 'other',
+    seniority: filter.seniority ?? analysis.jobMeta?.seniority ?? 'not_specified',
+    clearance_required: filter.clearanceRequired ?? 'none',
+    salary: salary
+      ? { min: salary.min ?? null, max: salary.max ?? null, period: salary.period ?? null, raw: salary.raw ?? null }
+      : { min: null, max: null, period: null, raw: null },
+    region: filter.region ?? 'us',
+    us_state: filter.usState ?? null,
+    ...(jobField === undefined ? {} : { job_field: jobField }),
+  };
+  return { analysis: JSON.stringify(analysis), facts: JSON.stringify(facts) };
+}
+
+/**
+ * The tailoring answer, minimal and in the shipped prompt's shape: the
+ * skills block in groups, the posting's soft skills last under a heading the
+ * code recognises whichever was drawn. It covers little of a posting's
+ * checklist, so a fresh tailoring is followed by the revise pass
+ * (`revisions()`), which this stub answers with no change by default.
+ */
 const TAILOR_ANSWER = JSON.stringify({
   title: 'Senior Engineer',
   summary: 'Engineer building reliable services.',
   experience: [],
-  strengths: [],
+  skillGroups: [
+    { category: 'Languages', skills: ['TypeScript'] },
+    { category: 'Soft Skills', skills: ['Ownership'] },
+  ],
   coverLetter: 'I build things.',
 });
 
@@ -56,23 +104,35 @@ function posting(n = 0, extra = '') {
 }
 
 /**
- * Every seat, counting. `calls` holds each request as the seat got it; the
- * analysis ones are those whose callSite is the analysis prompt's. `hold`
- * makes the next analysis wait until released; `failNext` makes the next
- * analysis fail; `holdTailoring` parks every tailoring call for ever (a
- * process that died mid-run).
+ * Every seat, counting, and answering each prompt BY ITS CALL SITE - a call
+ * site it does not know fails loudly, so a new model call is never answered
+ * with another prompt's text unnoticed. `calls` holds each request as the
+ * seat got it; `analyses()`, `facts()`, `tailorings()`, `revisions()` and
+ * `letters()` are the ones of each prompt.
+ *
+ * `answer(request)` is the posting's one-object analysis (`analysisAnswer`),
+ * split for the two calls (`splitAnswer`); `factsAnswer(request)`, when
+ * given, is the facts call's raw answer instead. `hold` makes the next
+ * analysis call wait until released, `holdFacts` the next facts call;
+ * `failAnalyses` / `failFacts` fail that many; `holdTailoring` parks every
+ * tailoring call for ever (a process that died mid-run). `reviseAnswer`
+ * answers the revise pass ('{}', no change, by default).
  */
 function countingSeats(ai, options = {}) {
   ai.resetRegistryForTests();
   const state = {
     calls: [],
     holdAnalysis: null,
+    holdFactsCall: null,
     failAnalyses: 0,
+    failFacts: 0,
     failTailorings: 0,
     holdTailoring: false,
     answer: options.answer ?? (() => analysisAnswer()),
+    factsAnswer: options.factsAnswer ?? null,
+    reviseAnswer: options.reviseAnswer ?? (() => '{}'),
   };
-  const release = { analysis: null };
+  const release = { analysis: null, facts: null };
   state.hold = () => {
     state.holdAnalysis = new Promise((resolve) => {
       release.analysis = resolve;
@@ -84,8 +144,31 @@ function countingSeats(ai, options = {}) {
     release.analysis = null;
     done?.();
   };
-  state.analyses = () => state.calls.filter((call) => call.callSite === 'analyze-job-description');
-  state.tailorings = () => state.calls.filter((call) => call.callSite === 'tailor-resume');
+  state.holdFacts = () => {
+    state.holdFactsCall = new Promise((resolve) => {
+      release.facts = resolve;
+    });
+  };
+  state.releaseFacts = () => {
+    const done = release.facts;
+    state.holdFactsCall = null;
+    release.facts = null;
+    done?.();
+  };
+  const bySite = (site) => () => state.calls.filter((call) => call.callSite === site);
+  state.analyses = bySite('analyze-job-description');
+  state.facts = bySite(FACTS_CALL_SITE);
+  state.tailorings = bySite('tailor-resume');
+  state.revisions = bySite(REVISE_CALL_SITE);
+  state.letters = bySite('generate-cover-letter');
+
+  // A held call gives up when its signal aborts, as a seat does.
+  const held = (gate, signal) =>
+    new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(signal.reason ?? new Error('aborted (stub)'));
+      signal?.addEventListener('abort', () => reject(signal.reason ?? new Error('aborted (stub)')), { once: true });
+      gate.then(resolve);
+    });
 
   for (const id of ['claude-cli', 'codex-cli', 'gemini-cli']) {
     ai.registerAdapter(id, () => ({
@@ -100,12 +183,20 @@ function countingSeats(ai, options = {}) {
         const call = { provider: id, ...request };
         state.calls.push(call);
         if (request.callSite === 'analyze-job-description') {
-          if (state.holdAnalysis) await state.holdAnalysis;
+          if (state.holdAnalysis) await held(state.holdAnalysis, request.signal);
           if (state.failAnalyses > 0) {
             state.failAnalyses -= 1;
             throw new Error('The seat is down (stub).');
           }
-          return reply(id, request, state.answer(request));
+          return reply(id, request, splitAnswer(state.answer(request)).analysis);
+        }
+        if (request.callSite === FACTS_CALL_SITE) {
+          if (state.holdFactsCall) await held(state.holdFactsCall, request.signal);
+          if (state.failFacts > 0) {
+            state.failFacts -= 1;
+            throw new Error('The seat is down (stub).');
+          }
+          return reply(id, request, state.factsAnswer ? state.factsAnswer(request) : splitAnswer(state.answer(request)).facts);
         }
         if (request.callSite === 'tailor-resume') {
           // A process that dies mid-tailoring: the call never answers, so the
@@ -117,7 +208,9 @@ function countingSeats(ai, options = {}) {
           }
           return reply(id, request, TAILOR_ANSWER);
         }
-        return reply(id, request, 'Dear team, I build things.');
+        if (request.callSite === REVISE_CALL_SITE) return reply(id, request, state.reviseAnswer(request));
+        if (request.callSite === 'generate-cover-letter') return reply(id, request, 'Dear team, I build things.');
+        throw new Error(`stub seat: no answer for call site "${request.callSite}"`);
       },
     }));
   }
@@ -278,6 +371,9 @@ async function until(condition, what, tries = 1000) {
 module.exports = {
   analysisAnswer,
   countingSeats,
+  FACTS_CALL_SITE,
+  REVISE_CALL_SITE,
+  splitAnswer,
   freshInstall,
   posting,
   serveInstall,

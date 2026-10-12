@@ -81,6 +81,9 @@ export function readCodexCliConfig(): CodexCliConfig {
     defaultTimeoutMs,
     timeoutMsByCallSite: {
       'tailor-resume': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_TAILOR'),
+      // The revise pass is the tailoring's second call, inside the same resume:
+      // the same budget.
+      'revise-resume-coverage': cliTimeoutMs('AI_CODEX_TIMEOUT_MS_TAILOR'),
     },
     workdir: flag('AI_CODEX_WORKDIR') || defaultWorkdir(),
     maxOutputBytes: intFlag('AI_CODEX_MAX_OUTPUT_BYTES', 8_000_000, 100_000, 64_000_000),

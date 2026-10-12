@@ -524,14 +524,14 @@ test('an override saved before the list stopped offering it survives edits that 
   const { staticDir } = useTempStorage('model-administration-prompt-update');
   writeStaticJson(staticDir, 'prompts/analyze-job-description.json', {
     id: 'analyze-job-description',
-    content: 'Analyze [[jobFieldList]] [[industryList]] [[jobDescription]]',
+    content: 'Analyze [[jobDescription]]',
     createdAt: '2026-04-18T00:00:00.000Z',
     updatedAt: '2026-04-18T00:00:00.000Z',
   });
   const promptService = loadFresh('../dist/services/promptService');
   const custom = await promptService.createPrompt({ ...PROMPT, name: 'Custom', modelProvider: 'claude-cli', modelName: 'haiku' });
   await promptService.updatePrompt('analyze-job-description', {
-    content: 'Analyze [[jobFieldList]] [[industryList]] [[jobDescription]]',
+    content: 'Analyze [[jobDescription]]',
     modelProvider: 'claude-cli',
     modelName: 'haiku',
   });
@@ -553,7 +553,7 @@ test('an override saved before the list stopped offering it survives edits that 
     });
     assert.equal(resent.modelName, 'haiku');
     const builtIn = await promptService.updatePrompt('analyze-job-description', {
-      content: 'Analyze deeply [[jobFieldList]] [[industryList]] [[jobDescription]]',
+      content: 'Analyze deeply [[jobDescription]]',
       modelProvider: 'claude-cli',
       modelName: 'haiku',
     });
@@ -567,7 +567,7 @@ test('an override saved before the list stopped offering it survives edits that 
     await assert.rejects(
       () =>
         promptService.updatePrompt('analyze-job-description', {
-          content: 'Analyze [[jobFieldList]] [[industryList]] [[jobDescription]]',
+          content: 'Analyze [[jobDescription]]',
           modelProvider: 'gemini-cli',
           modelName: 'haiku',
         }),

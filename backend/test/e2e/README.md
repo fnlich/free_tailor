@@ -112,7 +112,13 @@ Off the default ports - beside another server, say - every script reads
 fake provider), and `fake-providers.js` listens on `FAKE_PROVIDER_PORT` and
 posts its webhooks to the server's own `PORT`. The frontend has to be BUILT
 with `NEXT_PUBLIC_API_URL` naming that backend, and the backend started with
-`FRONTEND_URL` naming the frontend, or its CORS gate refuses the page.
+`FRONTEND_URL` naming the frontend, or its CORS gate refuses the page. Name
+both by `127.0.0.1`, as the defaults do, not `localhost`: `immediate-run.js`
+sets its session cookie for `127.0.0.1`, and the cookie is all the pagehide
+release carries across origins - under `localhost` its two release checks
+fail (*...and OK leaves, and stops the run at once*, *closing the tab stops
+its run at once*) with the run left going. Set `E2E_SHOTS` to a folder of
+your own unless you mean to replace the screenshots committed here.
 
 ## The profile preview, held still
 
@@ -173,8 +179,12 @@ section's heading all stayed.
 needs a model. `stub-seat.js` is that model: a `--require` preload, like
 `fake-providers.js`, that registers a canned Claude seat before the app loads -
 nothing is spawned, so a machine whose `claude` is signed in never spends its
-owner's subscription on a test. Each call waits `E2E_STUB_DELAY_MS` (2500 by
-default) so there is time to press Stop or leave a page mid-run, and an abort
+owner's subscription on a test. It answers each prompt by its call site, and
+fails loudly on one it does not know. Each call waits `E2E_STUB_DELAY_MS`
+(2500 by default) so there is time to press Stop or leave a page mid-run - a
+new posting's analysis is two calls (the keywords and the facts), made side
+by side, so it still takes one delay (*Stored analysis ... in 2.51s*), and a
+resume whose draft leaves a term out takes one more for its revise pass - and an abort
 is honoured as the real runner honours it - a signal already aborted when the
 call starts is refused at once, so a stopped run's waiting resume is not built
 and charged behind the check. Set
@@ -196,8 +206,15 @@ of every tab's row 1 the layouts come from - the range reader `POST
 intact on a job tab, the one batched read of a sheet run's rows, and the
 write-back, which throws on the old tab) - plus the Job Filter's tab
 inspection and its read of C:E, which the route calls directly. All three share the rows, so what a run writes back is
-what the next *Load rows* shows. `stub-seat.js`'s canned analysis carries a job
-field, a salary and the filter facts. Everything else is the shipping code:
+what the next *Load rows* shows. `stub-seat.js` answers the analysis call with
+the posting's keywords and the facts call with its job type, clearance,
+salary (no currency, as the facts prompt asks for none), company category and
+job field; the tailoring in the shipped prompt's shape (`skillGroups` with the
+soft skills last, no role description), its summary carrying every term of
+that analysis, so a profile whose role it names gets no revise pass; and a
+revise call, when one comes (a profile with other roles, whose own bullets
+carry fewer than five figures), with no change - one more delayed call.
+Everything else is the shipping code:
 routes, the analysis gate and its trust rule, the queue, the tab lease, order
 rows, files.
 
@@ -225,7 +242,8 @@ posting stored under its link - fetches `https://today.example/jobs/1`
 
 The stub's delay applies only to a call that reaches it. A posting analysed
 once is never analysed again, and the tailoring cache answers the same posting,
-profile and model with no call at all, so a repeat build is near-instant - it
+profile and model with no call at all - no tailoring and no revise pass - so a
+repeat build is near-instant - it
 finishes in PDF time, before anything can be stopped. The timing checks
 therefore give every queued JOB a posting of its own (`immediate-run.js`'s
 `postingsFor`, `... Ref <submission>-<job>.`); a script written later that
@@ -343,8 +361,8 @@ job sheet's), rows in memory, and the admin sheet a list in memory - through
 the four seams the unit tests use (the account sheet's client, the report
 run's, the analysis columns' and the admin sheet's). The first three share the
 rows, so what a run writes back (G:L, and nothing else in a row) is what the
-next preview reads. `stub-seat.js` answers every analysis as a Backend posting
-(a SaaS company: *Technology*). All's rows are `report-sheet-rows.js`'s, in the
+next preview reads. `stub-seat.js`'s facts call answers every posting as a
+remote Backend job at a SaaS company (*Technology*), no clearance. All's rows are `report-sheet-rows.js`'s, in the
 twelve-column layout: *Acme Corp*
 (added), *ACME, Inc.* (the same company once normalised, so a duplicate),
 *Globex LLC* (added), *Initech* (reported by this reporter before, and added
@@ -516,10 +534,12 @@ Neither a user nor an administrator is offered *Ask for refund* on any page
 they walk (owner decision R1), and the Refund Requests tab says to contact the
 administrator, with the link.
 
-The job analysis, as an administrator sees it (owner decisions J0, J1): Admin
--> Prompts lists no Filter Google Sheet Job prompt, and Analyze Job
-Description is one prompt - no New Variant, Duplicate, Save Active or model
-override, and a sentence saying why; Admin -> Settings -> General has a Job
+The prompts, as an administrator sees them (owner decisions J0, J1, O1):
+Admin -> Prompts lists Analyze Job Description, Job Facts (Filter), Revise
+Resume Coverage and Generate Cover Letter beside Tailor Resume, and each of
+the four is one prompt - no New Variant, Duplicate, Save Active or model
+override, and its own sentence saying why - while Tailor Resume still offers
+New Variant and the override; Admin -> Settings -> General has a Job
 Analysis section whose Analysis model select starts on the app default, with
 its own Save.
 

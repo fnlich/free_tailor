@@ -43,9 +43,10 @@ test('every shipped feature is filed under one of the two categories', async () 
   assert.equal(byFeature.get('analyze-job-description').category, 'extracting');
   assert.equal(byFeature.get('extract-profile-from-resume').category, 'extracting');
   assert.equal(byFeature.get('extract-template-from-pdf').category, 'extracting');
-  // The Job Filter's own prompt is retired: the filter judges the job
-  // analysis, which reads the same facts (owner decision J8).
-  assert.equal(byFeature.has('filter-google-sheet-job'), false);
+  // The Job Facts (Filter) prompt reads a posting too: the analysis's second
+  // call (owner decision O1), which the Job Filter judges.
+  assert.equal(byFeature.get('filter-google-sheet-job').category, 'extracting');
+  assert.equal(byFeature.get('filter-google-sheet-job').featureLabel, 'Job Facts (Filter)');
 
   assert.equal(byFeature.get('tailor-resume').category, 'building');
   assert.equal(byFeature.get('generate-cover-letter').category, 'building');
@@ -92,9 +93,7 @@ test('a custom prompt inherits the category of the feature it is attached to', a
   const built = await service.createPrompt({
     name: 'My tailoring prompt',
     featureKey: 'tailor-resume',
-    content:
-      'Tailor this.\n[[profileJson]]\n[[jobAnalysisJson]]\n' +
-      'Strengths: [[includeStrengths]]. Soft skills: [[includeSoftSkills]]. Skills: [[technicalSkillsLayout]].',
+    content: 'Tailor this.\n[[profileJson]]\n[[jobAnalysisJson]]\nHead the soft skills [[softSkillGroupHeading]].',
   });
   assert.equal(built.category, 'building');
   assert.equal(built.categoryLabel, 'Building Prompts');

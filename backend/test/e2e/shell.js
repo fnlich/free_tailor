@@ -1139,46 +1139,60 @@ async function main() {
     check('admin /admin/prompts: the Settings sidebar row stays lit', onSettings.settingsRowLit);
 
     /*
-     * Job analysis has one prompt, edited in place (owner decision J0): no
-     * New Variant or Duplicate for it, a sentence saying why, and no model
-     * override - it runs on the analysis model. The Job Filter's own prompt
-     * is gone from the list.
+     * Four features have one prompt each, edited in place: the job analysis's
+     * two calls (owner decisions J0, O1), the revise pass and the cover
+     * letter. None offers New Variant, Duplicate, Save Active or a model
+     * override, and each says why in its own sentence. Tailor Resume, which
+     * a profile may choose a variant of, still offers New Variant.
      */
     const promptFeatures = await adminPage.evaluate(() =>
       Array.from(document.querySelectorAll('aside button')).map((b) => b.textContent.replace(/\d+$/, '').trim())
     );
+    const SINGLE_PROMPTS = [
+      ['Analyze Job Description', /Job analysis has one prompt/],
+      ['Job Facts (Filter)', /The job facts have one prompt/],
+      ['Revise Resume Coverage', /The revise pass has one prompt/],
+      ['Generate Cover Letter', /A cover letter has one prompt/],
+    ];
     check(
-      'admin /admin/prompts: no Filter Google Sheet Job prompt any more, Analyze Job Description listed',
-      !promptFeatures.some((label) => /Filter Google Sheet Job/.test(label)) &&
-        promptFeatures.some((label) => label.startsWith('Analyze Job Description')),
+      'admin /admin/prompts: the analysis, the job facts, the revise pass and the cover letter are listed, with Tailor Resume',
+      SINGLE_PROMPTS.every(([label]) => promptFeatures.some((entry) => entry.startsWith(label))) &&
+        promptFeatures.some((entry) => entry.startsWith('Tailor Resume')),
       promptFeatures.join(', ')
     );
-    await adminPage.evaluate(() => {
-      Array.from(document.querySelectorAll('aside button'))
-        .find((b) => b.textContent.trim().startsWith('Analyze Job Description'))
-        ?.click();
-    });
-    await adminPage
-      .waitForFunction(() => /Job analysis has one prompt/.test(document.body.innerText), { timeout: 10_000 })
-      .catch(() => null);
-    const analysisPrompt = await adminPage.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
-      return {
-        onePrompt: /Job analysis has one prompt/.test(document.body.innerText),
-        newVariant: buttons.includes('New Variant'),
-        duplicate: buttons.includes('Duplicate'),
-        saveActive: buttons.includes('Save Active'),
-        override: Boolean(document.getElementById('prompt-model-provider')),
-      };
-    });
+    const openFeature = async (label, ready) => {
+      await adminPage.evaluate((wanted) => {
+        Array.from(document.querySelectorAll('aside button'))
+          .find((b) => b.textContent.trim().startsWith(wanted))
+          ?.click();
+      }, label);
+      await adminPage
+        .waitForFunction((source) => new RegExp(source).test(document.body.innerText), { timeout: 10_000 }, ready.source)
+        .catch(() => null);
+      return adminPage.evaluate((source) => {
+        const buttons = Array.from(document.querySelectorAll('button')).map((b) => b.textContent.trim());
+        return {
+          note: new RegExp(source).test(document.body.innerText),
+          newVariant: buttons.includes('New Variant'),
+          duplicate: buttons.includes('Duplicate'),
+          saveActive: buttons.includes('Save Active'),
+          override: Boolean(document.getElementById('prompt-model-provider')),
+        };
+      }, ready.source);
+    };
+    for (const [label, sentence] of SINGLE_PROMPTS) {
+      const shown = await openFeature(label, sentence);
+      check(
+        `admin /admin/prompts: ${label} is one prompt - its own sentence, no New Variant, Duplicate, Save Active or override`,
+        shown.note && !shown.newVariant && !shown.duplicate && !shown.saveActive && !shown.override,
+        JSON.stringify(shown)
+      );
+    }
+    const tailoring = await openFeature('Tailor Resume', /Model override: provider/);
     check(
-      'admin /admin/prompts: the analysis prompt is one prompt - no New Variant, Duplicate, Save Active or override',
-      analysisPrompt.onePrompt &&
-        !analysisPrompt.newVariant &&
-        !analysisPrompt.duplicate &&
-        !analysisPrompt.saveActive &&
-        !analysisPrompt.override,
-      JSON.stringify(analysisPrompt)
+      'admin /admin/prompts: Tailor Resume still offers New Variant, and the override that says the run decides',
+      tailoring.newVariant && tailoring.override,
+      JSON.stringify(tailoring)
     );
 
     await adminPage.goto(`${APP}/orders`, { waitUntil: 'networkidle2' });

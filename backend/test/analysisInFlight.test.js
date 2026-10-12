@@ -40,6 +40,7 @@ test('ten callers on one posting make one analysis call, and all get its stored 
   await until(() => seats.analyses().length > 0, 'the first analysis to go out');
   await settle();
   assert.equal(seats.analyses().length, 1, 'nine of the ten waited on the first call');
+  assert.equal(seats.facts().length, 1, 'and on its facts call');
   assert.equal(gate.analysesInFlight(), 1);
 
   seats.release();
@@ -80,6 +81,8 @@ test('three profiles on three models share one call, made on the analysis model'
   assert.equal(seats.analyses().length, 1);
   assert.equal(seats.analyses()[0].provider, 'codex-cli', 'on the analysis model');
   assert.equal(seats.analyses()[0].modelName, 'default');
+  assert.equal(seats.facts().length, 1);
+  assert.deepEqual([seats.facts()[0].provider, seats.facts()[0].modelName], ['codex-cli', 'default'], 'the facts call too');
 });
 
 test('a caller that goes away does not fail the others waiting on the same call', async () => {
@@ -111,6 +114,7 @@ test('a failed call stores nothing, and the next request is the first real analy
   assert.ok(row.id);
   await gate.getOrCreateAnalysis({ jd: posting(5) });
   assert.equal(seats.analyses().length, 2, 'the failure, then the one analysis - and nothing after it');
+  assert.equal(seats.facts().length, 2, 'its facts asked again with it: one analysis is both answers or none');
 });
 
 test('a posting too short to analyse is not sent, and a stored one is found by its link whatever its text', async () => {
