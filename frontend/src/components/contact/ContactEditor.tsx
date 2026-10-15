@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ErrorNotice, Notice, Section, Status } from '@/components/ui/kit';
+import SettingSource from '@/components/ui/SettingSource';
 import { ApiResponseError } from '@/lib/api';
 import { adminContactApi, type ContactChannel, type ContactChannelType, type ContactEditorPayload } from '@/lib/contact';
 import {
@@ -18,6 +19,7 @@ import {
   type ChannelDraft,
   type ChannelFieldErrors,
 } from '@/lib/contactChannels';
+import { CONTACT_SETTING_ENV_VARIABLES, canReset, readSettingSource, sourceLabel } from '@/lib/settingSources';
 import { messageWithDetail, userMessage } from '@/lib/userMessage';
 import { ContactAdminLink } from './ContactAdminDialog';
 
@@ -45,6 +47,7 @@ export default function ContactEditor() {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [drafts, setDrafts] = useState<ChannelDraft[]>([]);
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [note, setNote] = useState('');
   const [problem, setProblem] = useState('');
   const [rowErrors, setRowErrors] = useState<Record<string, ChannelFieldErrors>>({});
@@ -127,6 +130,34 @@ export default function ContactEditor() {
     }
   };
 
+  /** Reset to default: the saved list goes, and `.env`'s CONTACT_CHANNELS (else none) is shown again. */
+  const reset = async () => {
+    setResetting(true);
+    setNote('');
+    setProblem('');
+    setRowErrors({});
+    setListErrors([]);
+    try {
+      const answer = await adminContactApi.reset();
+      setPayload(answer);
+      setDrafts(toChannelDrafts(answer.channels, makeKey));
+      setNote(
+        answer.channels.length === 0
+          ? 'Reset. No contact details are listed now.'
+          : 'Reset. Everybody now sees the contact details from .env.'
+      );
+    } catch (error) {
+      setProblem(messageWithDetail(error, 'Could not reset the contact details.'));
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const source = readSettingSource(payload?.settingSources?.channels);
+  const resetGives = payload?.settingDefaults?.channels?.length
+    ? `${payload.settingDefaults.channels.length === 1 ? 'one channel' : `${payload.settingDefaults.channels.length} channels`} from .env`
+    : 'none';
+
   return (
     <Section
       title="Contact"
@@ -196,6 +227,14 @@ export default function ContactEditor() {
               {/* The dialog as everybody sees it - what was SAVED, read from the public endpoint. */}
               <ContactAdminLink label="Preview what people see" />
             </div>
+            <SettingSource
+              label={sourceLabel(source, CONTACT_SETTING_ENV_VARIABLES.channels)}
+              resettable={canReset(source)}
+              gives={resetGives}
+              name="the contact details"
+              busy={resetting}
+              onReset={() => void reset()}
+            />
             {problem && <Status tone="error">{problem}</Status>}
             {note && <Status tone="ok">{note}</Status>}
           </div>

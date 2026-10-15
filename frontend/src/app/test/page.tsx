@@ -273,7 +273,7 @@ function TestPageBody() {
 
       <Section
         title="Analyzer"
-        description="The job description to analyse: the Analyze Job Description prompt reads its keywords and the Job Facts (Filter) prompt its facts, both on the analysis model (Settings > General)."
+        description="The job description to analyse: the Analyze Job Description prompt reads its keywords and the Job Facts (Filter) prompt its facts, both on the analysis model (Settings > Models)."
       >
         <form onSubmit={handleAnalyze} className="space-y-6">
           <Field label="Job description" htmlFor="prompt-test-description">

@@ -1834,6 +1834,27 @@ export async function resolveRequestedAIModel(
   throw new ModelUnavailableError(found.problem);
 }
 
+/** The boxes of Admin -> Models' dialog, by the name each has in a create or edit body. */
+export const AI_MODEL_FIELDS = ['name', 'provider', 'modelName', 'pricePerResumeUsd', 'description', 'enabled'] as const;
+
+export type AIModelField = (typeof AI_MODEL_FIELDS)[number];
+
+/**
+ * A model create or edit refused over ONE of its fields. The route answers it
+ * with `field` beside the sentence (`{ error, field }`), so the page shows the
+ * sentence under that box rather than guessing the box from its wording -
+ * which the next rewording would break.
+ */
+export class AIModelInputError extends Error {
+  constructor(
+    message: string,
+    readonly field: AIModelField
+  ) {
+    super(message);
+    this.name = 'AIModelInputError';
+  }
+}
+
 type AIModelMutationInput = {
   name?: string;
   provider?: AIProvider;
@@ -1863,18 +1884,27 @@ type AIModelMutationInput = {
  * input leaves out keeps its stored value - the price included, so the enable
  * switch, which sends only `{ enabled }`, cannot reset what a model costs.
  */
+/** The price box's value, or its refusal pinned to the box (config/pricePerResume.ts words it). */
+function priceOrRefusal(value: unknown, fallback: number | undefined): number {
+  try {
+    return parsePricePerResume(value, fallback);
+  } catch (error) {
+    throw new AIModelInputError(error instanceof Error ? error.message : String(error), 'pricePerResumeUsd');
+  }
+}
+
 function normalizeAIModelMutationInput(
   input: AIModelMutationInput,
   fallback?: AIModelRecord
 ): Omit<AIModelRecord, 'id' | 'createdAt' | 'updatedAt'> {
   const provider = normalizeAIModelProvider(input.provider ?? fallback?.provider);
   if (!provider) {
-    throw new Error(`Model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`);
+    throw new AIModelInputError(`Model provider must be one of: ${AI_PROVIDER_IDS.join(', ')}.`, 'provider');
   }
 
   const requestedModelName = normalizeAIModelText(input.modelName, fallback?.modelName || '');
   if (!requestedModelName) {
-    throw new Error('Model name is required.');
+    throw new AIModelInputError('Model name is required.', 'modelName');
   }
 
   const unchanged =
@@ -1885,9 +1915,10 @@ function normalizeAIModelMutationInput(
   if (!unchanged) {
     const option = findProviderModelOption(provider, requestedModelName);
     if (!option) {
-      throw new Error(
+      throw new AIModelInputError(
         `"${requestedModelName}" is not one of the ${getProviderLabel(provider)} models: ` +
-          `${describeProviderModelOptions(provider)}.`
+          `${describeProviderModelOptions(provider)}.`,
+        'modelName'
       );
     }
     modelName = option.value;
@@ -1898,7 +1929,7 @@ function normalizeAIModelMutationInput(
   // `default` says nothing to them.
   const name = normalizeAIModelText(input.name, fallback?.name ?? '');
   if (!name) {
-    throw new Error('Display name is required.');
+    throw new AIModelInputError('Display name is required.', 'name');
   }
 
   return {
@@ -1907,7 +1938,7 @@ function normalizeAIModelMutationInput(
     modelName,
     description: normalizeAIModelText(input.description, fallback?.description || ''),
     enabled: typeof input.enabled === 'boolean' ? input.enabled : fallback?.enabled ?? true,
-    pricePerResumeMilli: parsePricePerResume(input.pricePerResumeUsd, fallback?.pricePerResumeMilli),
+    pricePerResumeMilli: priceOrRefusal(input.pricePerResumeUsd, fallback?.pricePerResumeMilli),
   };
 }
 
@@ -1924,9 +1955,10 @@ function assertNoDuplicateModel(
   );
 
   if (duplicate) {
-    throw new Error(
+    throw new AIModelInputError(
       `${getProviderLabel(candidate.provider)} already has a model for "${candidate.modelName}" ` +
-        `("${duplicate.name}"). Edit that one instead.`
+        `("${duplicate.name}"). Edit that one instead.`,
+      'modelName'
     );
   }
 }
@@ -1942,9 +1974,10 @@ function assertUniqueDisplayName(models: AIModelRecord[], candidate: { id?: stri
   const wanted = candidate.name.trim().toLowerCase();
   const owner = models.find((model) => model.id !== candidate.id && model.name.trim().toLowerCase() === wanted);
   if (owner) {
-    throw new Error(
+    throw new AIModelInputError(
       `"${owner.name}" is already the name of a ${getProviderLabel(owner.provider)} model. Users see only ` +
-        'display names, so give this one a different name.'
+        'display names, so give this one a different name.',
+      'name'
     );
   }
 }

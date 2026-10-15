@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
+import SettingSource from '@/components/ui/SettingSource';
 import {
   adminApi,
   AdminAppSettings,
+  AdminAppSettingsUpdate,
   AIModelRecord,
   AIProvider,
-  coerceProvider,
   describeProviderModel,
   findProviderModelOption,
   formatPricePerResume,
@@ -16,62 +17,26 @@ import {
   isProviderOffered,
   LOCK_ICON,
 } from '@/lib/api';
-import { formatMoney, toDollarInput } from '@/lib/format';
-import { ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import { appSettingSourceLabel, canReset, resetBody } from '@/lib/settingSources';
+import { ErrorNotice, Field, Notice, Pill, Section, Spinner, StaticValue } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
-import { blankDraftChoice, displayNameOwner, firstModelName, isTaken, optionsFor } from './modelDraft';
-import { freeEnabledModels, readPriceDraft } from './modelPrice';
+import { freeEnabledModels } from './modelPrice';
+import ModelDialog from './ModelDialog';
 import ProvidersSection from './ProvidersSection';
-
-type ModelDraft = {
-  name: string;
-  provider: AIProvider;
-  modelName: string;
-  /**
-   * Dollars per resume, kept as typed ("0.023") so the field can be cleared
-   * and retyped; checked as it is typed and sent as typed - the server parses
-   * it exactly, in thousandths.
-   */
-  price: string;
-  description: string;
-  enabled: boolean;
-};
 
 function lockReason(settings: AdminAppSettings, provider: AIProvider): string {
   return settings.providerLocks.find((lock) => lock.id === provider)?.reason ?? '';
 }
 
-function toDraft(model: AIModelRecord): ModelDraft {
-  return {
-    name: model.name,
-    provider: model.provider,
-    modelName: model.modelName,
-    price: toDollarInput(model.pricePerResumeMilli),
-    description: model.description,
-    enabled: model.enabled,
-  };
-}
-
-/** A blank form on the first seat with a free model name, on that name. */
-function emptyDraft(settings: AdminAppSettings | null): ModelDraft {
-  const { provider, modelName } = blankDraftChoice(settings);
-  return {
-    name: '',
-    provider,
-    modelName,
-    // EMPTY, not a default: a new model is priced by whoever adds it, and the
-    // server refuses a create without a price. A pre-filled figure is a price
-    // somebody would save without having chosen it.
-    price: '',
-    description: '',
-    enabled: true,
-  };
+/** A model's display name, or its id when it has none (an id the list no longer holds). */
+function modelLabel(settings: AdminAppSettings, id: string): string {
+  return settings.aiModels.find((model) => model.id === id)?.name || id;
 }
 
 function ModelsPageBody() {
   const [settings, setSettings] = useState<AdminAppSettings | null>(null);
-  const [draft, setDraft] = useState<ModelDraft>(() => emptyDraft(null));
-  const [editingId, setEditingId] = useState<string | null>(null);
+  /** The dialog: a model to edit, null for Create New Model, absent while it is closed. */
+  const [editor, setEditor] = useState<{ model: AIModelRecord | null } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
@@ -88,11 +53,7 @@ function ModelsPageBody() {
       setIsLoading(true);
       setError('');
       setLoadError(null);
-      const loaded = await adminApi.getSettings();
-      setSettings(loaded);
-      // The blank form needs the seat lists to pick its model name from, and
-      // they arrive with the settings.
-      setDraft(emptyDraft(loaded));
+      setSettings(await adminApi.getSettings());
     } catch (err) {
       setLoadError(err);
     } finally {
@@ -100,142 +61,39 @@ function ModelsPageBody() {
     }
   };
 
-  const resetDraft = (next: AdminAppSettings | null = settings) => {
-    setDraft(emptyDraft(next));
-    setEditingId(null);
-  };
-
-  const handleProviderChange = (value: string) => {
-    if (!settings) return;
-    const provider = coerceProvider(value);
-    if (!provider) return;
-    // The model name belongs to the provider, so a switch starts it over on
-    // the new seat's list rather than carrying a name that seat may not have.
-    setDraft((current) => ({
-      ...current,
-      provider,
-      modelName:
-        provider === current.provider ? current.modelName : firstModelName(settings, provider, editingId),
-    }));
-  };
-
-  const handleSubmit = async () => {
-    const name = draft.name.trim();
-    const modelName = draft.modelName.trim();
-    const price = readPriceDraft(draft.price);
-
-    if (!name) {
-      setError('Display name is required.');
-      return;
-    }
-
-    const nameOwner = displayNameOwner(settings ?? { aiModels: [] }, name, editingId);
-    if (nameOwner) {
-      setError(
-        `"${nameOwner.name}" is already the name of a ${getAIProviderLabel(nameOwner.provider)} model. ` +
-          'People see only display names, so give this one a different name.'
-      );
-      return;
-    }
-
-    if (!modelName) {
-      setError('Choose a model.');
-      return;
-    }
-
-    if (!price.ok) {
-      setError(price.message);
-      return;
-    }
-
+  /** One change, its answer adopted and said; a refusal in the server's words. */
+  const change = async (run: () => Promise<AdminAppSettings>, said: (updated: AdminAppSettings) => string, failed: string) => {
     try {
       setIsSaving(true);
       setError('');
       setStatus('');
-      const fields = {
-        name,
-        provider: draft.provider,
-        modelName,
-        // As typed: the server reads "0.023" exactly. Sending the parsed
-        // number back as a float would be the one way to lose that precision.
-        pricePerResumeUsd: draft.price.trim(),
-        description: draft.description.trim(),
-        enabled: draft.enabled,
-      };
-      const updated = editingId
-        ? await adminApi.updateModel(editingId, fields)
-        : await adminApi.createModel(fields);
+      const updated = await run();
       setSettings(updated);
-      setStatus(editingId ? 'Model updated.' : 'Model created.');
-      resetDraft(updated);
+      setStatus(said(updated));
     } catch (err) {
-      setError(messageWithDetail(err, 'Failed to save model'));
+      setError(messageWithDetail(err, failed));
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleEdit = (model: AIModelRecord) => {
-    setDraft(toDraft(model));
-    setEditingId(model.id);
-    setError('');
-    setStatus('');
-  };
-
-  const handleDelete = async (model: AIModelRecord) => {
+  const handleDelete = (model: AIModelRecord) => {
     if (!window.confirm(`Delete model "${model.name}"?`)) return;
-
-    try {
-      setIsSaving(true);
-      setError('');
-      setStatus('');
-      const updated = await adminApi.deleteModel(model.id);
-      setSettings(updated);
-      if (editingId === model.id) {
-        resetDraft(updated);
-      }
-      setStatus('Model deleted.');
-    } catch (err) {
-      setError(messageWithDetail(err, 'Failed to delete model'));
-    } finally {
-      setIsSaving(false);
-    }
+    void change(() => adminApi.deleteModel(model.id), () => 'Model deleted.', 'Failed to delete model');
   };
 
-  const handleToggleEnabled = async (model: AIModelRecord) => {
-    try {
-      setIsSaving(true);
-      setError('');
-      setStatus('');
-      // `{enabled}` alone: the server keeps every other field, the price
-      // included, so a toggle can never reprice a model by accident.
-      const updated = await adminApi.updateModel(model.id, { enabled: !model.enabled });
-      setSettings(updated);
-      if (editingId === model.id) {
-        setDraft((current) => ({ ...current, enabled: !model.enabled }));
-      }
-      setStatus(`${model.name} ${model.enabled ? 'disabled' : 'enabled'}.`);
-    } catch (err) {
-      setError(messageWithDetail(err, 'Failed to update model'));
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  // `{enabled}` alone: the server keeps every other field, the price
+  // included, so a toggle can never reprice a model by accident.
+  const handleToggleEnabled = (model: AIModelRecord) =>
+    void change(
+      () => adminApi.updateModel(model.id, { enabled: !model.enabled }),
+      () => `${model.name} ${model.enabled ? 'disabled' : 'enabled'}.`,
+      'Failed to update model'
+    );
 
-  const handleSetDefault = async (model: AIModelRecord) => {
-    try {
-      setIsSaving(true);
-      setError('');
-      setStatus('');
-      const updated = await adminApi.updateSettings({ defaultModelId: model.id });
-      setSettings(updated);
-      setStatus(`Default model set to ${model.name}.`);
-    } catch (err) {
-      setError(messageWithDetail(err, 'Failed to update default model'));
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  /** Set default, Use for analysis, and the two resets: one field of the settings each. */
+  const saveChoice = (body: AdminAppSettingsUpdate, said: (updated: AdminAppSettings) => string) =>
+    void change(() => adminApi.updateSettings(body), said, 'Failed to update the model choice');
 
   if (isLoading) {
     return <Spinner />;
@@ -256,27 +114,56 @@ function ModelsPageBody() {
   }
 
   const providerEnabled = settings.providersEnabled;
-  const draftOptions = optionsFor(settings, draft.provider);
-  /*
-   * A record saved with a name the seat's list does not hold - typed before
-   * the list existed, or since narrowed through .env - keeps its name as an
-   * extra option while it is edited, so its display name, price and
-   * description can still be changed. Choosing a listed name replaces it.
-   */
-  const draftListedOption = findProviderModelOption(settings.providerModelOptions, draft.provider, draft.modelName);
-  const draftPrice = readPriceDraft(draft.price);
-  const nameOwner = displayNameOwner(settings, draft.name, editingId);
   const freeModels = freeEnabledModels(settings);
+  /** What the server would run: enabled, on a provider this installation offers. */
+  const canRun = (model: AIModelRecord) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled);
+  /*
+   * The analysis model as the server resolves it (`resolveAnalysisModel`):
+   * the chosen one while it can run, else the default model. A stored choice
+   * that stopped running - switched off, its provider off or locked - is
+   * named for what it is rather than silently shown as another model.
+   */
+  const analysisId = settings.analysisModelId;
+  const chosenAnalysis = analysisId ? settings.aiModels.find((model) => model.id === analysisId) ?? null : null;
+  const analysisStale = Boolean(analysisId) && !(chosenAnalysis && canRun(chosenAnalysis));
+  const analysisRunsOn = analysisId && !analysisStale ? analysisId : settings.defaultModelId;
+  const defaultName = settings.defaultModelId ? modelLabel(settings, settings.defaultModelId) : '';
+  const theDefaultModel = defaultName ? `the default model (${defaultName})` : 'the default model';
+  const sources = settings.settingSources;
+  const analysisSource =
+    sources.analysisModelId === 'default'
+      ? 'Default (the default model)'
+      : appSettingSourceLabel(sources, 'analysisModelId');
+  const analysisGives = settings.settingDefaults.analysisModelId
+    ? modelLabel(settings, settings.settingDefaults.analysisModelId)
+    : theDefaultModel;
+  const defaultGives = settings.settingDefaults.defaultModelId
+    ? modelLabel(settings, settings.settingDefaults.defaultModelId)
+    : 'no model';
 
   return (
     <div>
-      <header>
-        <h2 className="text-2xl font-bold tracking-tight text-ink">Models</h2>
-        <p className="mt-1 text-sm text-muted">
-          The models people choose from in the Resume Builder and on their profiles, by the display name
-          you give each one, and what one resume on it costs - and, under Providers, every place each type
-          of model runs.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-3xl">
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Models</h2>
+          <p className="mt-1 text-sm text-muted">
+            The models people choose from in the Resume Builder and on their profiles, by the display name
+            you give each one, and what one resume on it costs - and, under Providers, every place each type
+            of model runs.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="tl-button"
+          onClick={() => {
+            setError('');
+            setStatus('');
+            setEditor({ model: null });
+          }}
+          disabled={isSaving}
+        >
+          Create New Model
+        </button>
       </header>
 
       {freeModels.length > 0 && (
@@ -321,167 +208,60 @@ function ModelsPageBody() {
       )}
 
       <Section
-        title={editingId ? 'Edit Model' : 'Add Model'}
-        description="People see the display name and nothing else; the provider and model name decide what runs."
-        actions={
-          editingId && (
-            <button type="button" onClick={() => resetDraft()} disabled={isSaving} className="tl-button-quiet">
-              Cancel Edit
-            </button>
-          )
-        }
+        title="Default and analysis"
+        description="Each job posting is analysed once, by the analysis model, and never again - its keywords by the Analyze Job Description prompt and its facts, job field included, by the Job Facts (Filter) prompt: every profile, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way. Set either one from a row of the library below."
       >
         <div className="grid gap-6 md:grid-cols-2">
-          <Field
-            label="Display name"
-            htmlFor="model-display-name"
-            hint={
-              nameOwner
-                ? `Already the name of a ${getAIProviderLabel(nameOwner.provider)} model - people see only this name, so it must differ.`
-                : undefined
-            }
-          >
-            <input
-              id="model-display-name"
-              type="text"
-              value={draft.name}
-              onChange={(e) => setDraft((current) => ({ ...current, name: e.target.value }))}
-              disabled={isSaving}
-              placeholder="Claude Sonnet"
-              className="tl-input"
-            />
-          </Field>
-
-          <Field label="Provider" htmlFor="model-provider">
-            <select
-              id="model-provider"
-              value={draft.provider}
-              onChange={(e) => handleProviderChange(e.target.value)}
-              disabled={isSaving}
-              className="tl-input"
+          <div data-choice="default">
+            <Field label="Default model" hint="What Resume Builder runs when nobody chooses a model - a profile's or a prompt's choice wins.">
+              <StaticValue>
+                <span data-default-model>{defaultName || 'None - no model can run'}</span>
+              </StaticValue>
+              <SettingSource
+                label={appSettingSourceLabel(sources, 'defaultModelId')}
+                resettable={canReset(sources.defaultModelId)}
+                gives={defaultGives}
+                name="the default model"
+                busy={isSaving}
+                onReset={() =>
+                  saveChoice(resetBody('defaultModelId'), (updated) =>
+                    `The default model is ${modelLabel(updated, updated.defaultModelId) || 'none'} again.`
+                  )
+                }
+              />
+            </Field>
+          </div>
+          <div data-choice="analysis">
+            <Field
+              label="Analysis model"
+              hint="Changing it changes how postings never analysed before are read. Stored analyses are kept as they are; nothing is analysed again."
             >
-              {settings.providerModelOptions.map((entry) => (
-                // Still offered, not removed: a model row for a locked
-                // provider is worth writing down now so it is simply there if
-                // the lock is ever lifted.
-                <option key={entry.provider} value={entry.provider}>
-                  {isProviderLocked(settings, entry.provider)
-                    ? `${LOCK_ICON} ${entry.label} (locked)`
-                    : entry.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field
-            label="Model name"
-            htmlFor="model-runtime-name"
-            hint={
-              draftOptions.length === 0
-                ? 'The server listed no model names for this provider.'
-                : undefined
-            }
-          >
-            <select
-              id="model-runtime-name"
-              // The listed spelling, so a name stored as `Sonnet` still shows
-              // as the `sonnet` option; the draft keeps what was stored, so an
-              // untouched name is not sent back as a change.
-              value={draftListedOption?.value ?? draft.modelName}
-              onChange={(e) => setDraft((current) => ({ ...current, modelName: e.target.value }))}
-              disabled={isSaving || (draftOptions.length === 0 && !draft.modelName)}
-              className="tl-input"
-            >
-              {draft.modelName && !draftListedOption && (
-                <option value={draft.modelName}>{draft.modelName} (current - not in the list)</option>
+              <StaticValue>
+                <span data-analysis-model>
+                  {!analysisId
+                    ? `The default model${defaultName ? ` (${defaultName})` : ''}`
+                    : chosenAnalysis
+                      ? chosenAnalysis.name
+                      : `A model that is gone (${analysisId})`}
+                </span>
+              </StaticValue>
+              <SettingSource
+                label={analysisSource}
+                resettable={canReset(sources.analysisModelId)}
+                gives={analysisGives}
+                name="the analysis model"
+                busy={isSaving}
+                onReset={() => saveChoice(resetBody('analysisModelId'), () => 'The analysis model is back to its default.')}
+              />
+              {analysisStale && (
+                <Notice tone="warn" className="mt-3">
+                  {chosenAnalysis ? `"${chosenAnalysis.name}"` : 'The chosen analysis model'} cannot run here - it is
+                  switched off, or its provider is switched off or locked - so postings are analysed on{' '}
+                  {theDefaultModel} until it can, or another is chosen.
+                </Notice>
               )}
-              {draftOptions.length === 0 && !draft.modelName && <option value="">No model names</option>}
-              {draftOptions.length > 0 && !draft.modelName && (
-                // Every name on this seat is taken: nothing is preselected,
-                // so the form cannot be saved into the duplicate refusal.
-                <option value="" disabled>
-                  Choose a model
-                </option>
-              )}
-              {draftOptions.map((option) => {
-                const taken = isTaken(settings, draft.provider, option.value, editingId);
-                return (
-                  <option key={option.value} value={option.value} disabled={taken}>
-                    {taken ? `${option.label} (already added)` : option.label}
-                  </option>
-                );
-              })}
-            </select>
-          </Field>
-
-          <Field
-            label="Price per resume ($)"
-            htmlFor="model-price-per-resume"
-            hint={
-              !draftPrice.ok
-                ? draft.price.trim() === ''
-                  ? 'Required. Dollars to $0.001, like 0.023; 0 makes the model free.'
-                  : draftPrice.message
-                : draftPrice.milli === 0
-                  ? 'Free - a resume on this model costs $0.'
-                  : `${formatMoney(draftPrice.milli)} a resume. 0 makes it free.`
-            }
-          >
-            <input
-              id="model-price-per-resume"
-              // Text, like every other dollar box: a number box hands over
-              // what the BROWSER made of the keystrokes, not what was typed.
-              // In an en-US Chrome "0,023" becomes "0023" before onChange sees
-              // it - $23 a resume, a thousand times the price meant -
-              // where the text reaches readPriceDraft and the server as typed
-              // and is refused by name. The range and the $0.001 step are
-              // theirs to check, not the box's.
-              type="text"
-              inputMode="decimal"
-              autoComplete="off"
-              required={!editingId}
-              placeholder="0.023"
-              value={draft.price}
-              onChange={(e) => setDraft((current) => ({ ...current, price: e.target.value }))}
-              disabled={isSaving}
-              aria-invalid={draft.price.trim() !== '' && !draftPrice.ok}
-              className="tl-input"
-            />
-          </Field>
-
-          <Field label="Description" htmlFor="model-description">
-            <input
-              id="model-description"
-              type="text"
-              value={draft.description}
-              onChange={(e) => setDraft((current) => ({ ...current, description: e.target.value }))}
-              disabled={isSaving}
-              placeholder="Optional - a note for administrators"
-              className="tl-input"
-            />
-          </Field>
-        </div>
-
-        <label className="flex items-center gap-3 text-sm text-ink">
-          <input
-            type="checkbox"
-            className="tl-check"
-            checked={draft.enabled}
-            onChange={(e) => setDraft((current) => ({ ...current, enabled: e.target.checked }))}
-            disabled={isSaving}
-          />
-          Enable this model immediately
-        </label>
-
-        <div>
-          <button
-            type="button"
-            onClick={() => void handleSubmit()}
-            disabled={isSaving}
-            className="tl-button"
-          >
-            {isSaving ? 'Saving...' : editingId ? 'Save Model' : 'Create Model'}
-          </button>
+            </Field>
+          </div>
         </div>
       </Section>
 
@@ -506,6 +286,10 @@ function ModelsPageBody() {
             <tbody>
               {settings.aiModels.map((model) => {
                 const isDefault = settings.defaultModelId === model.id;
+                // Where postings are analysed: the chosen model, or the
+                // default while none is chosen or the chosen one cannot run.
+                const isAnalysis = analysisRunsOn === model.id;
+                const isChosenForAnalysis = analysisId === model.id;
                 const providerIsLocked = isProviderLocked(settings, model.provider);
                 // The same rule the backend gate applies, via the shared helper: a
                 // model whose provider this installation has withdrawn is still
@@ -520,7 +304,7 @@ function ModelsPageBody() {
                 );
 
                 return (
-                  <tr key={model.id}>
+                  <tr key={model.id} data-model-id={model.id}>
                     <td className="min-w-[16rem]">
                       {/* Colours on inner elements: `.tl-table td` is unlayered
                           and would beat a utility on the cell itself. */}
@@ -561,6 +345,12 @@ function ModelsPageBody() {
                     <td>
                       <div className="flex flex-wrap gap-1.5">
                         {isDefault && <Pill tone="sky">Default</Pill>}
+                        {isAnalysis && (
+                          <span title={analysisId ? 'Job postings are analysed on this model' : 'Job postings are analysed on the default model'}>
+                            <Pill tone="violet">Analysis</Pill>
+                          </span>
+                        )}
+                        {isChosenForAnalysis && analysisStale && <Pill tone="amber">Analysis - cannot run</Pill>}
                         {model.enabled && providerIsEnabled && <Pill tone="green">Enabled</Pill>}
                         {!model.enabled && <Pill tone="red">Disabled</Pill>}
                         {providerIsLocked && (
@@ -583,7 +373,11 @@ function ModelsPageBody() {
                       <div className="flex flex-wrap justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => handleEdit(model)}
+                          onClick={() => {
+                            setError('');
+                            setStatus('');
+                            setEditor({ model });
+                          }}
                           disabled={isSaving}
                           className="tl-button-quiet"
                           data-size="sm"
@@ -592,7 +386,7 @@ function ModelsPageBody() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => void handleToggleEnabled(model)}
+                          onClick={() => handleToggleEnabled(model)}
                           disabled={isSaving}
                           className="tl-button-quiet"
                           data-size="sm"
@@ -601,16 +395,46 @@ function ModelsPageBody() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => void handleSetDefault(model)}
-                          disabled={isSaving || !model.enabled || !providerIsEnabled || isDefault}
+                          onClick={() =>
+                            saveChoice({ defaultModelId: model.id }, () => `Default model set to ${model.name}.`)
+                          }
+                          disabled={isSaving || !canRun(model) || isDefault}
                           className="tl-button-quiet"
                           data-size="sm"
                         >
-                          Set Default
+                          Set default
                         </button>
+                        {isChosenForAnalysis ? (
+                          // Chosen already: the other way is back to the
+                          // default model - '' is that choice, and it beats
+                          // ANALYSIS_MODEL in .env.
+                          <button
+                            type="button"
+                            onClick={() =>
+                              saveChoice({ analysisModelId: '' }, () => 'Job postings are analysed on the default model now.')
+                            }
+                            disabled={isSaving}
+                            className="tl-button-quiet"
+                            data-size="sm"
+                          >
+                            Use the default model
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              saveChoice({ analysisModelId: model.id }, () => `Job postings are analysed on ${model.name} now.`)
+                            }
+                            disabled={isSaving || !canRun(model)}
+                            className="tl-button-quiet"
+                            data-size="sm"
+                          >
+                            Use for analysis
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => void handleDelete(model)}
+                          onClick={() => handleDelete(model)}
                           disabled={isSaving}
                           className="tl-button-quiet"
                           data-size="sm"
@@ -631,9 +455,24 @@ function ModelsPageBody() {
       <ProvidersSection
         providers={settings.aiProviders}
         // A provider switched on or off changes which models can run - the
-        // Status column above and Set Default follow the list it answers with.
+        // Status column above and Set default follow the list it answers with.
         onProvidersChange={(next) => setSettings((current) => (current ? { ...current, aiProviders: next } : current))}
       />
+
+      {editor && (
+        <ModelDialog
+          // A fresh form for each model it opens on.
+          key={editor.model?.id ?? 'new'}
+          model={editor.model}
+          settings={settings}
+          onClose={() => setEditor(null)}
+          onSaved={(updated, said) => {
+            setSettings(updated);
+            setStatus(said);
+            setEditor(null);
+          }}
+        />
+      )}
     </div>
   );
 }

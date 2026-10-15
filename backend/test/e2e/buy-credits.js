@@ -20,6 +20,12 @@
  *      `pi_` rather than a `cs_`.
  *   2. A browser pass over the dialog itself, which by then has a card to list.
  *
+ * Before either, the limits themselves (owner decisions S1, S4): they follow
+ * PAYMENT_<METHOD>_MIN_USD / _MAX_USD from .env until an administrator sets
+ * them; a save of the limits alone makes only them "Set here", the buy page
+ * offers what was saved, and Reset to default (`null`) hands them back -
+ * and Admin -> Payments, saved untouched, sends nothing.
+ *
  * The one thing no script here can do is type a card number: the Payment
  * Element is an iframe served by js.stripe.com and will not mount against a
  * made-up publishable key. So the card column is asserted to either mount OR
@@ -221,6 +227,50 @@ async function main() {
     'and nothing on them is a price per credit or a fee',
     options.body?.unitPriceCents === undefined && targets.every((t) => t.feeBps === undefined && t.minCredits === undefined),
     JSON.stringify(options.body)
+  );
+
+  console.log('\n=== The limits, and where they come from ===');
+  let limitSettings = (await call(adminToken, '/admin/settings')).body;
+  if (limitSettings?.settingSources?.paymentLimits === 'admin') {
+    // An earlier run's own: put back, so the defaults are what is offered.
+    limitSettings = (await call(adminToken, '/admin/settings', { method: 'PUT', body: JSON.stringify({ paymentLimits: null }) })).body;
+  }
+  const defaultCard = limitSettings?.settingDefaults?.paymentLimits?.find((row) => row.target === 'card');
+  check(
+    "with nothing set here, the buy page's card bounds are the defaults (.env's, else the code's)",
+    Boolean(defaultCard) &&
+      cardTarget?.minAmountMilli === defaultCard.minMilli &&
+      cardTarget?.maxAmountMilli === defaultCard.maxMilli &&
+      limitSettings.settingSources.paymentLimits !== 'admin',
+    JSON.stringify({ defaultCard, cardTarget, source: limitSettings?.settingSources?.paymentLimits })
+  );
+  const raisedMax = (defaultCard?.maxMilli ?? 100_000) + 50_000;
+  const limitsSaved = await call(adminToken, '/admin/settings', {
+    method: 'PUT',
+    body: JSON.stringify({
+      paymentLimits: limitSettings.paymentLimits.map((row) => ({
+        target: row.target,
+        minUsd: usd(row.minMilli),
+        maxUsd: usd(row.target === 'card' ? raisedMax : row.maxMilli),
+        presetsUsd: row.presetsMilli.map(usd),
+      })),
+    }),
+  });
+  const raisedCard = ((await call(token, '/payments/methods')).body?.targets ?? []).find((t) => t.method === 'card');
+  check(
+    'a limits save makes only the limits "Set here", and the buy page offers the new bound',
+    limitsSaved.status === 200 &&
+      limitsSaved.body.settingSources.paymentLimits === 'admin' &&
+      limitsSaved.body.settingSources.requireThreeDSecure !== 'admin' &&
+      raisedCard?.maxAmountMilli === raisedMax,
+    JSON.stringify({ status: limitsSaved.status, sources: limitsSaved.body?.settingSources, raisedCard })
+  );
+  const limitsReset = await call(adminToken, '/admin/settings', { method: 'PUT', body: JSON.stringify({ paymentLimits: null }) });
+  const resetCard = ((await call(token, '/payments/methods')).body?.targets ?? []).find((t) => t.method === 'card');
+  check(
+    'Reset to default hands the limits back to .env (or the code)',
+    limitsReset.body?.settingSources?.paymentLimits !== 'admin' && resetCard?.maxAmountMilli === defaultCard?.maxMilli,
+    JSON.stringify({ source: limitsReset.body?.settingSources?.paymentLimits, resetCard })
   );
 
   console.log('\n=== A coin named by a stale tab ===');
@@ -438,6 +488,34 @@ async function main() {
   /* ======================================================== 2. the browser */
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   try {
+    console.log('\n=== Admin -> Payments: the limits say where they come from ===');
+    const adminPage = await browser.newPage();
+    await adminPage.setViewport(WIDE);
+    await signIn(adminPage, adminToken);
+    await adminPage.goto(`${APP}/admin/payments`, { waitUntil: 'networkidle2' });
+    await adminPage.waitForSelector('[data-setting-source]', { timeout: 15_000 }).catch(() => null);
+    const sourceLines = () =>
+      adminPage.evaluate(() => Array.from(document.querySelectorAll('[data-setting-source]')).map((node) => node.textContent.trim()));
+    const shownBefore = await sourceLines();
+    check(
+      'Admin -> Payments says where the limits and card security come from, neither set here',
+      shownBefore.length === 2 && shownBefore.every((line) => /^(Default|From \.env \()/.test(line)),
+      JSON.stringify(shownBefore)
+    );
+    await adminPage.evaluate(() =>
+      Array.from(document.querySelectorAll('button')).find((button) => button.textContent.trim() === 'Save limits')?.click()
+    );
+    await wait(800);
+    const untouched = (await call(adminToken, '/admin/settings')).body?.settingSources ?? {};
+    check(
+      'saved untouched, it sends nothing: still not set here',
+      untouched.paymentLimits !== 'admin' &&
+        untouched.requireThreeDSecure !== 'admin' &&
+        (await adminPage.evaluate(() => /Nothing to save/.test(document.body.innerText))),
+      JSON.stringify(untouched)
+    );
+    await adminPage.close();
+
     const page = await browser.newPage();
     await page.setViewport(WIDE);
     await signIn(page, token);

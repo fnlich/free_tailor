@@ -1,4 +1,4 @@
-import { apiFetch, removeToken, setToken } from './api';
+import { apiFetch, normalizeOutputPathPreview, removeToken, setToken, type OutputPathPreview } from './api';
 import type { LedgerEntry } from './credits';
 import type { ConfiguredAdminSource, UserRole } from './roles';
 import type { AccountSubscriptionId } from './subscriptions';
@@ -40,6 +40,24 @@ export type Account = {
    * opens the All tab) arrives.
    */
   sheetUrl?: string;
+} & Partial<AccountOutputPath>;
+
+/**
+ * Where an account files its own resumes (Settings -> Profile -> Resume
+ * files, owner decision O3): the folder path after the administrator's
+ * prefix. On GET and PUT /auth/account only - not on the session's account
+ * from /auth/me - and only for an account that builds resumes; a reporter's
+ * says nothing about it.
+ */
+export type AccountOutputPath = {
+  /** The account's own, canonical; null when it has set none. */
+  outputPathSuffix: string | null;
+  /** 'account' (its own), else where the default came from - which the page calls "Default" either way. */
+  outputPathSuffixSource: 'account' | 'env' | 'default';
+  /** The folder path its runs use now. */
+  effectiveOutputPathSuffix: string;
+  /** What Reset to default gives. */
+  defaultOutputPathSuffix: string;
 };
 
 export type AccountSubscription = {
@@ -120,6 +138,34 @@ export const authApi = {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
+
+  /** The account as Settings -> Profile reads it: with its folder path, for a builder. */
+  account: () => apiFetch<{ account: Account }>('/auth/account'),
+
+  /**
+   * Saves the account's own folder path; `null` resets it to the default.
+   * Refused by the server's own check: 400 `output-path-invalid` with
+   * `field: 'outputPathSuffix'` and a sentence naming the token or folder.
+   */
+  saveOutputPathSuffix: (outputPathSuffix: string | null) =>
+    apiFetch<{ account: Account }>('/auth/account', {
+      method: 'PUT',
+      body: JSON.stringify({ outputPathSuffix }),
+    }),
+
+  /**
+   * Where a resume of the account's would be filed with this folder path -
+   * `/<prefix>/<folder path>`, drawn by the server's own function with sample
+   * values. Left out, the one in effect; `null`, the default.
+   */
+  previewOutputPath: async (outputPathSuffix?: string | null, signal?: AbortSignal): Promise<OutputPathPreview> =>
+    normalizeOutputPathPreview(
+      await apiFetch<OutputPathPreview>('/auth/output-path/preview', {
+        method: 'POST',
+        body: JSON.stringify(outputPathSuffix === undefined ? {} : { outputPathSuffix }),
+        signal,
+      })
+    ),
 };
 
 /* --------------------------------------------------- admin account management */

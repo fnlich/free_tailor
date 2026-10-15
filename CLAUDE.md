@@ -254,7 +254,17 @@ backend/src/
                       #   APP_SETTING_ENV_VARIABLES, its code default, a row
                       #   in SETTING_DEFAULT_VARIABLES, `readings` and
                       #   `defaults` in composeSettings, .env.example, README,
-                      #   and a case in test/settingDefaults.test.js.
+                      #   and a case in test/settingDefaults.test.js - and on
+                      #   its page (owner decision S4) a copy in frontend
+                      #   lib/settingSources.ts's table (no runtime import;
+                      #   test/frontendSettings.test.js holds it to this one),
+                      #   a components/ui/SettingSource.tsx line under its box
+                      #   ("Set here" | "From .env (NAME)" | "Default", and
+                      #   Reset to default - the field sent as `null` - while
+                      #   Set here), and a save that sends only what changed
+                      #   (`changedSettings`): a form that sent every box
+                      #   would mark every one Set here, frozen at that day's
+                      #   .env.
                       #   providerCatalog.ts is the ONE list of seats (TYPES)
                       #   - `coerceProviderId` answers null for any other id,
                       #   with no alias or retired-id map; aiProviders.ts the
@@ -793,7 +803,10 @@ frontend/src/
                       #   responseError, then messageWithDetail like the rest
   components/ui/      # The kit every page is built from: kit.tsx (Page,
                       #   PageHeader, Section, Card, Field, Notice, ErrorNotice,
-                      #   Pill, EmptyState, Spinner) and Dialog.tsx (the one
+                      #   Pill, EmptyState, Spinner), SettingSource.tsx (where
+                      #   an admin setting's value came from, and its Reset to
+                      #   default - lib/settingSources.ts decides the words)
+                      #   and Dialog.tsx (the one
                       #   modal: portal, Escape for the TOP dialog only, one
                       #   scroll lock however many are stacked -
                       #   lib/dialogStack.ts's `pageDialogs`) over the .tl-*
@@ -1168,6 +1181,24 @@ spaced or aliased spelling) - the two validators and the one renderer.
   10 gave the runs placed before theirs. Retention deletes recorded paths and
   prunes what that empties up to the output folder, so a run's folder goes
   with its last recorded file; nothing in it needs the prefix.
+- **The pages** (O5) never render or judge a path: both boxes are
+  components/settings/OutputPathBox.tsx - the tokens as chips that insert
+  at the caret, and a preview from the server's route, asked once the typing
+  stops (lib/outputPath.ts `OUTPUT_PATH_PREVIEW_DELAY_MS`), each request
+  aborting the one before and an answer shown only while it is for what the
+  box holds (`createLatestGate`); a value the server would refuse shows its
+  sentences under the box before anything is saved, and a save's refusal
+  (`field`) goes under it too. Admin -> Settings -> General has Output folder
+  and Output prefix, each with its source and Reset (the old folder template
+  box and its client-side preview are gone); Settings -> Profile has
+  **Resume files** (components/settings/ResumeFilesSection.tsx, read with
+  GET /auth/account - the session's /auth/me carries none of it), its source
+  "Your own" or "Default" (`suffixSourceLabel`: never which .env line), Save
+  and Reset to default, and not drawn for a reporter. lib/outputPath.ts's
+  chip lists are held to `OUTPUT_PREFIX_TOKENS` / `OUTPUT_SUFFIX_TOKENS` by
+  test/frontendSettings.test.js, which also drives lib/auth.ts's three calls
+  against the real routes. The profile editor's Company folder name box is
+  gone; its file NAME boxes stay.
 
 ## Money
 
@@ -1428,6 +1459,19 @@ is refused (`ModelUnavailableError`, 400) rather than swapped, because another
 model could cost another price, while a STORED profile preference that went
 stale falls back to the default with a warning once. The bare-provider and
 `provider:modelName` request forms are admin-only.
+
+**Admin -> Models** (owner decisions M1, M2) opens with its heading and
+**Create New Model** at the top right; create and edit are one kit Dialog,
+app/admin/models/ModelDialog.tsx (ProvidersSection's pattern), its decisions
+in modelForm.ts - the draft, the local checks in the server's own sentences,
+an edit's body of only what changed (an untouched one closes with no
+request), and `modelRefusalField`. The model routes answer a refusal about
+one box with `field` (config/aiModelConfig.ts `AIModelInputError`,
+`AI_MODEL_FIELDS`: name, provider, modelName, pricePerResumeUsd,
+description, enabled), so a name another administrator took meanwhile lands
+under the name box; test/frontendSettings.test.js drives the dialog's
+helpers through the real routes. The table's badges and the default and
+analysis choices are under "Job analysis runs once" below.
 
 **Price per resume.** `pricePerResumeMilli` is thousandths of a dollar,
 0..1,000,000 ($0-$1,000), 0 = free (`config/pricePerResume.ts`). There is
@@ -2272,9 +2316,15 @@ with `+` at build time and dropped the middle literal of three (not tried
 again on 16.3.8), so write such a constant as plain string literals. The Job Filter page shows each row's
 verdict (lib/jobFilterDisplay.ts - its reason words are drift-checked against
 services/jobFilter.ts's reasons by the same test) and sends only `{ tabName,
-startRow, endRow? }`. Admin -> Settings ->
-General has the Analysis model select (its own Save; a stored model that
-stopped running stays listed as "cannot run here"); Admin -> Prompts lists
+startRow, endRow? }`. The analysis model is chosen on Admin -> Models (owner
+decision M2; General has no select for it any more): a *Default* and an
+*Analysis* badge in the Model Library - Analysis on the model postings are
+analysed on, the default model's while none is chosen - and each row's **Set
+default** and **Use for analysis**, which on the chosen model is **Use the
+default model** (`analysisModelId: ''`); above the table the two choices
+with their sources ("Default (the default model)" for an analysis model
+nobody set) and Reset to default, and a chosen model that stopped running
+named as one that cannot run, postings meanwhile on the default; Admin -> Prompts lists
 the features in the server's order (`FEATURE_ORDER`, held to
 `listPromptFeatureKeys`) and offers no New Variant, Duplicate, Save Active or
 model override for the four single-prompt features, saying why in each one's

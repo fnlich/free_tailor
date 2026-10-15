@@ -452,6 +452,60 @@ async function main() {
     }
 
     /*
+     * Settings -> Profile -> Resume files (owner decisions O3, O5): the
+     * account's own folder path, its tokens as chips that insert at the caret,
+     * and the server's preview - a refusal shown before anything is saved.
+     */
+    await page.goto(`${APP}/settings`, { waitUntil: 'networkidle2' });
+    await page.waitForSelector('[data-preview-path]', { timeout: 10_000 }).catch(() => null);
+    const resumeFiles = await page.evaluate(() => ({
+      heading: Array.from(document.querySelectorAll('.tl-section h2')).some((h) => h.textContent.trim() === 'Resume files'),
+      value: document.getElementById('settings-output-path-suffix')?.value ?? null,
+      chips: Array.from(document.querySelectorAll('[data-token]')).map((b) => b.textContent.trim()),
+      preview: document.querySelector('[data-preview-path]')?.textContent.trim() ?? null,
+      source: document.querySelector('[data-suffix-source]')?.textContent.trim() ?? null,
+    }));
+    check(
+      'user /settings: Resume files shows the folder path in effect, its five tokens as chips and the server-drawn preview',
+      resumeFiles.heading &&
+        resumeFiles.value === '/{{date}}/{{profile_name}}/{{company_name}}/{{role}}' &&
+        resumeFiles.chips.join(' ') === '{{date}} {{profile_name}} {{company_name}} {{role}} {{row_number}}' &&
+        /^\/[a-z0-9_]+\/ft_\d{8}_0001\/\d{4}_\d{2}_\d{2}\//.test(resumeFiles.preview ?? '') &&
+        /^Default/.test(resumeFiles.source ?? ''),
+      JSON.stringify(resumeFiles)
+    );
+    // A chip lands at the caret, not at the end.
+    await page.evaluate(() => {
+      const box = document.getElementById('settings-output-path-suffix');
+      box.focus();
+      box.setSelectionRange(1, 1);
+    });
+    await page.click('[data-token="row_number"]');
+    await wait(500);
+    const afterChip = await page.$eval('#settings-output-path-suffix', (box) => ({ value: box.value, caret: box.selectionStart }));
+    check(
+      'user /settings: a chip inserts its token at the caret',
+      afterChip.value === '/{{row_number}}{{date}}/{{profile_name}}/{{company_name}}/{{role}}' && afterChip.caret === 15,
+      JSON.stringify(afterChip)
+    );
+    // A token from the administrator's half is refused in the server's words, before any save.
+    await page.$eval('#settings-output-path-suffix', (box) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(box, '/{{order_number}}');
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForSelector('[data-preview-problems]', { timeout: 10_000 }).catch(() => null);
+    const refusedSuffix = await page.evaluate(() => ({
+      problems: document.querySelector('[data-preview-problems]')?.textContent.trim() ?? null,
+      save: Array.from(document.querySelectorAll('button')).find((b) => b.textContent.trim() === 'Save')?.disabled ?? null,
+    }));
+    check(
+      "user /settings: a token in the administrator's place is refused under the box, by name",
+      /cannot use \{\{order_number\}\}/.test(refusedSuffix.problems ?? ''),
+      JSON.stringify(refusedSuffix)
+    );
+
+    /*
      * The rail, in the order it was asked for.
      *
      * Find Jobs is the account's own job sheet and is offered only once there
@@ -1253,27 +1307,79 @@ async function main() {
       contactSection.headings.includes('Contact') && contactSection.save && contactSection.add,
       JSON.stringify(contactSection)
     );
-    // The one analysis model (owner decision J1): the app default first, then
-    // every model that can run, with its own Save.
-    const analysisModel = await adminPage.evaluate(() => {
-      const select = document.getElementById('analysis-model');
+    /*
+     * Every setting with a .env default says where its value came from (owner
+     * decision S4); the analysis model moved to Models (M2); the folder
+     * template went, and the output prefix has the server's preview (O5).
+     */
+    await adminPage.waitForSelector('[data-preview-path]', { timeout: 10_000 }).catch(() => null);
+    const general = await adminPage.evaluate(() => ({
+      analysisSelect: Boolean(document.getElementById('analysis-model')),
+      analysisHeading: Array.from(document.querySelectorAll('.tl-section h2')).some((h) => h.textContent.trim() === 'Job Analysis'),
+      template: Boolean(document.getElementById('output-path-template')),
+      prefix: document.getElementById('output-path-prefix')?.value ?? null,
+      prefixChips: Array.from(document.querySelectorAll('[data-token]')).map((b) => b.textContent.trim()),
+      preview: document.querySelector('[data-preview-path]')?.textContent.trim() ?? null,
+      sources: Array.from(document.querySelectorAll('[data-setting-source]')).map((p) => p.textContent.trim()),
+    }));
+    check(
+      'admin /admin/settings: no analysis select and no folder template; the output prefix has its tokens and the server-drawn preview',
+      !general.analysisSelect &&
+        !general.analysisHeading &&
+        !general.template &&
+        general.prefix === '/{{user_email}}/{{order_number}}' &&
+        general.prefixChips.join(' ') === '{{user_email}} {{order_number}} {{date}}' &&
+        /ft_\d{8}_0001/.test(general.preview ?? ''),
+      JSON.stringify(general)
+    );
+    check(
+      'admin /admin/settings: each defaulted setting says where its value came from',
+      general.sources.length >= 8 && general.sources.every((line) => /^(Set here|From \.env \(|Default)/.test(line)),
+      JSON.stringify(general.sources)
+    );
+
+    // Admin -> Models: Create New Model at the top right, the default and analysis badges.
+    await adminPage.goto(`${APP}/admin/models`, { waitUntil: 'networkidle2' });
+    await wait(400);
+    const models = await adminPage.evaluate(() => {
+      // The page's own header, not the shell's top bar.
+      const create = Array.from(document.querySelectorAll('main button')).find((b) => b.textContent.trim() === 'Create New Model');
+      const header = create?.closest('header');
+      const headerBox = header?.getBoundingClientRect();
+      const createBox = create?.getBoundingClientRect();
+      const pills = Array.from(document.querySelectorAll('.tl-table .tl-pill')).map((p) => p.textContent.trim());
       return {
-        heading: Array.from(document.querySelectorAll('.tl-section h2')).some((h) => h.textContent.trim() === 'Job Analysis'),
-        options: select ? Array.from(select.options).map((o) => o.textContent.trim()) : null,
-        value: select?.value ?? null,
-        save: Array.from(document.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Save Analysis Model'),
-        once: /analysed once, by this model, and never again/.test(document.body.innerText),
+        create: Boolean(create),
+        topRight: Boolean(headerBox && createBox && createBox.right > headerBox.right - 4 && createBox.top < headerBox.top + 40),
+        inlineForm: Boolean(document.getElementById('model-display-name')),
+        defaultPill: pills.includes('Default'),
+        analysisPill: pills.includes('Analysis'),
+        actions: ['Set default', 'Use for analysis'].map((label) =>
+          Array.from(document.querySelectorAll('.tl-table button')).some((b) => b.textContent.trim() === label)
+        ),
+        analysis: document.querySelector('[data-analysis-model]')?.textContent.trim() ?? null,
+        once: /analysed once, by the analysis model, and never again/.test(document.body.innerText),
       };
     });
     check(
-      'admin /admin/settings: Job Analysis names the analysis model - the app default unless chosen - and says each posting is analysed once',
-      analysisModel.heading &&
-        /^App default model/.test(analysisModel.options?.[0] ?? '') &&
-        analysisModel.value === '' &&
-        analysisModel.save &&
-        analysisModel.once,
-      JSON.stringify(analysisModel)
+      'admin /admin/models: Create New Model at the top right, no inline form, Default and Analysis badges, Set default and Use for analysis',
+      models.create && models.topRight && !models.inlineForm && models.defaultPill && models.analysisPill && models.actions.every(Boolean) && models.once,
+      JSON.stringify(models)
     );
+    await adminPage.evaluate(() =>
+      Array.from(document.querySelectorAll('main button')).find((b) => b.textContent.trim() === 'Create New Model')?.click()
+    );
+    await adminPage.waitForSelector('[role="dialog"] #model-display-name', { timeout: 5_000 }).catch(() => null);
+    const createDialog = await adminPage.evaluate(() => ({
+      title: document.querySelector('[role="dialog"] h2')?.textContent.trim() ?? null,
+      price: document.querySelector('[role="dialog"] #model-price-per-resume')?.getAttribute('type') ?? null,
+    }));
+    check(
+      'admin /admin/models: Create New Model opens the dialog, its price a text box',
+      createDialog.title === 'Create New Model' && createDialog.price === 'text',
+      JSON.stringify(createDialog)
+    );
+    await adminPage.keyboard.press('Escape');
 
     /*
      * Admin -> Accounts, for a reporter (owner decisions A3, A4, J7): Reporter
@@ -1596,6 +1702,15 @@ async function main() {
       reporterTabs.tabs.join(', ')
     );
     check('reporter /settings: their role reads Reporter', reporterTabs.role);
+    // A reporter builds nothing, so has no folder path to set.
+    check(
+      'reporter /settings: no Resume files section',
+      await reporterPage.evaluate(
+        () =>
+          !Array.from(document.querySelectorAll('.tl-section h2')).some((h) => h.textContent.trim() === 'Resume files') &&
+          !document.getElementById('settings-output-path-suffix')
+      )
+    );
 
     // The account menu: earnings, the sheet, Settings, Contact admin, Log out - no subscription.
     const reporterBar = await inspectTopBar(reporterPage);

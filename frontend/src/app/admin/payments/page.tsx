@@ -5,7 +5,9 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { useDialogLayer } from '@/components/ui/Dialog';
 import { Card, EmptyState, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
-import { adminApi, type PaymentTargetLimits, type PaymentTargetLimitsInput } from '@/lib/api';
+import SettingSource from '@/components/ui/SettingSource';
+import { adminApi, type AdminAppSettings, type AdminAppSettingsUpdate } from '@/lib/api';
+import { appSettingSourceLabel, canReset, resetBody } from '@/lib/settingSources';
 import {
   type AdminPayment,
   adminPaymentsApi,
@@ -18,11 +20,12 @@ import {
   describeRefundOutcome,
   isLegacyPurchase,
 } from '@/lib/paymentDisplay';
-import { formatDate, formatMoney, parseDollars, toDollarInput } from '@/lib/format';
+import { formatDate, formatMoney, parseDollars } from '@/lib/format';
 import { describeClosedRequests, openRequestCount, readRefundFilter } from '@/lib/refundDisplay';
 import { adminRefundRequestsApi, type RefundRequestCounts, type RefundStateFilter } from '@/lib/refunds';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
+import { describeLimits, limitsChanged, targetLabel, toLimitDraft, toLimitRow, type LimitDraft } from './limitDraft';
 import RefundQueue from './RefundQueue';
 
 /**
@@ -32,57 +35,6 @@ import RefundQueue from './RefundQueue';
  *
  * Under `/admin`, so the nav comes from that layout rather than from here.
  */
-
-/**
- * One method's limits, while they are being edited.
- *
- * Strings, not numbers, and that is the point: an operator clearing a box to
- * retype it produces "" for a moment, and a number-typed state turns that into
- * NaN or - worse - silently into 0, which is a live setting that offers a
- * purchase of nothing. They are DOLLARS as typed ("2.50"), sent to the server
- * as typed, and the server parses them exactly and refuses anything that is
- * not a whole number of cents by name - so a bad value is reported on save
- * instead of applied.
- */
-type LimitDraft = {
-  target: string;
-  min: string;
-  max: string;
-  presets: string;
-};
-
-function toDraft(row: PaymentTargetLimits): LimitDraft {
-  return {
-    target: row.target,
-    min: toDollarInput(row.minMilli),
-    max: toDollarInput(row.maxMilli),
-    presets: row.presetsMilli.map(toDollarInput).join(', '),
-  };
-}
-
-function toRow(draft: LimitDraft): PaymentTargetLimitsInput {
-  return {
-    target: draft.target.trim(),
-    minUsd: draft.min.trim(),
-    maxUsd: draft.max.trim(),
-    /*
-     * Commas, spaces or both - an operator pasting a list should not have to
-     * guess the separator. Each is sent as typed: one that is not an amount is
-     * refused by the server naming the preset, rather than dropped here where
-     * nobody would notice it went.
-     */
-    presetsUsd: draft.presets
-      .split(/[\s,]+/)
-      .map((part) => part.replace(/^\$/, ''))
-      .filter(Boolean),
-  };
-}
-
-function targetLabel(target: string): string {
-  if (target === 'card') return 'Card';
-  if (target === 'crypto') return 'Crypto — every coin';
-  return target;
-}
 
 /** A typed bound as money for the card's description, or a dash while it is not one yet. */
 function typedMoney(value: string): string {
@@ -177,6 +129,7 @@ function LimitFields({
  * is the same validation any other settings change gets.
  */
 function PricingCard({ onSaved }: { onSaved: () => void }) {
+  const [settings, setSettings] = useState<AdminAppSettings | null>(null);
   const [limits, setLimits] = useState<LimitDraft[]>([]);
   const [require3ds, setRequire3ds] = useState(false);
   const [newTarget, setNewTarget] = useState('');
@@ -185,12 +138,16 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   const [note, setNote] = useState('');
   const [problem, setProblem] = useState('');
 
+  const adopt = (next: AdminAppSettings) => {
+    setSettings(next);
+    setLimits(next.paymentLimits.map(toLimitDraft));
+    setRequire3ds(next.requireThreeDSecure);
+  };
+
   useEffect(() => {
     void (async () => {
       try {
-        const settings = await adminApi.getSettings();
-        setLimits(settings.paymentLimits.map(toDraft));
-        setRequire3ds(settings.requireThreeDSecure);
+        adopt(await adminApi.getSettings());
       } catch {
         setProblem('Could not load the current purchase limits.');
       } finally {
@@ -199,16 +156,26 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
     })();
   }, []);
 
-  const save = async () => {
+  /**
+   * Only what changed. The limits and the switch each follow .env until an
+   * administrator sets them, so a save that sent both unchanged would freeze
+   * whatever .env said that day.
+   */
+  const changes = (): AdminAppSettingsUpdate => {
+    if (!settings) return {};
+    const body: AdminAppSettingsUpdate = {};
+    if (limitsChanged(limits, settings.paymentLimits)) body.paymentLimits = limits.map(toLimitRow);
+    if (require3ds !== settings.requireThreeDSecure) body.requireThreeDSecure = require3ds;
+    return body;
+  };
+
+  const send = async (body: AdminAppSettingsUpdate, said: string) => {
     setSaving(true);
     setNote('');
     setProblem('');
     try {
-      await adminApi.updateSettings({
-        paymentLimits: limits.map(toRow),
-        requireThreeDSecure: require3ds,
-      });
-      setNote('Saved. It applies to new purchases only.');
+      adopt(await adminApi.updateSettings(body));
+      setNote(said);
       onSaved();
     } catch (err) {
       setProblem(messageWithDetail(err, 'Could not save the purchase limits.'));
@@ -217,7 +184,19 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
     }
   };
 
+  const save = () => {
+    const body = changes();
+    if (Object.keys(body).length === 0) {
+      setProblem('');
+      setNote('Nothing to save: the limits and card security are as they were.');
+      return;
+    }
+    void send(body, 'Saved. It applies to new purchases only.');
+  };
+
   if (!loaded) return null;
+  const sources = settings?.settingSources;
+  const defaults = settings?.settingDefaults;
 
   return (
     <>
@@ -249,6 +228,16 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
             </span>
           </span>
         </label>
+        {sources && defaults && (
+          <SettingSource
+            label={appSettingSourceLabel(sources, 'requireThreeDSecure')}
+            resettable={canReset(sources.requireThreeDSecure)}
+            gives={defaults.requireThreeDSecure ? 'on' : 'off'}
+            name="card security"
+            busy={saving}
+            onReset={() => void send(resetBody('requireThreeDSecure'), 'Card security reset to its default.')}
+          />
+        )}
       </Section>
 
       <Section
@@ -257,9 +246,9 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
           <>
             In dollars and whole cents: the smallest and largest single purchase, and the amounts
             offered as buttons (a button outside the bounds is not offered). A method with no row
-            falls back to its built-in limits - card $2.50 to $100, crypto $50 to $2,000 - so
-            removing a row is a way of switching its limits back, not a way of switching the method
-            off.
+            falls back to its default limits - {defaults ? describeLimits(defaults.paymentLimits) : 'the built-in limits'},
+            from .env&apos;s PAYMENT_*_USD where it sets them - so removing a row is a way of switching
+            its limits back, not a way of switching the method off.
             {/* A block span rather than a second <p>: the kit puts the
                 description inside one paragraph already. */}
             <span className="mt-2 block">
@@ -287,9 +276,19 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
           ))}
           {limits.length === 0 && (
             <p className="text-sm text-muted">
-              No rows. Saving with none restores the built-in defaults rather than leaving every
-              method unbounded.
+              No rows. Saving with none restores the defaults rather than leaving every method
+              unbounded.
             </p>
+          )}
+          {sources && defaults && (
+            <SettingSource
+              label={appSettingSourceLabel(sources, 'paymentLimits')}
+              resettable={canReset(sources.paymentLimits)}
+              gives={describeLimits(defaults.paymentLimits)}
+              name="the purchase limits"
+              busy={saving}
+              onReset={() => void send(resetBody('paymentLimits'), 'Purchase limits reset to their defaults.')}
+            />
           )}
         </div>
 
@@ -344,7 +343,7 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         <div>
           <button
             type="button"
-            onClick={() => void save()}
+            onClick={save}
             disabled={saving}
             className="tl-button"
           >

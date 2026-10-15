@@ -2,21 +2,23 @@
 
 import { useEffect, useState } from 'react';
 
+import ResumeFilesSection from '@/components/settings/ResumeFilesSection';
 import { Field, Section, SettingsPage, StaticValue, Status } from '@/components/settings/SettingsParts';
 import { useAuth } from '@/contexts/AuthContext';
 import { authApi } from '@/lib/auth';
 import { formatDate } from '@/lib/format';
-import { roleLabel } from '@/lib/roles';
+import { canBuildResumes, roleLabel } from '@/lib/roles';
 import { messageWithDetail } from '@/lib/userMessage';
 
 /**
- * Settings > Profile: who you are signed in as, and the one thing about that
- * you may change yourself.
+ * Settings > Profile: who you are signed in as, what about that you may change
+ * yourself, and - for an account that builds resumes - where they are filed.
  *
- * Read-mostly on purpose. The only thing a user may change about themselves is
- * their display name - subscription, credits and role are an administrator's
- * to set, and a form that let somebody pick their own subscription would be a
- * form that lies.
+ * Read-mostly on purpose. What a user may change about themselves is their
+ * display name and their resumes' folder path - subscription, credits and
+ * role are an administrator's to set, and a form that let somebody pick their
+ * own subscription would be a form that lies. A reporter builds nothing, so
+ * Resume files is not drawn for one (the routes refuse them too).
  */
 export default function ProfileSettingsPage() {
   const { account, adopt, signOut } = useAuth();
@@ -112,6 +114,8 @@ export default function ProfileSettingsPage() {
           {error && <Status tone="error">{error}</Status>}
         </form>
       </Section>
+
+      {canBuildResumes(account.role) && <ResumeFilesSection />}
 
       <Section title="Sign out" description="End this session on this device.">
         <div>

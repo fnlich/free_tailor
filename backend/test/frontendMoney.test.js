@@ -531,7 +531,10 @@ const FRONTEND_MONEY_SOURCES = [
   'app/admin/payments/RefundQueue.tsx',
   'app/orders/[id]/page.tsx',
   'app/admin/models/page.tsx',
+  'app/admin/models/ModelDialog.tsx',
+  'app/admin/models/modelForm.ts',
   'app/admin/models/modelPrice.ts',
+  'app/admin/payments/limitDraft.ts',
   // The Job Data Lake: a reporter's earnings and rate, the admin rate, cap and rewards.
   'lib/jobLake.ts',
   'lib/jobLakeDisplay.ts',
@@ -568,8 +571,8 @@ test('no box an amount of money is typed into is a number box', () => {
     const code = withoutComments(fs.readFileSync(path.join(SRC, relative), 'utf8'));
     assert.doesNotMatch(code, /type=\{?["'`]number["'`]\}?/, `${relative} has a type="number" input`);
   }
-  // The one that did, by name: Admin -> Models' price per resume.
-  const models = withoutComments(fs.readFileSync(path.join(SRC, 'app/admin/models/page.tsx'), 'utf8'));
+  // The one that did, by name: Admin -> Models' price per resume, in the Create / Edit dialog.
+  const models = withoutComments(fs.readFileSync(path.join(SRC, 'app/admin/models/ModelDialog.tsx'), 'utf8'));
   const priceBox = models.match(/<input\s+id="model-price-per-resume"[\s\S]*?\/>/);
   assert.ok(priceBox, 'the price per resume input is found');
   assert.match(priceBox[0], /type="text"/);

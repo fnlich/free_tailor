@@ -19,6 +19,11 @@
  *     server's grace
  *   - leaving Build Resumes inside the app asks first, and then stops it -
  *     and coming back says how it ended
+ *   - the files land on the server under the output folder, the
+ *     administrator's prefix and the account's own folder path - one set the
+ *     owner's way, `/{{date}}{{profile_name}}/{{company_name}}/{{role}}`,
+ *     whose first folder is two tokens in one - and the run's folder is the
+ *     order's `output_root`
  *
  * Servers are expected to be up already, the backend preloaded with the stub
  * and sharing DB_DIR with this script, IMMEDIATE_TAB_GRACE_MS left at its
@@ -38,6 +43,9 @@ const puppeteer = require('puppeteer');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
+const orders = require(path.join(DIST, 'database', 'orderRepository'));
+const { getDb } = require(path.join(DIST, 'database', 'sqlite'));
+const { outputDateText, sanitizePathSegment } = require(path.join(DIST, 'utils', 'outputStorage'));
 const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
 const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
 
@@ -51,6 +59,8 @@ const CONFIRM_SENTENCE =
   'If you close the tab or the network drops, the run can be stopped. Would you like to proceed?';
 const POSTING =
   'Senior engineer wanted to ship TypeScript services packaged with Docker, for a small platform team.';
+/** The account's own folder path for this run: the owner's example, a date and a profile in one folder. */
+const SUFFIX = '/{{date}}{{profile_name}}/{{company_name}}/{{role}}';
 
 /*
  * Every queued job gets a posting of its own. The stored analysis and the
@@ -220,6 +230,13 @@ async function main() {
     });
   const batchState = async (batchId) => (await api(`/generation/batches/${batchId}`)).body?.state ?? null;
 
+  const savedSuffix = await api('/auth/account', { method: 'PUT', body: JSON.stringify({ outputPathSuffix: SUFFIX }) });
+  check(
+    "setup: the account's own folder path is saved",
+    savedSuffix.status === 200 && savedSuffix.body?.account?.outputPathSuffix === SUFFIX,
+    JSON.stringify(savedSuffix.body)
+  );
+
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   const cdp = await browser.target().createCDPSession();
   await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOADS, eventsEnabled: true });
@@ -276,6 +293,41 @@ async function main() {
       firstFiles.some((name) => /\.pdf$/i.test(name)) && firstFiles.some((name) => /Acme/.test(name)),
       `downloads: ${firstFiles.join(', ') || '(none)'}`
     );
+    /*
+     * Where the server put it: `<output folder>/<prefix>/<folder path>/`. The
+     * prefix is the default, `/{{user_email}}/{{order_number}}`, so the run's
+     * folder - recorded as the order's output_root - ends with the account's
+     * email and the order number; under it, the account's own folder path.
+     */
+    const firstRun = getDb()
+      .prepare("SELECT id, number, output_root FROM orders WHERE user_id = ? AND kind = 'immediate' ORDER BY created_at LIMIT 1")
+      .get(user.id);
+    const root = firstRun?.output_root ?? '';
+    const base = path.dirname(path.dirname(root));
+    const recorded = firstRun ? orders.listOrderItems(firstRun.id).flatMap((item) => item.files) : [];
+    const expectedFolders = [`${outputDateText()}Ada Run`, 'Acme', 'Senior Engineer'].map(sanitizePathSegment);
+    const filed = recorded.map((file) => {
+      const absolute = path.join(base, file.path);
+      return {
+        file: file.path,
+        under: path.relative(root, path.dirname(absolute)).split(path.sep),
+        exists: fs.existsSync(absolute),
+      };
+    });
+    check(
+      "the run's folder is <output folder>/<email>/<order number>, recorded on its order",
+      Boolean(firstRun) &&
+        path.basename(root) === sanitizePathSegment(firstRun.number) &&
+        path.basename(path.dirname(root)) === sanitizePathSegment(user.email) &&
+        (!process.env.E2E_OUTPUT_DIR || base === path.resolve(process.env.E2E_OUTPUT_DIR)),
+      JSON.stringify({ root, number: firstRun?.number, outputDir: process.env.E2E_OUTPUT_DIR ?? null })
+    );
+    check(
+      "every file it wrote is on disk under the account's own folder path, its first folder two tokens in one",
+      filed.length > 0 && filed.every((entry) => entry.exists && entry.under.join('/') === expectedFolders.join('/')),
+      JSON.stringify({ expected: expectedFolders, filed })
+    );
+
     const listed = await page.evaluate(() => {
       const card = document.querySelector('section[aria-label="This run\'s files"]');
       return card ? { text: card.innerText, buttons: card.querySelectorAll('li button').length } : null;

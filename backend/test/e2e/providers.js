@@ -27,6 +27,12 @@
  *     no `ranOn`, the provider routes refuse it, and Admin -> Models shows it
  *     nothing
  *   - no horizontal page scroll at 390px on Admin -> Models
+ *   - Admin -> Models' own dialog (owner decisions M1, M2): Create New Model
+ *     at the top right; a price the server would refuse is refused under its
+ *     box before anything is sent; a display name another tab took meanwhile
+ *     is refused BY THE SERVER, pinned under the name box; Edit saves a new
+ *     price; Set default and Use for analysis move the badges and say "Set
+ *     here", Reset to default and "Use the default model" put them back
  *
  * Servers are expected to be up already, the backend preloaded with the stub
  * seat and sharing DB_DIR with this script:
@@ -452,6 +458,117 @@ async function main() {
       'once idle, Team B is removed',
       !(await readProviders(page))?.some((row) => row.id === addedId)
     );
+
+    /* ---------------------------------------------- the Models dialog */
+    const modelName = `E2E Model ${stamp}`;
+    const before = (await asAdmin('/admin/settings')).body;
+    await page.goto(`${APP}/admin/models`, { waitUntil: 'networkidle2' });
+    await until(page, () => Boolean(document.querySelector('[data-model-id]')), 20_000);
+    check('Create New Model opens the dialog', await pressButton(page, 'Create New Model', 'main header'));
+    await until(page, () => Boolean(document.querySelector('[role="dialog"] #model-display-name')), 5_000);
+    await setBox(page, '#model-display-name', modelName);
+    await setBox(page, '#model-price-per-resume', '0.0005');
+    await pressButton(page, 'Create model', '[role="dialog"]');
+    await wait(300);
+    under = await errorUnder(page, 'model-price-per-resume');
+    check(
+      'a price the server would refuse is refused under its box, and the dialog stays',
+      under?.invalid && /Price per resume/.test(under.text) && (await page.evaluate(dialogOpen)),
+      JSON.stringify(under)
+    );
+    // Another administrator takes the name meanwhile: only the server can know.
+    const codexFree = before.providerModelOptions
+      .find((entry) => entry.provider === 'codex-cli')
+      ?.models.find((option) => !before.aiModels.some((model) => model.provider === 'codex-cli' && model.modelName.toLowerCase() === option.value.toLowerCase()))?.value;
+    const taken = await asAdmin('/admin/models', {
+      method: 'POST',
+      body: JSON.stringify({ name: modelName, provider: 'codex-cli', modelName: codexFree, pricePerResumeUsd: '0' }),
+    });
+    const takenId = taken.body?.aiModels?.find((model) => model.name === modelName)?.id ?? null;
+    await setBox(page, '#model-price-per-resume', '0.023');
+    await pressButton(page, 'Create model', '[role="dialog"]');
+    await until(page, () => /already the name of/.test(document.querySelector('[role="dialog"]')?.innerText ?? ''), 10_000);
+    under = await errorUnder(page, 'model-display-name');
+    check(
+      "a name taken since the dialog opened is refused by the server, under the name box",
+      Boolean(takenId) && under?.invalid && under.text.startsWith(`"${modelName}" is already the name of a Codex`),
+      JSON.stringify({ takenId, status: taken.status, under })
+    );
+    if (takenId) await asAdmin(`/admin/models/${takenId}`, { method: 'DELETE' });
+    await setBox(page, '#model-display-name', `${modelName} B`);
+    await pressButton(page, 'Create model', '[role="dialog"]');
+    await until(page, (name) => document.body.innerText.includes(`${name} created.`), 10_000, `${modelName} B`);
+    const createdId = (await asAdmin('/admin/settings')).body?.aiModels?.find((model) => model.name === `${modelName} B`)?.id;
+    check('the model is created, priced as typed', Boolean(createdId), String(createdId));
+    const rowSel = `tr[data-model-id="${createdId}"]`;
+    check('its row reads $0.023', await page.evaluate((sel) => /\$0\.023/.test(document.querySelector(sel)?.innerText ?? ''), rowSel));
+
+    await pressButton(page, 'Edit', rowSel);
+    await until(page, () => Boolean(document.querySelector('[role="dialog"] #model-price-per-resume')), 5_000);
+    await setBox(page, '#model-price-per-resume', '0.05');
+    await pressButton(page, 'Save model', '[role="dialog"]');
+    await until(page, (sel) => /\$0\.05\b/.test(document.querySelector(sel)?.innerText ?? ''), 10_000, rowSel);
+    check('Edit saves a new price', await page.evaluate((sel) => /\$0\.05\b/.test(document.querySelector(sel)?.innerText ?? ''), rowSel));
+
+    /** The default or analysis model as the page names it, and its source line. */
+    const choice = (which) =>
+      page.evaluate((kind) => {
+        const field = document.querySelector(`[data-choice="${kind}"]`);
+        return {
+          name: field?.querySelector('.tl-field-static')?.textContent.trim() ?? null,
+          source: field?.querySelector('[data-setting-source]')?.textContent.trim() ?? null,
+        };
+      }, which);
+    await pressButton(page, 'Set default', rowSel);
+    await until(page, (sel) => /Default/.test(document.querySelector(sel)?.innerText ?? ''), 10_000, rowSel);
+    const defaultChoice = await choice('default');
+    check(
+      'Set default moves the Default badge, and the default model reads Set here',
+      defaultChoice.name === `${modelName} B` && /^Set here/.test(defaultChoice.source ?? ''),
+      JSON.stringify(defaultChoice)
+    );
+    await pressButton(page, 'Use for analysis', rowSel);
+    // Chosen, not merely followed: the row offers the way back, and the badge stays on it.
+    await until(page, (sel) => Array.from(document.querySelectorAll(`${sel} button`)).some((b) => b.textContent.trim() === 'Use the default model'), 10_000, rowSel);
+    let analysisChoice = await choice('analysis');
+    check(
+      'Use for analysis puts the Analysis badge on it, and its row now offers Use the default model',
+      analysisChoice.name === `${modelName} B` &&
+        /^Set here/.test(analysisChoice.source ?? '') &&
+        (await page.evaluate((sel) => Array.from(document.querySelectorAll(`${sel} .tl-pill`)).some((p) => p.textContent.trim() === 'Analysis'), rowSel)),
+      JSON.stringify(analysisChoice)
+    );
+    await pressButton(page, 'Use the default model', rowSel);
+    await until(page, () => /^The default model/.test(document.querySelector('[data-analysis-model]')?.textContent.trim() ?? ''), 10_000);
+    analysisChoice = await choice('analysis');
+    check('Use the default model: postings follow the default model, chosen here', /^Set here/.test(analysisChoice.source ?? ''), JSON.stringify(analysisChoice));
+    // Both Resets: the analysis model's, then the default model's.
+    await page.evaluate(() => document.querySelector('button[aria-label="Reset the analysis model to default"]')?.click());
+    await until(page, () => !/^Set here/.test(
+      document.querySelector('[data-choice="analysis"] [data-setting-source]')?.textContent.trim() ?? 'Set here'
+    ), 10_000);
+    await page.evaluate(() => document.querySelector('button[aria-label="Reset the default model to default"]')?.click());
+    await until(page, (id) => !document.querySelector(`tr[data-model-id="${id}"]`)?.innerText.includes('Default'), 10_000, createdId);
+    await until(page, () => !/^Set here/.test(
+      document.querySelector('[data-choice="default"] [data-setting-source]')?.textContent.trim() ?? 'Set here'
+    ), 10_000);
+    const after = (await asAdmin('/admin/settings')).body;
+    check(
+      'Reset to default gives each what it said it would, and neither is set here',
+      after.defaultModelId === before.settingDefaults.defaultModelId &&
+        after.analysisModelId === before.settingDefaults.analysisModelId &&
+        after.settingSources.defaultModelId !== 'admin' &&
+        after.settingSources.analysisModelId !== 'admin',
+      JSON.stringify({ gives: before.settingDefaults, after: [after.defaultModelId, after.analysisModelId, after.settingSources] })
+    );
+    // Whatever an earlier run had set here, put back, so the next script finds it so.
+    const restore = {};
+    if (before.settingSources.defaultModelId === 'admin') restore.defaultModelId = before.defaultModelId;
+    if (before.settingSources.analysisModelId === 'admin') restore.analysisModelId = before.analysisModelId;
+    if (Object.keys(restore).length > 0) await asAdmin('/admin/settings', { method: 'PUT', body: JSON.stringify(restore) });
+    await pressButton(page, 'Delete', rowSel);
+    await until(page, (sel) => !document.querySelector(sel), 10_000, rowSel);
+    check('and the model is deleted', !(await page.$(rowSel)));
 
     /* -------------------------------------------------- at a phone's width */
     await page.setViewport(PHONE);

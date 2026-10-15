@@ -9,6 +9,7 @@ import {
   type ProviderCard,
   type ProviderOutage,
 } from './providerDisplay';
+import { APP_SETTING_KEYS, readSettingSources, type AppSettingKey, type SettingSource } from './settingSources';
 
 const DEFAULT_LOCAL_API_BASE = 'http://localhost:3001/api';
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || DEFAULT_LOCAL_API_BASE;
@@ -793,8 +794,20 @@ export interface AdminAppSettings extends BuilderDefaults {
   aiProviders: AdminAIProvider[];
   /** Every seat in catalog order, locked ones included, with the model names it offers. */
   providerModelOptions: ProviderModelOptions[];
+  /** The output folder on the server: every resume is filed under it. */
   outputBaseDir: string;
-  outputPathTemplate: string;
+  /**
+   * The administrator's half of every resume's folder (owner decision O1),
+   * canonical: `/{{user_email}}/{{order_number}}` by default. Each account
+   * adds its own folder path after it (Settings -> Profile -> Resume files).
+   */
+  outputPathPrefix: string;
+  /**
+   * Where a resume would be filed today - the whole path on the server, the
+   * prefix in effect and the default folder path after it, with sample
+   * values - rendered by the server's own function. A prefix not saved yet is
+   * previewed with `adminApi.previewOutputPrefix`; a page never renders one.
+   */
   outputPathPreview: string;
   /**
    * The ids of every ENABLED model priced $0 - free to everybody who
@@ -807,9 +820,11 @@ export interface AdminAppSettings extends BuilderDefaults {
   /**
    * The model every job analysis runs on - one for the whole installation, so
    * that every posting is read, and classified into a job field, the same way.
-   * '' is the app default model. Each posting is analysed once, ever: changing
-   * this changes the postings analysed from then on, never the stored ones.
-   * Administrators only; the builder's payload does not carry it.
+   * The value IN EFFECT: the one chosen on Admin -> Models, else .env's
+   * ANALYSIS_MODEL, else '' - the default model ('' chosen on the page is
+   * "use the default model", and beats .env). Each posting is analysed once,
+   * ever: changing this changes the postings analysed from then on, never the
+   * stored ones. Administrators only; the builder's payload does not carry it.
    */
   analysisModelId: string;
   /**
@@ -827,6 +842,57 @@ export interface AdminAppSettings extends BuilderDefaults {
    * instead of charging in one tap.
    */
   requireThreeDSecure: boolean;
+  /**
+   * Where each setting with a `.env` default got the value in effect: 'admin'
+   * (set here - Reset to default is offered), 'env' or 'default'
+   * (lib/settingSources.ts). Every key is present; one the server left out
+   * reads as 'default'.
+   */
+  settingSources: Record<AppSettingKey, SettingSource>;
+  /** What each of those would be with nothing set here: what Reset to default gives. */
+  settingDefaults: AppSettingDefaults;
+}
+
+/**
+ * Each `.env`-defaulted setting's value with nothing set here - `.env`'s,
+ * else the code's - as the admin payload serves it. `defaultModelId` is one of
+ * the models listed beside it; `analysisModelId` '' is the default model.
+ */
+export interface AppSettingDefaults {
+  defaultModelId: string;
+  analysisModelId: string;
+  defaultMode: DefaultMode;
+  defaultTheme: ThemeMode;
+  defaultResumeSelection: DefaultResumeSelection;
+  defaultResumeDocxEnabled: boolean;
+  defaultCoverLetterDocxEnabled: boolean;
+  outputBaseDir: string;
+  outputPathPrefix: string;
+  /** In thousandths, like `paymentLimits`. */
+  paymentLimits: PaymentTargetLimits[];
+  requireThreeDSecure: boolean;
+}
+
+/**
+ * A preview of a resume's folder, drawn by the server's own function:
+ * the path, or - for one a save would refuse - `path: null` and every
+ * sentence it would be refused with. `notes` is advice that refuses nothing.
+ */
+export interface OutputPathPreview {
+  path: string | null;
+  problems: string[];
+  notes: string[];
+}
+
+export function normalizeOutputPathPreview(value: unknown): OutputPathPreview {
+  const source = asRecord(value);
+  const texts = (list: unknown): string[] =>
+    Array.isArray(list) ? list.filter((entry): entry is string => typeof entry === 'string') : [];
+  return {
+    path: typeof source.path === 'string' ? source.path : null,
+    problems: texts(source.problems),
+    notes: texts(source.notes),
+  };
 }
 
 /**
@@ -1104,9 +1170,53 @@ function normalizeUserAppSettings(value: unknown): UserAppSettings {
   };
 }
 
+/**
+ * The admin payload's `settingDefaults`, read leniently: a field the server
+ * left out, or sent in the wrong shape, reads as the value in effect - so a
+ * Reset is never shown giving something nobody was told.
+ */
+function normalizeSettingDefaults(value: unknown, inEffect: Omit<AdminAppSettings, 'settingDefaults'>): AppSettingDefaults {
+  const source = asRecord(value);
+  const builder = normalizeBuilderDefaults({ ...pickBuilderDefaults(inEffect), ...source });
+  const text = (key: string, fallback: string) => (typeof source[key] === 'string' ? (source[key] as string) : fallback);
+  return {
+    defaultModelId: builder.defaultModelId,
+    analysisModelId: text('analysisModelId', inEffect.analysisModelId),
+    defaultMode: builder.defaultMode,
+    defaultTheme: builder.defaultTheme,
+    defaultResumeSelection: builder.defaultResumeSelection,
+    defaultResumeDocxEnabled: builder.defaultResumeDocxEnabled,
+    defaultCoverLetterDocxEnabled: builder.defaultCoverLetterDocxEnabled,
+    outputBaseDir: text('outputBaseDir', inEffect.outputBaseDir),
+    outputPathPrefix: text('outputPathPrefix', inEffect.outputPathPrefix),
+    paymentLimits: Array.isArray(source.paymentLimits)
+      ? normalizePaymentLimits(source.paymentLimits)
+      : inEffect.paymentLimits,
+    requireThreeDSecure:
+      typeof source.requireThreeDSecure === 'boolean' ? source.requireThreeDSecure : inEffect.requireThreeDSecure,
+  };
+}
+
+function pickBuilderDefaults(settings: BuilderDefaults): BuilderDefaults {
+  return {
+    defaultMode: settings.defaultMode,
+    defaultTheme: settings.defaultTheme,
+    defaultResumeSelection: settings.defaultResumeSelection,
+    defaultGroupId: settings.defaultGroupId,
+    defaultProfileId: settings.defaultProfileId,
+    defaultModelId: settings.defaultModelId,
+    defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
+    defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
+  };
+}
+
 function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
   const source = asRecord(value);
+  const inEffect = normalizeAdminSettingsInEffect(source);
+  return { ...inEffect, settingDefaults: normalizeSettingDefaults(source.settingDefaults, inEffect) };
+}
 
+function normalizeAdminSettingsInEffect(source: Record<string, unknown>): Omit<AdminAppSettings, 'settingDefaults'> {
   return {
     ...normalizeBuilderDefaults(source),
     providersEnabled: normalizeProvidersEnabled(source),
@@ -1117,7 +1227,7 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     aiProviders: normalizeAdminProviders(source.aiProviders),
     providerModelOptions: normalizeProviderModelOptions(source.providerModelOptions),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
-    outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
+    outputPathPrefix: typeof source.outputPathPrefix === 'string' ? source.outputPathPrefix : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
     freeEnabledModelIds: Array.isArray(source.freeEnabledModelIds)
       ? source.freeEnabledModelIds.filter((id): id is string => typeof id === 'string')
@@ -1125,19 +1235,32 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
     analysisModelId: typeof source.analysisModelId === 'string' ? source.analysisModelId : '',
     paymentLimits: normalizePaymentLimits(source.paymentLimits),
     requireThreeDSecure: source.requireThreeDSecure === true,
+    settingSources: readSettingSources(source.settingSources, APP_SETTING_KEYS),
   };
 }
 
-export interface AdminAppSettingsUpdate extends Partial<BuilderDefaults> {
-  providersEnabled?: Record<AIProvider, boolean>;
-  /** '' clears it (the app default model). A changed id must name a model that can run. */
-  analysisModelId?: string;
-  outputBaseDir?: string;
-  outputPathTemplate?: string;
-  /** In dollars. `[]` restores the shipped defaults. */
-  paymentLimits?: PaymentTargetLimitsInput[];
-  requireThreeDSecure?: boolean;
-}
+/** `null` beside each `.env`-defaulted field's own type: what Reset to default sends. */
+type Resettable<T> = { [K in keyof T]?: K extends AppSettingKey ? T[K] | null : T[K] };
+
+/**
+ * A save from an admin page. Only what is named changes, and a page names
+ * only what was changed (lib/settingSources.ts `changedSettings`): the server
+ * stores what an administrator set, so a field sent unchanged would stop
+ * following .env. A `.env`-defaulted field sent as `null` is Reset to default.
+ */
+export type AdminAppSettingsUpdate = Resettable<
+  BuilderDefaults & {
+    providersEnabled: Record<AIProvider, boolean>;
+    /** '' is "use the default model" (it beats ANALYSIS_MODEL); a changed id must name a model that can run. */
+    analysisModelId: string;
+    outputBaseDir: string;
+    /** Checked by the server: a refusal is 400 with `field: 'outputPathPrefix'`. */
+    outputPathPrefix: string;
+    /** In dollars. `null` (or `[]`) puts back the defaults. */
+    paymentLimits: PaymentTargetLimitsInput[];
+    requireThreeDSecure: boolean;
+  }
+>;
 
 export interface BrowseOutputDirectoryResponse {
   selectedPath: string | null;
@@ -1318,6 +1441,21 @@ export const adminApi = {
       method: 'PUT',
       body: JSON.stringify(data),
     })),
+
+  /**
+   * Where a resume would be filed with an output prefix not saved yet - the
+   * whole path on the server, drawn by its own function. Left out, the prefix
+   * in effect; `null`, what Reset to default gives. A prefix a save would
+   * refuse answers `path: null` and the sentences.
+   */
+  previewOutputPrefix: async (outputPathPrefix?: string | null, signal?: AbortSignal) =>
+    normalizeOutputPathPreview(
+      await apiFetch<OutputPathPreview>('/admin/output-path/preview', {
+        method: 'POST',
+        body: JSON.stringify(outputPathPrefix === undefined ? {} : { outputPathPrefix }),
+        signal,
+      })
+    ),
 
   createModel: async (data: {
     name: string;

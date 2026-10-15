@@ -933,6 +933,50 @@ async function main() {
       JSON.stringify(stillSaved)
     );
 
+    /*
+     * Where the list came from (owner decision S4): saved here, so Reset to
+     * default is offered - and pressed, the list is CONTACT_CHANNELS' from
+     * .env, or none, for everybody. Put back afterwards for what follows.
+     */
+    const contactSource = await adminPage.evaluate(() => {
+      const section = Array.from(document.querySelectorAll('.tl-section')).find((node) => node.querySelector('h2')?.textContent.trim() === 'Contact');
+      return {
+        line: section?.querySelector('[data-setting-source]')?.textContent.trim() ?? null,
+        reset: Boolean(section?.querySelector('button[aria-label="Reset the contact details to default"]')),
+      };
+    });
+    check(
+      'admin: the contact list says it was set here, and offers Reset to default',
+      /^Set here/.test(contactSource.line ?? '') && contactSource.reset,
+      JSON.stringify(contactSource)
+    );
+    const envChannels = (await asAdmin('/admin/contact')).body?.settingDefaults?.channels ?? [];
+    await adminPage.evaluate(() => document.querySelector('button[aria-label="Reset the contact details to default"]')?.click());
+    await until(adminPage, () => /^Reset\./.test(
+      Array.from(document.querySelectorAll('.tl-status[data-tone="ok"]')).map((node) => node.textContent.trim()).join(' ')
+    ));
+    const afterReset = await (await fetch(`${API}/contact`)).json();
+    const resetLine = await adminPage.evaluate(() =>
+      Array.from(document.querySelectorAll('.tl-section'))
+        .find((node) => node.querySelector('h2')?.textContent.trim() === 'Contact')
+        ?.querySelector('[data-setting-source]')
+        ?.textContent.trim() ?? null
+    );
+    check(
+      "admin: Reset to default shows everybody .env's contact list (or none), and the line says where it came from",
+      afterReset.channels?.length === envChannels.length && /^(Default|From \.env \(CONTACT_CHANNELS\))/.test(resetLine ?? ''),
+      JSON.stringify({ afterReset, resetLine })
+    );
+    await asAdmin('/admin/contact', {
+      method: 'PUT',
+      body: JSON.stringify({
+        channels: [
+          { type: 'email', label: 'Support', value: 'help@example.com' },
+          { type: 'discord', label: '', value: 'Tailor.Help' },
+        ],
+      }),
+    });
+
     /* ------------------------------------------------ on a phone */
     const phoneContext = await browser.createBrowserContext();
     const phone = await phoneContext.newPage();

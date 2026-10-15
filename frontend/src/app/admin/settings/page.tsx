@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import ContactEditor from '@/components/contact/ContactEditor';
+import OutputPathBox from '@/components/settings/OutputPathBox';
+import SettingSource from '@/components/ui/SettingSource';
 import {
   AI_PROVIDERS,
   adminApi,
@@ -23,6 +25,9 @@ import {
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
+import { OUTPUT_PREFIX_TOKEN_CHIPS } from '@/lib/outputPath';
+import { appSettingSourceLabel, canReset, changedSettings, resetBody, type AppSettingKey } from '@/lib/settingSources';
+import { ApiResponseError } from '@/lib/api';
 import { Card, ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { seatHolds } from '@/lib/seatHolds';
@@ -46,22 +51,23 @@ type SettingsFormState = {
   defaultResumeDocxEnabled: boolean;
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
-  outputPathTemplate: string;
-  /** '' = the app default model. */
-  analysisModelId: string;
+  outputPathPrefix: string;
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'analysis';
+type SaveSection = 'output' | 'providers' | 'defaults' | 'reset';
 
-function buildPathPreview(template: string): string {
-  const normalized = (template || '').trim() || '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
-  return normalized
-    .replace(/\{\{\s*date\s*\}\}/gi, '2026-04-10')
-    .replace(/\{\{\s*profile name\s*\}\}/gi, 'jane_doe')
-    .replace(/\{\{\s*company name\s*\}\}/gi, 'acme_inc')
-    .replace(/\{\{\s*(row number|sheet row|source row|row)\s*\}\}/gi, '12')
-    .replace(/\{\{\s*(job title|role)\s*\}\}/gi, 'senior_engineer');
-}
+/** The Builder Defaults fields that have a `.env` default: each shows where it came from, and saves only when changed. */
+const BUILDER_SETTING_KEYS = [
+  'defaultMode',
+  'defaultTheme',
+  'defaultResumeSelection',
+  'defaultModelId',
+  'defaultResumeDocxEnabled',
+  'defaultCoverLetterDocxEnabled',
+] as const satisfies readonly AppSettingKey[];
+
+/** The Output Storage fields, likewise. */
+const OUTPUT_SETTING_KEYS = ['outputBaseDir', 'outputPathPrefix'] as const satisfies readonly AppSettingKey[];
 
 /**
  * A type's row: its one provider's own words, or - with several, each a
@@ -232,9 +238,25 @@ function toFormState(settings: AdminAppSettings): SettingsFormState {
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: settings.defaultCoverLetterDocxEnabled,
     outputBaseDir: settings.outputBaseDir,
-    outputPathTemplate: settings.outputPathTemplate,
-    analysisModelId: settings.analysisModelId,
+    outputPathPrefix: settings.outputPathPrefix,
   };
+}
+
+/** The box a Reset to default puts back, from the settings it answered with. */
+function pickResetField(updated: AdminAppSettings, key: AppSettingKey): Partial<SettingsFormState> {
+  switch (key) {
+    case 'defaultMode':
+    case 'defaultTheme':
+    case 'defaultResumeSelection':
+    case 'defaultModelId':
+    case 'defaultResumeDocxEnabled':
+    case 'defaultCoverLetterDocxEnabled':
+    case 'outputBaseDir':
+    case 'outputPathPrefix':
+      return { [key]: updated[key] };
+    default:
+      return {};
+  }
 }
 
 function mergeSavedSection(
@@ -246,7 +268,7 @@ function mergeSavedSection(
     return {
       ...current,
       outputBaseDir: updated.outputBaseDir,
-      outputPathTemplate: updated.outputPathTemplate,
+      outputPathPrefix: updated.outputPathPrefix,
     };
   }
 
@@ -254,13 +276,6 @@ function mergeSavedSection(
     return {
       ...current,
       providersEnabled: { ...updated.providersEnabled },
-    };
-  }
-
-  if (section === 'analysis') {
-    return {
-      ...current,
-      analysisModelId: updated.analysisModelId,
     };
   }
 
@@ -292,6 +307,8 @@ function AdminSettingsPageBody() {
   const [savingSection, setSavingSection] = useState<SaveSection | null>(null);
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
   const [error, setError] = useState('');
+  /** A save's refusal of the output prefix, in the server's words, under its box until it is edited. */
+  const [prefixRefusal, setPrefixRefusal] = useState('');
   /**
    * Why the settings could not be read, kept whole rather than as text, so the
    * notice can show the server's sentence, its reference and - this page being
@@ -366,13 +383,18 @@ function AdminSettingsPageBody() {
       const updated = await adminApi.updateSettings(payload);
       setSettings(updated);
       setForm((current) => (current ? mergeSavedSection(current, updated, section) : toFormState(updated)));
-      if (section === 'defaults') {
+      if ('defaultTheme' in payload) {
         applySavedThemeDefault(updated.defaultTheme);
       }
       setSuccessMessage(nextMessage);
       return true;
     } catch (err) {
-      setError(messageWithDetail(err, 'Failed to update settings'));
+      // The server names the prefix box when it refuses one: the sentence goes under it.
+      if (err instanceof ApiResponseError && err.body?.field === 'outputPathPrefix') {
+        setPrefixRefusal(err.message);
+      } else {
+        setError(messageWithDetail(err, 'Failed to update settings'));
+      }
       return false;
     } finally {
       setSavingSection(null);
@@ -397,17 +419,42 @@ function AdminSettingsPageBody() {
     }
   };
 
-  const handleSaveOutputStorage = async () => {
+  /**
+   * Reset to default: the field sent as `null`, a save of its own. The value
+   * in effect comes back from .env, or the code, and the box shows it.
+   */
+  const handleReset = async (key: AppSettingKey, name: string) => {
     if (!form) return;
+    try {
+      setSavingSection('reset');
+      setError('');
+      setSuccessMessage('');
+      const updated = await adminApi.updateSettings(resetBody(key));
+      setSettings(updated);
+      setForm((current) => (current ? { ...current, ...pickResetField(updated, key) } : toFormState(updated)));
+      if (key === 'outputPathPrefix') setPrefixRefusal('');
+      if (key === 'defaultTheme') applySavedThemeDefault(updated.defaultTheme);
+      setSuccessMessage(`${name} reset to its default.`);
+    } catch (err) {
+      setError(messageWithDetail(err, `Could not reset ${name.toLowerCase()}`));
+    } finally {
+      setSavingSection(null);
+    }
+  };
 
-    await saveSection(
-      'output',
-      {
-        outputBaseDir: form.outputBaseDir.trim(),
-        outputPathTemplate: form.outputPathTemplate.trim(),
-      },
-      'Output storage saved.'
+  const handleSaveOutputStorage = async () => {
+    if (!form || !settings) return;
+    // Only what changed: a box saved as it came would stop following .env.
+    const changes = changedSettings(
+      { outputBaseDir: form.outputBaseDir.trim(), outputPathPrefix: form.outputPathPrefix.trim() },
+      settings,
+      OUTPUT_SETTING_KEYS
     );
+    if (Object.keys(changes).length === 0) {
+      setSuccessMessage('Nothing to save: the output folder and prefix are as they were.');
+      return;
+    }
+    await saveSection('output', changes, 'Output storage saved.');
   };
 
   const handleSaveProviders = async () => {
@@ -437,25 +484,24 @@ function AdminSettingsPageBody() {
       return;
     }
 
-    await saveSection(
-      'defaults',
-      {
-        defaultMode: form.defaultMode,
-        defaultTheme: form.defaultTheme,
-        defaultResumeSelection: form.defaultResumeSelection,
-        defaultGroupId: form.defaultResumeSelection === 'group' ? form.defaultGroupId : '',
-        defaultProfileId: form.defaultResumeSelection === 'single' ? form.defaultProfileId : '',
-        defaultModelId: form.defaultModelId,
-        defaultResumeDocxEnabled: form.defaultResumeDocxEnabled,
-        defaultCoverLetterDocxEnabled: form.defaultCoverLetterDocxEnabled,
-      },
-      'Builder defaults saved.'
-    );
-  };
-
-  const handleSaveAnalysisModel = async () => {
-    if (!form) return;
-    await saveSection('analysis', { analysisModelId: form.analysisModelId }, 'Analysis model saved.');
+    if (!settings) return;
+    const intended = {
+      ...form,
+      defaultGroupId: form.defaultResumeSelection === 'group' ? form.defaultGroupId : '',
+      defaultProfileId: form.defaultResumeSelection === 'single' ? form.defaultProfileId : '',
+    };
+    /*
+     * Only what changed. The six with a .env default are stored only once an
+     * administrator sets them, so sending one unchanged would freeze the
+     * value .env gives today; the group and profile have no .env default and
+     * go with them when they changed.
+     */
+    const changes = changedSettings(intended, settings, [...BUILDER_SETTING_KEYS, 'defaultGroupId', 'defaultProfileId']);
+    if (Object.keys(changes).length === 0) {
+      setSuccessMessage('Nothing to save: the builder defaults are as they were.');
+      return;
+    }
+    await saveSection('defaults', changes, 'Builder defaults saved.');
   };
 
   if (isLoading) {
@@ -490,20 +536,24 @@ function AdminSettingsPageBody() {
   const availableDefaultModels = settings.aiModels.filter(
     (model) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled)
   );
-  const outputPathPreview = buildPathPreview(form.outputPathTemplate);
-  /*
-   * The analysis model as the server resolves it (`resolveAnalysisModel`): the
-   * chosen one while it can run, else the app default. A stored choice that
-   * stopped running - switched off, its provider off or locked - stays in the
-   * select, named for what it is, rather than the select silently showing
-   * another model than the one saved.
-   */
-  const defaultModelName = settings.aiModels.find((model) => model.id === settings.defaultModelId)?.name ?? '';
-  const chosenAnalysisModel = form.analysisModelId
-    ? settings.aiModels.find((model) => model.id === form.analysisModelId) ?? null
-    : null;
-  const analysisModelStale =
-    Boolean(form.analysisModelId) && !availableDefaultModels.some((model) => model.id === form.analysisModelId);
+  const sources = settings.settingSources;
+  const defaults = settings.settingDefaults;
+  const resetting = savingSection === 'reset';
+  /** A box's source line: where its value came from and, while it is set here, Reset to default. */
+  const sourceOf = (key: AppSettingKey, name: string, gives: string) => (
+    <SettingSource
+      label={appSettingSourceLabel(sources, key)}
+      resettable={canReset(sources[key])}
+      gives={gives}
+      name={name.toLowerCase()}
+      busy={resetting}
+      onReset={() => void handleReset(key, name)}
+    />
+  );
+  const modelName = (id: string) => settings.aiModels.find((model) => model.id === id)?.name || id || 'no model';
+  const onOff = (value: boolean) => (value ? 'on' : 'off');
+  const MODE_LABELS = { preview: 'Preview first', generate: 'Generate directly' } as const;
+  const TARGET_LABELS = { single: 'Single profile', all: 'All profiles', group: 'Specific group' } as const;
   /* One card per PROVIDER of every type this installation could run - two
      Claude sign-ins are two cards. Keyed on the LOCK, not on the enabled
      tick: a seat an admin has unticked is exactly the one whose readiness
@@ -519,8 +569,10 @@ function AdminSettingsPageBody() {
       <header>
         <h2 className="text-2xl font-bold tracking-tight text-ink">General</h2>
         <p className="mt-1 text-sm text-muted">
-          Configure builder defaults, enabled providers, output storage, the job analysis model, and how people
-          contact you.
+          Configure builder defaults, enabled providers, where resumes are filed, and how people contact you. Each
+          setting says where its value comes from: set here, a line of the server&apos;s .env, or the built-in
+          default - and Reset to default hands one set here back to .env. The default and analysis models are
+          chosen under Models.
         </p>
       </header>
 
@@ -541,12 +593,18 @@ function AdminSettingsPageBody() {
 
       <Section
         title="Output Storage"
-        description="Generated resumes are saved under the base directory below, using the folder template you define."
+        description={
+          <>
+            Every resume is filed under the output folder, then the prefix below, then the folder path of the account
+            that ordered it - <code className={styles.code}>{'<output folder>/<prefix>/<folder path>/<file>'}</code>.
+            Each account sets its own folder path under Settings, Profile, Resume files.
+          </>
+        }
       >
         <Field
-          label="Base directory"
+          label="Output folder"
           htmlFor="output-base-dir"
-          hint="Browse opens the folder picker on the backend machine, so mounted shared drives and network folders are selectable if that machine can access them."
+          hint="An absolute folder on the server. Browse opens the folder picker on the backend machine, so mounted shared drives and network folders are selectable if that machine can access them."
         >
           <div className="flex flex-col gap-3 sm:flex-row">
             <input
@@ -556,7 +614,7 @@ function AdminSettingsPageBody() {
               onChange={(e) => setField('outputBaseDir', e.target.value)}
               disabled={savingSection === 'output' || isBrowsingDirectory}
               placeholder="/mnt/resume-archive"
-              className="tl-input"
+              className="tl-input font-mono"
             />
             <button
               type="button"
@@ -567,35 +625,36 @@ function AdminSettingsPageBody() {
               {isBrowsingDirectory ? 'Opening...' : 'Browse...'}
             </button>
           </div>
+          {sourceOf('outputBaseDir', 'Output folder', defaults.outputBaseDir)}
         </Field>
 
-        <Field label="Folder template" htmlFor="output-path-template">
-          <input
-            id="output-path-template"
-            type="text"
-            value={form.outputPathTemplate}
-            onChange={(e) => setField('outputPathTemplate', e.target.value)}
-            disabled={savingSection === 'output'}
-            placeholder="/{{date}}/{{profile name}}/{{company name}}"
-            className="tl-input"
-          />
-          <Notice tone="neutral" className="mt-3 space-y-2">
-            <div>
-              <span className="font-medium">Supported tokens:</span>{' '}
-              <code className={styles.code}>{'{{date}}'}</code>,{' '}
-              <code className={styles.code}>{'{{profile name}}'}</code>,{' '}
-              <code className={styles.code}>{'{{company name}}'}</code>,{' '}
-              <code className={styles.code}>{'{{row number}}'}</code>,{' '}
-              <code className={styles.code}>{'{{job title}}'}</code>
-            </div>
-            <div className="break-all">
-              <span className="font-medium">Preview:</span> {outputPathPreview}
-            </div>
-            <div className="break-all">
-              <span className="font-medium">Saved preview:</span> {settings.outputPathPreview}
-            </div>
-          </Notice>
-        </Field>
+        <OutputPathBox
+          id="output-path-prefix"
+          label="Output prefix"
+          value={form.outputPathPrefix}
+          onChange={(next) => {
+            setField('outputPathPrefix', next);
+            setPrefixRefusal('');
+          }}
+          chips={OUTPUT_PREFIX_TOKEN_CHIPS}
+          preview={(text, signal) => adminApi.previewOutputPrefix(text, signal)}
+          placeholder="/{{user_email}}/{{order_number}}"
+          disabled={savingSection === 'output'}
+          refusal={prefixRefusal}
+          hint={
+            <>
+              The first folders of every resume&apos;s path, the same for everybody. It may use{' '}
+              <code className={styles.code}>{'{{user_email}}'}</code>,{' '}
+              <code className={styles.code}>{'{{order_number}}'}</code> and{' '}
+              <code className={styles.code}>{'{{date}}'}</code>, with text around them, and must hold{' '}
+              <code className={styles.code}>{'{{order_number}}'}</code> exactly once, alone in its folder - it is what
+              gives every run a folder of its own, and what says whose a file is. The preview adds the default folder
+              path after it, with sample values. A run keeps the folder it was placed in; a change reaches only the
+              runs placed after it.
+            </>
+          }
+          source={sourceOf('outputPathPrefix', 'Output prefix', defaults.outputPathPrefix)}
+        />
 
         <div>
           <button
@@ -724,6 +783,7 @@ function AdminSettingsPageBody() {
               <span>Generate directly</span>
             </label>
           </div>
+          {sourceOf('defaultMode', 'Default mode', MODE_LABELS[defaults.defaultMode])}
         </Field>
 
         <Field label="Default theme">
@@ -749,6 +809,7 @@ function AdminSettingsPageBody() {
               <span>Dark</span>
             </label>
           </div>
+          {sourceOf('defaultTheme', 'Default theme', defaults.defaultTheme === 'dark' ? 'Dark' : 'Light')}
         </Field>
 
         <div className="space-y-4">
@@ -785,6 +846,7 @@ function AdminSettingsPageBody() {
                 <span>Specific group</span>
               </label>
             </div>
+            {sourceOf('defaultResumeSelection', 'Default resume target', TARGET_LABELS[defaults.defaultResumeSelection])}
           </Field>
 
           {form.defaultResumeSelection === 'single' && (
@@ -856,8 +918,10 @@ function AdminSettingsPageBody() {
               ))}
             </select>
           </div>
+          {sourceOf('defaultModelId', 'Default model', modelName(defaults.defaultModelId))}
           <p className="mt-2 text-sm text-subtle">
-            This is the default model used by Resume Builder when no prompt-level override is set.
+            This is the default model used by Resume Builder when no prompt-level override is set. Models also
+            sets it, and the model job postings are analysed on.
           </p>
           {availableDefaultModels.length === 0 && (
             <Notice tone="warn" className="mt-3">
@@ -892,6 +956,20 @@ function AdminSettingsPageBody() {
               <span>Generate DOCX cover letter by default</span>
             </label>
           </div>
+          <div className="grid gap-x-6 sm:grid-cols-2">
+            <div>
+              <p className="mt-3 text-xs font-medium text-muted">DOCX resume</p>
+              {sourceOf('defaultResumeDocxEnabled', 'DOCX resume default', onOff(defaults.defaultResumeDocxEnabled))}
+            </div>
+            <div>
+              <p className="mt-3 text-xs font-medium text-muted">DOCX cover letter</p>
+              {sourceOf(
+                'defaultCoverLetterDocxEnabled',
+                'DOCX cover letter default',
+                onOff(defaults.defaultCoverLetterDocxEnabled)
+              )}
+            </div>
+          </div>
         </Field>
 
         <div>
@@ -902,57 +980,6 @@ function AdminSettingsPageBody() {
             className="tl-button"
           >
             {savingSection === 'defaults' ? 'Saving...' : 'Save Builder Defaults'}
-          </button>
-        </div>
-      </Section>
-
-      <Section
-        title="Job Analysis"
-        description="Each job posting is analysed once, by this model, and never again - its keywords by the Analyze Job Description prompt and its facts, job field included, by the Job Facts (Filter) prompt: every profile, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way."
-      >
-        <Field
-          label="Analysis model"
-          htmlFor="analysis-model"
-          hint="Changing it changes how postings never analysed before are read. Stored analyses are kept as they are; nothing is analysed again."
-        >
-          <div className="max-w-xl">
-            <select
-              id="analysis-model"
-              value={form.analysisModelId}
-              onChange={(e) => setField('analysisModelId', e.target.value)}
-              disabled={savingSection === 'analysis'}
-              className="tl-input"
-            >
-              <option value="">{defaultModelName ? `App default model (${defaultModelName})` : 'App default model'}</option>
-              {analysisModelStale && (
-                <option value={form.analysisModelId}>
-                  {chosenAnalysisModel ? `${chosenAnalysisModel.name} (cannot run here)` : `Saved model (${form.analysisModelId})`}
-                </option>
-              )}
-              {availableDefaultModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {`${model.name} (${getAIProviderLabel(model.provider)})`}
-                </option>
-              ))}
-            </select>
-          </div>
-          {analysisModelStale && (
-            <Notice tone="warn" className="mt-3">
-              {chosenAnalysisModel ? `"${chosenAnalysisModel.name}"` : 'The saved analysis model'} cannot run here - it
-              is switched off, or its provider is switched off or locked - so postings are analysed on the app
-              default model until it can, or another is chosen.
-            </Notice>
-          )}
-        </Field>
-
-        <div>
-          <button
-            type="button"
-            onClick={handleSaveAnalysisModel}
-            disabled={savingSection !== null && savingSection !== 'analysis'}
-            className="tl-button"
-          >
-            {savingSection === 'analysis' ? 'Saving...' : 'Save Analysis Model'}
           </button>
         </div>
       </Section>

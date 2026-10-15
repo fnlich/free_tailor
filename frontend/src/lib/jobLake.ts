@@ -3,6 +3,7 @@ import type { JobSalary } from './jobAnalysis';
 import type { LakeFilterBody } from './jobLakeDisplay';
 import type { SheetTabConflict } from './sheet';
 import type { SheetTabListing } from './sheetTabs';
+import type { LakeSettingKey, SettingSource } from './settingSources';
 
 /**
  * The Job Data Lake's API: Report Jobs (`/api/report`, a reporter's own sheet
@@ -274,11 +275,21 @@ export type DuplicateWindow = {
 };
 
 export type LakeSettings = {
+  /** The global rate in effect: the one set here, else .env's JOB_LAKE_REPORT_RATE_USD, else $0. */
   reportRateMilli: number;
-  /** False until an administrator saves a global rate: nobody is paid yet. */
+  /** Whether an administrator saved a global rate here. Without one, .env's - else $0, nobody paid. */
   reportRateSet: boolean;
   duplicateWindow: DuplicateWindow;
+  /** The daily cap in effect: the one set here, else .env's JOB_LAKE_DAILY_CAP_USD, else null - no cap. */
   dailyCapMilli: number | null;
+  /**
+   * Where each value in effect came from: 'admin' (set here), 'env' or
+   * 'default' (lib/settingSources.ts). Optional only so a page served by an
+   * older backend still reads.
+   */
+  settingSources?: Partial<Record<LakeSettingKey, SettingSource>>;
+  /** Each value with nothing set here: what Reset to default gives. */
+  settingDefaults?: { reportRateMilli: number; duplicateWindowDays: number; dailyCapMilli: number | null };
   updatedAt: string | null;
 };
 
@@ -305,7 +316,7 @@ export type SyncReport = { appended: number; failed: boolean; skipped?: 'nothing
 
 export type LakeSettingsAnswer = { settings: LakeSettings; sheet: AdminLakeSheet | null; sync: AdminLakeSyncStatus };
 
-/** The settings form's body: each field optional, null or '' clears it. */
+/** The settings form's body: each field optional, null or '' clears it - Reset to default. */
 export type LakeSettingsUpdate = {
   reportRateUsd?: string | null;
   duplicateWindowDays?: string | null;

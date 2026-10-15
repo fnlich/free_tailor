@@ -3,11 +3,21 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import Dialog from '@/components/ui/Dialog';
+import SettingSource from '@/components/ui/SettingSource';
 import { Card, ErrorNotice, Field, Notice, Spinner, StaticValue, Status } from '@/components/ui/kit';
 import { ApiResponseError } from '@/lib/api';
-import { formatDate } from '@/lib/format';
+import { formatDate, formatMoney } from '@/lib/format';
 import { adminJobLakeApi, type AdminLakeSyncStatus, type LakeSettingsAnswer } from '@/lib/jobLake';
 import {
+  canReset,
+  lakeResetBody,
+  lakeSettingSourceLabel,
+  type LakeSettingKey,
+  type SettingSource as Source,
+} from '@/lib/settingSources';
+import {
+  capPlaceholder,
+  capSource,
   describeDailyCap,
   describeDuplicateWindow,
   describeGlobalRate,
@@ -18,6 +28,8 @@ import {
   lakeSettingsChanges,
   lakeSettingsDraft,
   lakeSettingsProblems,
+  ratePlaceholder,
+  rateSource,
   safeWebLink,
   settingsFieldForCode,
   type LakeSettingsDraft,
@@ -32,12 +44,16 @@ import { messageWithDetail } from '@/lib/userMessage';
  * J10).
  *
  *  - The GLOBAL rate per job, dollars in $0.001 steps: what a reporter
- *    without a rate of their own (Admin -> Accounts) is paid. Unset is
- *    $0, and the page says nobody is paid until it is set.
+ *    without a rate of their own (Admin -> Accounts) is paid. Unset here,
+ *    .env's JOB_LAKE_REPORT_RATE_USD applies, else $0, and the page says
+ *    nobody is paid until one is set.
  *  - The duplicate window in days, and where the value in effect comes from:
  *    the one set here, `JOB_LAKE_DUPLICATE_WINDOW_DAYS` in .env, or the
  *    built-in 60 - the one set here wins.
- *  - An optional daily cap per reporter.
+ *  - An optional daily cap per reporter (unset here, .env's JOB_LAKE_DAILY_CAP_USD).
+ *
+ * Each says where its value in effect came from, with Reset to default
+ * while it is set here (owner decision S4).
  *  - The admin sheet: its link, who it is shared with, how many jobs wait to
  *    be appended and why the last attempt failed, and "Retry now".
  *
@@ -55,6 +71,7 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
   /** A box's problem as the SERVER said it, until that box is edited. */
   const [refused, setRefused] = useState<LakeSettingsProblems>({});
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState<LakeSettingKey | null>(null);
   const [saved, setSaved] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
   const [syncing, setSyncing] = useState(false);
@@ -146,6 +163,32 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
     }
   };
 
+  /** Reset to default: the value stored here goes, and .env - else the default - decides again. */
+  const reset = async (key: LakeSettingKey) => {
+    setResetting(key);
+    setSaved(null);
+    try {
+      adopt(await adminJobLakeApi.saveSettings(lakeResetBody(key)));
+      setSaved({ tone: 'ok', text: 'Reset to the default. The next job the lake accepts is paid and judged by it.' });
+    } catch (caught) {
+      setSaved({ tone: 'error', text: messageWithDetail(caught, 'The setting could not be reset.') });
+    } finally {
+      setResetting(null);
+    }
+  };
+
+  /** A box's source line, with Reset to default while it is set here. */
+  const sourceLine = (key: LakeSettingKey, source: Source, gives: string, name: string) => (
+    <SettingSource
+      label={lakeSettingSourceLabel({ [key]: source }, key)}
+      resettable={canReset(source)}
+      gives={gives}
+      name={name}
+      busy={resetting === key || saving}
+      onReset={() => void reset(key)}
+    />
+  );
+
   const retry = async () => {
     setSyncing(true);
     setSyncNote(null);
@@ -177,6 +220,10 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
     }
   };
 
+  const defaults = settings.settingDefaults;
+  const rateGives = defaults ? formatMoney(defaults.reportRateMilli) : '$0';
+  const windowGives = `${defaults?.duplicateWindowDays ?? settings.duplicateWindow.envDays} days`;
+  const capGives = defaults?.dailyCapMilli == null ? 'no cap' : formatMoney(defaults.dailyCapMilli);
   const state = describeSyncState(sheet, sync);
   const sheetHref = sheet ? safeWebLink(sheet.spreadsheetUrl) : null;
 
@@ -196,14 +243,15 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
                 inputMode="decimal"
                 value={draft.rate}
                 onChange={(event) => edit('rate')(event.target.value)}
-                placeholder="0.000"
+                placeholder={ratePlaceholder(settings)}
                 aria-describedby="lake-rate-steps"
                 aria-invalid={Boolean(problems.rate)}
                 className="tl-input tabular-nums"
               />
               <p id="lake-rate-steps" className="mt-2 text-xs text-subtle">
-                In steps of $0.001, from $0 to $1,000. Empty: not set, nobody paid.
+                In steps of $0.001, from $0 to $1,000. Empty: not set here - .env&apos;s rate applies, else nobody is paid.
               </p>
+              {sourceLine('reportRateMilli', rateSource(settings), rateGives, 'the global rate')}
               {problems.rate && (
                 <p className="tl-status mt-2" data-tone="error" role="alert">
                   {problems.rate}
@@ -231,6 +279,7 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
                 last replaced within it is a duplicate - red, not paid; an older one is replaced and counts as added.
                 Empty: .env decides.
               </p>
+              {sourceLine('duplicateWindowDays', settings.duplicateWindow.source, windowGives, 'the duplicate window')}
               {problems.window && (
                 <p className="tl-status mt-2" data-tone="error" role="alert">
                   {problems.window}
@@ -238,17 +287,18 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
               )}
             </Field>
 
-            <Field label="Daily cap per reporter ($)" htmlFor="lake-cap" hint={problems.cap ? undefined : describeDailyCap(settings.dailyCapMilli)}>
+            <Field label="Daily cap per reporter ($)" htmlFor="lake-cap" hint={problems.cap ? undefined : describeDailyCap(settings.dailyCapMilli, capSource(settings))}>
               <input
                 id="lake-cap"
                 type="text"
                 inputMode="decimal"
                 value={draft.cap}
                 onChange={(event) => edit('cap')(event.target.value)}
-                placeholder="No cap"
+                placeholder={capPlaceholder(settings)}
                 aria-invalid={Boolean(problems.cap)}
                 className="tl-input tabular-nums"
               />
+              {sourceLine('dailyCapMilli', capSource(settings), capGives, 'the daily cap')}
               {problems.cap && (
                 <p className="tl-status mt-2" data-tone="error" role="alert">
                   {problems.cap}

@@ -1,5 +1,6 @@
 import { describeDollarProblem, formatMoney, parseDollars, toDollarInput } from './format';
 import { parseReportRate } from './reporterPay';
+import { LAKE_SETTING_ENV_VARIABLES, readSettingSource, type SettingSource } from './settingSources';
 import type {
   AdminLakeSheet,
   AdminLakeSyncStatus,
@@ -648,12 +649,30 @@ export function windowPlaceholder(window: DuplicateWindow): string {
 /** The settings form, as typed. */
 export type LakeSettingsDraft = { rate: string; window: string; cap: string };
 
-/** The form as the stored settings fill it: empty for what is not set. */
+type SourcedSettings = Pick<LakeSettings, 'reportRateMilli' | 'reportRateSet' | 'dailyCapMilli' | 'settingSources'>;
+
+/** Where the global rate in effect came from. 'admin' exactly while one is stored here (`reportRateSet`). */
+export function rateSource(settings: SourcedSettings): SettingSource {
+  if (settings.reportRateSet) return 'admin';
+  return readSettingSource(settings.settingSources?.reportRateMilli) === 'env' ? 'env' : 'default';
+}
+
+/**
+ * Where the daily cap in effect came from. Read from the server's sources:
+ * since .env can set one too, a cap in effect is no longer one set here. A
+ * backend that sends no sources had no .env cap, so a cap there is stored.
+ */
+export function capSource(settings: SourcedSettings): SettingSource {
+  if (!settings.settingSources) return settings.dailyCapMilli === null ? 'default' : 'admin';
+  return readSettingSource(settings.settingSources.dailyCapMilli);
+}
+
+/** The form as the settings STORED here fill it: empty for what is not set here, whatever .env says. */
 export function lakeSettingsDraft(settings: LakeSettings): LakeSettingsDraft {
   return {
-    rate: settings.reportRateSet ? toDollarInput(settings.reportRateMilli) : '',
+    rate: rateSource(settings) === 'admin' ? toDollarInput(settings.reportRateMilli) : '',
     window: settings.duplicateWindow.adminDays === null ? '' : String(settings.duplicateWindow.adminDays),
-    cap: settings.dailyCapMilli === null ? '' : toDollarInput(settings.dailyCapMilli),
+    cap: capSource(settings) === 'admin' && settings.dailyCapMilli !== null ? toDollarInput(settings.dailyCapMilli) : '',
   };
 }
 
@@ -729,25 +748,53 @@ export function lakeSettingsChanges(draft: LakeSettingsDraft, settings: LakeSett
   const cap = parseCap(draft.cap);
   if (!rate.ok || !window.ok || !cap.ok) return null;
   const body: LakeSettingsUpdate = {};
-  const storedRate = settings.reportRateSet ? settings.reportRateMilli : null;
+  const storedRate = rateSource(settings) === 'admin' ? settings.reportRateMilli : null;
+  const storedCap = capSource(settings) === 'admin' ? settings.dailyCapMilli : null;
   if (rate.value !== storedRate) body.reportRateUsd = draft.rate.trim();
   if (window.value !== settings.duplicateWindow.adminDays) body.duplicateWindowDays = draft.window.trim();
-  if (cap.value !== settings.dailyCapMilli) body.dailyCapUsd = draft.cap.trim();
+  if (cap.value !== storedCap) body.dailyCapUsd = draft.cap.trim();
   return body;
 }
 
-/** The global rate's line under its box. */
-export function describeGlobalRate(settings: Pick<LakeSettings, 'reportRateMilli' | 'reportRateSet'>): string {
-  if (!settings.reportRateSet) {
-    return 'Not set: every job is accepted and nobody is paid until you set one. A reporter with a rate of their own (Accounts) is paid that.';
+const RATE_VARIABLE = LAKE_SETTING_ENV_VARIABLES.reportRateMilli[0];
+const CAP_VARIABLE = LAKE_SETTING_ENV_VARIABLES.dailyCapMilli[0];
+
+/**
+ * The global rate's line under its box: the rate in effect and where it came
+ * from - set here, .env, or nothing at all, when nobody is paid.
+ */
+export function describeGlobalRate(settings: SourcedSettings): string {
+  const source = rateSource(settings);
+  const money = formatMoney(settings.reportRateMilli);
+  const own = 'A reporter with a rate of their own (Accounts) is paid that.';
+  if (source === 'admin') {
+    return `${money} per job the lake accepts, for every reporter without a rate of their own (Accounts).`;
   }
-  return `${formatMoney(settings.reportRateMilli)} per job the lake accepts, for every reporter without a rate of their own (Accounts).`;
+  if (source === 'env') {
+    return settings.reportRateMilli === 0
+      ? `$0 per job, from ${RATE_VARIABLE} in .env: every job is accepted and nobody is paid until a rate is set here or there. ${own}`
+      : `${money} per job the lake accepts, from ${RATE_VARIABLE} in .env, for every reporter without a rate of their own (Accounts). A rate set here wins over it.`;
+  }
+  return `Not set: every job is accepted and nobody is paid until you set one here, or ${RATE_VARIABLE} in .env. ${own}`;
 }
 
-/** The daily cap's line under its box. */
-export function describeDailyCap(dailyCapMilli: number | null): string {
+/** The daily cap's line under its box, with where the cap in effect came from. */
+export function describeDailyCap(dailyCapMilli: number | null, source: SettingSource = 'admin'): string {
   if (dailyCapMilli === null) return 'No cap: a reporter is paid for every job the lake accepts.';
-  return `A reporter earns at most ${formatMoney(dailyCapMilli)} a day (UTC). A job past it is still added, and paid what is left of the day.`;
+  const from = source === 'env' ? ` From ${CAP_VARIABLE} in .env; a cap set here wins over it.` : '';
+  return `A reporter earns at most ${formatMoney(dailyCapMilli)} a day (UTC). A job past it is still added, and paid what is left of the day.${from}`;
+}
+
+/** The rate box's placeholder while nothing is set here: what applies instead. */
+export function ratePlaceholder(settings: SourcedSettings): string {
+  return rateSource(settings) === 'env' ? `${toDollarInput(settings.reportRateMilli)} (from .env)` : '0.000';
+}
+
+/** The cap box's placeholder while nothing is set here: what applies instead. */
+export function capPlaceholder(settings: SourcedSettings): string {
+  return capSource(settings) === 'env' && settings.dailyCapMilli !== null
+    ? `${toDollarInput(settings.dailyCapMilli)} (from .env)`
+    : 'No cap';
 }
 
 /**

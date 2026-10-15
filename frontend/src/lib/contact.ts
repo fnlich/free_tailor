@@ -1,4 +1,5 @@
 import { apiFetch } from './api';
+import type { SettingSource } from './settingSources';
 
 /**
  * How to reach whoever runs this installation (owner decision A2): a short
@@ -39,11 +40,18 @@ export type ContactFieldError = {
   message: string;
 };
 
-/** What the editor draws itself from: the channels, and the rules it is held to. */
+/**
+ * What the editor draws itself from: the channels in effect, the rules it is
+ * held to, where the channels came from - saved here ('admin'), `.env`'s
+ * CONTACT_CHANNELS ('env'), or none ('default') - and what Reset to default
+ * would show.
+ */
 export type ContactEditorPayload = {
   channels: ContactChannel[];
   types: ContactChannelType[];
   limits: { channels: number; label: number; value: number };
+  settingSources?: { channels?: SettingSource };
+  settingDefaults?: { channels?: ContactChannel[] };
 };
 
 export const contactApi = {
@@ -62,5 +70,15 @@ export const adminContactApi = {
     apiFetch<ContactEditorPayload>('/admin/contact', {
       method: 'PUT',
       body: JSON.stringify({ channels }),
+    }),
+  /**
+   * Reset to default: nothing stored, so `.env`'s CONTACT_CHANNELS - else
+   * none - is what everybody sees. Saving an empty list is different: that is
+   * "none", set here, and it beats `.env`.
+   */
+  reset: () =>
+    apiFetch<ContactEditorPayload>('/admin/contact', {
+      method: 'PUT',
+      body: JSON.stringify({ channels: null }),
     }),
 };

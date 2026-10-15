@@ -164,6 +164,21 @@ router.post('/output-path/preview', requireAdmin, async (req: Request, res: Resp
   }
 });
 
+/**
+ * A model create, edit or delete refused: 404 for a model that is not there,
+ * else 400 with the sentence - and, when it is about one box of Admin ->
+ * Models' dialog (config/aiModelConfig.ts `AIModelInputError`), `field`
+ * naming it, so the page puts the sentence under that box.
+ */
+function sendModelRefusal(res: Response, error: unknown, fallback: string): void {
+  const notFound = error instanceof Error && error.message === 'AI model not found.';
+  const field = (error as { field?: unknown } | null)?.field;
+  res.status(notFound ? 404 : 400).json({
+    error: error instanceof Error ? error.message : fallback,
+    ...(typeof field === 'string' ? { field } : {}),
+  });
+}
+
 router.get('/models', requireAdmin, async (req: Request, res: Response) => {
   try {
     res.json({ models: await listAdminAIModels() });
@@ -177,9 +192,7 @@ router.post('/models', requireAdmin, async (req: Request, res: Response) => {
     const settings = await createAIModel(req.body ?? {});
     res.status(201).json(settings);
   } catch (error) {
-    res.status(400).json({
-      error: error instanceof Error ? error.message : 'Failed to create AI model',
-    });
+    sendModelRefusal(res, error, 'Failed to create AI model');
   }
 });
 
@@ -188,10 +201,7 @@ router.put('/models/:id', requireAdmin, async (req: Request<{ id: string }>, res
     const settings = await updateAIModel(req.params.id, req.body ?? {});
     res.json(settings);
   } catch (error) {
-    const statusCode = error instanceof Error && error.message === 'AI model not found.' ? 404 : 400;
-    res.status(statusCode).json({
-      error: error instanceof Error ? error.message : 'Failed to update AI model',
-    });
+    sendModelRefusal(res, error, 'Failed to update AI model');
   }
 });
 
@@ -200,10 +210,7 @@ router.delete('/models/:id', requireAdmin, async (req: Request<{ id: string }>, 
     const settings = await deleteAIModel(req.params.id);
     res.json(settings);
   } catch (error) {
-    const statusCode = error instanceof Error && error.message === 'AI model not found.' ? 404 : 400;
-    res.status(statusCode).json({
-      error: error instanceof Error ? error.message : 'Failed to delete AI model',
-    });
+    sendModelRefusal(res, error, 'Failed to delete AI model');
   }
 });
 
