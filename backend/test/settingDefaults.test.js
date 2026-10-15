@@ -228,6 +228,32 @@ test("deleting the administrator's default or analysis model removes the choice,
   });
 });
 
+test('a default model set here that stops running is served as stale, still stored, and the default again once it runs', async () => {
+  const { dbDir } = useTempStorage('setting-defaults-stale-default');
+  await withEnv({}, async () => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    let admin = await config.updateAppSettings({ defaultModelId: 'claude-cli-opus' });
+    assert.equal(admin.settingSources.defaultModelId, 'admin');
+    assert.equal(admin.staleDefaultModelId, null);
+
+    admin = await config.updateAIModel('claude-cli-opus', { enabled: false });
+    assert.equal(admin.defaultModelId, 'claude-cli-sonnet', 'another runs in its place');
+    assert.equal(admin.settingSources.defaultModelId, 'default', 'which is where THAT one came from');
+    assert.equal(admin.staleDefaultModelId, 'claude-cli-opus', 'the stored one is named, so the page can say so');
+    assert.equal(storedRow(dbDir).defaultModelId, 'claude-cli-opus');
+
+    admin = await config.updateAIModel('claude-cli-opus', { enabled: true });
+    assert.equal(admin.defaultModelId, 'claude-cli-opus');
+    assert.equal(admin.staleDefaultModelId, null);
+
+    // Reset forgets it, stale or not.
+    await config.updateAIModel('claude-cli-opus', { enabled: false });
+    admin = await config.updateAppSettings({ defaultModelId: null });
+    assert.equal(admin.staleDefaultModelId, null);
+    assert.equal('defaultModelId' in storedRow(dbDir), false);
+  });
+});
+
 test('a model .env names that cannot run warns once, by name, and the code default is used', async () => {
   useTempStorage('setting-defaults-bad-model');
   await withEnv({ DEFAULT_MODEL: 'No Such Model', ANALYSIS_MODEL: 'Nor This' }, async (warnings) => {
@@ -376,6 +402,82 @@ test('the payment limits: .env reaches the buy page, an empty list resets, and a
   });
 });
 
+test('each payment method resolves on its own: changing the card never freezes crypto, and one method resets alone', async () => {
+  await withEnv({ PAYMENT_CARD_MIN_USD: '7', PAYMENT_CRYPTO_MIN_USD: '70' }, async () => {
+    const { dbDir } = useTempStorage('setting-defaults-limits-per-method');
+    const config = loadFresh('../dist/config/aiModelConfig');
+
+    let admin = await config.getAdminAppSettings();
+    assert.deepEqual(limitsOf(admin.paymentLimits), [['card', 7_000, 100_000], ['crypto', 70_000, 2_000_000]]);
+    // Each method names only the variable that set it.
+    assert.deepEqual(admin.paymentLimitSources, {
+      card: { source: 'env', variables: ['PAYMENT_CARD_MIN_USD'] },
+      crypto: { source: 'env', variables: ['PAYMENT_CRYPTO_MIN_USD'] },
+    });
+
+    // The card's minimum is changed: only the card's row is stored.
+    admin = await config.updateAppSettings({ paymentLimits: [{ target: 'card', minUsd: '8', maxUsd: '100' }] });
+    assert.deepEqual(limitsOf(admin.paymentLimits), [['card', 8_000, 100_000], ['crypto', 70_000, 2_000_000]]);
+    assert.deepEqual(storedRow(dbDir).paymentLimits.map((row) => row.target), ['card']);
+    assert.equal(admin.paymentLimitSources.card.source, 'admin');
+    assert.equal(admin.paymentLimitSources.crypto.source, 'env');
+    assert.equal(admin.settingSources.paymentLimits, 'admin', 'something about the limits is set here');
+
+    // .env's crypto bound still reaches the page...
+    await withEnv({ PAYMENT_CARD_MIN_USD: '7', PAYMENT_CRYPTO_MIN_USD: '60' }, async () => {
+      admin = await config.getAdminAppSettings();
+      assert.deepEqual(limitsOf(admin.paymentLimits), [['card', 8_000, 100_000], ['crypto', 60_000, 2_000_000]]);
+    });
+
+    // ...a save of crypto keeps the card's stored row...
+    admin = await config.updateAppSettings({ paymentLimits: [{ target: 'crypto', minUsd: '75', maxUsd: '1500' }] });
+    assert.deepEqual(limitsOf(admin.paymentLimits), [['card', 8_000, 100_000], ['crypto', 75_000, 1_500_000]]);
+    assert.deepEqual(storedRow(dbDir).paymentLimits.map((row) => row.target), ['card', 'crypto']);
+
+    // ...and Reset to default of one method takes only its row away.
+    admin = await config.updateAppSettings({ paymentLimits: [{ target: 'card', reset: true }] });
+    assert.deepEqual(limitsOf(admin.paymentLimits), [['card', 7_000, 100_000], ['crypto', 75_000, 1_500_000]]);
+    assert.deepEqual(admin.paymentLimitSources.card, { source: 'env', variables: ['PAYMENT_CARD_MIN_USD'] });
+    assert.deepEqual(storedRow(dbDir).paymentLimits.map((row) => row.target), ['crypto']);
+
+    await assert.rejects(
+      () => config.updateAppSettings({ paymentLimits: [{ target: 'crypto', reset: true }, { target: 'crypto', minUsd: '1', maxUsd: '2' }] }),
+      /name crypto twice/
+    );
+    await assert.rejects(() => config.updateAppSettings({ paymentLimits: { target: 'card' } }), /must be a list/);
+
+    // The last stored row reset: nothing is stored, and the source is .env's again.
+    admin = await config.updateAppSettings({ paymentLimits: [{ target: 'crypto', reset: true }] });
+    assert.equal(admin.settingSources.paymentLimits, 'env');
+    assert.equal('paymentLimits' in storedRow(dbDir), false);
+  });
+});
+
+test('DEFAULT_RESUME_SELECTION=group is refused from .env, which cannot name the group: the default is used, said once', async () => {
+  useTempStorage('setting-defaults-group-env');
+  await withEnv({ DEFAULT_RESUME_SELECTION: 'Group' }, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    const admin = await config.getAdminAppSettings();
+    assert.equal(admin.defaultResumeSelection, 'single');
+    assert.equal(admin.settingSources.defaultResumeSelection, 'default');
+    assert.equal((await config.getUserAppSettings()).defaultResumeSelection, 'single');
+    assert.equal(warnings.filter((line) => line.includes('DEFAULT_RESUME_SELECTION=group names no group')).length, 1, warnings.join('\n'));
+  });
+});
+
+test('Reset to default of the output folder checks the folder it puts back, as a save of one does', async () => {
+  const { rootDir } = useTempStorage('setting-defaults-folder-reset');
+  const blocker = path.join(rootDir, 'a-file');
+  require('node:fs').writeFileSync(blocker, 'not a folder');
+  await withEnv({ OUTPUT_BASE_DIR: path.join(blocker, 'sub') }, async () => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    await config.updateAppSettings({ outputBaseDir: path.join(rootDir, 'out') });
+    // .env's folder cannot be made: Reset is refused rather than said to succeed.
+    await assert.rejects(() => config.updateAppSettings({ outputBaseDir: null }), /ENOTDIR|not a directory|EEXIST/);
+    assert.equal((await config.getAdminAppSettings()).outputBaseDir, path.join(rootDir, 'out'), 'nothing was saved');
+  });
+});
+
 test('a payment bound .env cannot use warns once and keeps the default', async () => {
   useTempStorage('setting-defaults-limits-junk');
   await withEnv(
@@ -508,6 +610,22 @@ test("the lake's rate and cap: .env under the administrator's value, each with i
     assert.equal(saved.settings.reportRateMilli, 50);
     assert.equal(saved.settings.dailyCapMilli, 3_000);
     assert.equal(saved.settings.settingSources.reportRateMilli, 'env');
+
+    // "No cap" is an administrator's choice of its own, and beats .env's cap...
+    saved = lake.updateLakeSettings({ dailyCapUsd: 'none' }, 'admin-1');
+    assert.equal(saved.ok, true);
+    assert.equal(saved.settings.dailyCapMilli, null);
+    assert.equal(saved.settings.settingSources.dailyCapMilli, 'admin');
+    assert.equal(saved.settings.settingDefaults.dailyCapMilli, 3_000, 'Reset gives .env\'s cap back');
+    assert.equal(lake.readLakeSettings().dailyCapMilli, null);
+    // ...a cap typed later replaces it, and Reset takes either away.
+    saved = lake.updateLakeSettings({ dailyCapUsd: '4' }, 'admin-1');
+    assert.equal(saved.settings.dailyCapMilli, 4_000);
+    saved = lake.updateLakeSettings({ dailyCapUsd: 'None' }, 'admin-1');
+    assert.equal(saved.settings.dailyCapMilli, null);
+    saved = lake.updateLakeSettings({ dailyCapUsd: null }, 'admin-1');
+    assert.equal(saved.settings.dailyCapMilli, 3_000);
+    assert.equal(saved.settings.settingSources.dailyCapMilli, 'env');
   });
 
   await withEnv({ JOB_LAKE_DAILY_CAP_USD: 'lots' }, async (warnings) => {

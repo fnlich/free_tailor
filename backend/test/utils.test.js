@@ -15,6 +15,7 @@ const {
   resolveStoredFilePath,
   sanitizeFileNameStem,
   sanitizePathSegment,
+  validateOutputFileNameTemplate,
 } = require('../dist/utils/outputStorage');
 
 /**
@@ -91,6 +92,24 @@ test('output path helpers render a prefix and a folder path, and file names', ()
     }, '{{profile name}}'),
     'Jane_Doe_Resume'
   );
+  // The folder path's own spellings - the ones the profile editor offers -
+  // read in a file name too, beside the older ones.
+  const variables = {
+    date: '2026-04-18',
+    accountName: 'jane@example.com',
+    orderNumber: 'FT-20260418-0007',
+    profileName: 'Jane Doe',
+    companyName: 'Acme Inc.',
+    rowNumber: '12',
+    jobTitle: 'Senior Engineer',
+  };
+  assert.equal(
+    renderOutputFileNameTemplate('{{profile_name}}_{{company_name}}_{{role}}_{{row_number}}', variables, '{{profile_name}}'),
+    'Jane_Doe_Acme_Inc._Senior_Engineer_12'
+  );
+  assert.equal(renderOutputFileNameTemplate('{{order_number}} {{user_email}}', variables, '{{profile_name}}'), 'FT-20260418-0007_jane@example.com');
+  assert.equal(validateOutputFileNameTemplate('{{profile_name}} {{job_title}}', '{{profile_name}}'), '{{profile_name}} {{job_title}}');
+  assert.throws(() => validateOutputFileNameTemplate('{{profile-name}}', '{{profile_name}}'), /Unsupported output token/);
 });
 
 test('resolveStoredFilePath keeps paths inside the configured base directory', () => {

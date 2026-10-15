@@ -63,10 +63,17 @@ function notFound(res: Response): void {
   res.status(404).json({ error: 'That order was not found.' });
 }
 
-type OrderView = Order & { counts: OrderCounts; hasFiles: boolean };
+/**
+ * What an order reads as, to anybody who may read it. Never its folder
+ * (`outputRoot`): that is an absolute path on the server, and where the
+ * server keeps files is the administrator's business, not a builder's - no
+ * page needs it, so nobody is sent it.
+ */
+type OrderView = Omit<Order, 'outputRoot'> & { counts: OrderCounts; hasFiles: boolean };
 
 function view(order: Order, counts: OrderCounts, hasFiles: boolean): OrderView {
-  return { ...order, counts, hasFiles };
+  const { outputRoot: _outputRoot, ...shown } = order;
+  return { ...shown, counts, hasFiles };
 }
 
 /**
@@ -201,7 +208,7 @@ router.get('/:id/items/:itemId/:kind', async (req: Request, res: Response) => {
     // Resolved rather than joined: this applies the same traversal guard every
     // other download uses, so a doctored row cannot reach outside the output
     // directory even though the path came from our own database.
-    const absolute = await getGeneratedFilePath(file.path);
+    const absolute = await getGeneratedFilePath(file.path, order.outputRoot);
     if (!absolute) {
       res.status(410).json({ error: 'That file is no longer on the server.' });
       return;
@@ -284,7 +291,7 @@ router.get('/:id/zip', async (req: Request, res: Response) => {
     const taken = new Set<string>();
     for (const item of items) {
       for (const file of availableFiles(item)) {
-        const absolute = await getGeneratedFilePath(file.path);
+        const absolute = await getGeneratedFilePath(file.path, order.outputRoot);
         if (!absolute) continue;
 
         // Two profiles of the same name for one company would otherwise write

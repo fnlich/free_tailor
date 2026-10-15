@@ -253,12 +253,19 @@ needs a run still going when it acts has to do the same, per job and not per
 submission, or jobs 2..N of a run hit the cache the moment the first is
 tailored.
 
-`immediate-run.js` — 29 claims, on the Default subscription. The first
+`immediate-run.js` — 32 claims, on the Default subscription. It first saves
+the account's own folder path, the owner's example
+`/{{date}}{{profile_name}}/{{company_name}}/{{role}}`. The first
 Generate Immediately asks first, in the owner's sentence, with *Don't show
 again*, and after it is ticked the next click goes straight through; the run
 shows progress and Stop, ends saying what it built, and its resume reaches the
 browser's download folder by itself, named for the company and the person, and
-is listed under the progress to download again. A run queued for the tab is
+is listed under the progress to download again. On the server, the run's
+folder - recorded as its order's `output_root` - is `<E2E_OUTPUT_DIR>/<the
+account's email>/<its order number>` (the default prefix), and every file the
+run recorded is on disk under that account's folder path, its first folder the
+date and the profile's name in one (`2026_10_15ada_run/acme/senior_engineer/`).
+A run queued for the tab is
 picked back up by that tab after a reload - and never by a second tab, which
 gets an id of its own - followed to its end with every file of every resume
 handed to the browser exactly once. Stop mid-run says what was refunded and
@@ -482,12 +489,12 @@ script time to try removing a provider while it builds.
 
 ```bash
 cd backend && npm run build
-E2E_STUB_DELAY_MS=4000 DB_DIR=/tmp/e2e-db PORT=3001 node --require ./test/e2e/stub-seat.js dist/index.js
+E2E_STUB_DELAY_MS=4000 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 node --require ./test/e2e/stub-seat.js dist/index.js
 # the frontend, built against that backend, in another terminal; then
 DB_DIR=/tmp/e2e-db node test/e2e/providers.js
 ```
 
-`providers.js` — 31 claims. The table lists the three built-in providers in
+`providers.js` — 42 claims. The table lists the three built-in providers in
 catalog order, each marked *Built-in* with no Remove, each value saying where
 it comes from, the stub Claude seat *Ready*. Add provider: a relative folder is
 refused under its box before anything is sent; a folder that does not exist is
@@ -501,8 +508,18 @@ Claude row counts *1 of 2* providers that can take work (the built-in one
 switched off). An order then runs on Team B, Remove is refused while it builds
 - in the server's sentence, the row still there - and once the order is done
 its page says *Built on Team B (Claude)* to the administrator; idle, Team B is
-removed. No horizontal page scroll at 390px. An ordinary account's order page
-and API answer name no provider, and the provider and health routes refuse it.
+removed. Then Admin -> Models' own dialog (owner decisions M1, M2): **Create
+New Model** at the top right opens it; a price of $0.0005 is refused under the
+price box before anything is sent; a display name another administrator takes
+meanwhile (the script adds it over the API) is refused by the server and its
+sentence pinned under the name box; the model is created at $0.023 and Edit
+saves $0.05; **Set default** moves the *Default* badge and the default model
+reads *Set here*; **Use for analysis** puts the *Analysis* badge on it and its
+row then offers **Use the default model**, which leaves the analysis on the
+default model, still *Set here*; both **Reset to default**s give what the page
+said they would, neither set here; and the model is deleted. No horizontal page
+scroll at 390px. An ordinary account's order page and API answer name no
+provider, and the provider and health routes refuse it.
 
 ## The shell, as every role
 
@@ -541,9 +558,19 @@ Admin -> Prompts lists Analyze Job Description, Job Facts (Filter), Revise
 Resume Coverage and Generate Cover Letter beside Tailor Resume, and each of
 the four is one prompt - no New Variant, Duplicate, Save Active or model
 override, and its own sentence saying why - while Tailor Resume still offers
-New Variant and the override; Admin -> Settings -> General has a Job
-Analysis section whose Analysis model select starts on the app default, with
-its own Save.
+New Variant and the override. Admin -> Settings -> General has no analysis
+model select and no folder template any more (owner decisions M2, O5): its
+output prefix box shows the prefix in effect, its three tokens as chips and the
+server's preview, and every setting with a `.env` default says where its value
+came from (*Set here*, *From .env (NAME)* or *Default*). Admin -> Models has
+**Create New Model** at the top right of its header and no inline form, the
+*Default* and *Analysis* badges and **Set default** and **Use for analysis**
+on its rows, and says each posting is analysed once; Create New Model opens the
+dialog, its price a text box. Settings -> Profile -> Resume files, for a user:
+the folder path in effect, its five tokens as chips, the server's preview and
+*Default*; a chip lands at the caret, and a token of the administrator's
+(`{{order_number}}`) is refused under the box by name before anything is
+saved. A reporter's Settings -> Profile has no Resume files.
 
 ## Sign-in is seeded, deliberately
 
@@ -568,16 +595,21 @@ the admin list and a refund that reports what it reversed; the amount the
 provider was actually asked for; and an event payload that keeps the amount
 and drops the customer.
 
-`buy-credits.js` — 110 claims over the three-step dialog and the credits page,
+`buy-credits.js` — 115 claims over the three-step dialog and the credits page,
 a third of them through HTTP first because the browser half needs what they
-leave behind. Over HTTP: each method judged by its own bounds and presets that
+leave behind. Over HTTP: with nothing set on Admin -> Payments the buy page's
+card bounds are the defaults (`.env`'s, else the code's), a save of the limits
+alone makes only them *Set here* and the buy page offers the new bound, and
+Reset to default (`paymentLimits: null`) hands them back; each method judged by its own bounds and presets that
 fall inside them; an `asset` from a stale tab ignored rather than refused, and
 unable to change the price; a purchase that asks to keep the card keeping it,
 and one that does not, not - even for an account that already has a customer;
 a saved card that is the owner's alone to charge or delete, and answering 404
 to anybody else; and an off-session charge settling through
 `payment_intent.succeeded` against a `pi_` reference and crediting exactly
-once. Then with a mouse: only what the installation can serve offered; a
+once. Then with a mouse: Admin -> Payments saying where the limits and card
+security come from, neither set here, and its Save limits, pressed untouched,
+sending nothing (*Nothing to save*); only what the installation can serve offered; a
 preset agreeing with the server's own figure; an amount above the ceiling
 priced AT the ceiling and saying so, and a fraction of a cent refused with
 Continue switched off; Back preserving the amount; a summary with the same
@@ -618,7 +650,7 @@ could not; the return page waiting for the webhook rather than congratulating
 on arrival; the balance and the ledger afterwards; backing out of a payment;
 and an admin refunding from the UI.
 
-`refunds.js` — 61 claims over a reporter's payout request, the refund requests
+`refunds.js` — 63 claims over a reporter's payout request, the refund requests
 left from before asking was removed, and Contact admin, with no provider at all
 (step 5 above - against step 2's server, whose fake Stripe accepts every
 refund, the card checks fail, and the first of them says why): its purchases,
@@ -660,7 +692,9 @@ again: *Paid out*, *$6.5 paid out to you.*, the payout in Earnings and
 Payouts, the button off at $0, and *Payout recorded: $6.5* in their bell
 linking to Credits. Last, Contact admin from the account menu (a `mailto:`
 link, a Discord name to copy) and the editor pinning the server's refusal of a
-bad Telegram name to that row, with nothing saved; and both Credits pages at
+bad Telegram name to that row, with nothing saved; the saved list reading *Set
+here* with **Reset to default**, which shows everybody `.env`'s
+`CONTACT_CHANNELS` (or none) and says so beside it; and both Credits pages at
 390 with no sideways scroll. The person, the reporter and the administrator
 browse in separate browser contexts: a sign-in is a cookie and a localStorage
 token, and one context would share them.

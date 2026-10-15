@@ -280,9 +280,8 @@ export interface TailoredStrength {
   description: string;
 }
 
-export type ResumeFormat = 'pdf' | 'docx' | 'both';
-
-export interface GenerateResumeRequest {
+/** POST /api/resume/preview's body (the model is read by `readAiOverrides`, the posting by `analysisForRequest`). */
+export interface PreviewResumeRequest {
   profileId: string;
   templateId: string;
   jobDescription?: string;
@@ -297,9 +296,4 @@ export interface GenerateResumeRequest {
   tailoredContent?: TailoredContent;
   /** An AI model record id; overrides the profile's own for this run. */
   model?: string;
-  companyName: string;
-  role: string;
-  sourceRowNumber?: number;
-  format?: ResumeFormat;
-  includeCoverLetterDocx?: boolean;
 }

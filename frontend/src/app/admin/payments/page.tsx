@@ -1,6 +1,14 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import { useDialogLayer } from '@/components/ui/Dialog';
@@ -25,7 +33,17 @@ import { describeClosedRequests, openRequestCount, readRefundFilter } from '@/li
 import { adminRefundRequestsApi, type RefundRequestCounts, type RefundStateFilter } from '@/lib/refunds';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
-import { describeLimits, limitsChanged, targetLabel, toLimitDraft, toLimitRow, type LimitDraft } from './limitDraft';
+import {
+  allLimitsSourceLabel,
+  describeLimitDefault,
+  describeLimits,
+  limitChanges,
+  limitSourceLabel,
+  replaceLimitDraft,
+  targetLabel,
+  toLimitDraft,
+  type LimitDraft,
+} from './limitDraft';
 import RefundQueue from './RefundQueue';
 
 /**
@@ -48,10 +66,14 @@ function LimitFields({
   draft,
   onChange,
   onRemove,
+  source,
 }: {
   draft: LimitDraft;
   onChange: (next: LimitDraft) => void;
-  onRemove: () => void;
+  /** Absent while there is nothing to remove: a method that follows .env comes back. */
+  onRemove?: () => void;
+  /** Where this method's limits came from, with its own Reset to default. */
+  source?: ReactNode;
 }) {
   return (
     <Card
@@ -63,15 +85,17 @@ function LimitFields({
         </>
       }
       actions={
-        <button
-          type="button"
-          onClick={onRemove}
-          className="tl-button-quiet"
-          data-size="sm"
-          data-tone="danger"
-        >
-          Remove
-        </button>
+        onRemove ? (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="tl-button-quiet"
+            data-size="sm"
+            data-tone="danger"
+          >
+            Remove
+          </button>
+        ) : undefined
       }
     >
       <div className="grid gap-4 sm:grid-cols-2">
@@ -110,6 +134,7 @@ function LimitFields({
           placeholder="5, 10, 25"
         />
       </label>
+      {source}
     </Card>
   );
 }
@@ -143,6 +168,19 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
     setLimits(next.paymentLimits.map(toLimitDraft));
     setRequire3ds(next.requireThreeDSecure);
   };
+  // A Reset takes in only what it reset; whatever is typed elsewhere stays typed.
+  const adoptLimits = (next: AdminAppSettings) => {
+    setSettings(next);
+    setLimits(next.paymentLimits.map(toLimitDraft));
+  };
+  const adoptLimit = (target: string) => (next: AdminAppSettings) => {
+    setSettings(next);
+    setLimits((current) => replaceLimitDraft(current, next.paymentLimits, target));
+  };
+  const adoptCardSecurity = (next: AdminAppSettings) => {
+    setSettings(next);
+    setRequire3ds(next.requireThreeDSecure);
+  };
 
   useEffect(() => {
     void (async () => {
@@ -157,24 +195,30 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
   }, []);
 
   /**
-   * Only what changed. The limits and the switch each follow .env until an
-   * administrator sets them, so a save that sent both unchanged would freeze
-   * whatever .env said that day.
+   * Only what changed - and of the limits, only the methods that changed.
+   * Each method and the switch follow .env until an administrator sets them,
+   * so a save that sent them unchanged would freeze whatever .env said that
+   * day.
    */
   const changes = (): AdminAppSettingsUpdate => {
     if (!settings) return {};
     const body: AdminAppSettingsUpdate = {};
-    if (limitsChanged(limits, settings.paymentLimits)) body.paymentLimits = limits.map(toLimitRow);
+    const limitRows = limitChanges(limits, settings.paymentLimits, settings.paymentLimitSources);
+    if (limitRows.length > 0) body.paymentLimits = limitRows;
     if (require3ds !== settings.requireThreeDSecure) body.requireThreeDSecure = require3ds;
     return body;
   };
 
-  const send = async (body: AdminAppSettingsUpdate, said: string) => {
+  const send = async (
+    body: AdminAppSettingsUpdate,
+    said: string,
+    take: (next: AdminAppSettings) => void = adopt
+  ) => {
     setSaving(true);
     setNote('');
     setProblem('');
     try {
-      adopt(await adminApi.updateSettings(body));
+      take(await adminApi.updateSettings(body));
       setNote(said);
       onSaved();
     } catch (err) {
@@ -235,7 +279,9 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
             gives={defaults.requireThreeDSecure ? 'on' : 'off'}
             name="card security"
             busy={saving}
-            onReset={() => void send(resetBody('requireThreeDSecure'), 'Card security reset to its default.')}
+            onReset={() =>
+              void send(resetBody('requireThreeDSecure'), 'Card security reset to its default.', adoptCardSecurity)
+            }
           />
         )}
       </Section>
@@ -245,10 +291,11 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         description={
           <>
             In dollars and whole cents: the smallest and largest single purchase, and the amounts
-            offered as buttons (a button outside the bounds is not offered). A method with no row
-            falls back to its default limits - {defaults ? describeLimits(defaults.paymentLimits) : 'the built-in limits'},
-            from .env&apos;s PAYMENT_*_USD where it sets them - so removing a row is a way of switching
-            its limits back, not a way of switching the method off.
+            offered as buttons (a button outside the bounds is not offered). Each method follows its
+            default limits - {defaults ? describeLimits(defaults.paymentLimits) : 'the built-in limits'},
+            from .env&apos;s PAYMENT_*_USD where it sets them - until it is changed here, on its own:
+            saving one method never fixes another&apos;s. Its Reset to default switches it back; nothing
+            here switches a method off.
             {/* A block span rather than a second <p>: the kit puts the
                 description inside one paragraph already. */}
             <span className="mt-2 block">
@@ -260,20 +307,48 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
         }
       >
         <div className="space-y-4">
-          {limits.map((draft, index) => (
-            <LimitFields
-              key={draft.target}
-              draft={draft}
-              onChange={(next) =>
-                setLimits((current) =>
-                  current.map((entry, position) => (position === index ? next : entry))
-                )
-              }
-              onRemove={() =>
-                setLimits((current) => current.filter((_, position) => position !== index))
-              }
-            />
-          ))}
+          {limits.map((draft, index) => {
+            const target = draft.target.trim();
+            const inEffect = settings?.paymentLimits.some((row) => row.target === target) ?? false;
+            const limitSources = settings?.paymentLimitSources ?? {};
+            const setHere = limitSources[target]?.source === 'admin';
+            return (
+              <LimitFields
+                key={draft.target}
+                draft={draft}
+                onChange={(next) =>
+                  setLimits((current) =>
+                    current.map((entry, position) => (position === index ? next : entry))
+                  )
+                }
+                // A row added here, or one set here (whose Remove saves as its
+                // Reset); a method that follows .env would only come back.
+                onRemove={
+                  !inEffect || setHere
+                    ? () => setLimits((current) => current.filter((_, position) => position !== index))
+                    : undefined
+                }
+                source={
+                  inEffect && defaults ? (
+                    <SettingSource
+                      label={limitSourceLabel(target, limitSources)}
+                      resettable={setHere}
+                      gives={describeLimitDefault(target, defaults.paymentLimits)}
+                      name={`the ${target} limits`}
+                      busy={saving}
+                      onReset={() =>
+                        void send(
+                          { paymentLimits: [{ target, reset: true }] },
+                          `The ${target} limits are reset to their default.`,
+                          adoptLimit(target)
+                        )
+                      }
+                    />
+                  ) : undefined
+                }
+              />
+            );
+          })}
           {limits.length === 0 && (
             <p className="text-sm text-muted">
               No rows. Saving with none restores the defaults rather than leaving every method
@@ -282,12 +357,14 @@ function PricingCard({ onSaved }: { onSaved: () => void }) {
           )}
           {sources && defaults && (
             <SettingSource
-              label={appSettingSourceLabel(sources, 'paymentLimits')}
+              label={allLimitsSourceLabel(sources.paymentLimits, settings?.paymentLimitSources ?? {})}
               resettable={canReset(sources.paymentLimits)}
               gives={describeLimits(defaults.paymentLimits)}
-              name="the purchase limits"
+              name="every method's limits"
               busy={saving}
-              onReset={() => void send(resetBody('paymentLimits'), 'Purchase limits reset to their defaults.')}
+              onReset={() =>
+                void send(resetBody('paymentLimits'), 'Purchase limits reset to their defaults.', adoptLimits)
+              }
             />
           )}
         </div>

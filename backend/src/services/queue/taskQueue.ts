@@ -142,6 +142,8 @@ export type TaskState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 export type Assignment = {
   queue: QueueName;
   signal: AbortSignal;
+  /** The task's place in its batch (`Task.seq`): what its order item is keyed by. */
+  seq?: number;
 };
 
 export type TaskLabel = {
@@ -1228,6 +1230,7 @@ export class TaskQueue {
         task.value = await runner(task.payload, {
           queue: slot.queue,
           signal: batch.controller.signal,
+          seq: task.seq,
         });
         this.settle(task, 'done');
       } catch (error) {

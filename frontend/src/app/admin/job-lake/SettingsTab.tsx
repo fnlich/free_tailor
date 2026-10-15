@@ -64,6 +64,13 @@ import { messageWithDetail } from '@/lib/userMessage';
 /** How often a sync that is running is asked about. */
 const SYNC_POLL_MS = 2000;
 
+/** The box each setting is typed in: a Reset takes in that box alone. */
+const DRAFT_FIELD: Record<LakeSettingKey, keyof LakeSettingsDraft> = {
+  reportRateMilli: 'rate',
+  duplicateWindowDays: 'window',
+  dailyCapMilli: 'cap',
+};
+
 export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncStatus) => void }) {
   const [answer, setAnswer] = useState<LakeSettingsAnswer | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -163,19 +170,35 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
     }
   };
 
-  /** Reset to default: the value stored here goes, and .env - else the default - decides again. */
-  const reset = async (key: LakeSettingKey) => {
+  /**
+   * One setting saved on its own - a Reset to default, or "No cap" - taking in
+   * that setting's box alone: what is typed in the others stays typed.
+   */
+  const saveOne = async (key: LakeSettingKey, body: Parameters<typeof adminJobLakeApi.saveSettings>[0], said: string) => {
     setResetting(key);
     setSaved(null);
     try {
-      adopt(await adminJobLakeApi.saveSettings(lakeResetBody(key)));
-      setSaved({ tone: 'ok', text: 'Reset to the default. The next job the lake accepts is paid and judged by it.' });
+      const next = await adminJobLakeApi.saveSettings(body);
+      const field = DRAFT_FIELD[key];
+      setAnswer(next);
+      setDraft((current) => ({ ...current, [field]: lakeSettingsDraft(next.settings)[field] }));
+      setRefused((current) => {
+        const kept = { ...current };
+        delete kept[field];
+        return kept;
+      });
+      onSync?.(next.sync);
+      setSaved({ tone: 'ok', text: said });
     } catch (caught) {
-      setSaved({ tone: 'error', text: messageWithDetail(caught, 'The setting could not be reset.') });
+      setSaved({ tone: 'error', text: messageWithDetail(caught, 'The setting could not be saved.') });
     } finally {
       setResetting(null);
     }
   };
+
+  /** Reset to default: the value stored here goes, and .env - else the default - decides again. */
+  const reset = (key: LakeSettingKey) =>
+    saveOne(key, lakeResetBody(key), 'Reset to the default. The next job the lake accepts is paid and judged by it.');
 
   /** A box's source line, with Reset to default while it is set here. */
   const sourceLine = (key: LakeSettingKey, source: Source, gives: string, name: string) => (
@@ -299,6 +322,20 @@ export default function SettingsTab({ onSync }: { onSync?: (sync: AdminLakeSyncS
                 className="tl-input tabular-nums"
               />
               {sourceLine('dailyCapMilli', capSource(settings), capGives, 'the daily cap')}
+              {/* No cap, even where .env sets one: stored here, it wins as any value set here does. */}
+              {settings.dailyCapMilli !== null && (
+                <button
+                  type="button"
+                  className="tl-button-quiet mt-2"
+                  data-size="sm"
+                  disabled={resetting !== null || saving}
+                  onClick={() =>
+                    void saveOne('dailyCapMilli', { dailyCapUsd: 'none' }, 'No daily cap: a reporter is paid for every job the lake accepts.')
+                  }
+                >
+                  No cap
+                </button>
+              )}
               {problems.cap && (
                 <p className="tl-status mt-2" data-tone="error" role="alert">
                   {problems.cap}

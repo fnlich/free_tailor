@@ -34,6 +34,7 @@ import {
   type TaskState,
 } from './taskQueue';
 import { makeResumeRunner, RESUME_TASK_KIND, type ResumeJob } from './resumeTask';
+import { forgetRunFileClaims } from './runFiles';
 import { placeOfPlacedRun } from '../outputPath';
 
 export { TaskQueue, registerTaskRunner, newBatchId } from './taskQueue';
@@ -326,9 +327,10 @@ export function getGenerationQueue(): TaskQueue {
             : null
         );
       },
-      /** A run that is over needs no lease: nothing is left for a timer to stop. */
+      /** A run that is over needs no lease, nor file claims: nothing of it runs again. */
       batchFinished: (batch) => {
         leases?.forget(batch.id);
+        forgetRunFileClaims(batch.id);
       },
     },
     readMaxAttempts(),

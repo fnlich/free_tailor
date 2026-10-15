@@ -20,7 +20,7 @@ const { useAdminEmails, useTempStorage, writeSettingRaw } = require('./helpers')
  *     cancelled, with what had not started refunded; a page that knows it is
  *     leaving releases it at once;
  *   - it is filed with an `orders` row of kind `immediate`, so its files live
- *     under the order tree, are downloaded one by one through an owner-checked
+ *     in the run's own folder under the output prefix, are downloaded one by one through an owner-checked
  *     route, and are deleted IMMEDIATE_FILE_RETENTION_MS after the run ends,
  *     downloaded or not - and it is never listed on /orders;
  *   - its tasks go ahead of orders in their lane (queuePriority.test.js).
@@ -110,7 +110,9 @@ async function serve(name) {
     const entry = pending.get(`${batchId}:${jobIndex}`);
     if (!entry) throw new Error(`task ${batchId}:${jobIndex} is not running`);
     pending.delete(`${batchId}:${jobIndex}`);
-    const folder = `${entry.payload.accountFolder}/${entry.payload.orderNumber}/${jobIndex}`;
+    // The run's own folder (the prefix rendered for its order), as the real
+    // task files it, and a folder per job inside it.
+    const folder = `${entry.payload.output.prefix}/${jobIndex}`;
     fs.mkdirSync(path.join(outputBaseDir, folder), { recursive: true });
     fs.writeFileSync(path.join(outputBaseDir, folder, 'Ada.pdf'), `resume ${jobIndex}`);
     fs.writeFileSync(path.join(outputBaseDir, folder, 'Ada_cover_letter.pdf'), `letter ${jobIndex}`);

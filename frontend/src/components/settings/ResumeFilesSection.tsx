@@ -35,6 +35,8 @@ function readOutputPath(account: Partial<AccountOutputPath>): AccountOutputPath 
  */
 export default function ResumeFilesSection() {
   const [path, setPath] = useState<AccountOutputPath | null>(null);
+  /** The account was read - with a folder path, or (an older server) without one. */
+  const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
   const [draft, setDraft] = useState('');
@@ -55,6 +57,7 @@ export default function ResumeFilesSection() {
       ({ account }) => {
         if (!alive) return;
         adopt(account);
+        setLoaded(true);
         setLoadError(null);
       },
       (error: unknown) => {
@@ -102,7 +105,8 @@ export default function ResumeFilesSection() {
   if (!path) {
     return (
       <Section title="Resume files" description={description}>
-        <p className="text-sm text-subtle">Loading...</p>
+        {/* Read, and no folder path in it: a server from before folder paths, which files by its own rule. */}
+        <p className="text-sm text-subtle">{loaded ? 'This server does not say where your resumes are saved.' : 'Loading...'}</p>
       </Section>
     );
   }

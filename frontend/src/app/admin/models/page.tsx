@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AdminOnly } from '@/components/auth/AuthGate';
 import SettingSource from '@/components/ui/SettingSource';
 import {
@@ -43,6 +43,8 @@ function ModelsPageBody() {
   /** Why the models could not be read, whole, for the notice's reference and cause. */
   const [loadError, setLoadError] = useState<unknown>(null);
   const [status, setStatus] = useState('');
+  /** The newest re-read after a provider change: an older answer landing late is not adopted. */
+  const providerReads = useRef(0);
 
   useEffect(() => {
     void loadSettings();
@@ -137,6 +139,8 @@ function ModelsPageBody() {
   const analysisGives = settings.settingDefaults.analysisModelId
     ? modelLabel(settings, settings.settingDefaults.analysisModelId)
     : theDefaultModel;
+  /** A default set here that cannot run: still stored, and the default again once it can. */
+  const staleDefault = settings.staleDefaultModelId;
   const defaultGives = settings.settingDefaults.defaultModelId
     ? modelLabel(settings, settings.settingDefaults.defaultModelId)
     : 'no model';
@@ -219,7 +223,8 @@ function ModelsPageBody() {
               </StaticValue>
               <SettingSource
                 label={appSettingSourceLabel(sources, 'defaultModelId')}
-                resettable={canReset(sources.defaultModelId)}
+                // A stored choice that cannot run is still stored: Reset takes it away.
+                resettable={canReset(sources.defaultModelId) || staleDefault !== null}
                 gives={defaultGives}
                 name="the default model"
                 busy={isSaving}
@@ -229,6 +234,14 @@ function ModelsPageBody() {
                   )
                 }
               />
+              {staleDefault !== null && (
+                <Notice tone="warn" className="mt-3">
+                  &quot;{modelLabel(settings, staleDefault)}&quot;, the default model set here, cannot run here - it is
+                  switched off or gone, or its provider is switched off or locked - so{' '}
+                  {defaultName || 'no model'} is the default until it can. It becomes the default again the moment it
+                  can run; Reset to default forgets it.
+                </Notice>
+              )}
             </Field>
           </div>
           <div data-choice="analysis">
@@ -366,10 +379,11 @@ function ModelsPageBody() {
                     </td>
                     {/* The column says "Updated", so the cell is the date alone. */}
                     <td className="whitespace-nowrap text-xs">{new Date(model.updatedAt).toLocaleString()}</td>
-                    <td>
+                    <td className="min-w-[15rem]">
                       {/* Wraps rather than widening the row: with the Price
                           column the four buttons pushed Delete off a 1440px
-                          screen. */}
+                          screen. Wide enough for two or three to a line,
+                          though: one each made every row five buttons tall. */}
                       <div className="flex flex-wrap justify-end gap-2">
                         <button
                           type="button"
@@ -456,7 +470,18 @@ function ModelsPageBody() {
         providers={settings.aiProviders}
         // A provider switched on or off changes which models can run - the
         // Status column above and Set default follow the list it answers with.
-        onProvidersChange={(next) => setSettings((current) => (current ? { ...current, aiProviders: next } : current))}
+        // The default model and the analysis model's fallback move with it too,
+        // as the server resolves them: so the whole payload is read again.
+        onProvidersChange={(next) => {
+          setSettings((current) => (current ? { ...current, aiProviders: next } : current));
+          const read = ++providerReads.current;
+          adminApi.getSettings().then(
+            (updated) => {
+              if (read === providerReads.current) setSettings(updated);
+            },
+            () => undefined
+          );
+        }}
       />
 
       {editor && (

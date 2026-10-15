@@ -8,6 +8,7 @@ import { getOutputPathSuffix, getUserById, setOutputPathSuffix } from '../databa
 import type { UserAccount } from '../types/account';
 import { accountFolderName, type RunOutputPlace } from '../utils/generatedPath';
 import {
+  normalizeOutputBaseDir,
   outputDateText,
   outputSuffixNotes,
   renderOutputPath,
@@ -143,14 +144,20 @@ export async function previewAccountOutputPath(
  * POST /api/admin/output-path/preview: where a resume would be filed with this
  * prefix and the default folder path, under the output folder - the whole
  * path on the server, for the administrator. Without `outputPathPrefix` it is
- * the one in effect; with `null`, what Reset to default gives.
+ * the one in effect; with `null`, what Reset to default gives. `outputBaseDir`,
+ * when given, is an output folder typed but not saved yet, read as a save
+ * would store it; without it, the one in effect.
  */
 export async function previewOutputPrefix(
   account: UserAccount,
-  body: { outputPathPrefix?: unknown }
+  body: { outputPathPrefix?: unknown; outputBaseDir?: unknown }
 ): Promise<OutputPathPreview> {
-  const { outputBaseDir, outputPathPrefix } = await getOutputStorageSettings();
-  let prefix = outputPathPrefix;
+  const settings = await getOutputStorageSettings();
+  const outputBaseDir =
+    typeof body.outputBaseDir === 'string' && body.outputBaseDir.trim()
+      ? normalizeOutputBaseDir(body.outputBaseDir)
+      : settings.outputBaseDir;
+  let prefix = settings.outputPathPrefix;
   if (Object.prototype.hasOwnProperty.call(body, 'outputPathPrefix')) {
     if (body.outputPathPrefix === null) {
       prefix = envOutputPathPrefix().value;

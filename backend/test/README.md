@@ -327,6 +327,22 @@ Coverage currently focuses on:
   purchase crediting exactly what it charges, with no fee, and the payment
   limits in dollars (`paymentFees.test.js`); and the frontend's copies of all
   of it run against the server's (`frontendMoney.test.js`)
+- the admin pages' half of the settings with a `.env` default, the Models
+  dialog and where resumes are filed (`frontendSettings.test.js`): the frontend's
+  copies of the server's variable tables, dialog fields and token lists held
+  to the server's; the words beside a box (*Set here*, *From .env (NAME)*,
+  *Default* - the Providers table's own) and Reset offered only while set
+  here; through the real client and routes, an untouched General or Payments
+  form sending nothing, one changed box sent alone and turning *Set here*,
+  Reset (`null`) putting `.env`'s back, the contact list's Reset against a
+  saved empty list, the lake's boxes holding only what is set here; the
+  dialog refusing what the server refuses in its words and pinning a refusal
+  only the server can make (a name taken meanwhile, a pair another record
+  holds) under the box it names, an edit sending only what changed; Set
+  default, Use for analysis and "Use the default model"; the token chips
+  inserting at the caret and a slow preview answer dropped; and Resume files'
+  preview, save and Reset against the account routes, a reporter refused and
+  the section not drawn for one
 - refund requests and Contact admin: every allowed and refused state change,
   a double-pressed *Refunded* moving money once, a card's partial refund with
   its credit held while Stripe answers, crypto at the amount sent by hand, one
@@ -544,6 +560,12 @@ Coverage currently focuses on:
   a file by its run's folder - after the prefix changed, a run with no folder
   recorded, a file nobody claims - is `orderFileAccess.test.js`'s, and the
   run's place fixed at submission `orderLifecycle.test.js`'s
+- a run's files once they are on disk (`runFiles.test.js`): two resumes of one
+  run at one company with one role written to two files (the second `_2`), a
+  retry and a restored task keeping their names, another run's first resume
+  taking the plain one; and a run found - and purged - in the output folder it
+  was placed in after an administrator changed it, or where the tree was moved
+  across.
 - generated output paths (`aiModelConfig.test.js`, `utils.test.js`)
 - JSON extraction utilities
 - array utilities

@@ -9,9 +9,8 @@ import {
   type Order,
   type OrderFile,
 } from '../../database/orderRepository';
-import { getOutputStorageSettings } from '../../config/aiModelConfig';
 import { immediateFileRetentionMs, orderRetentionSweepMs } from '../../config/operational';
-import { getGeneratedFilePath } from '../../utils/generatedPath';
+import { resolveRunFile } from '../../utils/generatedPath';
 
 /**
  * Deleting ordered resumes once their five days are up.
@@ -65,13 +64,13 @@ export function orderRetentionDays(): number {
  * Emptiness is the test, not ownership, and that is what makes it safe: two
  * accounts whose folder names happened to collide cannot delete each other's
  * work, because the other account's files are still in the directory and
- * `rmdir` refuses. Walking upward stops at the base directory, which is never
- * removed even when the install has no files left at all.
+ * `rmdir` refuses. Walking upward stops at the output folder the file was
+ * found under - the run's own, which an administrator may have replaced since
+ * - and that folder is never removed, even with no files left in it.
  */
-async function pruneEmptyDirectories(directories: Set<string>, baseDir: string): Promise<void> {
-  const base = path.resolve(baseDir);
-
-  for (const directory of directories) {
+async function pruneEmptyDirectories(directories: Map<string, string>): Promise<void> {
+  for (const [directory, baseDir] of directories) {
+    const base = path.resolve(baseDir);
     let current = path.resolve(directory);
     while (current !== base && current.startsWith(`${base}${path.sep}`)) {
       try {
@@ -100,19 +99,20 @@ export type PurgeReport = {
 /**
  * Deletes one order's files and marks it expired.
  *
- * `getGeneratedFilePath` is what resolves each path, deliberately: it applies
- * the same traversal guard the download routes use, so a doctored row cannot
- * make the sweep unlink something outside the output directory. A path it
+ * `resolveRunFile` is what resolves each path, deliberately: it looks where
+ * the download routes look - the run's own output folder, then the one in
+ * effect - with the same traversal guard, so a doctored row cannot make the
+ * sweep unlink something outside the output folder it is resolved under. A path it
  * refuses and a file already gone are indistinguishable here, and both count as
  * missing rather than as a failure - the end state wanted is "not on disk",
  * which is already true.
  */
 async function purgeOrder(
-  orderId: string,
+  order: Order,
   report: PurgeReport,
-  emptiedDirectories: Set<string>
+  emptiedDirectories: Map<string, string>
 ): Promise<void> {
-  for (const item of listOrderItems(orderId)) {
+  for (const item of listOrderItems(order.id)) {
     if (item.files.length === 0) continue;
 
     const removedAt = new Date().toISOString();
@@ -123,11 +123,11 @@ async function purgeOrder(
         continue;
       }
 
-      const absolute = await getGeneratedFilePath(file.path);
-      if (absolute) {
+      const found = await resolveRunFile(file.path, order.outputRoot);
+      if (found) {
         try {
-          await fs.unlink(absolute);
-          emptiedDirectories.add(path.dirname(absolute));
+          await fs.unlink(found.absolute);
+          emptiedDirectories.set(path.dirname(found.absolute), found.baseDir);
           report.filesRemoved += 1;
         } catch {
           report.filesMissing += 1;
@@ -141,7 +141,7 @@ async function purgeOrder(
     recordItemFiles(item.id, next);
   }
 
-  markOrderPurged(orderId);
+  markOrderPurged(order.id);
   report.orders += 1;
 }
 
@@ -170,8 +170,8 @@ export async function purgeFinishedImmediateRuns(
 
 async function purgePages(nextPage: () => Order[]): Promise<PurgeReport> {
   const report: PurgeReport = { orders: 0, filesRemoved: 0, filesMissing: 0 };
-  const { outputBaseDir } = await getOutputStorageSettings();
-  const emptiedDirectories = new Set<string>();
+  /** Each emptied directory, with the output folder its file was found under. */
+  const emptiedDirectories = new Map<string, string>();
 
   /*
    * Worked in pages until there is nothing left, rather than taking one page
@@ -191,13 +191,11 @@ async function purgePages(nextPage: () => Order[]): Promise<PurgeReport> {
     if (expired.length === 0) break;
 
     for (const order of expired) {
-      await purgeOrder(order.id, report, emptiedDirectories);
+      await purgeOrder(order, report, emptiedDirectories);
     }
   }
 
-  if (outputBaseDir) {
-    await pruneEmptyDirectories(emptiedDirectories, outputBaseDir);
-  }
+  await pruneEmptyDirectories(emptiedDirectories);
 
   return report;
 }

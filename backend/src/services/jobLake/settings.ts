@@ -25,7 +25,9 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../../utils/mo
  *  - `dailyCapMilli`, the most one reporter earns from the lake in one UTC
  *    day. Unset falls back to `JOB_LAKE_DAILY_CAP_USD` in .env, then to no
  *    cap. A job past it is still added - the lake wants the job - and paid
- *    only what the cap leaves.
+ *    only what the cap leaves. "No cap" is a choice of its own too
+ *    (`noDailyCap`, sent as `dailyCapUsd: 'none'`): stored, it beats a cap
+ *    `.env` sets, as every value set here does.
  *
  * Each value set here WINS over .env (owner decision S1, as for every setting
  * with a `.env` default), and the row holds only what an administrator set:
@@ -49,6 +51,8 @@ type StoredLakeSettings = {
   reportRateMilli?: unknown;
   duplicateWindowDays?: unknown;
   dailyCapMilli?: unknown;
+  /** `true`: an administrator chose no cap, whatever `.env` says. */
+  noDailyCap?: unknown;
   updatedAt?: unknown;
   updatedBy?: unknown;
 };
@@ -141,7 +145,8 @@ export function resolveDuplicateWindow(env: EnvSource = process.env, stored: Sto
 export function readLakeSettings(env: EnvSource = process.env): LakeSettings {
   const stored = readStored();
   const rate = storedInt(stored, 'reportRateMilli', 0, MAX_REPORT_RATE_MILLI);
-  const cap = storedInt(stored, 'dailyCapMilli', 0, MAX_DAILY_CAP_MILLI);
+  const noCap = stored.noDailyCap === true;
+  const cap = noCap ? null : storedInt(stored, 'dailyCapMilli', 0, MAX_DAILY_CAP_MILLI);
   const envRate = envJobLakeReportRateMilli(env);
   const envCap = envJobLakeDailyCapMilli(env);
   const duplicateWindow = resolveDuplicateWindow(env, stored);
@@ -150,11 +155,11 @@ export function readLakeSettings(env: EnvSource = process.env): LakeSettings {
     reportRateMilli: rate ?? rateWithoutAdmin,
     reportRateSet: rate !== null,
     duplicateWindow,
-    dailyCapMilli: cap ?? envCap.value,
+    dailyCapMilli: noCap ? null : cap ?? envCap.value,
     settingSources: {
       reportRateMilli: rate !== null ? 'admin' : envRate.fromEnv ? 'env' : 'default',
       duplicateWindowDays: duplicateWindow.source,
-      dailyCapMilli: cap !== null ? 'admin' : envCap.fromEnv ? 'env' : 'default',
+      dailyCapMilli: noCap || cap !== null ? 'admin' : envCap.fromEnv ? 'env' : 'default',
     },
     settingDefaults: {
       reportRateMilli: rateWithoutAdmin,
@@ -186,8 +191,9 @@ function refuse(code: string, error: string, status = 400): LakeSettingsUpdate {
  *    administrator's rate, so .env's (or $0) is in effect again.
  *  - `duplicateWindowDays`: a whole number 1-3650; null or '' removes the
  *    administrator's value, so .env (or 60) is in effect again.
- *  - `dailyCapUsd`: dollars to $0.001; null or '' removes the administrator's
- *    cap, so .env's (or none) is in effect again.
+ *  - `dailyCapUsd`: dollars to $0.001, or 'none' for no cap even where
+ *    .env sets one; null or '' removes the administrator's choice, so .env's
+ *    cap (or none) is in effect again.
  *
  * An amount in thousandths (`reportRateMilli`, `dailyCapMilli`) is refused:
  * requests carry dollars, responses thousandths, everywhere in this app.
@@ -229,6 +235,10 @@ export function updateLakeSettings(body: unknown, actorId: string): LakeSettings
     const value = input.dailyCapUsd;
     if (value === null || (typeof value === 'string' && value.trim() === '')) {
       delete next.dailyCapMilli;
+      delete next.noDailyCap;
+    } else if (typeof value === 'string' && value.trim().toLowerCase() === 'none') {
+      delete next.dailyCapMilli;
+      next.noDailyCap = true;
     } else {
       const parsed = parseDollars(value);
       if (!parsed.ok) return refuse('bad-cap', describeDollarProblem(parsed.problem, 'The daily cap'));
@@ -236,6 +246,7 @@ export function updateLakeSettings(body: unknown, actorId: string): LakeSettings
         return refuse('bad-cap', `The daily cap can be at most ${formatMoney(MAX_DAILY_CAP_MILLI)}.`);
       }
       next.dailyCapMilli = parsed.milli;
+      delete next.noDailyCap;
     }
   }
 

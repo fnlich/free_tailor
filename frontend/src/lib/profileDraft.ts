@@ -95,8 +95,8 @@ export const FALLBACK_TEMPLATE_ID = 'default';
 
 export const DEFAULT_PROFILE_SETTINGS: DraftSettings = {
   resumePromptId: 'tailor-resume',
-  resumeFileNameTemplate: '{{profile name}}',
-  coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
+  resumeFileNameTemplate: '{{profile_name}}',
+  coverLetterFileNameTemplate: '{{profile_name}}_cover_letter',
   technicalSkillsLayout: 'categorized',
   // Off, which is what every resume printed before the switches existed - so a
   // profile nobody has touched comes out exactly as it did.

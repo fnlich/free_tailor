@@ -472,7 +472,6 @@ function pathInfoIn(dir) {
     profileSlug: 'jane',
     resumeFileStem: 'Jane',
     coverLetterFileStem: 'Jane_cover_letter',
-    companyFolderName: 'acme',
     roleSlug: 'eng',
   };
 }

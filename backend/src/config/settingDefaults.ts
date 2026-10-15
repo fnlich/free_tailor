@@ -213,13 +213,27 @@ export function envDefaultTheme(env: EnvSource = process.env): EnvReading<ThemeM
   return readEnvEnum('DEFAULT_THEME', CODE_SETTING_DEFAULTS.defaultTheme, options, env);
 }
 
+/**
+ * `single` or `all`. Not `group`: a group is one an administrator made, and
+ * `.env` has no way to name it - Build Resumes would open every account on
+ * Group with none chosen, and Admin -> Settings could save nothing until a
+ * group or another target was stored. So `group` warns once and the default
+ * is used; a group is chosen under Admin -> Settings, with the group itself.
+ */
 export function envDefaultResumeSelection(env: EnvSource = process.env): EnvReading<DefaultResumeSelection> {
-  return readEnvEnum(
+  const reading = readEnvEnum(
     'DEFAULT_RESUME_SELECTION',
     CODE_SETTING_DEFAULTS.defaultResumeSelection,
     { values: DEFAULT_RESUME_SELECTIONS, caseInsensitive: true },
     env
   );
+  if (reading.value !== 'group') return reading;
+  warnEnvOnce(
+    'DEFAULT_RESUME_SELECTION',
+    'DEFAULT_RESUME_SELECTION=group names no group, and .env cannot; using ' +
+      `${CODE_SETTING_DEFAULTS.defaultResumeSelection}. Choose a default group under Admin -> Settings -> General.`
+  );
+  return { value: CODE_SETTING_DEFAULTS.defaultResumeSelection, fromEnv: false };
 }
 
 export function envDefaultResumeDocx(env: EnvSource = process.env): EnvReading<boolean> {
@@ -333,8 +347,12 @@ function envLimitCents(name: string, fallbackCents: number, env: EnvSource): Env
  * purchase with a sentence about the buyer's amount - and says so once. The
  * presets are the defaults' (outside the bounds, the buy page drops them).
  */
-export function envPaymentLimits(env: EnvSource = process.env): EnvReading<PaymentTargetLimits[]> {
+export function envPaymentLimits(
+  env: EnvSource = process.env
+): EnvReading<PaymentTargetLimits[]> & { variables: Record<string, string[]> } {
   let fromEnv = false;
+  /** Per method, the variables that supplied a bound in effect: what "From .env (NAME)" names for it. */
+  const variables: Record<string, string[]> = {};
   const rows = DEFAULT_PAYMENT_LIMITS.map((row) => {
     const names = PAYMENT_LIMIT_VARIABLES[row.target as PaymentMethodTarget];
     const defaults: PaymentTargetLimits = { ...row, presetsCents: [...row.presetsCents] };
@@ -350,10 +368,14 @@ export function envPaymentLimits(env: EnvSource = process.env): EnvReading<Payme
       );
       return defaults;
     }
-    if (min.fromEnv || max.fromEnv) fromEnv = true;
+    const supplied = [min.fromEnv ? names.min : '', max.fromEnv ? names.max : ''].filter(Boolean);
+    if (supplied.length > 0) {
+      fromEnv = true;
+      variables[row.target] = supplied;
+    }
     return { ...defaults, minCents: min.value, maxCents: max.value };
   });
-  return { value: rows, fromEnv };
+  return { value: rows, fromEnv, variables };
 }
 
 /**

@@ -15,7 +15,9 @@ import type { UpdateDraft } from './parts';
  * the profile's skills in the order they were entered.)
  */
 
-const FILE_NAME_TOKENS = '{{profile name}}, {{company name}}, {{row number}}, {{job title}}, {{date}}';
+/** The folder path's spellings (Settings > Profile > Resume files), and two of the run's. */
+const FILE_NAME_TOKENS =
+  '{{profile_name}}, {{company_name}}, {{role}}, {{row_number}}, {{date}}, {{order_number}}, {{user_email}}';
 
 export function AiDefaultsSection({
   draft,

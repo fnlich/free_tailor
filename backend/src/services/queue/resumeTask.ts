@@ -17,6 +17,7 @@ import { writeBackFor, type SheetRowRef } from '../jobAnalysis/submit';
 import type { Profile } from '../../types/profile';
 import type { JobAnalysis, TailoredContent } from '../../types/template';
 import { getGeneratedOutputPath, type RunOutputPlace } from '../../utils/generatedPath';
+import { claimRunFileStems } from './runFiles';
 import type { Assignment } from './taskQueue';
 
 /**
@@ -112,6 +113,12 @@ export type ResumeTaskInput = {
   onAnalysis?: (stored: StoredJobAnalysis) => void;
   /** Where the run files it (`ResumeTaskPayload.output`). */
   output?: RunOutputPlace;
+  /**
+   * The task's batch and place in it, when it runs on the queue: its file
+   * names are claimed for it there, so no other resume of the run lands on
+   * them (services/queue/runFiles.ts).
+   */
+  claim?: { batchId: string; seq: number };
 };
 
 /** The kind a resume task is registered under. */
@@ -302,10 +309,11 @@ export async function runResumeTask(
     ? tailoredContent.coverLetter.trim()
     : await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal, cacheContext);
 
-  const pathInfo = await getGeneratedOutputPath(profile, job.companyName, role, {
+  const placed = await getGeneratedOutputPath(profile, job.companyName, role, {
     sourceRowNumber: job.sourceRowNumber,
     output: input.output,
   });
+  const pathInfo = input.claim ? claimRunFileStems(input.claim.batchId, input.claim.seq, placed) : placed;
   const coverLetterPdf = await saveCoverLetter(profile, coverLetterBody, pathInfo);
   const coverLetterDocx = input.includeCoverLetterDocx
     ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
@@ -445,6 +453,7 @@ export function makeResumeRunner(
         ...(input.analysisId || job.analysisId ? { analysisId: input.analysisId || job.analysisId } : {}),
         requestedBy: hooks.ownerOf?.(input.batchId) ?? null,
         onAnalysis: (stored) => hooks.recorded?.(input.batchId, input.jobIndex, stored.id),
+        ...(typeof assignment.seq === 'number' ? { claim: { batchId: input.batchId, seq: assignment.seq } } : {}),
       },
       assignment
     ));

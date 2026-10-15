@@ -776,6 +776,22 @@ export function ownersOfGeneratedFile(spellings: readonly string[], absolutes: r
   return [...owners];
 }
 
+/**
+ * Every file the OTHER resumes of a batch's run recorded (their items' paths,
+ * removed ones included): what a resume about to be written must not land on
+ * (services/queue/runFiles.ts). Empty for a batch that has no order row.
+ */
+export function recordedRunFilePaths(batchId: string, exceptSeq: number): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT i.files AS files
+       FROM order_items i JOIN orders o ON o.id = i.order_id
+       WHERE o.batch_id = ? AND i.seq != ? AND i.files != '[]'`
+    )
+    .all(batchId, exceptSeq) as Array<{ files: string }>;
+  return rows.flatMap((row) => parseFiles(row.files).map((file) => file.path));
+}
+
 export function recordItemFiles(itemId: string, files: OrderFile[]): void {
   getDb()
     .prepare(`UPDATE order_items SET files = @files, updated_at = @updatedAt WHERE id = @id`)

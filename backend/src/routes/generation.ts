@@ -84,10 +84,10 @@ import { resolveAddressableSheet } from '../services/sheets/accountSheet';
  * tied to the tab that started it (owner decision B4): the tab's progress
  * stream holds a lease on the run, and when the tab is gone for longer than
  * IMMEDIATE_TAB_GRACE_MS the run is cancelled and what had not started is
- * refunded (services/queue/tabLease.ts). Both are filed under the order tree
- * with an `orders` row - an immediate run's is never listed - so every queued
- * resume is downloaded through an owner-checked route and refundable by its
- * order item.
+ * refunded (services/queue/tabLease.ts). Both are filed in the run's own folder
+ * under the output prefix, with an `orders` row - an immediate run's is never
+ * listed - so every queued resume is downloaded through an owner-checked route
+ * and refundable by its order item.
  */
 
 const router = Router();
@@ -1128,7 +1128,7 @@ router.get(
         return;
       }
       // Resolved through the same traversal guard every download uses.
-      const absolute = await getGeneratedFilePath(file.path);
+      const absolute = await getGeneratedFilePath(file.path, order.outputRoot);
       if (!absolute) {
         gone();
         return;

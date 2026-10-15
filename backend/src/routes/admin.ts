@@ -158,7 +158,9 @@ router.put('/settings', requireAdmin, async (req: Request, res: Response) => {
  */
 router.post('/output-path/preview', requireAdmin, async (req: Request, res: Response) => {
   try {
-    res.json(await previewOutputPrefix(req.user!, (req.body ?? {}) as { outputPathPrefix?: unknown }));
+    res.json(
+      await previewOutputPrefix(req.user!, (req.body ?? {}) as { outputPathPrefix?: unknown; outputBaseDir?: unknown })
+    );
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to preview the output prefix');
   }

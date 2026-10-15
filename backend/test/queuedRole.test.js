@@ -8,7 +8,7 @@ const { useTempStorage } = require('./helpers');
 /**
  * A queued resume with no role takes the posting's own title from the
  * analysis - in the cover letter, the file path, the rendered files and the
- * task's result - as /resume/generate always has.
+ * task's result.
  *
  * The builder used to paper over an empty Job Title with a "Fallback Role"
  * typed on the page; that box is gone, so the queue is where an empty role is

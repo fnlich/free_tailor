@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~60s with the tsc step, 1717 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 1735 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -243,6 +243,22 @@ backend/src/
                       #   `settingDefaults` (what Reset gives), never the
                       #   user payload; the contact editor's and the lake
                       #   settings' payloads carry the same two maps.
+                      #   PAYMENT LIMITS resolve PER METHOD: a stored row
+                      #   stands for its own method, a method the row leaves
+                      #   out is `.env`'s (else the code's), and the admin
+                      #   payload's `paymentLimits` is every method in effect,
+                      #   known ones first; `paymentLimitSources` says, per
+                      #   method, whose row it is and which PAYMENT_* names
+                      #   set it (only those). A save's rows MERGE by method
+                      #   - `{ target, reset: true }` removes one method's
+                      #   row, `null`/`[]` all of them - so a page sends only
+                      #   the methods that changed (payments/limitDraft.ts
+                      #   `limitChanges`). `staleDefaultModelId` names a
+                      #   default model stored here that cannot run now
+                      #   (another is in effect, and `settingSources` is
+                      #   THAT one's); Admin -> Models says so and offers
+                      #   Reset. DEFAULT_RESUME_SELECTION=group is refused
+                      #   (warned, `single`): .env cannot name the group.
                       #   DEFAULT_MODEL / ANALYSIS_MODEL are TEXT here (a
                       #   record id or display name) judged per read against
                       #   the runnable models, warned once when unusable.
@@ -669,7 +685,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 139 files; fixtures/cli, codex and gemini
+  test/               # node:test, 141 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -1076,9 +1092,9 @@ template has no section for counts as OFF everywhere: read the profile through
 entry point does (`generateResumePDF`, `generatePreviewHTML`,
 `generateProfilePreviewHTML`, and `generateResumeDOCX`, which takes the
 template for exactly this) and every tailoring caller does before
-`tailorResume` / `parseTailoredResumeContent` / `finaliseHeldContent` (the two
-resume routes, `/preview-all` - which resolves each profile's template before
-tailoring - and `runResumeTask`), and the gallery does too. A new output or
+`tailorResume` / `parseTailoredResumeContent` / `finaliseHeldContent`
+(`/resume/preview`, `/preview-all` - which resolves each profile's template
+before tailoring - and `runResumeTask`), and the gallery does too. A new output or
 tailoring path that skips it prints a section the PDF does not, or routes the
 model's soft-skill group to a Soft Skills section the template does not have,
 where it never prints.
@@ -1135,10 +1151,15 @@ spaced or aliased spelling) - the two validators and the one renderer.
   once and ALONE in its folder - it is what makes every run's folder its own.
   A save is refused with an `OutputPathError` (400 `output-path-invalid`,
   `field: 'outputPathPrefix'`, PUT /api/admin/settings passes both on); the
-  admin payload carries `outputPathPrefix` and `outputPathPreview` (the whole
-  path, base included, with the default suffix and sample values), and POST
-  /api/admin/output-path/preview `{ outputPathPrefix? }` answers `{ path,
-  problems, notes }` for one not saved yet (`null` = what Reset gives).
+  admin payload carries `outputPathPrefix` (no rendered path: that is the
+  route's), and POST /api/admin/output-path/preview `{ outputPathPrefix?,
+  outputBaseDir? }` answers `{ path, problems, notes }` - the whole path, base
+  included, with the default suffix and sample values - for a prefix not saved
+  yet (`null` = what Reset gives) and an output folder as its box holds it
+  (General asks again when either box changes, OutputPathBox's `previewKey`).
+  A save that changes the output folder in effect - a Reset included - creates
+  and checks it first (`ensureWritableOutputDir`), refusing the save if it
+  cannot.
 - **The suffix** is each account's: `users.output_path_suffix` (NULL =
   `OUTPUT_PATH_SUFFIX`, else `/{{date}}/{{profile_name}}/{{company_name}}/{{role}}`),
   read and written by its own query (`getOutputPathSuffix` /
@@ -1173,14 +1194,36 @@ spaced or aliased spelling) - the two validators and the one renderer.
   INSIDE its insert, where the number is issued - and stamps `placeFor(number)`
   on every task as `payload.output` (persisted whole). `getGeneratedOutputPath`
   files under it; without one (a script, a test) it uses the settings in
-  effect with `unknown` account and order. The per-profile FILE NAME
-  templates stay, with their own old spellings (`{{profile name}}`,
-  `FILE_NAME_TOKEN_ALIASES`); `companyFolderNameTemplate` is gone (a stored
-  one is not read and the next save drops it).
+  effect with `unknown` account and order. Two resumes of ONE run never share
+  a file: the default suffix renders one folder for two postings with one
+  title at one company, and the generators overwrite, so each queued task
+  claims its stems first (services/queue/runFiles.ts `claimRunFileStems`,
+  keyed by its batch and `Assignment.seq`): a stem another task of the run
+  claimed in this process or recorded on its order item
+  (`recordedRunFilePaths`) gets `_2`, `_3`... on the resume and cover letter
+  alike; a retry or restored task keeps its own; forgotten at
+  `batchFinished`. The per-profile FILE NAME templates stay, and read the
+  folder tokens' spellings (`{{profile_name}}`, `{{company_name}}`,
+  `{{role}}`, `{{row_number}}`, `{{date}}`, `{{order_number}}`,
+  `{{user_email}}`, the defaults' and the editor's) beside their old ones
+  (`{{profile name}}`, ... - `FILE_NAME_TOKEN_ALIASES`);
+  `companyFolderNameTemplate` is gone (a stored one is not read and the next
+  save drops it).
+- **A run is read where it was written.** Recorded paths are relative to the
+  output folder, and a run keeps the one it was placed in, so every reader
+  that has the order - the per-file and order downloads, the zip, retention -
+  resolves through utils/generatedPath.ts `resolveRunFile(path,
+  order.outputRoot)`: under the run's own base (`runBaseDir`: `output_root`
+  less the leading folders the path shares with it) first, then under the
+  folder in effect (a tree an administrator moved across). Only the
+  path-taking GET /api/generated/* (no page uses it) resolves under the folder
+  in effect alone. An order a builder reads never carries `outputRoot`
+  (routes/orders.ts `view`): it is a server path.
 - **Ownership** is the run's folder (see generatedFiles.ts above); migration
   10 gave the runs placed before theirs. Retention deletes recorded paths and
-  prunes what that empties up to the output folder, so a run's folder goes
-  with its last recorded file; nothing in it needs the prefix.
+  prunes what that empties up to the output folder each was found under, so a
+  run's folder goes with its last recorded file; nothing in it needs the
+  prefix.
 - **The pages** (O5) never render or judge a path: both boxes are
   components/settings/OutputPathBox.tsx - the tokens as chips that insert
   at the caret, and a preview from the server's route, asked once the typing
@@ -1631,7 +1674,8 @@ never lists), and
 through the same parse (`finaliseHeldContent`), as `/resume/preview` does.
 
 **The revise pass** (owner's `revise-resume-coverage`; services/reviseCoverage.ts,
-called inside `tailorResume`, so all five callers get it) runs after a FRESH
+called inside `tailorResume`, so /resume/preview, /preview-all and the queue
+task all get it) runs after a FRESH
 tailoring only - never on a cache hit or on content a page sent back - when
 TAILOR_REVISE_PASS is on and the draft is missing a checklist term, or its
 bullets carry fewer than five figures and one could carry another (a figure:
@@ -2461,7 +2505,9 @@ nobody paid until set), `duplicateWindowDays` (unset =
 for all three, and `readLakeSettings` serves `settingSources` and
 `settingDefaults` for them (`reportRateSet` is still "an administrator stored
 one"). PUT takes `reportRateUsd`, `duplicateWindowDays`, `dailyCapUsd`
-(null/'' clears: Reset to default) and refuses `*Milli`. Admin -> Accounts'
+(null/'' clears: Reset to default; `dailyCapUsd: 'none'` stores
+`noDailyCap`, an administrator's "no cap" that beats `.env`'s) and refuses
+`*Milli`. Admin -> Accounts'
 list carries `globalReportRateMilli`.
 
 **The reporter run** (`services/jobLake/reportRun.ts`, routes/report.ts under

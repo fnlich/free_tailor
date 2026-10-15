@@ -22,7 +22,7 @@ import { resolveGeneratedFile } from '../utils/generatedPath';
  * served to every builder, either could be anybody's. (The synchronous
  * `POST /api/resume/generate`, whose builds were nobody's, is gone.)
  */
-export async function generatedFileFor(viewerId: string, requested: string): Promise<string | null> {
+async function generatedFileFor(viewerId: string, requested: string): Promise<string | null> {
   const file = await resolveGeneratedFile(requested);
   if (!file) return null;
   const owners = ownersOfGeneratedFile(file.spellings, file.absolutes);

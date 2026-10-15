@@ -45,9 +45,7 @@ import {
   ensureWritableOutputDir,
   normalizeOutputBaseDir,
   outputSuffixUsesRole,
-  renderOutputPath,
   requireValidOutputPath,
-  sampleOutputPathValues,
   validateOutputPrefix,
 } from '../utils/outputStorage';
 import { warnEnvOnce, type EnvSource } from './envValue';
@@ -264,7 +262,6 @@ export type ProviderLock = {
 };
 
 type BaseAppSettingsWithDerived = BaseAppSettings & {
-  outputPathUsesJobTitle: boolean;
   /** Providers locked in this build, so Admin -> Models can say why their models do not run. */
   providerLocks: ProviderLock[];
 };
@@ -293,14 +290,8 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
    */
   providerModelOptions: ProviderModelOptions[];
   outputBaseDir: string;
+  /** Where a resume would be filed with it is POST /api/admin/output-path/preview's to say. */
   outputPathPrefix: string;
-  /**
-   * Where a resume would be filed today with the prefix in effect and the
-   * default folder path after it, under the output folder, rendered by the
-   * server's own function with sample values (`sampleOutputPathValues`).
-   * POST /api/admin/output-path/preview renders a prefix not saved yet.
-   */
-  outputPathPreview: string;
   /** Per method, in thousandths of a dollar. */
   paymentLimits: PaymentLimitsView[];
   requireThreeDSecure: boolean;
@@ -314,7 +305,26 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
   settingSources: SettingSources;
   /** What each of those would be with nothing stored: what Reset to default gives. */
   settingDefaults: AppSettingDefaultsView;
+  /**
+   * Per payment method in `paymentLimits`, where ITS row came from - each
+   * method resolves on its own: a stored row of the method, else `.env`'s
+   * PAYMENT_<METHOD>_*_USD, else the code's - and, from `.env`, the
+   * variables that set it (only those: "From .env (NAME)" names the line to
+   * look for).
+   */
+  paymentLimitSources: Record<string, PaymentLimitSource>;
+  /**
+   * The default model an administrator set that cannot run now - switched
+   * off, its provider off or locked, or gone - while another is the default
+   * in its place (`settingSources.defaultModelId` says where that one came
+   * from); null otherwise. Still stored: it is the default again the moment
+   * it can run, so Admin -> Models names it and offers Reset to default.
+   */
+  staleDefaultModelId: string | null;
 };
+
+/** Where one payment method's limits came from (`AdminAppSettings.paymentLimitSources`). */
+export type PaymentLimitSource = { source: SettingSource; variables: string[] };
 
 /**
  * The app-settings fields an administrator may leave unset, as STORED: only
@@ -343,6 +353,8 @@ type SettingsState = {
   overrides: SettingOverrides;
   sources: SettingSources;
   defaults: AppSettingDefaults;
+  /** Per method in `settings.paymentLimits`: whose its row is. */
+  limitSources: Record<string, PaymentLimitSource>;
 };
 
 /**
@@ -396,6 +408,8 @@ export type PaymentLimitsInput = {
   minUsd?: unknown;
   maxUsd?: unknown;
   presetsUsd?: unknown;
+  /** `true` with a `target`: that method's stored row goes - Reset to default for one method. */
+  reset?: unknown;
 };
 
 export const APP_SETTINGS_KEY = 'app-settings';
@@ -1098,9 +1112,6 @@ function describeProviderLocks(settings: AppSettings): ProviderLock[] {
 function toBaseSettingsWithDerived(settings: AppSettings): BaseAppSettingsWithDerived {
   return {
     ...toBaseSettings(settings),
-    // The default folder path's: an administrator's own builder reads
-    // GET /api/resume/models, which answers for their own.
-    outputPathUsesJobTitle: outputSuffixUsesRole(envOutputPathSuffix().value),
     providerLocks: describeProviderLocks(settings),
   };
 }
@@ -1123,16 +1134,19 @@ function toAdminSettings(state: SettingsState): AdminAppSettings {
     providerModelOptions: listSeatModelOptions(),
     outputBaseDir: settings.outputBaseDir,
     outputPathPrefix: settings.outputPathPrefix,
-    outputPathPreview: nodePath.join(
-      settings.outputBaseDir,
-      ...renderOutputPath(settings.outputPathPrefix, envOutputPathSuffix().value, sampleOutputPathValues()).split('/')
-    ),
     paymentLimits: settings.paymentLimits.map(toPaymentLimitsView),
     requireThreeDSecure: settings.requireThreeDSecure,
     freeEnabledModelIds: settings.aiModels
       .filter((model) => model.enabled && model.pricePerResumeMilli === 0)
       .map((model) => model.id),
     settingSources: { ...state.sources },
+    staleDefaultModelId:
+      state.overrides.defaultModelId !== undefined && state.overrides.defaultModelId !== settings.defaultModelId
+        ? state.overrides.defaultModelId
+        : null,
+    paymentLimitSources: Object.fromEntries(
+      Object.entries(state.limitSources).map(([target, entry]) => [target, { ...entry, variables: [...entry.variables] }])
+    ),
     settingDefaults: {
       ...state.defaults,
       // As the builder defaults serve it: one of the models listed beside it.
@@ -1309,6 +1323,27 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
   // The stored row over it. Its default model resolves against the code's for
   // now; the .env model choices need the row's models, read just here.
   const settings = normalizeSettings(source, base, strict);
+
+  // Payment limits resolve PER METHOD: a stored row stands for its own method
+  // only, and a method the row leaves out keeps `.env`'s bounds (else the
+  // code's) - so changing the card's limits never freezes crypto's. Known
+  // methods first, in their order; any other stored row (a coin's, from
+  // before the coins went) after them.
+  const storedLimits = hasOwnProperty(source, 'paymentLimits') ? clonePaymentLimits(settings.paymentLimits) : [];
+  const limitSources: Record<string, PaymentLimitSource> = {};
+  const storedFor = (target: string) => storedLimits.find((row) => row.target === target);
+  settings.paymentLimits = [
+    ...base.paymentLimits.map((row) => storedFor(row.target) ?? clonePaymentLimits([row])[0]),
+    ...storedLimits.filter((row) => !base.paymentLimits.some((known) => known.target === row.target)),
+  ];
+  for (const row of settings.paymentLimits) {
+    const variables = readings.paymentLimits.variables[row.target] ?? [];
+    limitSources[row.target] = storedFor(row.target)
+      ? { source: 'admin', variables: [] }
+      : variables.length > 0
+        ? { source: 'env', variables: [...variables] }
+        : { source: 'default', variables: [] };
+  }
   const runnable = getRunnableModels(settings);
   const envDefaultModelId = envModelChoice('DEFAULT_MODEL', envDefaultModelText(env), runnable);
   const envAnalysisModelId = envModelChoice('ANALYSIS_MODEL', envAnalysisModelText(env), runnable);
@@ -1341,7 +1376,7 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     if (key === 'defaultModelId') {
       // Not a string is no choice at all, as it always read; only an id is kept.
       if (storedDefaultModelId !== undefined) overrides.defaultModelId = storedDefaultModelId;
-    } else if (key === 'paymentLimits') overrides.paymentLimits = clonePaymentLimits(settings.paymentLimits);
+    } else if (key === 'paymentLimits') overrides.paymentLimits = clonePaymentLimits(storedLimits);
     else (overrides as Record<string, unknown>)[key] = settings[key];
   }
 
@@ -1384,7 +1419,7 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     requireThreeDSecure: base.requireThreeDSecure,
   };
 
-  return { settings, overrides, sources, defaults };
+  return { settings, overrides, sources, defaults, limitSources };
 }
 
 /**
@@ -1606,13 +1641,41 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
    * The payment limits arrive in DOLLARS and are parsed here, strictly, into
    * the cents they are stored in, so a bad amount or an inverted band is
    * reported by name rather than dropped while the save says it succeeded.
-   * `null` - or a list with every row removed, which the page has always said
-   * restores the defaults - stores none: `.env`'s limits, else the code's.
+   * PER METHOD: each row sent replaces that method's stored row, and
+   * `{ target, reset: true }` removes it (Reset to default for one method);
+   * a method the save does not name keeps what it had - stored, or `.env`'s.
+   * `null` - or an empty list, which the page has always said restores the
+   * defaults - removes them all.
    */
   if (limitsInput !== undefined) {
-    const parsed = limitsInput === null ? [] : parsePaymentLimitsInput(limitsInput);
-    if (parsed.length === 0) delete row.paymentLimits;
-    else row.paymentLimits = parsed;
+    if (limitsInput === null || (Array.isArray(limitsInput) && limitsInput.length === 0)) {
+      delete row.paymentLimits;
+    } else {
+      if (!Array.isArray(limitsInput)) throw new Error('Payment limits must be a list.');
+      const entries: unknown[] = limitsInput;
+      const resets = new Set<string>();
+      const values: unknown[] = [];
+      for (const entry of entries) {
+        const candidate = entry as { target?: unknown; reset?: unknown } | null;
+        if (candidate && candidate.reset === true && typeof candidate.target === 'string' && candidate.target.trim()) {
+          resets.add(candidate.target.trim());
+        } else {
+          values.push(entry);
+        }
+      }
+      const parsed = values.length > 0 ? parsePaymentLimitsInput(values) : [];
+      const named = [...parsed.map((entry) => entry.target), ...resets];
+      const repeated = named.find((target, index) => named.indexOf(target) !== index);
+      if (repeated !== undefined) throw new Error(`The payment limits name ${repeated || 'a method'} twice.`);
+      const stored = clonePaymentLimits(current.overrides.paymentLimits ?? []).filter((entry) => !resets.has(entry.target));
+      for (const entry of parsed) {
+        const at = stored.findIndex((existing) => existing.target === entry.target);
+        if (at >= 0) stored[at] = entry;
+        else stored.push(entry);
+      }
+      if (stored.length === 0) delete row.paymentLimits;
+      else row.paymentLimits = stored;
+    }
   }
 
   // Read as strictly as the stored row is: a field that is present and of the
@@ -1624,9 +1687,11 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
   assertRequestedDefaultCanRun(input, current.settings, next.settings);
   assertRequestedAnalysisModelCanRun(input, current.settings, next.settings);
 
-  // A folder an administrator names is created and checked now, where they can
-  // fix it; `.env`'s (and the default) are the operator's, used as they are.
-  if (typeof changes.outputBaseDir === 'string') {
+  // The folder in effect is created and checked whenever a save names it or
+  // changes it - a Reset included, which puts `.env`'s (or the default) back
+  // into effect: the administrator is told now, where they can fix it, not
+  // by every run failing to write later.
+  if (typeof changes.outputBaseDir === 'string' || next.settings.outputBaseDir !== current.settings.outputBaseDir) {
     await ensureWritableOutputDir(next.settings.outputBaseDir);
   }
 
@@ -1869,6 +1934,15 @@ type AIModelMutationInput = {
   pricePerResumeUsd?: unknown;
 };
 
+/** The price box's value, or its refusal pinned to the box (config/pricePerResume.ts words it). */
+function priceOrRefusal(value: unknown, fallback: number | undefined): number {
+  try {
+    return parsePricePerResume(value, fallback);
+  } catch (error) {
+    throw new AIModelInputError(error instanceof Error ? error.message : String(error), 'pricePerResumeUsd');
+  }
+}
+
 /**
  * An administrator's create (no `fallback`) or edit (the stored record as
  * `fallback`) of one model record. Every message here reaches an administrator
@@ -1884,15 +1958,6 @@ type AIModelMutationInput = {
  * input leaves out keeps its stored value - the price included, so the enable
  * switch, which sends only `{ enabled }`, cannot reset what a model costs.
  */
-/** The price box's value, or its refusal pinned to the box (config/pricePerResume.ts words it). */
-function priceOrRefusal(value: unknown, fallback: number | undefined): number {
-  try {
-    return parsePricePerResume(value, fallback);
-  } catch (error) {
-    throw new AIModelInputError(error instanceof Error ? error.message : String(error), 'pricePerResumeUsd');
-  }
-}
-
 function normalizeAIModelMutationInput(
   input: AIModelMutationInput,
   fallback?: AIModelRecord

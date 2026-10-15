@@ -637,7 +637,8 @@ function AdminSettingsPageBody() {
             setPrefixRefusal('');
           }}
           chips={OUTPUT_PREFIX_TOKEN_CHIPS}
-          preview={(text, signal) => adminApi.previewOutputPrefix(text, signal)}
+          preview={(text, signal) => adminApi.previewOutputPrefix(text, signal, form.outputBaseDir)}
+          previewKey={form.outputBaseDir}
           placeholder="/{{user_email}}/{{order_number}}"
           disabled={savingSection === 'output'}
           refusal={prefixRefusal}
@@ -920,8 +921,8 @@ function AdminSettingsPageBody() {
           </div>
           {sourceOf('defaultModelId', 'Default model', modelName(defaults.defaultModelId))}
           <p className="mt-2 text-sm text-subtle">
-            This is the default model used by Resume Builder when no prompt-level override is set. Models also
-            sets it, and the model job postings are analysed on.
+            This is the default model used by Resume Builder when no prompt-level override is set. Models sets
+            it too, and chooses the model job postings are analysed on.
           </p>
           {availableDefaultModels.length === 0 && (
             <Notice tone="warn" className="mt-3">

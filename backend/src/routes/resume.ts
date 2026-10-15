@@ -26,7 +26,7 @@ import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillH
 import { Profile } from '../types/profile';
 import { getProfileFor, listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
 import { profileForTemplate } from '../services/profileService';
-import { GenerateResumeRequest, JobAnalysis, TailoredContent } from '../types/template';
+import { JobAnalysis, PreviewResumeRequest, TailoredContent } from '../types/template';
 
 const router = Router();
 /**
@@ -636,7 +636,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   console.log('[Resume timing] /resume/preview started');
   try {
-    const { profileId, templateId, tailoredContent: manualTailoredContent }: GenerateResumeRequest = req.body;
+    const { profileId, templateId, tailoredContent: manualTailoredContent }: PreviewResumeRequest = req.body;
 
     if (!profileId) {
       res.status(400).json({ error: 'Profile ID is required' });

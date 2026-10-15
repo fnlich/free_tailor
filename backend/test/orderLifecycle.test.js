@@ -165,6 +165,13 @@ test('an order and a Generate Immediately run are both filed under their own fol
     // The order records the folder: what every file inside it is claimed by.
     const orderRow = server.orders.getOrder(ordered.orderId);
     assert.equal(orderRow.outputRoot, path.join(outputBaseDir, 'orderer_example_com', sanitizePathSegment(ordered.orderNumber)));
+    // ...which is a path on the server, so no order a builder reads names it.
+    const shown = await (await server.get(`/api/orders/${ordered.orderId}`)).json();
+    assert.equal(shown.number, ordered.orderNumber);
+    assert.equal('outputRoot' in shown, false, "the run's folder is the server's business");
+    const listed = await (await server.get('/api/orders/')).json();
+    assert.ok(listed.orders.length > 0);
+    assert.ok(listed.orders.every((order) => !('outputRoot' in order)));
 
     // A run that was not ordered - Generate Immediately, the default - is
     // filed the same way, under a number of its own.

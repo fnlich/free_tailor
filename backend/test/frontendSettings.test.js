@@ -259,7 +259,7 @@ test('the admin payload reads whole: every source and every Reset value the serv
         assert.equal(read.settingSources.defaultTheme, 'env');
         assert.equal(read.settingSources.outputPathPrefix, 'env');
         assert.equal(read.outputPathPrefix, '/{{date}}/{{order_number}}');
-        assert.equal(read.outputPathPreview, sent.outputPathPreview);
+        assert.equal('outputPathPreview' in read, false, 'the preview is the route\'s to draw');
         assert.equal('outputPathTemplate' in read, false, 'the folder template is gone');
       });
     } finally {
@@ -287,10 +287,19 @@ test('General and Payments send only what changed: an untouched form leaves .env
           {}
         );
         const drafts = settings.paymentLimits.map(limits.toLimitDraft);
-        assert.equal(limits.limitsChanged(drafts, settings.paymentLimits), false, 'the limits as they loaded');
+        assert.deepEqual(limits.limitChanges(drafts, settings.paymentLimits, settings.paymentLimitSources), [], 'the limits as they loaded');
         // Retyped to the same amounts: no change either.
         const retyped = drafts.map((draft) => ({ ...draft, min: `${draft.min}0`.replace(/^0+(?=\d)/, '') }));
-        assert.equal(limits.limitsChanged(retyped, settings.paymentLimits), false);
+        assert.deepEqual(limits.limitChanges(retyped, settings.paymentLimits, settings.paymentLimitSources), []);
+        // Each method names only the variable that set it.
+        assert.equal(limits.limitSourceLabel('card', settings.paymentLimitSources), 'From .env (PAYMENT_CARD_MAX_USD)');
+        assert.equal(limits.limitSourceLabel('crypto', settings.paymentLimitSources), 'Default');
+        assert.equal(
+          limits.allLimitsSourceLabel(settings.settingSources.paymentLimits, settings.paymentLimitSources),
+          'From .env (PAYMENT_CARD_MAX_USD)'
+        );
+        // Taking off a row that follows .env sends nothing: it would only come back.
+        assert.deepEqual(limits.limitChanges(drafts.slice(1), settings.paymentLimits, settings.paymentLimitSources), []);
 
         // One box changed: only it is sent, and only it becomes "Set here".
         const body = lib.changedSettings({ ...form, defaultMode: 'preview' }, settings, BUILDER);
@@ -299,14 +308,33 @@ test('General and Payments send only what changed: an untouched form leaves .env
         assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'defaultMode'), 'Set here');
         assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'defaultTheme'), 'From .env (DEFAULT_THEME)');
 
-        // A limit changed: the rows go, as typed, and the server takes them.
+        // A limit changed: that method's row goes alone, as typed, and the server takes it.
         const changed = settings.paymentLimits.map(limits.toLimitDraft);
         changed[0] = { ...changed[0], max: '300' };
-        assert.equal(limits.limitsChanged(changed, settings.paymentLimits), true);
-        settings = await api.adminApi.updateSettings({ paymentLimits: changed.map(limits.toLimitRow) });
+        const sent = limits.limitChanges(changed, settings.paymentLimits, settings.paymentLimitSources);
+        assert.deepEqual(sent.map((row) => row.target), ['card'], 'crypto is not sent, so it keeps following its default');
+        settings = await api.adminApi.updateSettings({ paymentLimits: sent });
         assert.equal(settings.settingSources.paymentLimits, 'admin');
+        assert.equal(settings.paymentLimitSources.card.source, 'admin');
+        assert.equal(settings.paymentLimitSources.crypto.source, 'default');
         assert.equal(settings.paymentLimits.find((row) => row.target === 'card').maxMilli, 300_000);
         assert.equal(limits.describeLimits(settings.settingDefaults.paymentLimits), 'card $2.5 to $250, crypto $50 to $2,000');
+        assert.equal(limits.describeLimitDefault('card', settings.settingDefaults.paymentLimits), '$2.5 to $250');
+
+        // A row set here, taken off the page, saves as that method's Reset; one
+        // method's Reset keeps what is typed in the others.
+        const typed = settings.paymentLimits.map(limits.toLimitDraft);
+        typed[1] = { ...typed[1], min: '60' };
+        assert.deepEqual(limits.limitChanges([typed[1]], settings.paymentLimits, settings.paymentLimitSources), [
+          limits.toLimitRow(typed[1]),
+          { target: 'card', reset: true },
+        ]);
+        const afterReset = await api.adminApi.updateSettings({ paymentLimits: [{ target: 'card', reset: true }] });
+        assert.equal(afterReset.paymentLimitSources.card.source, 'env');
+        const kept = limits.replaceLimitDraft(typed, afterReset.paymentLimits, 'card');
+        assert.equal(kept[0].max, limits.toLimitDraft(afterReset.paymentLimits[0]).max);
+        assert.equal(kept[1].min, '60', 'the crypto box keeps what was typed');
+        settings = await api.adminApi.updateSettings({ paymentLimits: sent });
 
         // Reset to default: .env's again, for that field alone.
         settings = await api.adminApi.updateSettings(lib.resetBody('paymentLimits'));

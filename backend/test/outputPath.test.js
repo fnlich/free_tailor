@@ -408,10 +408,16 @@ test("the administrator's prefix: refused by name with its field, previewed whol
       assert.equal(saved.body.settingDefaults.outputPathPrefix, DEFAULT_OUTPUT_PATH_PREFIX);
       assert.equal('outputPathTemplate' in saved.body, false);
       const number = `ft_${today().split('_').join('')}_0001`;
+      assert.equal('outputPathPreview' in saved.body, false, 'the preview is the route\'s to draw');
+      const inEffect = await server.call('boss', 'POST', '/admin/output-path/preview', {});
       assert.equal(
-        saved.body.outputPathPreview,
+        inEffect.body.path,
         path.join(saved.body.outputBaseDir, 'runs', number, today(), 'sample_profile', 'acme', 'software_engineer')
       );
+      // An output folder typed but not saved yet: the preview follows the box.
+      const draftFolder = path.join(saved.body.outputBaseDir, 'elsewhere');
+      const drafted = await server.call('boss', 'POST', '/admin/output-path/preview', { outputBaseDir: draftFolder });
+      assert.equal(drafted.body.path, path.join(draftFolder, 'runs', number, today(), 'sample_profile', 'acme', 'software_engineer'));
 
       const preview = await server.call('boss', 'POST', '/admin/output-path/preview', { outputPathPrefix: '/{{date}}/{{order_number}}' });
       assert.deepEqual(preview.body, {

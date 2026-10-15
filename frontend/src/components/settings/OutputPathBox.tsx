@@ -27,6 +27,7 @@ export default function OutputPathBox({
   onChange,
   chips,
   preview,
+  previewKey = '',
   placeholder,
   disabled = false,
   refusal,
@@ -40,6 +41,11 @@ export default function OutputPathBox({
   chips: readonly OutputPathTokenChip[];
   /** The server's preview of what the box holds. */
   preview: (text: string, signal: AbortSignal) => Promise<OutputPathPreview>;
+  /**
+   * Anything else the preview is drawn with (the admin's output folder, as
+   * its box holds it): a change asks again, as a change of the text does.
+   */
+  previewKey?: string;
   placeholder?: string;
   disabled?: boolean;
   /** A save's refusal, in the server's words, until the box is edited. */
@@ -51,7 +57,8 @@ export default function OutputPathBox({
   const input = useRef<HTMLInputElement>(null);
   const gate = useRef(createLatestGate());
   const pendingCaret = useRef<number | null>(null);
-  /** The newest answer, and the text it answers: anything else in the box is still being asked about. */
+  /** The newest answer, and the question it answers: anything else is still being asked about. */
+  const question = `${previewKey}\u0000${value}`;
   const [answered, setAnswered] = useState<{
     text: string;
     preview: OutputPathPreview | null;
@@ -69,12 +76,12 @@ export default function OutputPathBox({
     const timer = setTimeout(() => {
       ask.current(value, controller.signal).then(
         (answer) => {
-          if (gate.current.isLatest(ticket)) setAnswered({ text: value, preview: answer, error: '' });
+          if (gate.current.isLatest(ticket)) setAnswered({ text: question, preview: answer, error: '' });
         },
         (error: unknown) => {
           if (controller.signal.aborted || !gate.current.isLatest(ticket)) return;
           setAnswered((current) => ({
-            text: value,
+            text: question,
             // The last path drawn stays up: a failed redraw says so beside it.
             preview: current?.preview ?? null,
             error: messageWithDetail(error, 'The preview could not be drawn'),
@@ -86,7 +93,7 @@ export default function OutputPathBox({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [value]);
+  }, [value, question]);
 
   // Puts the caret after a chip once React has written the new value.
   useEffect(() => {
@@ -106,7 +113,7 @@ export default function OutputPathBox({
 
   const shown = answered?.preview ?? null;
   const previewError = answered?.error ?? '';
-  const asking = answered?.text !== value;
+  const asking = answered?.text !== question;
   const problems = asking ? [] : shown?.problems ?? [];
   const describedBy = `${id}-preview`;
 

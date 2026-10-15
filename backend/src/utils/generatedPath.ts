@@ -238,23 +238,74 @@ export async function resolveGeneratedFile(
   return { absolute, spellings: [...new Set(spellings)], absolutes: [...new Set([absolute, realFile])] };
 }
 
-export async function getGeneratedFilePath(relativePathValue: string): Promise<string | null> {
+/**
+ * The output folder a run's files were written under, worked out from the
+ * run's recorded folder (`orders.output_root`, `<output folder>/<rendered
+ * prefix>`) and one of its recorded paths (`<rendered prefix>/<folder
+ * path>/<file>`, relative to that output folder): the root less the trailing
+ * folders the path begins with - as many as match, at most. Null when they
+ * share none, or the path names no folder at all.
+ *
+ * A run keeps the output folder it was placed in (`RunOutputPlace.baseDir`),
+ * so an administrator moving the output folder must not move where its files
+ * are looked for - neither a run built before the change nor one still queued
+ * then, which goes on writing where it began.
+ */
+export function runBaseDir(outputRoot: string | null | undefined, recorded: string): string | null {
+  if (!outputRoot) return null;
+  const root = path.resolve(outputRoot);
+  const rootSegments = root.split(path.sep).filter(Boolean);
+  const pathSegments = recorded.replace(/\\/g, '/').split('/').filter(Boolean);
+  const same = (a: string, b: string) => a === b || a.toLowerCase() === b.toLowerCase();
+  for (let count = Math.min(rootSegments.length - 1, pathSegments.length - 1); count >= 1; count -= 1) {
+    const tail = rootSegments.slice(rootSegments.length - count);
+    if (tail.every((segment, index) => same(segment, pathSegments[index]))) {
+      let base = root;
+      for (let step = 0; step < count; step += 1) base = path.dirname(base);
+      return base;
+    }
+  }
+  return null;
+}
+
+/**
+ * A recorded file of a run, found on disk: under the run's own output folder
+ * first (`runBaseDir`), then under the one in effect - where an administrator
+ * who moved the old tree across put it. Each through the traversal guard
+ * every download uses, so a doctored row cannot reach outside the folder it
+ * is resolved under. `baseDir` is the folder it was found under. Null when it
+ * is in neither.
+ */
+export async function resolveRunFile(
+  relativePathValue: string,
+  outputRoot?: string | null
+): Promise<{ absolute: string; baseDir: string } | null> {
   const normalizedValue = relativePathValue.replace(/\\/g, '/').trim();
   if (!normalizedValue) {
     return null;
   }
 
   const { outputBaseDir } = await getOutputStorageSettings();
-  const resolved = resolveStoredFilePath(outputBaseDir, normalizedValue);
-
-  if (!resolved) {
-    return null;
+  const bases = [runBaseDir(outputRoot, normalizedValue), outputBaseDir ? path.resolve(outputBaseDir) : null].filter(
+    (base, index, all): base is string => Boolean(base) && all.indexOf(base) === index
+  );
+  for (const baseDir of bases) {
+    const resolved = resolveStoredFilePath(baseDir, normalizedValue);
+    if (!resolved) continue;
+    try {
+      await fs.access(resolved);
+      return { absolute: resolved, baseDir };
+    } catch {
+      // Not under this one; the next, if any.
+    }
   }
+  return null;
+}
 
-  try {
-    await fs.access(resolved);
-    return resolved;
-  } catch {
-    return null;
-  }
+/** `resolveRunFile`'s path alone: what the download routes open. */
+export async function getGeneratedFilePath(
+  relativePathValue: string,
+  outputRoot?: string | null
+): Promise<string | null> {
+  return (await resolveRunFile(relativePathValue, outputRoot))?.absolute ?? null;
 }

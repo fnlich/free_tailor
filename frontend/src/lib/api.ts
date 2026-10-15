@@ -9,7 +9,13 @@ import {
   type ProviderCard,
   type ProviderOutage,
 } from './providerDisplay';
-import { APP_SETTING_KEYS, readSettingSources, type AppSettingKey, type SettingSource } from './settingSources';
+import {
+  APP_SETTING_KEYS,
+  readSettingSource,
+  readSettingSources,
+  type AppSettingKey,
+  type SettingSource,
+} from './settingSources';
 
 const DEFAULT_LOCAL_API_BASE = 'http://localhost:3001/api';
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL || DEFAULT_LOCAL_API_BASE;
@@ -782,7 +788,6 @@ export interface UserAppSettings extends BuilderDefaults {
 export interface AdminAppSettings extends BuilderDefaults {
   /** Canonical enable flags, keyed by provider id. */
   providersEnabled: Record<AIProvider, boolean>;
-  outputPathUsesJobTitle: boolean;
   aiModels: AIModelRecord[];
   /** Providers locked in this build. Empty on a build that locks nothing. */
   providerLocks: ProviderLock[];
@@ -802,13 +807,6 @@ export interface AdminAppSettings extends BuilderDefaults {
    * adds its own folder path after it (Settings -> Profile -> Resume files).
    */
   outputPathPrefix: string;
-  /**
-   * Where a resume would be filed today - the whole path on the server, the
-   * prefix in effect and the default folder path after it, with sample
-   * values - rendered by the server's own function. A prefix not saved yet is
-   * previewed with `adminApi.previewOutputPrefix`; a page never renders one.
-   */
-  outputPathPreview: string;
   /**
    * The ids of every ENABLED model priced $0 - free to everybody who
    * picks it. Admin -> Models lists them in red: after credits became dollars
@@ -851,6 +849,25 @@ export interface AdminAppSettings extends BuilderDefaults {
   settingSources: Record<AppSettingKey, SettingSource>;
   /** What each of those would be with nothing set here: what Reset to default gives. */
   settingDefaults: AppSettingDefaults;
+  /**
+   * Per method in `paymentLimits`: where ITS row came from (each method
+   * resolves on its own) and, from `.env`, the variables that set it - only
+   * those. A method the server left out reads as 'default'.
+   */
+  paymentLimitSources: Record<string, PaymentLimitSource>;
+  /**
+   * A default model set here that cannot run now - another is the default in
+   * its place until it can - or null. Still stored, so Reset to default is
+   * offered for it.
+   */
+  staleDefaultModelId: string | null;
+}
+
+/** Where one payment method's limits came from. */
+export interface PaymentLimitSource {
+  source: SettingSource;
+  /** The PAYMENT_* variables that supplied it, when `source` is 'env'. */
+  variables: string[];
 }
 
 /**
@@ -923,6 +940,28 @@ export interface PaymentTargetLimitsInput {
   minUsd: string;
   maxUsd: string;
   presetsUsd: string[];
+}
+
+/** One method's Reset to default: its stored row goes, and `.env` (else the code) decides again. */
+export interface PaymentTargetLimitsReset {
+  target: string;
+  reset: true;
+}
+
+/** A method's limits read leniently: every method in `paymentLimits`, 'default' for one not described. */
+function normalizePaymentLimitSources(value: unknown, limits: PaymentTargetLimits[]): Record<string, PaymentLimitSource> {
+  const record = asRecord(value);
+  const sources: Record<string, PaymentLimitSource> = {};
+  for (const row of limits) {
+    const entry = asRecord(record[row.target]);
+    sources[row.target] = {
+      source: readSettingSource(entry.source),
+      variables: Array.isArray(entry.variables)
+        ? entry.variables.filter((name): name is string => typeof name === 'string')
+        : [],
+    };
+  }
+  return sources;
 }
 
 /** An amount the server sent: a whole number of thousandths, or 0 for anything that is not one. */
@@ -1217,23 +1256,24 @@ function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
 }
 
 function normalizeAdminSettingsInEffect(source: Record<string, unknown>): Omit<AdminAppSettings, 'settingDefaults'> {
+  const paymentLimits = normalizePaymentLimits(source.paymentLimits);
   return {
     ...normalizeBuilderDefaults(source),
     providersEnabled: normalizeProvidersEnabled(source),
-    outputPathUsesJobTitle:
-      typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
     aiModels: normalizeModelRecords(source.aiModels),
     providerLocks: normalizeProviderLocks(source.providerLocks),
     aiProviders: normalizeAdminProviders(source.aiProviders),
     providerModelOptions: normalizeProviderModelOptions(source.providerModelOptions),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathPrefix: typeof source.outputPathPrefix === 'string' ? source.outputPathPrefix : '',
-    outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',
     freeEnabledModelIds: Array.isArray(source.freeEnabledModelIds)
       ? source.freeEnabledModelIds.filter((id): id is string => typeof id === 'string')
       : [],
     analysisModelId: typeof source.analysisModelId === 'string' ? source.analysisModelId : '',
-    paymentLimits: normalizePaymentLimits(source.paymentLimits),
+    paymentLimits,
+    paymentLimitSources: normalizePaymentLimitSources(source.paymentLimitSources, paymentLimits),
+    staleDefaultModelId:
+      typeof source.staleDefaultModelId === 'string' && source.staleDefaultModelId ? source.staleDefaultModelId : null,
     requireThreeDSecure: source.requireThreeDSecure === true,
     settingSources: readSettingSources(source.settingSources, APP_SETTING_KEYS),
   };
@@ -1256,8 +1296,12 @@ export type AdminAppSettingsUpdate = Resettable<
     outputBaseDir: string;
     /** Checked by the server: a refusal is 400 with `field: 'outputPathPrefix'`. */
     outputPathPrefix: string;
-    /** In dollars. `null` (or `[]`) puts back the defaults. */
-    paymentLimits: PaymentTargetLimitsInput[];
+    /**
+     * In dollars, PER METHOD: each row replaces its method's, a reset row
+     * removes it, and a method left out keeps what it has. `null` (or `[]`)
+     * puts back the defaults for every method.
+     */
+    paymentLimits: Array<PaymentTargetLimitsInput | PaymentTargetLimitsReset>;
     requireThreeDSecure: boolean;
   }
 >;
@@ -1446,13 +1490,18 @@ export const adminApi = {
    * Where a resume would be filed with an output prefix not saved yet - the
    * whole path on the server, drawn by its own function. Left out, the prefix
    * in effect; `null`, what Reset to default gives. A prefix a save would
-   * refuse answers `path: null` and the sentences.
+   * refuse answers `path: null` and the sentences. `outputBaseDir` is the
+   * output folder as the box holds it, saved or not; left out or empty, the
+   * one in effect.
    */
-  previewOutputPrefix: async (outputPathPrefix?: string | null, signal?: AbortSignal) =>
+  previewOutputPrefix: async (outputPathPrefix?: string | null, signal?: AbortSignal, outputBaseDir?: string) =>
     normalizeOutputPathPreview(
       await apiFetch<OutputPathPreview>('/admin/output-path/preview', {
         method: 'POST',
-        body: JSON.stringify(outputPathPrefix === undefined ? {} : { outputPathPrefix }),
+        body: JSON.stringify({
+          ...(outputPathPrefix === undefined ? {} : { outputPathPrefix }),
+          ...(outputBaseDir?.trim() ? { outputBaseDir } : {}),
+        }),
         signal,
       })
     ),

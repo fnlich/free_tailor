@@ -205,7 +205,7 @@ test('the edit sent back finishes exactly as the whole content does, for every s
       const content = parseTailoredResumeContent(ANSWER, person, ANALYSIS);
       const { content: edit, error } = draftBox.readTailoredDraft(draftBox.tailoredDraftOf(content));
       assert.equal(error, '');
-      // What /resume/preview, /resume/generate and the queue do with held content.
+      // What /resume/preview and the queue do with held content.
       assert.deepEqual(
         parseTailoredResumeContent(JSON.stringify(edit), person, ANALYSIS),
         parseTailoredResumeContent(JSON.stringify(content), person, ANALYSIS),

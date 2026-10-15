@@ -52,11 +52,11 @@ export const SINGLE_PROMPT_NOTES: Readonly<Record<string, { about: string; model
   'analyze-job-description': {
     about:
       'Job analysis has one prompt, the built-in one: each posting is analysed once with it - beside Job Facts ' +
-      '(Filter), which reads the same posting\'s facts - on the analysis model chosen under Settings > General, and ' +
+      '(Filter), which reads the same posting\'s facts - on the analysis model chosen under Settings > Models, and ' +
       'never again. Editing it changes how postings never analysed before are read; stored analyses are kept as ' +
       'they are.',
     model:
-      'Job analysis always runs on the analysis model chosen under Settings > General, so that every posting is ' +
+      'Job analysis always runs on the analysis model chosen under Settings > Models, so that every posting is ' +
       'read the same way. There is no model override for it.',
   },
   'filter-google-sheet-job': {
@@ -67,7 +67,7 @@ export const SINGLE_PROMPT_NOTES: Readonly<Record<string, { about: string; model
       'the job field list and asks for the job field itself, so no edit can leave it out. Editing it changes how ' +
       'postings never analysed before are read; stored analyses are kept as they are.',
     model:
-      'The job facts always run on the analysis model chosen under Settings > General, beside Analyze Job ' +
+      'The job facts always run on the analysis model chosen under Settings > Models, beside Analyze Job ' +
       'Description. There is no model override for them.',
   },
   'revise-resume-coverage': {

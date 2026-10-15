@@ -243,7 +243,12 @@ export default function ModelDialog({
             {problems.modelName && <Status tone="error">{problems.modelName}</Status>}
           </Field>
 
-          <Field label="Price per resume ($)" htmlFor="model-price-per-resume" hint={priceHint}>
+          {/* The hint goes while the box shows its error: the error already says what the box needs. */}
+          <Field
+            label="Price per resume ($)"
+            htmlFor="model-price-per-resume"
+            hint={problems.pricePerResumeUsd ? undefined : priceHint}
+          >
             <input
               id="model-price-per-resume"
               // Text, like every other dollar box: a number box hands over

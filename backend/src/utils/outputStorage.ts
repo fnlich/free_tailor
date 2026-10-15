@@ -5,8 +5,8 @@ import os from 'os';
 import { PublicError } from '../middleware/publicError';
 
 export const DEFAULT_GENERATED_RESUMES_DIR = path.join(__dirname, '..', '..', '..', 'generated');
-export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}';
-export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_letter';
+export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile_name}}';
+export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile_name}}_cover_letter';
 
 /**
  * Where a resume is filed: `<output folder>/<prefix>/<suffix>/<file name>`
@@ -37,8 +37,8 @@ export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_l
  * THEN sanitized as a whole (`sanitizePathSegment`), so no value - a company
  * called "../etc", a role with a slash - is ever more than one folder.
  *
- * The per-profile file NAME templates below keep their own tokens, spelled as
- * they always were (`{{profile name}}`): they are stored in profiles.
+ * The per-profile file NAME templates below read these spellings too, and the
+ * older spaced ones (`{{profile name}}`) profiles may have stored.
  */
 export const OUTPUT_PATH_TOKENS = [
   'user_email',
@@ -324,8 +324,9 @@ export function sampleOutputPathValues(
  * What a valid suffix is worth knowing before it is saved, never a refusal.
  * One run builds every job for every profile chosen; with no
  * `{{company_name}}` in the folders, one profile's resumes for two companies
- * share a folder, and under the default file names (the profile's name) the
- * second replaces the first.
+ * share a folder. Nothing is overwritten - a resume whose file name another
+ * of the run already has gets a number (services/queue/runFiles.ts) - but
+ * `Ada.pdf` and `Ada_2.pdf` do not say which company each is for.
  */
 export function outputSuffixNotes(suffix: string): string[] {
   const check = validateOutputSuffix(suffix);
@@ -334,7 +335,7 @@ export function outputSuffixNotes(suffix: string): string[] {
   if (!/\{\{company_name\}\}/.test(check.value)) {
     notes.push(
       'Without {{company_name}}, the resumes one profile builds for different companies in one run share a ' +
-        "folder, and with file names that do not name the company each replaces the one before."
+        'folder, told apart only by a number after the file name unless the file names name the company.'
     );
   }
   return notes;
@@ -353,12 +354,21 @@ export type FileNameVariables = {
 };
 
 /**
- * The per-profile file NAME templates' tokens, in the spellings profiles have
- * always stored them in. Not the folder tokens above: a name is one file in
- * the folder the prefix and suffix chose.
+ * The per-profile file NAME templates' tokens: the folder tokens' own
+ * spellings (`{{profile_name}}`, `{{company_name}}`, `{{row_number}}`,
+ * `{{role}}`, `{{date}}`, `{{user_email}}`, `{{order_number}}`), which the
+ * profile editor offers, and the spellings profiles have always stored them in,
+ * which still read. Not the folder rules above: a name is one file in the
+ * folder the prefix and suffix chose.
  */
 const FILE_NAME_TOKEN_ALIASES: Record<string, keyof FileNameVariables> = {
   date: 'date',
+  user_email: 'accountName',
+  order_number: 'orderNumber',
+  profile_name: 'profileName',
+  company_name: 'companyName',
+  row_number: 'rowNumber',
+  job_title: 'jobTitle',
   account: 'accountName',
   'account name': 'accountName',
   order: 'orderNumber',
