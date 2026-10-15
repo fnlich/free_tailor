@@ -130,9 +130,18 @@ test('the items exist before any task can finish, one per resume, in submitted o
   }
 });
 
-test('an order and a Generate Immediately run are both filed under the account, by their own number', async () => {
+test('an order and a Generate Immediately run are both filed under their own folder, fixed and recorded when placed', async () => {
   const server = await serve();
   try {
+    const path = require('node:path');
+    const config = require('../dist/config/aiModelConfig');
+    const { sanitizePathSegment } = require('../dist/utils/outputStorage');
+    const users = require('../dist/database/userRepository');
+    // The submitter's own folder path, and the administrator's prefix in effect.
+    users.setOutputPathSuffix(server.account.id, '/{{date}}/{{company_name}}');
+    await config.updateAppSettings({ outputPathPrefix: '/{{user_email}}/{{order_number}}' });
+    const { outputBaseDir } = await config.getAdminAppSettings();
+
     const ordered = await (
       await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
     ).json();
@@ -144,26 +153,39 @@ test('an order and a Generate Immediately run are both filed under the account, 
         .all(batchId);
       return JSON.parse(rows[0].data).payload;
     };
-    const ORDER_TREE = '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}';
 
     const orderedPayload = readPayload(ordered.batchId);
-    assert.equal(orderedPayload.accountFolder, 'orderer@example.com');
-    assert.equal(orderedPayload.orderNumber, ordered.orderNumber);
-    assert.equal(orderedPayload.pathTemplate, ORDER_TREE, 'an order uses the fixed tree, not the administrator\'s template');
+    assert.deepEqual(Object.keys(orderedPayload.output).sort(), ['accountName', 'baseDir', 'date', 'orderNumber', 'prefix', 'suffix']);
+    assert.equal(orderedPayload.output.baseDir, outputBaseDir);
+    assert.equal(orderedPayload.output.prefix, `orderer_example_com/${sanitizePathSegment(ordered.orderNumber)}`);
+    assert.equal(orderedPayload.output.suffix, '/{{date}}/{{company_name}}', "the submitter's own folder path");
+    assert.match(orderedPayload.output.date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(orderedPayload.output.accountName, 'orderer@example.com');
+    assert.equal(orderedPayload.output.orderNumber, ordered.orderNumber);
+    // The order records the folder: what every file inside it is claimed by.
+    const orderRow = server.orders.getOrder(ordered.orderId);
+    assert.equal(orderRow.outputRoot, path.join(outputBaseDir, 'orderer_example_com', sanitizePathSegment(ordered.orderNumber)));
 
     // A run that was not ordered - Generate Immediately, the default - is
-    // filed the same way, under a number of its own: the administrator's
-    // template had no account segment, so two accounts with a same-named
-    // profile building the same company on the same day wrote ONE file, and
-    // either could download it.
+    // filed the same way, under a number of its own.
     assert.equal(immediate.kind, 'immediate');
     assert.equal(immediate.orderNumber, undefined, 'an immediate run has no order number to show');
     const immediatePayload = readPayload(immediate.batchId);
-    assert.equal(immediatePayload.accountFolder, 'orderer@example.com');
-    assert.match(immediatePayload.orderNumber, /^FT-RUN-\d{8}-\d{4}$/);
-    assert.equal(immediatePayload.pathTemplate, ORDER_TREE);
+    assert.match(immediatePayload.output.orderNumber, /^FT-RUN-\d{8}-\d{4}$/);
+    assert.match(immediatePayload.output.prefix, /^orderer_example_com\/ft_run_\d{8}_\d{4}$/);
+    const immediateRow = server.orders.findOrderForBatch(immediate.batchId);
+    assert.equal(immediateRow.outputRoot, path.join(outputBaseDir, ...immediatePayload.output.prefix.split('/')));
     // And it does not take a number out of the orders' own sequence.
     assert.match(ordered.orderNumber, /^FT-\d{8}-0001$/);
+
+    // A setting edited afterwards reaches the next run only.
+    await config.updateAppSettings({ outputPathPrefix: '/runs/{{order_number}}' });
+    users.setOutputPathSuffix(server.account.id, null);
+    assert.equal(readPayload(ordered.batchId).output.prefix, orderedPayload.output.prefix);
+    const later = await (await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })).json();
+    const laterPayload = readPayload(later.batchId);
+    assert.equal(laterPayload.output.prefix, `runs/${sanitizePathSegment(later.orderNumber)}`);
+    assert.equal(laterPayload.output.suffix, '/{{date}}/{{profile_name}}/{{company_name}}/{{role}}', 'the default again');
   } finally {
     server.close();
   }
@@ -207,29 +229,19 @@ test('two orders for the same job on the same day write to different paths', asy
       await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
     ).json();
 
-    const payloadFor = (batchId) => {
+    const placeFor = (batchId) => {
       const rows = require('better-sqlite3')(`${server.dbDir}/free_tailor.db`)
         .prepare('SELECT data FROM generation_tasks WHERE batch_id = ? ORDER BY seq')
         .all(batchId);
-      return JSON.parse(rows[0].data).payload;
+      return JSON.parse(rows[0].data).payload.output;
     };
 
     assert.notEqual(first.orderNumber, second.orderNumber);
-    assert.equal(payloadFor(first.batchId).orderNumber, first.orderNumber);
-    assert.equal(payloadFor(second.batchId).orderNumber, second.orderNumber);
-
-    // And the template renders that difference into the path itself.
-    const { renderOutputPathTemplate, ORDER_OUTPUT_PATH_TEMPLATE } = require('../dist/utils/outputStorage');
-    const render = (orderNumber) =>
-      renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
-        date: '2026-09-20',
-        accountName: 'orderer@example.com',
-        orderNumber,
-        profileName: 'Ada',
-        companyName: '2_company_0',
-        jobTitle: 'Engineer',
-      });
-    assert.notEqual(render(first.orderNumber), render(second.orderNumber));
+    assert.equal(placeFor(first.batchId).orderNumber, first.orderNumber);
+    // The prefix must hold the order number, so the difference is in the path
+    // itself - and in the folder each order records as its own.
+    assert.notEqual(placeFor(first.batchId).prefix, placeFor(second.batchId).prefix);
+    assert.notEqual(server.orders.getOrder(first.orderId).outputRoot, server.orders.getOrder(second.orderId).outputRoot);
   } finally {
     server.close();
   }
@@ -237,24 +249,17 @@ test('two orders for the same job on the same day write to different paths', asy
 
 test('two accounts whose emails sanitize alike still write to different paths', () => {
   // `john.smith@acme.com` and `john-smith@acme.com` both become
-  // `john_smith_acme_com`, so the account segment is NOT a unique key and the
-  // comment that once claimed it was has been corrected. The order number is
-  // what actually keeps them apart, and it is unique across the install.
-  const { renderOutputPathTemplate, ORDER_OUTPUT_PATH_TEMPLATE } = require('../dist/utils/outputStorage');
-  const render = (accountName, orderNumber) =>
-    renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
-      date: '2026-09-20',
-      accountName,
-      orderNumber,
-      profileName: 'John Smith',
-      companyName: '14_stripe',
-      jobTitle: 'Engineer',
-    });
+  // `john_smith_acme_com`, so the email folder is NOT a unique key. The order
+  // number is what actually keeps them apart: unique across the install, and
+  // in every prefix, as a folder of its own.
+  const { DEFAULT_OUTPUT_PATH_PREFIX, renderOutputPrefix } = require('../dist/utils/outputStorage');
+  const render = (email, orderNumber) =>
+    renderOutputPrefix(DEFAULT_OUTPUT_PATH_PREFIX, { user_email: email, order_number: orderNumber, date: '2026-09-20' });
 
   assert.equal(
     render('john.smith@acme.com', 'FT-20260920-0001').split('/')[0],
     render('john-smith@acme.com', 'FT-20260920-0002').split('/')[0],
-    'the account segment really does collide'
+    'the email folder really does collide'
   );
   assert.notEqual(
     render('john.smith@acme.com', 'FT-20260920-0001'),

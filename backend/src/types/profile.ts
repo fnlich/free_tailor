@@ -73,7 +73,6 @@ export interface ProfileSettings {
   resumePromptId?: string;
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
-  companyFolderNameTemplate?: string;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**

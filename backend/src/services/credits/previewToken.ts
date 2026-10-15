@@ -5,8 +5,8 @@ import { getSetting, setSetting } from '../../database/settingsRepository';
  * Which model wrote a preview, as proof the server issued.
  *
  * A preview is free and hands its tailored content back; finalising sends that
- * content to `/resume/generate` or `/generation/batches`, which build files
- * from it without running the model again - and charge for it. The charge has
+ * content to `/generation/batches`, which builds files
+ * from it without running the model again - and charges for it. The charge has
  * to be the price of the model that WROTE the content, and the request cannot
  * say which that was: the page's model picker may have moved since, the
  * multi-profile preview used each profile's own model, and a request is free to

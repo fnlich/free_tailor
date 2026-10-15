@@ -34,6 +34,7 @@ import {
   type TaskState,
 } from './taskQueue';
 import { makeResumeRunner, RESUME_TASK_KIND, type ResumeJob } from './resumeTask';
+import { placeOfPlacedRun } from '../outputPath';
 
 export { TaskQueue, registerTaskRunner, newBatchId } from './taskQueue';
 export { TabLeases, type TabLeaseDeps, type TabLeaseState } from './tabLease';
@@ -344,6 +345,7 @@ export function getGenerationQueue(): TaskQueue {
             return typeof owner === 'string' ? owner : null;
           },
           recorded: (batchId, jobIndex, analysisId) => recordJobAnalysis(batchId, jobIndex, analysisId),
+          placeOf: (batchId) => placeOfPlacedRun(batchId),
         }
       )
     );

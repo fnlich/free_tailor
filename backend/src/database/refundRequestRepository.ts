@@ -36,7 +36,8 @@ export type RefundRequestState = 'requested' | 'approved' | 'declined' | 'refund
  * - `order-item`: one resume of a queued run - an order, or a Generate
  *   Immediately run (an order row of kind `immediate`) - durable, priced from
  *   the item.
- * - `charge`: one resume built synchronously by POST /api/resume/generate,
+ * - `charge`: one resume built synchronously by POST /api/resume/generate (a
+ *   route since removed: requests made about one still read and decide),
  *   named by its reservation - which is that resume alone.
  * - `payout`: a REPORTER's earned balance, named by the account itself
  *   (`payout:<accountId>`), so the open-request index allows each reporter one

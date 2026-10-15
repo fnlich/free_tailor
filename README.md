@@ -52,6 +52,36 @@ rolling back to them - and the Apify Job Search are removed, and the server now
 refuses at startup a database an older build never finished upgrading (see
 [Upgrading](#4-upgrading)).
 
+**Every admin setting has a default in `.env`.** The default model, the
+analysis model (`ANALYSIS_MODEL`), Build Resumes' starting choices, the output
+folder, the contact details, the payment limits and 3-D Secure, and the Job
+Data Lake's rate and cap each resolve the same way: what an administrator
+saved, else `.env`, else the built-in default - and only what an administrator
+saved is stored, so the rest follows `.env`. The admin payloads say where each
+value came from and what **Reset to default** (`null` in a save) would give.
+On its first start this build takes out of the stored settings every value
+still equal to its old built-in default, which a save used to store whatever
+the page changed; a value an administrator changed is kept. See
+[Configuration](#-configuration).
+
+**You choose where your resumes are saved.** Every run is filed under
+`<output folder>/<output prefix>/<your folder path>/`: the administrator sets
+the prefix (`/{{user_email}}/{{order_number}}` by default,
+`OUTPUT_PATH_PREFIX`), and each account its own folder path under **Settings →
+Profile → Resume files** (`/{{date}}/{{profile_name}}/{{company_name}}/{{role}}`
+by default, `OUTPUT_PATH_SUFFIX`), both checked as they are typed and
+previewed by the server. The tokens are spelled the owner's way
+(`{{user_email}}`, `{{order_number}}`, `{{date}}`, `{{profile_name}}`,
+`{{company_name}}`, `{{role}}`, `{{row_number}}`); the administrator's old
+output path template and each profile's company folder name are gone, and so
+is the synchronous `POST /api/resume/generate` (with `/api/resume/download`),
+which no page called. Each run records its own folder when it is placed, so a
+later change of the prefix strands nothing; on its first start this build
+gives every run placed before the folder its recorded files name. A file in
+the output folder that no run claims is no longer served to anybody. The
+builder asks for a role when YOUR folder path uses `{{role}}`. See
+[Where resumes are saved](#where-resumes-are-saved).
+
 **The owner's prompts are the shipped built-ins.** A posting's one analysis is
 now two calls made side by side - *Analyze Job Description* for its keywords,
 and *Job Facts (Filter)*, the job filter's own prompt back again, for its job
@@ -782,8 +812,8 @@ payout request, and may ask again once it is paid out or declined.
 run's, which is filed with an order record of its own that **Orders** never
 lists - is named by its order item, which keeps what it was charged after its
 batch is gone and after the run's files are deleted; a resume built by the older
-synchronous `POST /api/resume/generate` by its charge, which was that resume's
-alone. A request an older build made for a builder run's resume named its
+synchronous `POST /api/resume/generate` (since removed) by its charge, which was
+that resume's alone. A request an older build made for a builder run's resume named its
 queued task instead (`task:`), which this build cannot measure, so the queue
 says so and offers only Decline: *This request names something this version of
 the app cannot measure, so it cannot be refunded here. Decline it, and refund
@@ -919,6 +949,7 @@ everybody but a reporter.
 | **Buy credits** (and saved cards, purchase history) | users | their own payments only, by the same 404 rule. Never a reporter: their balance is earnings, paid out by hand |
 | **Credits** (balance and history) | anybody signed in, reporters included | their own. A reporter's history is their earnings and payouts |
 | **Your account** (Settings → Profile, Job Sheet) | anybody signed in, reporters included | their own name and their own job sheet |
+| **Resume files** (Settings → Profile: your folder path and its preview) | users | where their own resumes are filed, after the administrator's prefix (`PUT /api/auth/account`, `POST /api/auth/output-path/preview`). A reporter builds nothing and is refused with 403 `role-not-allowed` |
 | **Report Jobs** | reporters (administrators may open it) | adding jobs from their own sheet to the job lake |
 | **Payouts** (Record payout, the rate per job) | **administrators** | on Admin → Accounts, for a reporter's row, and on a payout request in the refund queue |
 | **Payout requests** (asking) | **reporters** | for their own earned balance (`GET`/`POST /api/refund-requests/payout`). An administrator is refused (409 `not-a-reporter`): their balance is not earnings |
@@ -1917,18 +1948,20 @@ deletes files somebody was already promised.
 
 An order belongs to one account. Every route takes an id and checks it against
 the caller; somebody else's order answers **404**, not 403, because the
-difference between those two replies is itself an answer. The two older download
-routes - `/api/generated` and `/api/resume/download` - now ask the same question
-of any path an order (or a Generate Immediately run) owns: a fixed template
-makes such a path *derivable* rather than merely guessable, and a signed-in-only
-check would otherwise hand every account's resumes to anybody with a login. The
-question is asked of the path as the server opens it, not as it was typed -
-`a//b`, `./a/b` or `x/../a/b`, a symlink, or (on Windows and macOS) another case
-of the same name all reach the same file and get the same answer - and a file
-counts as the run's from the moment it is written into the run's folder, not
-only once its resume is recorded as finished. A path nothing claims is a resume
-built by the older synchronous `POST /api/resume/generate`, filed by the
-administrator's output template, and is unaffected.
+difference between those two replies is itself an answer. The older download
+route that takes a path, `/api/generated`, asks the same question: a path made
+of an email, an order number, a date, a profile and a company is *derivable*
+rather than merely guessable, and a signed-in-only check would otherwise hand
+every account's resumes to anybody with a login. It serves a file only to the
+one account whose run it is. The question is asked of the path as the server
+opens it, not as it was typed - `a//b`, `./a/b` or `x/../a/b`, a symlink, or
+(on Windows and macOS) another case of the same name all reach the same file
+and get the same answer - and a file counts as the run's from the moment it is
+written into the run's folder (recorded on the run when it is placed, so a
+later change of the output prefix does not move it), not only once its resume
+is recorded as finished. A path no run claims is nobody's, and answers 404 to
+everybody. (`/api/resume/download` went with the synchronous `POST
+/api/resume/generate` it served.)
 
 For a page or a script, the queue's contract is:
 
@@ -2221,7 +2254,14 @@ create is the most common first-run failure, and it says exactly that.
    pull, since a pull brings `package.json` entries but not the packages.
 5. **Build**: `npm run build --prefix backend` and
    `npm run build --prefix frontend`. The two halves ship together.
-6. **Start** the backend and read its log.
+6. **Start** the backend and read its log. On the first start it runs this
+   build's data migrations once; `[db] Migration 9 (settings-defaults)
+   applied: ...` names the stored settings it found still at their old
+   built-in defaults and handed back to `.env` (see
+   [Configuration](#-configuration)), and `[db] Migration 10
+   (orders-output-root) applied: ...` how many runs placed before it were given
+   the folder their files were recorded under (see
+   [Where resumes are saved](#where-resumes-are-saved)).
 
 **The database must have finished upgrading under build `ac3df79`.** This build
 carries none of the code that upgraded an older build's database, so before
@@ -2607,45 +2647,72 @@ free_tailor/
 
 ## 📤 Output Structure
 
-**Every queued build - an Order and a Generate Immediately run alike - is
-filed under one fixed layout**, a constant rather than a setting:
+### Where resumes are saved
+
+Every build is queued - an Order and a Generate Immediately run alike - and
+each run files its resumes under one folder of its own:
 
 ```
-{account}/{date}/{order number}/{profile}/{company}/
+<output folder>/<output prefix>/<your folder path>/
 ├── {profile}.pdf
 ├── {profile}.docx
 ├── {profile}_cover_letter.pdf
 └── {profile}_cover_letter.docx
 ```
 
-File names (and the company folder's name) are templated per profile. An
-order's number is `FT-YYYYMMDD-NNNN`; a Generate Immediately run gets one of its
-own, `FT-RUN-YYYYMMDD-NNNN`, which nobody is shown and which takes nothing out
-of the orders' sequence. Its files are deleted `IMMEDIATE_FILE_RETENTION_MS`
-after it ends; an order's, after `ORDER_RETENTION_DAYS`.
+- **The output folder** is the administrator's (**Admin → Settings → General**,
+  else `OUTPUT_BASE_DIR`, else `generated/` in the checkout).
+- **The output prefix** is the administrator's too, the same for everybody
+  (**Admin → Settings → General**, else `OUTPUT_PATH_PREFIX`, else
+  `/{{user_email}}/{{order_number}}`). It may use `{{user_email}}`,
+  `{{order_number}}` and `{{date}}`, with text around them, and must hold
+  `{{order_number}}` exactly once, as a folder of its own.
+- **Your folder path** is each account's own (**Settings → Profile → Resume
+  files**, else `OUTPUT_PATH_SUFFIX`, else
+  `/{{date}}/{{profile_name}}/{{company_name}}/{{role}}`). It may use
+  `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and
+  `{{row_number}}`, with text around them in a folder - `/{{date}}{{profile_name}}`
+  is one folder.
 
-The output path template in the admin settings, for example
-`{profile}/{date}/{company}/{role}/`, now files only resumes built by the older
-synchronous `POST /api/resume/generate`, which the builder no longer uses. It
-had no account segment, so two accounts with a same-named profile building for
-the same company on the same day wrote one file, and either could download it -
-the reason builder runs moved onto the order layout.
+Both are checked as they are typed and saved: at most 8 folders, no `.` or `..`
+folder and no empty one, no drive letter or `~` at the start, and a token in
+the wrong half is refused with a sentence saying whose it is. Each folder has
+its values put in and is then made safe for both Windows and Linux as a whole
+(lower case, anything but letters and digits as `_`), so no company or role can
+add or climb a folder; one left empty reads `unknown`. With the defaults, Jane's
+second run on 15 October builds Ada's resume for Acme's Software Engineer
+posting into
 
-Not configurable on purpose. These files are listed, downloaded, zipped and
-eventually deleted *by path*, minutes or days after they were written - so a layout an
-administrator edited in between would strand a live order's files and point the
-purge at a directory that no longer holds them. The account comes first so that
-everything one person ordered lives under one directory, which is what lets the
-clean-up prune emptied folders without ever walking into somebody else's tree.
+```
+generated/jane_doe_example_com/ft_20261015_0002/2026_10_15/ada/acme/software_engineer/Ada.pdf
+```
+
+File names are templated per profile (`{{profile name}}` and the other tokens
+the profile editor lists). An order's number is `FT-YYYYMMDD-NNNN`; a Generate
+Immediately run gets one of its own, `FT-RUN-YYYYMMDD-NNNN`, which nobody is
+shown and which takes nothing out of the orders' sequence. Its files are
+deleted `IMMEDIATE_FILE_RETENTION_MS` after it ends; an order's, after
+`ORDER_RETENTION_DAYS`.
+
+**A run's folder is fixed when it is placed.** The output folder, the prefix,
+your folder path and the date are all worked out at that moment and carried on
+every resume of the run, and the folder the prefix names is recorded on the
+run. These files are listed, downloaded, zipped and eventually deleted *by
+path*, minutes or days after they were written, so a setting edited meanwhile
+reaches the next run only - it can neither split a run between two trees nor
+strand the files of one already built.
 
 **The order number is there because nothing else in the tree is unique.**
-Account, date, profile and company all repeat: import the same sheet twice in
-one afternoon and every segment matches, so the second run would overwrite the
-first - leaving the first order listing files that hold the second's contents,
-and its earlier expiry deleting files the second still offers. The account
-segment is no help either, since it is sanitized for the filesystem and
+Email, date, profile and company all repeat: import the same sheet twice in
+one afternoon and every other folder matches, so the second run would overwrite
+the first - leaving the first order listing files that hold the second's
+contents, and its earlier expiry deleting files the second still offers. The
+email folder is no help either, since it is made safe for the file system and
 `john.smith@` and `john-smith@` both become `john_smith_`. An order number is
-unique across the install, which settles all of it in one segment.
+unique across the install, which settles all of it in one folder. Inside a
+run, your folder path is what keeps resumes apart: leave `{{company_name}}` out
+and one profile's resumes for two companies share a folder, where - under file
+names that do not name the company - the second replaces the first.
 
 ---
 
@@ -2665,10 +2732,10 @@ unique across the install, which settles all of it in one segment.
 | **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis and its facts, a resume PDF into a profile) and **Building Prompts** (the tailored resume content, its revise pass and the cover letter), in the order they run. The job analysis's two prompts (**Analyze Job Description** and **Job Facts (Filter)**), the tailoring's revise pass (**Revise Resume Coverage**) and the cover letter have exactly one prompt each - edit it, there are no variants, and the page says why and which model it runs on. Some variables are **required**: `[[jobDescription]]` in the two analysis prompts, `[[profileJson]]` in the cover letter, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in a tailoring prompt, `[[draftJson]]` and `[[missingTermsJson]]` in the revise prompt. A save that leaves one out is refused in so many words, and a stored prompt without one - or naming a variable this version no longer supplies - is marked *Needs update* and never runs - the built-in prompt of its feature runs in its place until it is updated; a stored edit of the analysis, job facts or tailoring prompts saved before this release is marked the same, whatever it names, until it is saved again; the list says why under it (*Not run: it does not use [[...]]*, *... uses [[...]], which this version does not supply* or *... dates from an older version of this prompt*), and the editor says it of the text as typed before Save. The line is what a prompt produces, not what it reads. A prompt of the other features can pin its own model - a provider and a model name from the same lists as **Models** - which decides the Bid Assistant and the extractors; a resume's tailoring always runs on the model it is charged at. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
-| **Job Lake** | The [Job Data Lake](#the-job-data-lake): search it (when it was updated, who reported it, job field, job type, clearance, industry, company, salary, free text), open a job and its history, delete one with or without taking its reward back; **Push to Google Sheet** - the jobs of a search into the *Temp For AI* tab of your own job sheet; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** (and see whether `.env` or this page decides it) and an optional **daily cap**; open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
+| **Job Lake** | The [Job Data Lake](#the-job-data-lake): search it (when it was updated, who reported it, job field, job type, clearance, industry, company, salary, free text), open a job and its history, delete one with or without taking its reward back; **Push to Google Sheet** - the jobs of a search into the *Temp For AI* tab of your own job sheet; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** and an optional **daily cap** (and see, for each, whether `.env` or this page decides it); open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
 | **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only, and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), output location, the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the Analyze Job Description and Job Facts (Filter) prompts as they stand (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message |
+| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the **analysis model** (the one model every job posting is analysed on - empty for the default model), the output folder and the **output prefix** - the administrator's half of where every run is filed, previewed as it is typed (see [Where resumes are saved](#where-resumes-are-saved)) - the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the Analyze Job Description and Job Facts (Filter) prompts as they stand (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message. Every setting with a default in `.env` - here, on **Payments** and on **Job Lake** - says where its value came from (*Set here*, *From .env (NAME)* or *Default*) and, when it was set here, offers **Reset to default**, which removes the saved value so `.env` decides again (see [Configuration](#-configuration)) |
 
 ---
 
@@ -2718,6 +2785,17 @@ to be literals in the code - are defined in one table,
 `backend/test/envExample.test.js` fails if `.env.example` or this table stops
 matching it.
 
+**Every setting an administrator can change has a default here too** - the
+default model and the analysis model, Build Resumes' starting choices, the
+output folder, the contact details, the payment limits and 3-D Secure, and the
+Job Data Lake's rate and cap. The value in effect is the administrator's when
+they saved one, else `.env`'s, else the built-in default, and only what an
+administrator actually set is stored - so a value nobody chose keeps following
+`.env` (restart to change). Each admin page says where every value came from
+(*Set here*, *From .env (NAME)* or *Default*), and **Reset to default** removes
+the saved value so `.env` decides again. A value here that cannot be used warns
+once at startup, by name, and the built-in default is used.
+
 | Variable | Description |
 |----------|-------------|
 | `HOST` / `PORT` | Backend bind address and port (default `0.0.0.0:3001`). `HOST` is used as written, so one that is not an address of this machine stops the server starting. A `PORT` that is not a whole number from 1 to 65535 is reported and `3001` is used |
@@ -2737,6 +2815,11 @@ matching it.
 | `CALENDAR_API_TIMEOUT_MS` / `CALENDAR_DETAIL_CONCURRENCY` | The calendar's own API routes, which run in the Next.js server: the timeout of each calendar.online request (default `12000`, range 1000-120000) and how many event-detail requests the link scan runs at once (default `12`, range 1-32). Server-only, not `NEXT_PUBLIC_`: restart the frontend, no rebuild |
 | `ADMIN_EMAILS` | Who becomes an administrator, comma separated. Leave it empty and the `SMTP_USER` address is used instead; with neither set the install has **no administrator at all** and says so at startup. **When it is set it is the only rule** - if somebody not on the list signs in first, the install has no administrator until a listed address does, and the backend says so at startup |
 | `CREDIT_SIGNUP_GRANT` | What a brand-new account starts with, **in dollars**, to `$0.001`: `5` is `$5`, `0.25` is `$0.25`. `0` by default; above `1000` clamps. A value with more than three decimals warns once and grants nothing |
+| `DEFAULT_MODEL` / `ANALYSIS_MODEL` | The model a run uses when it names none, and the model every job posting is analysed on, while **Admin → Models** has set neither: a model's id or its display name, any case (`Claude Opus`). It must be enabled and on a provider that is switched on, or it warns once - the default is then the first built-in model this install can run, and postings are analysed on the default model. Unset `ANALYSIS_MODEL` is the default model |
+| `DEFAULT_MODE` / `DEFAULT_THEME` / `DEFAULT_RESUME_SELECTION` / `DEFAULT_RESUME_DOCX` / `DEFAULT_COVER_LETTER_DOCX` | Build Resumes' starting choices while **Admin → Settings → General** has saved none: what a build does first, `preview` or `generate` (default `preview`); the theme, `light` or `dark` (default `light`); which profiles are picked, `single`, `all` or `group` (default `single`); and whether the resume and the cover letter are also made as Word files (default `on` for both) |
+| `OUTPUT_BASE_DIR` | Where generated resumes are filed while **Admin → Settings → General** names no folder: an absolute path, `~` for the home folder. Unset, `generated/` in the checkout. A relative path warns once and is not used - it would be read against whatever directory the server was started from |
+| `OUTPUT_PATH_PREFIX` / `OUTPUT_PATH_SUFFIX` | Where under that folder each run is filed (see [Where resumes are saved](#where-resumes-are-saved)): the prefix, the same for every account while **Admin → Settings → General** saves none (default `/{{user_email}}/{{order_number}}`; `{{user_email}}`, `{{order_number}}` and `{{date}}`, `{{order_number}}` exactly once as a folder of its own), and the folder path after it for an account that has set none of its own under **Settings → Profile** (default `/{{date}}/{{profile_name}}/{{company_name}}/{{role}}`; `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and `{{row_number}}`). Both allow text around their tokens and at most 8 folders, and refuse a `.` or `..` folder, a drive letter and `~`. A value refused warns once at startup and the default is used |
+| `CONTACT_CHANNELS` | How to reach the administrator, shown to everybody, while **Admin → Settings → General** has saved no contact details: `type:value` pairs separated by commas, each with an optional `\|label` after the value (`email:help@example.org\|Support,telegram:@example_help`); the type is `email`, `telegram`, `discord`, `whatsapp` or `other`. Each entry is held to the admin page's rules, and one that fails them is left out with one warning naming its position, never its text. Unset, none |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
 | `SMTP_CONNECTION_TIMEOUT_MS` / `SMTP_SOCKET_TIMEOUT_MS` / `SMTP_MAX_CONNECTIONS` | The pooled SMTP connection: connect and greeting timeout (default `10000`), idle socket timeout (default `20000`) - both range 1000-300000, never 0, because an unbounded wait is a sign-in that never returns - and the pool's width (default `2`, range 1-20). *Startup* |
@@ -2779,6 +2862,8 @@ matching it.
 | `CRYPTOMUS_MERCHANT_ID` / `CRYPTOMUS_PAYMENT_API_KEY` | Crypto through Cryptomus, on its hosted invoice page. Both are needed or the method is not offered. The payment API key does double duty: it signs outgoing requests **and** is what every incoming callback is verified against, so there is no separate webhook secret. The endpoint is `/api/payments/webhook/cryptomus` |
 | `CRYPTOMUS_INVOICE_LIFETIME_S` | How long a buyer has to pay a Cryptomus invoice (default `3600`; range 300-43200, Cryptomus's documented one, never checked against the live API from here) |
 | `CRYPTOMUS_CALLBACK_URL` | Optional. Sends the callback address per invoice instead of relying on the one set in the Cryptomus dashboard. Must be this server's API, reachable from the internet. Left empty the field is omitted entirely - sending it blank would override the dashboard with nothing |
+| `PAYMENT_CARD_MIN_USD` / `PAYMENT_CARD_MAX_USD` / `PAYMENT_CRYPTO_MIN_USD` / `PAYMENT_CRYPTO_MAX_USD` | The smallest and largest purchase per method, in dollars and whole cents, while **Admin → Payments** has saved no limits: card `2.50` to `100`, crypto `50` to `2000` by default. A fraction of a cent warns once and keeps that bound's default; a minimum above its maximum keeps the method's built-in pair. The preset buttons are the built-in ones, less any outside the bounds |
+| `REQUIRE_THREE_D_SECURE` | Make the cardholder's bank authenticate every card payment while **Admin → Payments** has not chosen (default `off`). It moves chargeback liability to the bank and adds a step a buyer can fail |
 | `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Unset, it is `APP_URL`, then the first `FRONTEND_URL`, then the origin the buyer's own browser is on |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `ORDER_RETENTION_SWEEP_MS` | How often that sweep runs, besides once at startup (default `21600000`, six hours; range 60000-86400000). *Startup* |
@@ -2788,6 +2873,7 @@ matching it.
 | `TAILOR_REVISE_PASS`, `TAILOR_REVISE_MAX_TERMS` | The revise pass after a fresh tailoring (default `on`): a second call, Revise Resume Coverage on the model the resume is charged at, that works the checklist terms the draft left out - and figures, when its bullets carry fewer than five - into its summary and bullets; `off` makes every resume the first draft. `TAILOR_REVISE_MAX_TERMS` (default `30`, range 1-200) is how many missing terms one call is given, the posting's top five first. Each revise call has the seat's `_TAILOR` budget |
 | `JOB_LAKE_DUPLICATE_WINDOW_DAYS` | The [Job Data Lake](#the-job-data-lake)'s duplicate window: a job reported again while its lake row was added or last replaced within this many days is a **duplicate** (red in the reporter's sheet, not paid); after it, the new report **replaces** the row and counts as added (default `60`, two months; range 1-3650). An administrator's value on **Admin → Job Lake** wins over this one, and that page says which is in effect |
 | `JOB_LAKE_PUSH_MAX_ROWS` | The most jobs one **Push to Google Sheet** on **Admin → Job Lake** writes into the pushing administrator's own *Temp For AI* tab, newest first (default `1000`, range 1-5000). A filter that matches more is cut at this many, and the page says so |
+| `JOB_LAKE_REPORT_RATE_USD` / `JOB_LAKE_DAILY_CAP_USD` | The Job Data Lake's global rate per accepted job and its daily cap per reporter, in dollars to $0.001, while **Admin → Job Lake → Settings** sets neither. Unset, the rate is $0 - nobody is paid - and there is no cap. A reporter with a rate of their own (**Admin → Accounts**) is paid that instead |
 | `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
 | `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging. Nothing is written there except `templates/`, where the templates administrators save are kept beside the built-ins, so it must be writable for those and backed up with the database |
 | `SMTP_USER` | Also the administrator's address when `ADMIN_EMAILS` is unset. Ignored for that purpose when it is a bare username rather than an email |
@@ -2824,7 +2910,10 @@ file. Export them in the shell, for the install and the server alike:
 | The log says `[analysis] Sheet row N's Analysis cell is cut short` (or *unreadable*) *; falling back to the store* | The cell holds more than Google's 50,000 characters, or is not the program's JSON - an old cell, or a paste from before the column was protected. The row's posting is read from the database instead (the cell still names its stored analysis when only its end was cut), and analysed once if the database has never seen it. Nothing is lost; a cell the program wrote for the row's own posting is not rewritten. |
 | The log says `[sheets] Google answered 429 (quota) to ...; retry n of 5 in ...ms`, or a page says *Google Sheets is busy right now* | Google's per-minute Sheets quota is per project and per user, and every account of this install is the same user - the server's one credential - so a big filter run, a few sheet orders and their write-backs share one budget. A 429 is waited out with growing, randomised delays (and Google's own `Retry-After`), up to five times and 32 s a wait; only then is it reported. If it keeps reaching people, raise the Sheets quota in the credential's Cloud project, or run fewer sheet jobs at once. |
 | **Load rows** on a sheet answers *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.*, and an administrator's detail under it quotes Google's `... exceeds grid limits. Max rows: 1000, max columns: 12` | The rows asked for run past the end of the tab. A Google tab has a fixed number of rows and columns - a tab this app makes starts with 1,000 rows - and Google refuses a range that reaches beyond them rather than returning blank cells. Choose a **To** row no higher than the tab's last row, or add rows to the tab in Google. **Report Jobs** stops at the tab's last row by itself. Columns are the app's business: a job tab somebody headed by hand narrower than twelve columns is widened to twelve the next time the app checks it - until then the builder's **Analysis** column says *When built* for its rows. |
-| The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model chosen as the **analysis model** under **Admin → Settings → General** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or leave the field empty for the default - and save. |
+| The log says `[ai] The analysis model "<id>" cannot run ...; job postings are analysed on the app default model` | The model an administrator chose as the **analysis model** is switched off, deleted, or on a provider that is switched off or locked here. Postings are analysed on the default model meanwhile. Choose a model that runs - or the default model - under **Admin → Models**. (One named by `ANALYSIS_MODEL` in `.env` that cannot run is the next row.) |
+| The backend log says, once, `[env] DEFAULT_MODEL="..." names no model that can run here ...` (or `ANALYSIS_MODEL`), `[env] OUTPUT_BASE_DIR="..." is not an absolute path; ...`, `[env] PAYMENT_CARD_MIN_USD=$2.505 is not a whole number of cents from $0.01; ...`, `[env] CONTACT_CHANNELS: entries 2, 4 are not contact channels ...`, `[env] OUTPUT_PATH_PREFIX="..." is refused: The output prefix must contain {{order_number}} as a folder of its own ... Using /{{user_email}}/{{order_number}}.` (or `OUTPUT_PATH_SUFFIX`) or another `[env] NAME=... is not ...; using ...` | A default in `.env` for an admin setting could not be used, so the built-in default is in effect and the admin page says *Default*. A model must be named by its id or its display name from **Admin → Models**, be enabled and be on a provider that is switched on; a folder must be an absolute path; a payment bound must be whole cents, its minimum not above its maximum; a contact entry is `type:value` or `type:value\|label`, held to the admin page's rules (the warning names the entry's position, never its text); an output prefix or folder path is held to the rules in [Where resumes are saved](#where-resumes-are-saved), and the warning quotes the same sentences the pages show. Fix the line in `.env` and restart. |
+| Saving the **output prefix** (Admin → Settings → General) or **your folder path** (Settings → Profile → Resume files) is refused with a sentence such as *The output prefix must contain {{order_number}} as a folder of its own, like /{{user_email}}/{{order_number}}: it is what keeps one run's files apart from every other's.*, *In the output prefix, {{order_number}} must be a folder of its own, not part of "run-{{order_number}}".*, *The folder path cannot use {{order_number}}: the administrator's output prefix places it ...*, *The folder path uses {{company name}}, which is not a token.* or *... has 9 folders; it may have at most 8.* | The value breaks one of the rules in [Where resumes are saved](#where-resumes-are-saved), and the sentence names the token or folder at fault (every one, when there are several). The tokens are spelled with underscores now - `{{company_name}}`, not the older `{{company name}}` - and each half has its own: the prefix `{{user_email}}`, `{{order_number}}` and `{{date}}`, a folder path `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and `{{row_number}}`. The preview under the box shows the same sentence before anything is saved. Nothing is changed by a refused save; runs already placed keep the folder they were placed with whatever is saved later. |
+| A value changed in `.env` (and the server restarted) does not take effect, and the admin page says *Set here* beside it | An administrator saved that setting on the page, and a saved value wins over `.env`. Press **Reset to default** beside it (or save it empty, for the payment limits): the saved value is removed and `.env`'s is in effect at once. |
 | Every new posting comes back **Unclassified** | A posting that fits none of the job fields is Unclassified by design. The job field comes from the **Job Facts (Filter)** prompt's call, which the code asks for it itself (the list before the prompt, a reminder after the posting); when every posting is unclassified, that prompt's text is fighting it - an instruction to return exactly some other JSON shape and nothing else, say. The backend log then says `[analysis] The job facts answer for posting <hash> named no job field, asked twice; it is stored as unclassified` for each one. Compare the prompt with the shipped text, `backend/static/prompts/filter-google-sheet-job.json` (there is no reset button), and paste that over it. An edit that does not use `[[jobDescription]]`, or uses a variable this version does not supply, is not the cause: it is marked *Needs update* and never runs (see *Needs update* below). Only postings analysed from then on are affected: a stored analysis is never redone. |
 | The builder's sheet table said *Skips analysis* for a row, but the run analysed its posting anyway (or used the database's analysis instead of the row's) | The table reads the row's **Analysis** cell as the page loaded it; the run reads it again on the server and trusts it only when the tab's protection is found intact in that run. When it had to be put back (the log says `... were not protected ... restoring the protection` and `Sheet row N's Analysis cell is not used: the protection of "<tab>" was not confirmed intact`), the Analysis column was cleared with it, the row is read from the database, or analysed once if it never was, and its cell is written again. A cell left by another posting - the row's posting was replaced, or rows sorted (`was not written for the posting in the row now`) - is not used either, and is written over with the right one. A Job Description that ends *...[cut at 50,000 characters]* (Push to Google Sheet writes a longer one so) is read as its posting only exactly as it was cut: edit it and it is another posting, analysed once (the same line, saying *its Job Description, cut at 50,000 characters, is not that analysis's posting as it was cut (edited since)*). A row moved or sorted since loading (`no longer matches`) is neither read nor written. |
 | A row's Analysis cell is filled, yet its posting was found in the database or analysed again and the cell rewritten, and the log says `[analysis] Sheet row N's Analysis cell names an analysis this store does not have (<id>); it is ignored, the posting is found in the store or analysed once, and the cell is replaced.` | The cell names a stored analysis this database does not hold - copied from another install's sheet, left from a database restored from an older backup, or never written by the program. A cell is only ever a pointer into the database, never an analysis in itself, so the row is treated as if it were empty: its posting is found in the database (by link or text) or analysed once, and its six cells are written again. The Build Resumes table reads only the cell's shape and cannot tell; it says *Skips analysis* for such a row. |
@@ -2905,7 +2994,7 @@ file. Export them in the shell, for the install and the server alike:
 | Opening a second tab of the app reloads the first one, and a Generate Immediately run going there stops (*Your last run ended while this page was away ... Stopped after building 0 of 1 resume*) | The frontend is on **webpack's** dev server - `npm run dev:live`, or the root `npm run dev` of a release before this one. In Next 16.1 that server sends every open tab a "sync" when a new tab connects, and a tab that has not seen the latest compile (the page the new tab opened is one) takes it for a restarted server and reloads itself - and 16.3.8's reloads it just the same; a reloaded Build Resumes tab releases its run as it goes, which the server then stops and refunds. Nothing in the app reloads a tab. Run `npm run dev` (Turbopack) or the production-style `npm run dev --prefix frontend` instead - neither reloads, and a production `next start` has no such server at all. `cd backend && DB_DIR=... E2E_MODE=dev:live node test/e2e/dev-reload.js` shows which a given setup does (backend/test/e2e/README.md). |
 | Only the first resume of a Generate Immediately run downloaded, or the browser asks *This site is trying to download multiple files* | The browser blocks a page from starting several downloads on its own until it is allowed to. Choose **Allow** in that prompt (in Chrome: the icon at the end of the address bar, or *Site settings → Automatic downloads → Allow* for this site). The files are on the server for `IMMEDIATE_FILE_RETENTION_MS` after the run ends (ten minutes by default), and the page lists each one under the progress (*This run's files*) to download again while it is open; after that they are deleted, downloaded or not - an **Order** keeps them for days instead. |
 | Downloading a Generate Immediately resume answers *That file has been deleted from the server* | Its run ended more than `IMMEDIATE_FILE_RETENTION_MS` ago, and the files went with it (owner decision: an immediate run's files are only kept long enough to download). The resume stays charged; if it never reached the person, an administrator can add the credit back with the **+/-** beside their balance on Admin → Accounts. Raise the setting, or use **Order**, when files are needed for longer. |
-| A link to `/api/generated/...` or `/api/resume/download/...` answers `{"error":"File not found"}` for a file that is on disk | The file is another account's: an order or a Generate Immediately run recorded it, or it sits in a run's own folder (`<account>/<date>/<order number>/...`, where a resume is written before it is recorded as finished - and stays, unrecorded, when its build fails). Whose it is is decided on the path as the server opens it, so a `//`, a `./`, a `..`, a symlink or (on Windows and macOS) another case of the same name is the same file and gets the same answer; an administrator is refused like anybody else, as before. Its owner downloads it from **Orders**, or from the run's own page while the files last. Otherwise the path leaves the output directory, names a folder rather than a file, or the file is gone. |
+| A link to `/api/generated/...` answers `{"error":"File not found"}` for a file that is on disk | The file is not yours alone. It is another account's: one of their runs recorded it, or it sits in a run's own folder (the output prefix's folder - `<email>/<order number>/` by default - recorded on the run when it was placed, where a resume is written before it is recorded as finished, and stays, unrecorded, when its build fails). Or it is nobody's: no run recorded it and no run's folder holds it - a resume the removed `POST /api/resume/generate` built, something copied in by hand, or the leftover of a failed build in a run placed before runs recorded their folder - and such a file is served to nobody. Whose it is is decided on the path as the server opens it, so a `//`, a `./`, a `..`, a symlink or (on Windows and macOS) another case of the same name is the same file and gets the same answer; an administrator is refused like anybody else. Its owner downloads it from **Orders**, or from the run's own page while the files last. Otherwise the path leaves the output directory, names a folder rather than a file, or the file is gone. A link to `/api/resume/download/...` answers 404 for every file: that route went with `POST /api/resume/generate`. |
 | Building for several profiles is refused with *Building for more than one profile needs a Premium subscription or higher* | The account is on the Default subscription, which supports one profile: Multiple, All profiles, Specific group and Select Group need Premium or higher, for Generate Immediately and Order alike (403 `subscription-too-low`). One profile at a time works on every subscription. Move the account up under **Admin → Accounts → Subscription**; administrators are never refused. |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut used to cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page keeps following until the server says the run is over: after twenty attaches in a row that brought nothing it slows from one attach a second to one every 10 s, and it stops at once only when the server answers that the batch is gone (404: restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the model's type can actually take: the slots of every switched-on provider of it, added together - the built-in one's `AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY` or `AI_GEMINI_CONCURRENCY` unless **Admin → Models → Providers** sets its limit, plus each added provider's own. The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
@@ -3080,7 +3169,7 @@ override, every path check on an add and an edit against the app's real
 directories, and the routes over HTTP). The tailoring cache is in
 `tailorCache.test.js`: a second identical build makes no tailoring or revise
 call and is charged again, a one-character profile change makes one, every
-caller reuses (the queue, `/resume/preview`, `/resume/generate`, cover letters
+caller reuses (the queue, `/resume/preview`, `/resume/preview-all`, cover letters
 included), another template is a miss and a skill added to the library is not,
 an answer that does not parse or that a fallback model wrote is never kept, the
 key (the settings out of it, the revise prompt in), the one-seek lookup and the

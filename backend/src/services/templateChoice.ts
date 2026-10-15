@@ -7,7 +7,7 @@ import { getProfileTechnicalSkillsLayout } from './profileService';
 
 /**
  * Which template a resume is drawn with - ONE answer for the live profile
- * preview, `/resume/preview`, `/resume/generate` and the queue.
+ * preview, `/resume/preview`, `/resume/preview-all` and the queue.
  *
  * It was two copies (the resume routes and the queue task) that already
  * agreed, and the preview would have been a third. Three copies of a fallback

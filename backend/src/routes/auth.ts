@@ -4,7 +4,14 @@ import { listSubscriptions, resolveSubscription, type AccountSubscription } from
 import { sessionTtlMs } from '../config/operational';
 import { countProfilesForOwner } from '../database/profileRepository';
 import { destroySession, updateUser } from '../database/userRepository';
-import { requireAccount, SESSION_COOKIE } from '../middleware/auth';
+import { requireAccount, requireUser, SESSION_COOKIE } from '../middleware/auth';
+import { canBuildResumes } from '../config/accountRoles';
+import {
+  describeAccountOutputPath,
+  previewAccountOutputPath,
+  saveAccountOutputPathSuffix,
+  type AccountOutputPath,
+} from '../services/outputPath';
 import { PublicError, sendPublicError } from '../middleware/publicError';
 import { pdfUploadLimitMb } from '../middleware/pdfUpload';
 import {
@@ -202,11 +209,25 @@ router.post('/logout', (req: Request, res: Response) => {
 });
 
 /**
+ * The account as Settings > Profile reads it: the session's view, and - for
+ * an account that builds resumes - where its resumes are filed
+ * (`AccountOutputPath`: its own folder path or null, where the one in effect
+ * came from, and what Reset gives). A reporter builds nothing, so theirs says
+ * nothing about it.
+ */
+function describeOwnAccount(account: UserAccount): AccountView & Partial<AccountOutputPath> {
+  return {
+    ...describeAccount(account),
+    ...(canBuildResumes(account.role) ? describeAccountOutputPath(account.id) : {}),
+  };
+}
+
+/**
  * The signed-in account's own details, refreshed. Any role: Settings > Profile
  * is one of the pages a reporter keeps.
  */
 router.get('/account', requireAccount, (req: Request, res: Response) => {
-  res.json({ account: describeAccount(req.user!) });
+  res.json({ account: describeOwnAccount(req.user!) });
 });
 
 /** The one thing a user may change about themselves. */
@@ -222,7 +243,47 @@ router.patch('/account', requireAccount, (req: Request, res: Response) => {
   }
 
   const updated = updateUser(req.user!.id, { name });
-  res.json({ account: describeAccount(updated ?? req.user!) });
+  res.json({ account: describeOwnAccount(updated ?? req.user!) });
+});
+
+/**
+ * Where the account files its own resumes (Settings > Profile > Resume files,
+ * owner decision O3): `{ outputPathSuffix }`, the folder path after the
+ * administrator's prefix. Checked by utils/outputStorage.ts
+ * `validateOutputSuffix` - a refusal is 400 `output-path-invalid` with
+ * `field: 'outputPathSuffix'` and a sentence naming the token or folder at
+ * fault - and stored as it reads canonically; `''` or `null` resets it to
+ * the default. A builder's: a reporter builds nothing (403 by role).
+ */
+router.put('/account', requireUser, (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(body, 'outputPathSuffix')) {
+      res.status(400).json({ error: 'There is nothing to change.' });
+      return;
+    }
+    saveAccountOutputPathSuffix(req.user!.id, body.outputPathSuffix);
+    res.json({ account: describeOwnAccount(req.user!) });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to save the folder path');
+  }
+});
+
+/**
+ * Where one of the asker's resumes would be filed with a folder path, before
+ * it is saved: `{ outputPathSuffix? }` -> `{ path, problems, notes }`, drawn by
+ * the function a run uses (services/outputPath.ts `previewAccountOutputPath`).
+ * A folder path that does not pass answers `path: null` and the sentences a
+ * save would refuse it with - a 200, since asking is not saving. Without the
+ * field it is the one in effect; `''` or `null`, the default.
+ */
+router.post('/output-path/preview', requireUser, async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as { outputPathSuffix?: unknown };
+    res.json(await previewAccountOutputPath(req.user!, body));
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to preview the folder path');
+  }
 });
 
 export default router;

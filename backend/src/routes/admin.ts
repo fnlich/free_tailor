@@ -20,6 +20,7 @@ import {
 } from '../integrations/googleSheets';
 import { PublicError, sendPublicError } from '../middleware/publicError';
 import { resolveAddressableSheet } from '../services/sheets/accountSheet';
+import { previewOutputPrefix } from '../services/outputPath';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
 const router = Router();
@@ -135,9 +136,31 @@ router.put('/settings', requireAdmin, async (req: Request, res: Response) => {
     const settings = await updateAppSettings(req.body ?? {});
     res.json(settings);
   } catch (error) {
+    // A refusal that names its box (an output prefix: utils/outputStorage.ts
+    // `OutputPathError`) says which, so the page can put the sentence under it.
+    const field = (error as { field?: unknown } | null)?.field;
+    const code = (error as { code?: unknown } | null)?.code;
     res.status(400).json({
       error: error instanceof Error ? error.message : 'Failed to update settings',
+      ...(typeof field === 'string' ? { field } : {}),
+      ...(typeof code === 'string' ? { code } : {}),
     });
+  }
+});
+
+/**
+ * Where a resume would be filed with an output prefix not saved yet:
+ * `{ outputPathPrefix? }` -> `{ path, problems, notes }`, the whole path under
+ * the output folder with the default folder path after the prefix, drawn by
+ * the function a run uses. A prefix that does not pass answers `path: null`
+ * and the sentences a save would refuse it with. Without the field it is the
+ * prefix in effect; `null`, what Reset to default gives.
+ */
+router.post('/output-path/preview', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    res.json(await previewOutputPrefix(req.user!, (req.body ?? {}) as { outputPathPrefix?: unknown }));
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to preview the output prefix');
   }
 });
 

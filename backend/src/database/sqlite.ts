@@ -160,6 +160,14 @@ const SCHEMA = `
    * run, filed here so its files are owner-checked and swept like an order's,
    * and never listed on /orders). An immediate run's files go
    * IMMEDIATE_FILE_RETENTION_MS after finished_at, not at expires_at.
+   *
+   * output_root is the folder the run files everything under - the output
+   * folder and the administrator's prefix, rendered for this run when it was
+   * placed (utils/outputStorage.ts), as an absolute path. Every file inside it
+   * is this run's account's (orderRepository's ownersOfGeneratedFile),
+   * whatever the prefix or the output folder says later. NULL on a run whose
+   * folder nothing records (migration 10 fills it from the files a run
+   * recorded): such a run claims only the files its items recorded.
    */
   CREATE TABLE IF NOT EXISTS orders (
     id         TEXT PRIMARY KEY,
@@ -174,7 +182,8 @@ const SCHEMA = `
     finished_at TEXT,
     expires_at TEXT NOT NULL,
     purged_at  TEXT,
-    kind       TEXT NOT NULL DEFAULT 'order'
+    kind       TEXT NOT NULL DEFAULT 'order',
+    output_root TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_orders_user
@@ -664,7 +673,14 @@ const SCHEMA = `
      * is every account until an administrator sets one. Read by its own
      * query, never through USER_COLUMNS: it is served to administrators only.
      */
-    report_rate_milli INTEGER
+    report_rate_milli INTEGER,
+    /*
+     * The account's own folder path after the administrator's output prefix
+     * (/{{date}}/{{profile_name}}/..., utils/outputStorage.ts). NULL is the
+     * default: OUTPUT_PATH_SUFFIX, else the code's. Read by its own query,
+     * like the rate above (userRepository's getOutputPathSuffix).
+     */
+    output_path_suffix TEXT
   );
 
   /**
@@ -970,15 +986,22 @@ export function getDatabasePath(): string {
  * difference that only shows up in production. `ALTER TABLE ADD COLUMN` is what
  * reaches both, and SQLite makes it cheap: it rewrites no rows.
  *
- * Empty: every column an older build added this way is on every database the
- * startup guard lets through - it asks for each one this build reads
- * (upgradeGuard.ts's `UPGRADE_ADDED_COLUMNS`, frozen at what ac3df79 adds) -
- * and in SCHEMA for a fresh one. A column added to SCHEMA from here on gets an
- * entry here as well, not there. Run before any migration and
- * before any query, since a data migration that writes one of these columns
- * needs it to exist first.
+ * Only the columns added since build ac3df79: every column an older build
+ * added this way is on every database the startup guard lets through - it
+ * asks for each one (upgradeGuard.ts's `UPGRADE_ADDED_COLUMNS`, frozen at what
+ * ac3df79 adds) - and in SCHEMA for a fresh one. A column added to SCHEMA from
+ * here on gets an entry here as well, never there: a database this build
+ * upgraded is not refused for lacking it, it is given it. Run before any
+ * migration and before any query, since a data migration that writes one of
+ * these columns needs it to exist first.
  */
-const ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; definition: string }> = [];
+const ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; definition: string }> = [
+  // Where an account files its own resumes, after the prefix (owner decision O3).
+  { table: 'users', column: 'output_path_suffix', definition: 'TEXT' },
+  // The folder a run files everything under (owner decision O4). Migration 10
+  // fills it for runs placed before it, from the files they recorded.
+  { table: 'orders', column: 'output_root', definition: 'TEXT' },
+];
 
 function addMissingColumns(db: Database.Database): void {
   for (const addition of ADDED_COLUMNS) {
@@ -1028,6 +1051,16 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     sql:
       'CREATE INDEX IF NOT EXISTS idx_orders_immediate_unpurged ON orders (finished_at) ' +
       "WHERE kind = 'immediate' AND purged_at IS NULL",
+  },
+  // A download's question, "whose run folder is this file in?" - asked of each
+  // folder above the file, one seek each (orderRepository
+  // `ownersOfGeneratedFile`). NOCASE because a case-insensitive disk opens
+  // one folder under any case of its name.
+  {
+    name: 'idx_orders_output_root',
+    table: 'orders',
+    columns: ['output_root'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_orders_output_root ON orders (output_root COLLATE NOCASE)',
   },
   // The analysis gate's two lookups, each one index seek whatever the size of
   // the table (test/jobAnalysisStore.test.js pins the plans). UNIQUE, because

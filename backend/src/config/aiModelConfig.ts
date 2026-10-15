@@ -42,18 +42,44 @@ import {
 import { getStaticDir } from './staticPaths';
 import { geminiCliStateDir, geminiCliWorkdir } from '../services/ai/providers/geminiCli/options';
 import {
-  buildOutputPathPreview,
-  DEFAULT_OUTPUT_PATH_TEMPLATE,
-  DEFAULT_GENERATED_RESUMES_DIR,
   ensureWritableOutputDir,
   normalizeOutputBaseDir,
-  normalizeOutputPathTemplate,
-  outputPathTemplateUsesJobTitle,
-  validateOutputPathTemplate,
+  outputSuffixUsesRole,
+  renderOutputPath,
+  requireValidOutputPath,
+  sampleOutputPathValues,
+  validateOutputPrefix,
 } from '../utils/outputStorage';
-export type DefaultMode = 'preview' | 'generate';
-export type ThemeMode = 'light' | 'dark';
-export type DefaultResumeSelection = 'single' | 'all' | 'group';
+import { warnEnvOnce, type EnvSource } from './envValue';
+import {
+  CODE_SETTING_DEFAULTS,
+  codeDefaultOutputBaseDir,
+  DEFAULT_PAYMENT_LIMITS,
+  DEFAULTED_SETTING_KEYS,
+  envAnalysisModelText,
+  envDefaultCoverLetterDocx,
+  envDefaultMode,
+  envDefaultModelText,
+  envDefaultResumeDocx,
+  envDefaultResumeSelection,
+  envDefaultTheme,
+  envOutputBaseDir,
+  envOutputPathPrefix,
+  envOutputPathSuffix,
+  envPaymentLimits,
+  envRequireThreeDSecure,
+  MAX_AMOUNT_CENTS,
+  settingEnvFingerprint,
+  type DefaultedSettingKey,
+  type DefaultMode,
+  type DefaultResumeSelection,
+  type PaymentTargetLimits,
+  type SettingSource,
+  type ThemeMode,
+} from './settingDefaults';
+
+export type { DefaultMode, DefaultResumeSelection, PaymentTargetLimits, SettingSource, ThemeMode };
+export { DEFAULT_PAYMENT_LIMITS };
 
 export type AIModelRecord = {
   id: string;
@@ -97,7 +123,14 @@ type AppSettings = {
   defaultResumeDocxEnabled: boolean;
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
-  outputPathTemplate: string;
+  /**
+   * The administrator's half of where a resume is filed:
+   * `<outputBaseDir>/<prefix>/<the account's own suffix>/<file>` (owner
+   * decision O1). Validated by utils/outputStorage.ts `validateOutputPrefix`,
+   * in its canonical spelling. A run renders it once, when it is submitted,
+   * and records the folder it names as `orders.output_root`.
+   */
+  outputPathPrefix: string;
   /**
    * What each payment method may be bought in.
    *
@@ -260,11 +293,56 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
    */
   providerModelOptions: ProviderModelOptions[];
   outputBaseDir: string;
-  outputPathTemplate: string;
+  outputPathPrefix: string;
+  /**
+   * Where a resume would be filed today with the prefix in effect and the
+   * default folder path after it, under the output folder, rendered by the
+   * server's own function with sample values (`sampleOutputPathValues`).
+   * POST /api/admin/output-path/preview renders a prefix not saved yet.
+   */
   outputPathPreview: string;
   /** Per method, in thousandths of a dollar. */
   paymentLimits: PaymentLimitsView[];
   requireThreeDSecure: boolean;
+  /**
+   * Where each setting that has a `.env` default got the value in effect:
+   * 'admin' (stored here - Reset to default is offered), 'env' (the variable
+   * in config/settingDefaults.ts's `APP_SETTING_ENV_VARIABLES`) or 'default'
+   * (the code's). Administrators only: an ordinary account is never told how
+   * the server is configured.
+   */
+  settingSources: SettingSources;
+  /** What each of those would be with nothing stored: what Reset to default gives. */
+  settingDefaults: AppSettingDefaultsView;
+};
+
+/**
+ * The app-settings fields an administrator may leave unset, as STORED: only
+ * the ones an administrator set (owner decision S1). Absent is "not set": the
+ * value in effect is then `.env`'s, else the code's. Every other field of the
+ * row is stored whole, as before - none of them has a `.env` default.
+ */
+type SettingOverrides = Partial<Pick<AppSettings, DefaultedSettingKey>>;
+
+export type SettingSources = Record<DefaultedSettingKey, SettingSource>;
+
+/** Each defaulted field's value with no administrator's: `.env`'s, else the code's. Payment bounds in cents. */
+type AppSettingDefaults = Pick<AppSettings, DefaultedSettingKey>;
+
+/** The same, as the admin payload serves it: payment bounds in thousandths, like every amount. */
+export type AppSettingDefaultsView = Omit<AppSettingDefaults, 'paymentLimits'> & {
+  paymentLimits: PaymentLimitsView[];
+};
+
+/**
+ * A settings read: the values in effect, and how they were arrived at. The
+ * cache holds this, so a page's sources and defaults cost nothing extra.
+ */
+type SettingsState = {
+  settings: AppSettings;
+  overrides: SettingOverrides;
+  sources: SettingSources;
+  defaults: AppSettingDefaults;
 };
 
 /**
@@ -273,13 +351,22 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
  * each model name against its seat's options and each price against its
  * bounds. A list arriving here would skip both, so `updateAppSettings` ignores
  * one.
+ *
+ * Every field is optional and only what is named changes. A field that has a
+ * `.env` default (`DEFAULTED_SETTING_KEYS`) may be `null`: Reset to default,
+ * which removes the stored value so `.env` - else the code - decides again.
  */
-export type AppSettingsUpdate = Partial<Omit<BaseAppSettings, 'aiModels'>> & {
-  outputBaseDir?: string;
-  outputPathTemplate?: string;
-  /** Per method, in dollars. See `PaymentLimitsInput`. */
-  paymentLimits?: PaymentLimitsInput[];
-  requireThreeDSecure?: boolean;
+export type AppSettingsUpdate = Resettable<Partial<Omit<BaseAppSettings, 'aiModels'>>> & {
+  outputBaseDir?: string | null;
+  outputPathPrefix?: string | null;
+  /** Per method, in dollars. See `PaymentLimitsInput`. `null` or `[]` resets. */
+  paymentLimits?: PaymentLimitsInput[] | null;
+  requireThreeDSecure?: boolean | null;
+};
+
+/** `null` beside each defaulted field's own type: what a Reset to default sends. */
+type Resettable<T> = {
+  [K in keyof T]: K extends DefaultedSettingKey ? T[K] | null : T[K];
 };
 
 /**
@@ -290,32 +377,6 @@ export type AppSettingsUpdate = Partial<Omit<BaseAppSettings, 'aiModels'>> & {
  * disagree with the checkout.
  */
 export const CREDIT_CURRENCY = 'usd';
-
-/**
- * What one payment method - or one coin - may be bought in, as STORED: cents.
- *
- * There is no fee. A purchase credits exactly what it charges - pay $50 by
- * crypto, get $50.000 (the owner's decision M2) - so the `feeBps` and
- * `feeFixedCents` a stored row may still carry are read past and dropped on
- * the next save, and the provider's own fees are the operator's to absorb.
- */
-export type PaymentTargetLimits = {
-  /**
-   * `card` or `crypto`. A stored row naming a coin id still reads and still
-   * round-trips - see the note on `paymentLimits` - but nothing resolves one.
-   */
-  target: string;
-  minCents: number;
-  maxCents: number;
-  /**
-   * The amounts to offer as buttons, in cents.
-   *
-   * An INTENTION, not a promise: what a buyer sees is worked out from these by
-   * `presetsFor`, which drops any that fall outside the bounds. A preset can
-   * therefore never name an amount the server would refuse to charge.
-   */
-  presetsCents: number[];
-};
 
 /** One method's limits as the admin API SENDS them: thousandths of a dollar, like every amount. */
 export type PaymentLimitsView = {
@@ -336,30 +397,6 @@ export type PaymentLimitsInput = {
   maxUsd?: unknown;
   presetsUsd?: unknown;
 };
-
-/**
- * The defaults, which are the figures in the design this was built to.
- *
- * Card starts at $2.50; crypto starts at $50 because sending coin costs the
- * buyer a network fee whatever we do, and a $2.50 purchase that costs $4 to
- * send is not a kindness.
- */
-export const DEFAULT_PAYMENT_LIMITS: PaymentTargetLimits[] = [
-  {
-    target: 'card',
-    minCents: 250,
-    maxCents: 10_000,
-    presetsCents: [250, 500, 1_000, 2_500, 5_000, 10_000],
-  },
-  {
-    target: 'crypto',
-    minCents: 5_000,
-    maxCents: 200_000,
-    presetsCents: [5_000, 10_000, 15_000, 25_000, 50_000, 100_000],
-  },
-];
-
-const MAX_AMOUNT_CENTS = 100_000_000;
 
 export const APP_SETTINGS_KEY = 'app-settings';
 
@@ -488,7 +525,7 @@ const DEFAULT_MODEL_RECORDS = createDefaultModelRecords();
  * can run at all; the Claude seat's id is kept, so lifting the lock restores
  * it.
  */
-function defaultSeedModelId(): string {
+export function defaultSeedModelId(): string {
   const preferred = buildModelId('claude-cli', DEFAULT_CLAUDE_CLI_MODEL);
   if (DEFAULT_MODEL_RECORDS.some((model) => model.id === preferred && !isProviderLocked(model.provider))) {
     return preferred;
@@ -498,29 +535,39 @@ function defaultSeedModelId(): string {
   );
 }
 
+/**
+ * The CODE defaults: what every setting is when neither an administrator nor
+ * `.env` says otherwise. The `.env` layer goes over these on every read
+ * (`composeSettings`), never into this constant: it is built once, at load.
+ */
 const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
-  defaultMode: 'preview',
-  defaultTheme: 'light',
-  defaultResumeSelection: 'single',
+  defaultMode: CODE_SETTING_DEFAULTS.defaultMode,
+  defaultTheme: CODE_SETTING_DEFAULTS.defaultTheme,
+  defaultResumeSelection: CODE_SETTING_DEFAULTS.defaultResumeSelection,
   defaultGroupId: '',
   defaultProfileId: '',
   defaultModelId: defaultSeedModelId(),
-  analysisModelId: '',
-  defaultResumeDocxEnabled: true,
-  defaultCoverLetterDocxEnabled: true,
-  outputBaseDir: DEFAULT_GENERATED_RESUMES_DIR,
-  outputPathTemplate: DEFAULT_OUTPUT_PATH_TEMPLATE,
+  analysisModelId: CODE_SETTING_DEFAULTS.analysisModelId,
+  defaultResumeDocxEnabled: CODE_SETTING_DEFAULTS.defaultResumeDocxEnabled,
+  defaultCoverLetterDocxEnabled: CODE_SETTING_DEFAULTS.defaultCoverLetterDocxEnabled,
+  outputBaseDir: codeDefaultOutputBaseDir(),
+  outputPathPrefix: CODE_SETTING_DEFAULTS.outputPathPrefix,
   paymentLimits: DEFAULT_PAYMENT_LIMITS,
-  requireThreeDSecure: false,
+  requireThreeDSecure: CODE_SETTING_DEFAULTS.requireThreeDSecure,
   aiModels: DEFAULT_MODEL_RECORDS,
   aiProviders: normalizeStoredProviders([]),
 };
+
+function clonePaymentLimits(rows: PaymentTargetLimits[]): PaymentTargetLimits[] {
+  return rows.map((row) => ({ ...row, presetsCents: [...row.presetsCents] }));
+}
 
 function cloneDefaultSettings(): AppSettings {
   return {
     ...DEFAULT_SETTINGS,
     providersEnabled: { ...DEFAULT_SETTINGS.providersEnabled },
+    paymentLimits: clonePaymentLimits(DEFAULT_SETTINGS.paymentLimits),
     aiModels: DEFAULT_SETTINGS.aiModels.map((model) => ({ ...model })),
     aiProviders: DEFAULT_SETTINGS.aiProviders.map((entry) => ({ ...entry })),
   };
@@ -650,25 +697,13 @@ function normalizePaymentLimits(
     .filter((entry): entry is PaymentTargetLimits => entry !== null);
 
   /*
-   * Never empty, and an EXPLICIT empty list means the defaults.
-   *
-   * An empty list would otherwise mean "no bounds anywhere", so something has
-   * to stand in. Which something depends on what the caller actually said:
-   *
-   *   - nothing at all, or a stored value that is not an array - the settings
-   *     row is absent or corrupt, so keep what is already in force;
-   *   - an array that normalizes to nothing - somebody removed every row and
-   *     saved, which is a reset, and the defaults are what a reset restores.
-   *
-   * The difference matters because the administrator page offers Remove on
-   * each row and tells the operator that saving with none restores the
-   * defaults. Folding both cases into `fallback` made that sentence false:
-   * the update path passes the CURRENT settings as the fallback, so removing
-   * every row and saving quietly kept the rows that were just removed, with
-   * no error and no visible change.
+   * Never empty: an empty list would mean "no bounds anywhere", so the
+   * fallback stands in - and the fallback IS the defaults, `.env`'s limits
+   * over the code's (`composeSettings` lays the stored row over them). That
+   * is also what an administrator who removes every row and saves gets: the
+   * update path reads an empty list as a reset and stores nothing at all.
    */
-  if (rows.length > 0) return rows;
-  return Array.isArray(input) ? DEFAULT_PAYMENT_LIMITS.map((row) => ({ ...row })) : fallback;
+  return rows.length > 0 ? rows : clonePaymentLimits(fallback);
 }
 
 function normalizeAIModelProvider(value: unknown): AIProvider | null {
@@ -941,14 +976,18 @@ function normalizeSettings(
           : strict
             ? (() => { throw new Error('outputBaseDir must be a non-empty string'); })()
             : normalizeOutputBaseDir(fallback.outputBaseDir),
-    outputPathTemplate:
-      typeof source.outputPathTemplate === 'undefined'
-        ? validateOutputPathTemplate(normalizeOutputPathTemplate(fallback.outputPathTemplate))
-        : typeof source.outputPathTemplate === 'string' && source.outputPathTemplate.trim()
-          ? validateOutputPathTemplate(source.outputPathTemplate)
+    // Refused by name - the validator's own sentences, as an OutputPathError
+    // whose `field` the settings route passes on - when read strictly; read
+    // leniently, a prefix that does not pass is not used.
+    outputPathPrefix:
+      typeof source.outputPathPrefix === 'undefined'
+        ? fallback.outputPathPrefix
         : strict
-            ? (() => { throw new Error('outputPathTemplate must be a non-empty string'); })()
-            : validateOutputPathTemplate(normalizeOutputPathTemplate(fallback.outputPathTemplate)),
+          ? requireValidOutputPath('prefix', source.outputPathPrefix)
+          : (() => {
+              const check = validateOutputPrefix(source.outputPathPrefix);
+              return check.ok ? check.value : fallback.outputPathPrefix;
+            })(),
     paymentLimits: normalizePaymentLimits(source.paymentLimits, fallback.paymentLimits, strict),
     requireThreeDSecure: normalizeBooleanSetting(
       source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
@@ -1032,12 +1071,16 @@ function toBaseSettings(settings: AppSettings): BaseAppSettings {
  * The ordinary account's view, built field by field rather than by deleting
  * from a bigger object: a field added to the settings later reaches nobody
  * here until somebody decides it should.
+ *
+ * `outputPathUsesJobTitle` is the reader's own: whether THEIR folder path
+ * files by `{{role}}`, which is when the builder asks for a role. The route
+ * passes the account's suffix; without one it is the default's.
  */
-function toUserSettings(settings: AppSettings): UserAppSettings {
+function toUserSettings(settings: AppSettings, outputPathSuffix: string): UserAppSettings {
   return {
     models: getRunnableModels(settings).map((model) => ({ id: model.id, name: model.name })),
     ...toBuilderDefaults(settings),
-    outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
+    outputPathUsesJobTitle: outputSuffixUsesRole(outputPathSuffix),
   };
 }
 
@@ -1055,7 +1098,9 @@ function describeProviderLocks(settings: AppSettings): ProviderLock[] {
 function toBaseSettingsWithDerived(settings: AppSettings): BaseAppSettingsWithDerived {
   return {
     ...toBaseSettings(settings),
-    outputPathUsesJobTitle: outputPathTemplateUsesJobTitle(settings.outputPathTemplate),
+    // The default folder path's: an administrator's own builder reads
+    // GET /api/resume/models, which answers for their own.
+    outputPathUsesJobTitle: outputSuffixUsesRole(envOutputPathSuffix().value),
     providerLocks: describeProviderLocks(settings),
   };
 }
@@ -1069,20 +1114,31 @@ export function listSeatModelOptions(env: NodeJS.ProcessEnv = process.env): Prov
   }));
 }
 
-function toAdminSettings(settings: AppSettings): AdminAppSettings {
+function toAdminSettings(state: SettingsState): AdminAppSettings {
+  const { settings } = state;
   return {
     ...toBaseSettingsWithDerived(settings),
     aiModels: settings.aiModels.map((model) => ({ ...model })),
     aiProviders: resolveProviders(settings.aiProviders).map(toAdminProvider),
     providerModelOptions: listSeatModelOptions(),
     outputBaseDir: settings.outputBaseDir,
-    outputPathTemplate: settings.outputPathTemplate,
-    outputPathPreview: buildOutputPathPreview(settings.outputPathTemplate),
+    outputPathPrefix: settings.outputPathPrefix,
+    outputPathPreview: nodePath.join(
+      settings.outputBaseDir,
+      ...renderOutputPath(settings.outputPathPrefix, envOutputPathSuffix().value, sampleOutputPathValues()).split('/')
+    ),
     paymentLimits: settings.paymentLimits.map(toPaymentLimitsView),
     requireThreeDSecure: settings.requireThreeDSecure,
     freeEnabledModelIds: settings.aiModels
       .filter((model) => model.enabled && model.pricePerResumeMilli === 0)
       .map((model) => model.id),
+    settingSources: { ...state.sources },
+    settingDefaults: {
+      ...state.defaults,
+      // As the builder defaults serve it: one of the models listed beside it.
+      defaultModelId: effectiveDefaultModelId({ ...settings, defaultModelId: state.defaults.defaultModelId }),
+      paymentLimits: state.defaults.paymentLimits.map(toPaymentLimitsView),
+    },
   };
 }
 
@@ -1146,52 +1202,246 @@ function parsePaymentLimitsInput(input: unknown): PaymentTargetLimits[] {
 const SETTINGS_CACHE_TTL_MS = 5_000;
 
 /**
- * Keyed on the DATABASE PATH, not just held in a module variable.
+ * Keyed on the DATABASE PATH, not just held in a module variable - and on what
+ * the environment says about the `.env`-defaulted settings.
  *
  * `getDatabasePath()` is resolved from `DB_DIR` on every call, so a single
  * process can legitimately address more than one database - which the test
  * suite does, giving each case a fresh temp directory. An unkeyed cache would
  * then serve one database's settings for another: reads that silently return
- * the wrong providers and models.
+ * the wrong providers and models. The environment is in the key for the same
+ * reason: a value in effect may be `.env`'s, and a test sets one and reads.
  */
-let settingsCache: { path: string; value: AppSettings; at: number } | null = null;
+let settingsCache: { key: string; path: string; value: SettingsState; at: number } | null = null;
 
 export function invalidateSettingsCache(): void {
   settingsCache = null;
 }
 
-async function readSettings(): Promise<AppSettings> {
+/**
+ * The stored row's keys with "not set" taken out: absent, `null`, an empty
+ * default model id (what clearing it always meant) and an empty payment list
+ * (what removing every row and saving always meant: the defaults).
+ */
+function withoutUnsetOverrides(source: Record<string, unknown>): Record<string, unknown> {
+  const row = { ...source };
+  for (const key of DEFAULTED_SETTING_KEYS) {
+    const value = row[key];
+    const unset =
+      value === undefined ||
+      value === null ||
+      (key === 'defaultModelId' && typeof value === 'string' && value.trim() === '') ||
+      (key === 'paymentLimits' && Array.isArray(value) && value.length === 0);
+    if (unset) delete row[key];
+  }
+  return row;
+}
+
+/**
+ * The model a `DEFAULT_MODEL` / `ANALYSIS_MODEL` text names: a runnable
+ * record by id, else by display name in any case - or null, warned once, when
+ * it names none. A model switched off, or on a provider switched off or
+ * locked here, is not one: a default that cannot run is no default. With
+ * nothing runnable at all there is nothing to name, and the lock has already
+ * said why, so that says nothing more.
+ */
+function envModelChoice(name: string, text: string, runnable: AIModelRecord[]): string | null {
+  if (!text) return null;
+  const byId = runnable.find((model) => model.id === text);
+  if (byId) return byId.id;
+  const wanted = text.toLowerCase();
+  const byName = runnable.find((model) => model.name.trim().toLowerCase() === wanted);
+  if (byName) return byName.id;
+  if (runnable.length > 0) {
+    warnEnvOnce(
+      name,
+      `${name}=${JSON.stringify(text)} names no model that can run here (an id or a display name from ` +
+        'Admin -> Models, enabled, on a provider that is switched on); ' +
+        (name === 'ANALYSIS_MODEL'
+          ? 'job postings are analysed on the default model.'
+          : 'using the built-in default model.')
+    );
+  }
+  return null;
+}
+
+/**
+ * The settings in effect: the stored row over `.env`'s values over the code's
+ * (owner decision S1), and where each of the `.env`-defaulted ones came from.
+ *
+ * `input` is the stored row (or the row a save is about to store); `strict`
+ * refuses a value of the wrong shape by name, as a stored row and an admin's
+ * save are both read. The two model choices are judged AFTER the row's model
+ * list is read, because `DEFAULT_MODEL` and `ANALYSIS_MODEL` name a record in
+ * it. Never writes.
+ */
+function composeSettings(input: unknown, strict: boolean, env: EnvSource = process.env): SettingsState {
+  if (strict && (typeof input !== 'object' || input === null)) {
+    throw new Error('Settings file must contain a JSON object');
+  }
+  const source = withoutUnsetOverrides(
+    typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
+  );
+
+  // The .env layer, over the code defaults.
+  const readings = {
+    defaultMode: envDefaultMode(env),
+    defaultTheme: envDefaultTheme(env),
+    defaultResumeSelection: envDefaultResumeSelection(env),
+    defaultResumeDocxEnabled: envDefaultResumeDocx(env),
+    defaultCoverLetterDocxEnabled: envDefaultCoverLetterDocx(env),
+    outputBaseDir: envOutputBaseDir(env),
+    outputPathPrefix: envOutputPathPrefix(env),
+    paymentLimits: envPaymentLimits(env),
+    requireThreeDSecure: envRequireThreeDSecure(env),
+  };
+  const base = cloneDefaultSettings();
+  base.defaultMode = readings.defaultMode.value;
+  base.defaultTheme = readings.defaultTheme.value;
+  base.defaultResumeSelection = readings.defaultResumeSelection.value;
+  base.defaultResumeDocxEnabled = readings.defaultResumeDocxEnabled.value;
+  base.defaultCoverLetterDocxEnabled = readings.defaultCoverLetterDocxEnabled.value;
+  base.outputBaseDir = readings.outputBaseDir.value;
+  base.outputPathPrefix = readings.outputPathPrefix.value;
+  base.paymentLimits = readings.paymentLimits.value;
+  base.requireThreeDSecure = readings.requireThreeDSecure.value;
+
+  // The stored row over it. Its default model resolves against the code's for
+  // now; the .env model choices need the row's models, read just here.
+  const settings = normalizeSettings(source, base, strict);
+  const runnable = getRunnableModels(settings);
+  const envDefaultModelId = envModelChoice('DEFAULT_MODEL', envDefaultModelText(env), runnable);
+  const envAnalysisModelId = envModelChoice('ANALYSIS_MODEL', envAnalysisModelText(env), runnable);
+
+  const storedDefaultModelId =
+    typeof source.defaultModelId === 'string' ? source.defaultModelId.trim() : undefined;
+  // Without the administrator's: .env's when it names one, else the seed (and
+  // the first model that runs when the seed does not).
+  const defaultModelIdWithoutAdmin = resolveDefaultModelId(
+    envDefaultModelId ?? '',
+    settings.aiModels,
+    settings,
+    base.defaultModelId
+  );
+  settings.defaultModelId = resolveDefaultModelId(
+    storedDefaultModelId ?? '',
+    settings.aiModels,
+    settings,
+    defaultModelIdWithoutAdmin
+  );
+  const analysisStored = hasOwnProperty(source, 'analysisModelId');
+  if (!analysisStored) settings.analysisModelId = envAnalysisModelId ?? CODE_SETTING_DEFAULTS.analysisModelId;
+
+  // Only what the row holds is an administrator's - in its normalized form,
+  // except a default model that stopped running, which is kept as stored so
+  // switching that model back on makes it the default again.
+  const overrides: SettingOverrides = {};
+  for (const key of DEFAULTED_SETTING_KEYS) {
+    if (!hasOwnProperty(source, key)) continue;
+    if (key === 'defaultModelId') {
+      // Not a string is no choice at all, as it always read; only an id is kept.
+      if (storedDefaultModelId !== undefined) overrides.defaultModelId = storedDefaultModelId;
+    } else if (key === 'paymentLimits') overrides.paymentLimits = clonePaymentLimits(settings.paymentLimits);
+    else (overrides as Record<string, unknown>)[key] = settings[key];
+  }
+
+  const simpleSource = (key: keyof typeof readings): SettingSource =>
+    hasOwnProperty(overrides, key) ? 'admin' : readings[key].fromEnv ? 'env' : 'default';
+  const sources: SettingSources = {
+    // Where the model IN EFFECT came from: a stored one that stopped running
+    // is not what runs, so it is not what the page labels.
+    defaultModelId:
+      overrides.defaultModelId !== undefined && settings.defaultModelId === overrides.defaultModelId
+        ? 'admin'
+        : envDefaultModelId !== null && settings.defaultModelId === envDefaultModelId
+          ? 'env'
+          : 'default',
+    // Kept as stored even when it stopped running (resolveAnalysisModel falls
+    // back meanwhile), so a stored one is always what the page shows.
+    analysisModelId: analysisStored ? 'admin' : envAnalysisModelId !== null ? 'env' : 'default',
+    defaultMode: simpleSource('defaultMode'),
+    defaultTheme: simpleSource('defaultTheme'),
+    defaultResumeSelection: simpleSource('defaultResumeSelection'),
+    defaultResumeDocxEnabled: simpleSource('defaultResumeDocxEnabled'),
+    defaultCoverLetterDocxEnabled: simpleSource('defaultCoverLetterDocxEnabled'),
+    outputBaseDir: simpleSource('outputBaseDir'),
+    outputPathPrefix: simpleSource('outputPathPrefix'),
+    paymentLimits: simpleSource('paymentLimits'),
+    requireThreeDSecure: simpleSource('requireThreeDSecure'),
+  };
+
+  const defaults: AppSettingDefaults = {
+    defaultModelId: defaultModelIdWithoutAdmin,
+    analysisModelId: envAnalysisModelId ?? CODE_SETTING_DEFAULTS.analysisModelId,
+    defaultMode: base.defaultMode,
+    defaultTheme: base.defaultTheme,
+    defaultResumeSelection: base.defaultResumeSelection,
+    defaultResumeDocxEnabled: base.defaultResumeDocxEnabled,
+    defaultCoverLetterDocxEnabled: base.defaultCoverLetterDocxEnabled,
+    outputBaseDir: normalizeOutputBaseDir(base.outputBaseDir),
+    outputPathPrefix: base.outputPathPrefix,
+    paymentLimits: clonePaymentLimits(base.paymentLimits),
+    requireThreeDSecure: base.requireThreeDSecure,
+  };
+
+  return { settings, overrides, sources, defaults };
+}
+
+/**
+ * The row as it is stored: every field without a `.env` default whole, as
+ * before, and of the ones with one only what an administrator set - so a
+ * value nobody chose keeps following `.env` instead of being frozen at the
+ * day of the first save. Built-in providers likewise only where an
+ * administrator set something (`storableProviders`). Keys this build does not
+ * read are not carried: a save drops them.
+ */
+function storedRowOf(state: SettingsState): Record<string, unknown> {
+  const { settings, overrides } = state;
+  const row: Record<string, unknown> = {
+    providersEnabled: { ...settings.providersEnabled },
+    defaultGroupId: settings.defaultGroupId,
+    defaultProfileId: settings.defaultProfileId,
+  };
+  for (const key of DEFAULTED_SETTING_KEYS) {
+    if (!hasOwnProperty(overrides, key)) continue;
+    row[key] = key === 'paymentLimits' ? clonePaymentLimits(overrides.paymentLimits ?? []) : overrides[key];
+  }
+  row.aiModels = settings.aiModels.map((model) => ({ ...model }));
+  row.aiProviders = storableProviders(settings.aiProviders);
+  return row;
+}
+
+async function readState(): Promise<SettingsState> {
   const path = getDatabasePath();
+  const key = `${path}\u0000${settingEnvFingerprint()}`;
   const cached = settingsCache;
-  if (cached && cached.path === path && Date.now() - cached.at < SETTINGS_CACHE_TTL_MS) {
-    noteStoredProviders(path, cached.value.aiProviders);
+  if (cached && cached.key === key && Date.now() - cached.at < SETTINGS_CACHE_TTL_MS) {
+    noteStoredProviders(path, cached.value.settings.aiProviders);
     return cached.value;
   }
 
   const stored = getSetting<unknown>(APP_SETTINGS_KEY);
-  if (stored === null) {
-    const defaults = cloneDefaultSettings();
-    settingsCache = { path, value: defaults, at: Date.now() };
-    noteStoredProviders(path, defaults.aiProviders);
-    return defaults;
-  }
-
-  const settings = normalizeSettings(stored, cloneDefaultSettings(), true);
+  // No row is a fresh install: nothing stored, everything .env's or the code's.
+  const state = composeSettings(stored ?? {}, stored !== null);
   // With every seat locked here nothing can run, and no save could change that:
   // the lock is the deployment's, not the row's. Refusing the READ would take
   // down every page that reads settings - the admin pages that say why among
   // them - so the row is served as it is, with no runnable model and the lock
   // list beside it. A request to run something is refused where it resolves a
   // model. Saves keep both asserts.
-  if (!everyProviderLocked()) {
-    assertAtLeastOneProviderEnabled(settings);
-    assertAtLeastOneRunnableModel(settings);
+  if (stored !== null && !everyProviderLocked()) {
+    assertAtLeastOneProviderEnabled(state.settings);
+    assertAtLeastOneRunnableModel(state.settings);
   }
-  settingsCache = { path, value: settings, at: Date.now() };
+  settingsCache = { key, path, value: state, at: Date.now() };
   // The providers, held synchronously for the queue's dispatcher and the pool
   // that spreads a type's calls (config/aiProviders.ts `currentProviders`).
-  noteStoredProviders(path, settings.aiProviders);
-  return settings;
+  noteStoredProviders(path, state.settings.aiProviders);
+  return state;
+}
+
+async function readSettings(): Promise<AppSettings> {
+  return (await readState()).settings;
 }
 
 /** True when this deployment locks every provider, so nothing can run whatever the row says. */
@@ -1199,17 +1449,25 @@ function everyProviderLocked(): boolean {
   return AI_PROVIDER_IDS.every((id) => isProviderLocked(id));
 }
 
-async function writeSettings(settings: AppSettings): Promise<AppSettings> {
-  const normalized = normalizeSettings(settings, cloneDefaultSettings(), true);
-  assertAtLeastOneProviderEnabled(normalized);
-  assertAtLeastOneRunnableModel(normalized);
-  // Built-ins only where an administrator set something: an untouched one is
-  // not stored, so it keeps reading `.env` and a later `.env` edit reaches it.
-  setSetting(APP_SETTINGS_KEY, { ...normalized, aiProviders: storableProviders(normalized.aiProviders) });
+/**
+ * Stores a row - read strictly, both asserts held - and answers the state it
+ * gives. Every writer builds the row from `storedRowOf(current)` and changes
+ * only what it is about, so a model edit can never store a default that was
+ * merely in effect.
+ */
+async function writeRow(row: Record<string, unknown>): Promise<SettingsState> {
+  const state = composeSettings(row, true);
+  assertAtLeastOneProviderEnabled(state.settings);
+  assertAtLeastOneRunnableModel(state.settings);
+  return persistState(state);
+}
+
+function persistState(state: SettingsState): SettingsState {
+  setSetting(APP_SETTINGS_KEY, storedRowOf(state));
   const path = getDatabasePath();
-  settingsCache = { path, value: normalized, at: Date.now() };
-  noteStoredProviders(path, normalized.aiProviders);
-  return normalized;
+  settingsCache = { key: `${path}\u0000${settingEnvFingerprint()}`, path, value: state, at: Date.now() };
+  noteStoredProviders(path, state.settings.aiProviders);
+  return state;
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
@@ -1217,12 +1475,12 @@ export async function getAppSettings(): Promise<AppSettings> {
 }
 
 /** What `GET /api/resume/models` serves to every signed-in account. See `UserAppSettings`. */
-export async function getUserAppSettings(): Promise<UserAppSettings> {
-  return toUserSettings(await readSettings());
+export async function getUserAppSettings(outputPathSuffix: string = envOutputPathSuffix().value): Promise<UserAppSettings> {
+  return toUserSettings(await readSettings(), outputPathSuffix);
 }
 
 export async function getAdminAppSettings(): Promise<AdminAppSettings> {
-  return toAdminSettings(await readSettings());
+  return toAdminSettings(await readState());
 }
 
 /**
@@ -1303,71 +1561,76 @@ export async function resolveAnalysisModel(): Promise<AIModelRecord> {
     warnOncePerPreference(
       `analysis-model:${chosen}`,
       `[ai] The analysis model "${chosen}" cannot run (switched off, deleted, or its provider is switched ` +
-        'off or locked); job postings are analysed on the app default model until Admin -> Settings names ' +
-        'one that can.'
+        'off or locked); job postings are analysed on the app default model until one that can is chosen ' +
+        'under Admin -> Models.'
     );
   }
   return resolveRequestedAIModel();
 }
 
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
-  const current = await readSettings();
+  const current = await readState();
+  const body = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
 
-  // Only the seats the save names change; the normalizer below reads nothing
-  // but catalog seats out of the record, so any other key never reaches the row.
-  const providersEnabled = input.providersEnabled
-    ? { ...current.providersEnabled, ...input.providersEnabled }
-    : { ...current.providersEnabled };
-
-  // A model list in a settings save is dropped, not merged: this path
-  // normalizes leniently, so a list here would skip the model-name check and
-  // clamp a mistyped price where the model routes refuse it by name. Nothing
-  // the admin pages send carries one.
-  /*
-   * The payment limits arrive in DOLLARS and are parsed here, strictly, into
-   * the cents they are stored in. This path otherwise normalizes non-strict,
-   * which drops a bad row and keeps what was there before - the kind direction
-   * for most fields, and the wrong one here: it would tell an operator their
-   * save succeeded while the limit they just typed was thrown away. So a bad
-   * amount or an inverted band is reported by name.
-   */
-  // And the providers, which have routes of their own for the same reason:
-  // every folder and binary they name is checked there, by name.
+  // A model list in a settings save is dropped, not merged: a list here would
+  // skip the model-name check and clamp a mistyped price where the model
+  // routes refuse it by name. Nothing the admin pages send carries one. And
+  // the providers, which have routes of their own for the same reason: every
+  // folder and binary they name is checked there, by name.
   const {
     aiModels: _models,
     aiProviders: _providers,
     paymentLimits: limitsInput,
+    providersEnabled: enabledInput,
     ...changes
-  } = input as AppSettingsUpdate & {
-    aiModels?: unknown;
-    aiProviders?: unknown;
-  };
-  const paymentLimits = limitsInput === undefined ? current.paymentLimits : parsePaymentLimitsInput(limitsInput);
-  const next = normalizeSettings(
-    {
-      ...current,
-      ...changes,
-      paymentLimits,
-      providersEnabled,
-    },
-    current
-  );
+  } = body;
 
-  assertAtLeastOneProviderEnabled(next);
-  assertAtLeastOneRunnableModel(next);
-  assertRequestedDefaultCanRun(input, current, next);
-  assertRequestedAnalysisModelCanRun(input, current, next);
-
-  const shouldValidateOutputDir =
-    typeof input.outputBaseDir !== 'undefined' ||
-    current.outputBaseDir !== next.outputBaseDir;
-
-  if (shouldValidateOutputDir) {
-    await ensureWritableOutputDir(next.outputBaseDir);
+  // The row as stored, changed only where the save names a field: a value
+  // merely in effect (.env's, the code's) is never written by saving another.
+  const row = storedRowOf(current);
+  for (const [key, value] of Object.entries(changes)) {
+    if (value === null && (DEFAULTED_SETTING_KEYS as readonly string[]).includes(key)) {
+      delete row[key]; // Reset to default.
+    } else {
+      row[key] = value;
+    }
   }
 
-  const saved = await writeSettings(next);
-  return toAdminSettings(saved);
+  // Only the seats the save names change; the normalizer reads nothing but
+  // catalog seats out of the record, so any other key never reaches the row.
+  if (enabledInput && typeof enabledInput === 'object') {
+    row.providersEnabled = { ...current.settings.providersEnabled, ...(enabledInput as Record<string, unknown>) };
+  }
+
+  /*
+   * The payment limits arrive in DOLLARS and are parsed here, strictly, into
+   * the cents they are stored in, so a bad amount or an inverted band is
+   * reported by name rather than dropped while the save says it succeeded.
+   * `null` - or a list with every row removed, which the page has always said
+   * restores the defaults - stores none: `.env`'s limits, else the code's.
+   */
+  if (limitsInput !== undefined) {
+    const parsed = limitsInput === null ? [] : parsePaymentLimitsInput(limitsInput);
+    if (parsed.length === 0) delete row.paymentLimits;
+    else row.paymentLimits = parsed;
+  }
+
+  // Read as strictly as the stored row is: a field that is present and of the
+  // wrong shape is refused by name, never quietly left as it was.
+  const next = composeSettings(row, true);
+
+  assertAtLeastOneProviderEnabled(next.settings);
+  assertAtLeastOneRunnableModel(next.settings);
+  assertRequestedDefaultCanRun(input, current.settings, next.settings);
+  assertRequestedAnalysisModelCanRun(input, current.settings, next.settings);
+
+  // A folder an administrator names is created and checked now, where they can
+  // fix it; `.env`'s (and the default) are the operator's, used as they are.
+  if (typeof changes.outputBaseDir === 'string') {
+    await ensureWritableOutputDir(next.settings.outputBaseDir);
+  }
+
+  return toAdminSettings(persistState(next));
 }
 
 function getProviderLabel(provider: AIProvider): string {
@@ -1687,7 +1950,8 @@ function assertUniqueDisplayName(models: AIModelRecord[], candidate: { id?: stri
 }
 
 export async function createAIModel(input: AIModelMutationInput): Promise<AdminAppSettings> {
-  const settings = await readSettings();
+  const current = await readState();
+  const { settings } = current;
   const normalized = normalizeAIModelMutationInput(input);
   assertNoDuplicateModel(settings.aiModels, normalized);
   assertUniqueDisplayName(settings.aiModels, normalized);
@@ -1700,18 +1964,16 @@ export async function createAIModel(input: AIModelMutationInput): Promise<AdminA
     ...normalized,
   };
 
-  const next: AppSettings = {
-    ...settings,
-    aiModels: [...settings.aiModels, created],
-    defaultModelId: settings.defaultModelId || created.id,
-  };
-
-  const saved = await writeSettings(next);
+  // The default model is left alone: with none stored, the one in effect is
+  // resolved on every read, and a list that had no model at all resolves to
+  // this one without anything being stored for it.
+  const saved = await writeRow({ ...storedRowOf(current), aiModels: [...settings.aiModels, created] });
   return toAdminSettings(saved);
 }
 
 export async function updateAIModel(id: string, input: AIModelMutationInput): Promise<AdminAppSettings> {
-  const settings = await readSettings();
+  const state = await readState();
+  const { settings } = state;
   const current = settings.aiModels.find((model) => model.id === id);
   if (!current) {
     throw new Error('AI model not found.');
@@ -1723,8 +1985,8 @@ export async function updateAIModel(id: string, input: AIModelMutationInput): Pr
     assertUniqueDisplayName(settings.aiModels, { id, name: normalized.name });
   }
 
-  const next: AppSettings = {
-    ...settings,
+  const saved = await writeRow({
+    ...storedRowOf(state),
     aiModels: settings.aiModels.map((model) =>
       model.id === id
         ? {
@@ -1734,29 +1996,26 @@ export async function updateAIModel(id: string, input: AIModelMutationInput): Pr
           }
         : model
     ),
-  };
-
-  const saved = await writeSettings(next);
+  });
   return toAdminSettings(saved);
 }
 
 export async function deleteAIModel(id: string): Promise<AdminAppSettings> {
-  const settings = await readSettings();
+  const state = await readState();
+  const { settings } = state;
   const nextModels = settings.aiModels.filter((model) => model.id !== id);
   if (nextModels.length === settings.aiModels.length) {
     throw new Error('AI model not found.');
   }
 
-  const next: AppSettings = {
-    ...settings,
-    aiModels: nextModels,
-    defaultModelId: settings.defaultModelId === id ? '' : settings.defaultModelId,
-    // A deleted analysis model is no choice at all: postings go back to the
-    // app default, the same as an unset one, rather than warning for ever.
-    analysisModelId: settings.analysisModelId === id ? '' : settings.analysisModelId,
-  };
+  const row: Record<string, unknown> = { ...storedRowOf(state), aiModels: nextModels };
+  // A deleted model is no choice at all. The administrator's default or
+  // analysis model naming it is removed, so .env's - else the code's - is in
+  // effect again, rather than a choice that warns for ever.
+  if (state.overrides.defaultModelId === id) delete row.defaultModelId;
+  if (state.overrides.analysisModelId === id) delete row.analysisModelId;
 
-  const saved = await writeSettings(next);
+  const saved = await writeRow(row);
   return toAdminSettings(saved);
 }
 
@@ -1771,22 +2030,29 @@ export async function getAIModelSettings(): Promise<AIModelSettings> {
 /** The bounds on one purchase, per method, and the card-authentication setting. */
 export async function getPurchaseSettings(): Promise<{
   paymentLimits: PaymentTargetLimits[];
+  /**
+   * The limits with nothing stored - `.env`'s, else the code's - for a method
+   * the stored list leaves out (services/payments/pricing.ts).
+   */
+  defaultPaymentLimits: PaymentTargetLimits[];
   requireThreeDSecure: boolean;
   currency: string;
 }> {
-  const settings = await readSettings();
+  const { settings, defaults } = await readState();
   return {
     paymentLimits: settings.paymentLimits,
+    defaultPaymentLimits: defaults.paymentLimits,
     requireThreeDSecure: settings.requireThreeDSecure,
     currency: CREDIT_CURRENCY,
   };
 }
 
-export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'outputBaseDir' | 'outputPathTemplate'>> {
+/** Where resumes are filed: the output folder and the administrator's prefix in effect. */
+export async function getOutputStorageSettings(): Promise<Pick<AppSettings, 'outputBaseDir' | 'outputPathPrefix'>> {
   const settings = await readSettings();
   return {
     outputBaseDir: settings.outputBaseDir,
-    outputPathTemplate: settings.outputPathTemplate,
+    outputPathPrefix: settings.outputPathPrefix,
   };
 }
 
@@ -1899,9 +2165,9 @@ export async function listAdminAIProviders(): Promise<AdminAIProvider[]> {
  * leave nothing runnable: every provider of every type with a model switched
  * off is the same as switching every seat off, which a settings save refuses.
  */
-async function saveProviders(current: AppSettings, aiProviders: StoredAIProvider[]): Promise<AppSettings> {
-  const next = normalizeSettings({ ...current, aiProviders }, current);
-  if (getRunnableModels(next).length === 0) {
+async function saveProviders(current: SettingsState, aiProviders: StoredAIProvider[]): Promise<AppSettings> {
+  const next = composeSettings({ ...storedRowOf(current), aiProviders }, true);
+  if (getRunnableModels(next.settings).length === 0) {
     throw new AIProviderInputError(
       'nothing-left',
       'That would leave no enabled model with an enabled provider to run on. Enable another provider first.',
@@ -1909,7 +2175,8 @@ async function saveProviders(current: AppSettings, aiProviders: StoredAIProvider
       409
     );
   }
-  return writeSettings(next);
+  assertAtLeastOneProviderEnabled(next.settings);
+  return persistState(next).settings;
 }
 
 function findStoredProvider(settings: AppSettings, id: string): StoredAIProvider {
@@ -1920,26 +2187,28 @@ function findStoredProvider(settings: AppSettings, id: string): StoredAIProvider
 
 /** Adds a provider (owner decision P1): `{ type, label, homeDir, binaryPath?, concurrency_max_requests?, enabled? }`. */
 export async function createAIProvider(input: unknown): Promise<ProviderMutationResult> {
-  const current = await readSettings();
+  const state = await readState();
+  const current = state.settings;
   const created = buildNewProvider(input, {
     providers: resolveProviders(current.aiProviders),
     appDirectories: listAppDirectories(current),
   });
-  const saved = await saveProviders(current, [...current.aiProviders, created]);
+  const saved = await saveProviders(state, [...current.aiProviders, created]);
   const providers = providersView(saved);
   return { provider: providers.find((entry) => entry.id === created.id), providers };
 }
 
 /** Edits one: any of `label`, `homeDir`, `binaryPath`, `concurrency_max_requests`, `enabled`. */
 export async function updateAIProvider(id: string, input: unknown): Promise<ProviderMutationResult> {
-  const current = await readSettings();
+  const state = await readState();
+  const current = state.settings;
   const existing = findStoredProvider(current, id);
   const edited = applyProviderEdit(existing, input, {
     providers: resolveProviders(current.aiProviders),
     appDirectories: listAppDirectories(current),
   });
   const saved = await saveProviders(
-    current,
+    state,
     current.aiProviders.map((entry) => (entry.id === id ? edited : entry))
   );
   const providers = providersView(saved);
@@ -1952,7 +2221,8 @@ export async function updateAIProvider(id: string, input: unknown): Promise<Prov
  * caller - the route - has already refused a provider with work running.
  */
 export async function deleteAIProvider(id: string): Promise<ProviderMutationResult> {
-  const current = await readSettings();
+  const state = await readState();
+  const current = state.settings;
   findStoredProvider(current, id);
   if (isBuiltInProviderId(id)) {
     throw new AIProviderInputError(
@@ -1963,7 +2233,7 @@ export async function deleteAIProvider(id: string): Promise<ProviderMutationResu
     );
   }
   const saved = await saveProviders(
-    current,
+    state,
     current.aiProviders.filter((entry) => entry.id !== id)
   );
   return { providers: providersView(saved) };

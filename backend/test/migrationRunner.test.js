@@ -5,11 +5,11 @@ const Database = require('better-sqlite3');
 /**
  * The data-migration runner (database/migrations/index.ts).
  *
- * It has no steps today - every one an older build needed ran before the
- * startup guard admits a database - but it stays for the next, which is 9,
- * and the server runs it at every start. So its contract is pinned here with
- * steps of the tests' own, rather than first meeting a regression when
- * migration 9 ships:
+ * Every step an older build needed ran before the startup guard admits a
+ * database; this build's are numbered from 9 (9 is settings-defaults,
+ * test/settingDefaults.test.js holds what it does), and the server runs them
+ * at every start. The runner's contract is pinned here with steps of the
+ * tests' own, so it does not depend on what the shipped steps happen to do:
  *
  *   - it never throws, whatever a step or the database does;
  *   - the version is written after EACH step, so a later step that fails does
@@ -20,7 +20,12 @@ const Database = require('better-sqlite3');
  *   - a step at or below the version the database is at never runs.
  */
 
-const { runDataMigrations, SCHEMA_VERSION_KEY, BASELINE_SCHEMA_VERSION } = require('../dist/database/migrations');
+const {
+  runDataMigrations,
+  SCHEMA_VERSION_KEY,
+  BASELINE_SCHEMA_VERSION,
+  LATEST_SCHEMA_VERSION,
+} = require('../dist/database/migrations');
 
 /** A database as every one the runner sees: schema_meta at the baseline. */
 function atBaseline() {
@@ -60,13 +65,15 @@ function quietly(fn) {
   return lines;
 }
 
-test('the baseline is 8, and the shipped list adds nothing to it', () => {
+test('the baseline is 8, and the shipped steps, from 9, find nothing to do on a database with nothing in it', () => {
   assert.equal(SCHEMA_VERSION_KEY, 'provider_schema_version');
   assert.equal(BASELINE_SCHEMA_VERSION, 8, 'the version 008 left; the next step is 9');
+  assert.ok(LATEST_SCHEMA_VERSION >= 9, 'step 9 (settings-defaults) ships');
   const db = atBaseline();
   const lines = quietly(() => runDataMigrations(db));
-  assert.equal(version(db), '8');
-  assert.deepEqual(lines, []);
+  assert.equal(version(db), String(LATEST_SCHEMA_VERSION), 'each wrote its version');
+  assert.deepEqual(lines, [], 'and none said it changed anything - every table it looks at is missing');
+  assert.deepEqual(quietly(() => runDataMigrations(db)), [], 'a second start runs none of them');
 });
 
 test('each step that runs writes its version, and a second start runs none of them again', () => {

@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { loadFresh, openTestDb, useTempStorage } = require('./helpers');
+const { LATEST_SCHEMA_VERSION } = require('../dist/database/migrations');
 
 /**
  * The startup guard (database/upgradeGuard.ts): this build opens only a
@@ -30,8 +31,9 @@ function meta(db, key) {
 
 /**
  * A database as ac3df79 leaves it, near enough: made by this build's schema,
- * with every marker that build writes and none of this build's own
- * `baseline_build` - so the guard reads it as an upgraded install, not one it
+ * with every marker that build writes - its data migrations at 8, the last it
+ * had, not this build's later steps - and none of this build's own
+ * `baseline_build`, so the guard reads it as an upgraded install, not one it
  * made. ac3df79's own also keeps what this build neither makes nor reads (a
  * `templates` table, `users.sheet_tab_*`, `job_lake.report_ref`), which the
  * guard never asks about. `change` then undoes one upgrade - or, for an older
@@ -44,6 +46,7 @@ function upgradedByOlderBuild(name, change = () => {}) {
   const raw = openTestDb(dbDir);
   try {
     raw.prepare("DELETE FROM schema_meta WHERE key = 'baseline_build'").run();
+    raw.prepare("UPDATE schema_meta SET value = '8' WHERE key = 'provider_schema_version'").run();
     raw.prepare(
       "INSERT INTO users (id, email, role, subscription, created_at, updated_at) VALUES ('u-admin', 'admin@example.com', 'admin', 'default', '2026-01-01', '2026-01-01')"
     ).run();
@@ -71,7 +74,10 @@ test('a database this build creates is stamped with every mark, and opens again'
 
   const raw = openTestDb(dbDir);
   try {
-    assert.equal(meta(raw, 'provider_schema_version'), '8');
+    // Stamped at 8, the baseline, and then taken through every later step,
+    // each of which finds nothing to do on a database with nothing in it.
+    assert.equal(meta(raw, 'provider_schema_version'), String(LATEST_SCHEMA_VERSION));
+    assert.ok(LATEST_SCHEMA_VERSION >= 9, 'step 9 (settings-defaults) ships');
     assert.equal(meta(raw, 'credit_unit'), 'usd-milli');
     assert.equal(JSON.parse(meta(raw, 'templates_moved_to_files')).complete, true);
     assert.equal(meta(raw, 'baseline_build'), 'ac3df79');

@@ -5,19 +5,16 @@ const test = require('node:test');
 
 const { extractJSON } = require('../dist/utils/json');
 const {
-  ORDER_OUTPUT_PATH_TEMPLATE,
-  buildOutputPathPreview,
+  DEFAULT_OUTPUT_PATH_PREFIX,
+  DEFAULT_OUTPUT_PATH_SUFFIX,
   normalizeOutputBaseDir,
-  normalizeOutputFolderNameTemplate,
-  normalizeOutputPathTemplate,
-  outputPathTemplateUsesJobTitle,
-  renderOutputFolderNameTemplate,
+  outputSuffixUsesRole,
   renderOutputFileNameTemplate,
-  renderOutputPathTemplate,
+  renderOutputPath,
+  renderOutputPrefix,
   resolveStoredFilePath,
   sanitizeFileNameStem,
   sanitizePathSegment,
-  validateOutputPathTemplate,
 } = require('../dist/utils/outputStorage');
 
 /**
@@ -62,37 +59,29 @@ test('extractJSON throws when no parseable JSON exists', () => {
   assert.throws(() => extractJSON('not json'), /No valid JSON object/);
 });
 
-test('output path helpers normalize, render, and validate paths', () => {
+test('output path helpers render a prefix and a folder path, and file names', () => {
   assert.equal(sanitizePathSegment(' Senior Engineer / Platform '), 'senior_engineer_platform');
   assert.equal(sanitizeFileNameStem(' Jane_Doe_Resume '), 'Jane_Doe_Resume');
-  assert.equal(normalizeOutputPathTemplate('profile\\{{date}}//{{company}}/'), '/profile/{{date}}/{{company}}');
-  assert.equal(validateOutputPathTemplate('/{{profile name}}/{{role}}'), '/{{profile name}}/{{role}}');
-  assert.throws(() => validateOutputPathTemplate('/{{unknown}}'), /Unsupported output path token/);
 
+  const values = {
+    user_email: 'jane@example.com',
+    order_number: 'FT-20260418-0007',
+    date: '2026-04-18',
+    profile_name: 'Jane Doe',
+    company_name: 'Acme Inc.',
+    role: 'Senior Engineer',
+    row_number: '12',
+  };
   assert.equal(
-    renderOutputPathTemplate('/{{profile name}}/{{company name}}/{{job title}}', {
-      date: '2026-04-18',
-      profileName: 'Jane Doe',
-      companyName: 'Acme Inc.',
-      rowNumber: '12',
-      jobTitle: 'Senior Engineer',
-    }),
-    'jane_doe/acme_inc/senior_engineer'
+    renderOutputPath(DEFAULT_OUTPUT_PATH_PREFIX, DEFAULT_OUTPUT_PATH_SUFFIX, values),
+    'jane_example_com/ft_20260418_0007/2026_04_18/jane_doe/acme_inc/senior_engineer'
   );
   assert.equal(
-    renderOutputPathTemplate('/{{profile name}}/{{row number}}_{{company name}}', {
-      date: '2026-04-18',
-      profileName: 'Jane Doe',
-      companyName: 'Acme Inc.',
-      rowNumber: '12',
-      jobTitle: 'Senior Engineer',
-    }),
-    'jane_doe/12_acme_inc'
+    renderOutputPath('/{{order_number}}', '/{{row_number}}_{{company_name}}', values),
+    'ft_20260418_0007/12_acme_inc'
   );
-
-  assert.equal(buildOutputPathPreview('/{{date}}/{{company name}}'), '/2026_04_10/acme_inc');
-  assert.equal(outputPathTemplateUsesJobTitle('/{{role}}'), true);
-  assert.equal(outputPathTemplateUsesJobTitle('/{{company name}}'), false);
+  assert.equal(outputSuffixUsesRole('/{{role}}'), true);
+  assert.equal(outputSuffixUsesRole('/{{company_name}}'), false);
   assert.equal(
     renderOutputFileNameTemplate('{{profile name}}_Resume', {
       date: '2026-04-18',
@@ -101,27 +90,6 @@ test('output path helpers normalize, render, and validate paths', () => {
       jobTitle: 'Senior Engineer',
     }, '{{profile name}}'),
     'Jane_Doe_Resume'
-  );
-  assert.equal(normalizeOutputFolderNameTemplate('row\\{{company name}}', '{{company name}}'), 'row {{company name}}');
-  assert.equal(
-    renderOutputFolderNameTemplate('{{row number}}_{{company name}}', {
-      date: '2026-04-18',
-      profileName: 'Jane Doe',
-      companyName: 'Acme Inc.',
-      rowNumber: '12',
-      jobTitle: 'Senior Engineer',
-    }, '{{company name}}'),
-    '12_acme_inc'
-  );
-  assert.throws(
-    () => renderOutputFolderNameTemplate('{{job title}}', {
-      date: '2026-04-18',
-      profileName: 'Jane Doe',
-      companyName: 'Acme Inc.',
-      rowNumber: '12',
-      jobTitle: 'Senior Engineer',
-    }, '{{company name}}'),
-    /Unsupported output token/
   );
 });
 
@@ -159,49 +127,32 @@ test('sanitizeFileNameStem escapes reserved names and Windows-illegal characters
   assert.equal(sanitizeFileNameStem('report. '), 'report');
 });
 
-test('the account segment renders like any other, and is not required', () => {
-  // Added for orders, which file under the account first so that one directory
-  // holds everything one person ordered - which is what lets the retention
-  // sweep prune emptied folders without walking into anybody else's tree.
+test('the email folder renders like any other, and an empty one is `unknown`', () => {
+  // The default prefix files under the account first, so one directory holds
+  // everything one person ran - which is what lets the retention sweep prune
+  // emptied folders without walking into anybody else's tree.
   assert.equal(
-    renderOutputPathTemplate(ORDER_OUTPUT_PATH_TEMPLATE, {
+    renderOutputPrefix(DEFAULT_OUTPUT_PATH_PREFIX, {
+      user_email: 'Jane.Doe@Example.com',
+      order_number: 'FT-20260418-0007',
       date: '2026-04-18',
-      accountName: 'Jane.Doe@Example.com',
-      orderNumber: 'FT-20260418-0007',
-      profileName: 'Jane Doe',
-      companyName: 'Acme Inc.',
-      rowNumber: '12',
-      jobTitle: 'Senior Engineer',
     }),
-    'jane_doe_example_com/2026_04_18/ft_20260418_0007/jane_doe/acme_inc'
+    'jane_doe_example_com/ft_20260418_0007'
   );
 
-  // Optional, because a script and a test have no account in scope. An absent
-  // one becomes `unknown` like every other empty segment rather than throwing
-  // or collapsing the level away.
-  assert.equal(
-    renderOutputPathTemplate('/{{account name}}/{{company name}}', {
-      date: '2026-04-18',
-      profileName: 'Jane Doe',
-      companyName: 'Acme Inc.',
-      jobTitle: 'Senior Engineer',
-    }),
-    'unknown/acme_inc'
-  );
-
-  // And the short alias works the way `profile` and `company` already do.
-  assert.equal(validateOutputPathTemplate('/{{account}}'), '/{{account}}');
-  assert.throws(() => validateOutputPathTemplate('/{{accounts}}'), /Unsupported output path token/);
+  // A script and a test have no account in scope. An absent value becomes
+  // `unknown` like every other empty folder rather than throwing or
+  // collapsing the level away.
+  assert.equal(renderOutputPrefix('/{{user_email}}/{{order_number}}', { order_number: 'FT-1' }), 'unknown/ft_1');
 });
 
-test('renderOutputPathTemplate produces a path that is legal on both platforms', () => {
-  const rendered = renderOutputPathTemplate('/{{profile name}}/{{company name}}', {
+test('a rendered path is legal on both platforms', () => {
+  const rendered = renderOutputPath('/{{order_number}}', '/{{profile_name}}/{{company_name}}', {
+    order_number: 'FT-20260410-0001',
     date: '2026-04-10',
-    profileName: 'Jane Doe',
-    companyName: 'CON',
-    rowNumber: '12',
-    jobTitle: 'Senior Engineer',
+    profile_name: 'Jane Doe',
+    company_name: 'CON',
   });
 
-  assert.equal(rendered, 'jane_doe/_con');
+  assert.equal(rendered, 'ft_20260410_0001/jane_doe/_con');
 });

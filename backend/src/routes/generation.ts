@@ -58,8 +58,9 @@ import {
 } from '../database/orderRepository';
 import { filesFromTaskResult } from '../services/orders/orderTracking';
 import { orderRetentionDays } from '../services/orders/retention';
-import { ORDER_OUTPUT_PATH_TEMPLATE, sanitizeFileNameStem } from '../utils/outputStorage';
-import { accountFolderName, getGeneratedFilePath } from '../utils/generatedPath';
+import { sanitizeFileNameStem } from '../utils/outputStorage';
+import { getGeneratedFilePath } from '../utils/generatedPath';
+import { planRunOutput } from '../services/outputPath';
 import type { Profile } from '../types/profile';
 import type { UserAccount } from '../types/account';
 import { openBatchStream } from './batchStream';
@@ -206,13 +207,11 @@ function readAiOverrides(body: SubmitBody): AiPreferences {
  * A missing company name is refused here, before anything is queued, because it
  * is wrong for every profile and there is nothing to be gained from discovering
  * it thirty times. A missing ROLE is not refused: the job analysis is what names
- * the role when a sheet row does not, and that analysis has not run yet. It is
- * checked per task, once its analysis is in.
+ * the role when a sheet row does not (`resolveTaskRole`), and that analysis has
+ * not run yet; a role still empty then files under an `unknown` `{{role}}`
+ * folder rather than failing a resume over a folder name.
  */
-export function normalizeJobs(
-  body: SubmitBody,
-  outputPathUsesJobTitle: boolean
-): NormalizedJob[] {
+export function normalizeJobs(body: SubmitBody): NormalizedJob[] {
   const jobs = Array.isArray(body.jobs) ? body.jobs : [];
   if (jobs.length === 0) throw new SubmitError('At least one job is required');
 
@@ -223,11 +222,6 @@ export function normalizeJobs(
 
     if (!companyName) {
       throw new SubmitError(`Job ${index + 1} is missing a company name`);
-    }
-    if (outputPathUsesJobTitle && !role && jobDescription.length <= 50) {
-      throw new SubmitError(
-        `Job ${index + 1} (${companyName}) has no role and no job description to take one from.`
-      );
     }
 
     const jobLink = typeof job.jobLink === 'string' ? job.jobLink.trim() : '';
@@ -312,16 +306,6 @@ export function routeFor(choice: { provider: string }): { queue: QueueName } {
  * order wrong is invisible in the response.
  */
 export type BuildTaskOptions = {
-  /**
-   * Who this is being built for, filling `{{account name}}`.
-   *
-   * Passed for EVERY submission, not only orders. The token is offered to the
-   * administrator's own template too, and a template using it would otherwise
-   * file every queued build into one shared `unknown/` tree while the
-   * synchronous routes filed correctly - which is the shape where accounts
-   * start overwriting each other.
-   */
-  accountFolder?: string;
   /**
    * Whether the submitter is an administrator, which decides the forms the
    * request's `model` may take (see ModelRequestOptions). Absent is not one.
@@ -414,10 +398,6 @@ export async function buildTasks(
           // now: the reservation is the sum of these, and a failure refunds
           // exactly its own.
           costMilli,
-          // Carried rather than looked up when the task runs, so the second
-          // half of an order cannot land somewhere else because a setting was
-          // edited, or because midnight passed, while it was queued.
-          ...(options.accountFolder ? { accountFolder: options.accountFolder } : {}),
           ...(tailoredByProfile[profile.id]
             ? { tailoredContent: tailoredByProfile[profile.id] }
             : {}),
@@ -567,13 +547,7 @@ router.post('/batches', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as SubmitBody;
     const kind = readRunKind(body);
     const tabId = kind === IMMEDIATE_BATCH_KIND ? readTabId(body.tabId) : undefined;
-    // Every queued run is filed under the fixed order tree now, which never
-    // renders a `{{job title}}` segment - so no run is held to the
-    // administrator's template's requirements: refusing a row for having no
-    // role, to fill a segment nothing renders, is a refusal for a reason that
-    // does not apply. The role still comes from the analysis when a row has
-    // none (`resolveTaskRole`).
-    const jobs = normalizeJobs(body, false);
+    const jobs = normalizeJobs(body);
 
     const profiles = loadProfiles(req.user ?? null, body.profileIds);
     if (profiles.length === 0) {
@@ -604,10 +578,13 @@ router.post('/batches', async (req: Request, res: Response) => {
     // dispatches immediately, so there is no window afterwards in which to do it.
     const batchId = newBatchId();
     const descriptors = await buildTasks(body, jobs, profiles, batchId, {
-      accountFolder: accountFolderName(req.user),
       admin: isAdmin(req),
       userId: req.user?.id,
     });
+    // Where the run files its resumes - the output folder, the prefix and the
+    // submitter's own folder path in effect NOW, and today - worked out once,
+    // so the whole run lands in one folder whatever is edited while it runs.
+    const output = await planRunOutput(req.user!);
     const charge = chargeFor(descriptors);
 
     /**
@@ -649,12 +626,11 @@ router.post('/batches', async (req: Request, res: Response) => {
        *
        * Every run gets an order row - an immediate one too, of kind
        * `immediate`, which /orders never lists. What the row buys a run that
-       * nobody ordered: its files are filed under the order tree (unique per
-       * run, under the account - a manual build used to land wherever the
-       * administrator's template said, where two accounts could write one
-       * file), they are served only to their owner, each resume is refundable
-       * by its order item, and the retention sweep deletes them
-       * IMMEDIATE_FILE_RETENTION_MS after the run ends (owner decision M4).
+       * nobody ordered: a number, which its prefix folder names - so its
+       * folder is its own, recorded as the row's `output_root`, and every
+       * file in it is served only to its owner - a refund by order item, and
+       * the retention sweep deleting its files IMMEDIATE_FILE_RETENTION_MS
+       * after the run ends (owner decision M4).
        * An immediate row's `expires_at` is not what deletes its files - see
        * `listFinishedImmediateRuns` - so it is stamped as placed.
        */
@@ -668,6 +644,7 @@ router.post('/batches', async (req: Request, res: Response) => {
                   ? body.label.trim()
                   : `${jobs.length} job(s) x ${profiles.length} profile(s)`,
               retentionDays: kind === ORDER_BATCH_KIND ? orderRetentionDays() : 0,
+              outputRootFor: output.rootFor,
             },
             descriptors.map((descriptor, seq) => ({
               seq,
@@ -685,19 +662,18 @@ router.post('/batches', async (req: Request, res: Response) => {
           );
 
       /**
-       * The order's number reaches the paths here, after it has been issued and
-       * before a single task has been dispatched.
+       * The run's place reaches the tasks here, after the order's number has
+       * been issued and before a single task has been dispatched.
        *
        * The number cannot be known when `buildTasks` runs - it is allocated by
-       * the insert above - and it cannot be applied after `submit`, which
-       * dispatches on the spot. This window is the only place it fits, and the
-       * payloads are ours to finish until they are handed over.
+       * the insert above, and the prefix holds it - and it cannot be applied
+       * after `submit`, which dispatches on the spot. This window is the only
+       * place it fits, and the payloads are ours to finish until they are
+       * handed over.
        */
-      const placed = order;
+      const place = output.placeFor(order.number);
       for (const descriptor of descriptors) {
-        const payload = descriptor.payload as ResumeTaskPayload;
-        payload.orderNumber = placed.number;
-        payload.pathTemplate = ORDER_OUTPUT_PATH_TEMPLATE;
+        (descriptor.payload as ResumeTaskPayload).output = place;
       }
 
       batch = queue.submit(descriptors, {
@@ -834,8 +810,9 @@ router.post('/quote', async (req: Request, res: Response) => {
  * to read and nobody else's - the safe direction.
  *
  * This matters more than it looks. A snapshot carries the task labels AND the
- * generated file paths, and `/api/generated/:filename` only asks for a session -
- * so an unscoped read here would hand one account another's finished resumes.
+ * generated file paths, so an unscoped read here would tell one account what
+ * another is applying for, and where its resumes are (the download itself
+ * checks whose run the file is, routes/generatedFiles.ts).
  */
 function canSeeBatch(viewer: Viewer, batch: { shared: Record<string, unknown> } | undefined): boolean {
   if (!batch) return false;

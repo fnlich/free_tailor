@@ -188,8 +188,10 @@ resume whose draft leaves a term out takes one more for its revise pass - and an
 is honoured as the real runner honours it - a signal already aborted when the
 call starts is refused at once, so a stopped run's waiting resume is not built
 and charged behind the check. Set
-`E2E_OUTPUT_DIR` too: it writes the admin *Output folder* setting at boot, so
-the runs' PDFs land there and not in the repository's `generated/`.
+`E2E_OUTPUT_DIR` too: stub-seat.js hands it to the app as `OUTPUT_BASE_DIR`
+(unless that is set already), the `.env` default under the admin *Output
+folder* setting, so the runs' PDFs land there and not in the repository's
+`generated/` - and nothing is stored, so the page reads *From .env*.
 `stub-sheets.js` adds Google Sheets for `sheet-panel.js` - every account's job
 sheet exists, as an upgraded sheet looks: **All** and **Temp For AI** in the
 twelve-column layout (A to F the user's, G to L the analysis's), an older

@@ -1,4 +1,6 @@
-import { getSetting, setSetting } from '../database/settingsRepository';
+import { envContactChannelsText, type SettingSource } from '../config/settingDefaults';
+import { warnEnvOnce, type EnvSource } from '../config/envValue';
+import { deleteSetting, getSetting, setSetting } from '../database/settingsRepository';
 
 /**
  * How to reach whoever runs this installation (owner decision A2): a short list
@@ -26,6 +28,11 @@ import { getSetting, setSetting } from '../database/settingsRepository';
  * Stored in its own app_settings row (`contact`), not in the app settings
  * document: it is the one setting read by people who are not signed in, and
  * keeping it apart keeps that read from touching anything else.
+ *
+ * With no row - nothing saved, or Reset to default, which deletes it - the
+ * channels are `.env`'s `CONTACT_CHANNELS` (`contactChannelsFromEnv`), else
+ * none (owner decision S1). A row holding an empty list is an administrator's
+ * "none", and beats `.env`.
  */
 
 export const CONTACT_SETTING_KEY = 'contact';
@@ -266,11 +273,60 @@ export function validateContactSettings(input: unknown): ContactValidation {
 }
 
 /**
- * The stored channels as anybody may read them - each re-checked, and one
- * that no longer passes (a row edited by hand, a rule tightened since) left
- * out rather than shown, with a line in the log for the operator.
+ * `CONTACT_CHANNELS` as channels: `type:value` entries separated by commas,
+ * each with an optional `|label` after the value -
+ * `email:help@example.org|Support,telegram:@example_help`. Every entry is held
+ * to the same rules as one typed on the admin page, and one that fails them is
+ * left out, with ONE warning naming the positions of every such entry and
+ * never its text (a value that failed may be somebody's address, typed wrong).
+ * More than `MAX_CONTACT_CHANNELS` keeps the first ones.
  */
-export function readContactChannels(): PublicContactChannel[] {
+export function contactChannelsFromEnv(env: EnvSource = process.env): PublicContactChannel[] {
+  const raw = envContactChannelsText(env);
+  if (!raw) return [];
+
+  const channels: PublicContactChannel[] = [];
+  const refused: number[] = [];
+  const beyond: number[] = [];
+  raw.split(',').forEach((piece, index) => {
+    const entry = piece.trim();
+    if (!entry) return;
+    const position = index + 1;
+    const colon = entry.indexOf(':');
+    const bar = entry.lastIndexOf('|');
+    const type = colon > 0 ? entry.slice(0, colon).trim().toLowerCase() : '';
+    const value = colon > 0 ? entry.slice(colon + 1, bar > colon ? bar : undefined) : '';
+    const label = bar > colon ? entry.slice(bar + 1) : '';
+    const checked = validateContactSettings({ channels: [{ type, value, label }] });
+    if (!checked.ok) refused.push(position);
+    else if (channels.length >= MAX_CONTACT_CHANNELS) beyond.push(position);
+    else channels.push(checked.channels[0]);
+  });
+
+  const problems: string[] = [];
+  if (refused.length > 0) {
+    problems.push(
+      `${refused.length === 1 ? 'entry' : 'entries'} ${refused.join(', ')} ` +
+        `${refused.length === 1 ? 'is not a contact channel' : 'are not contact channels'} ` +
+        `(type:value or type:value|label, the type one of ${CONTACT_CHANNEL_TYPES.join(', ')}, the value as the ` +
+        'admin page would take it)'
+    );
+  }
+  if (beyond.length > 0) {
+    problems.push(
+      `${beyond.length === 1 ? 'entry' : 'entries'} ${beyond.join(', ')} ` +
+        `${beyond.length === 1 ? 'is' : 'are'} past the first ${MAX_CONTACT_CHANNELS}`
+    );
+  }
+  if (problems.length > 0) {
+    const them = refused.length + beyond.length === 1 ? 'it is' : 'they are';
+    warnEnvOnce('CONTACT_CHANNELS', `CONTACT_CHANNELS: ${problems.join('; and ')}, so ${them} left out.`);
+  }
+  return channels;
+}
+
+/** The stored row's channels, or null when there is no row - nothing saved, or reset. */
+function storedChannels(): unknown[] | null {
   let stored: unknown;
   try {
     stored = getSetting<unknown>(CONTACT_SETTING_KEY);
@@ -278,20 +334,60 @@ export function readContactChannels(): PublicContactChannel[] {
     console.error('[contact] The stored contact details are not valid JSON; showing none.', error);
     return [];
   }
+  if (stored === null) return null;
   const list = (stored as { channels?: unknown } | null)?.channels;
-  if (!Array.isArray(list)) return [];
+  return Array.isArray(list) ? list : [];
+}
 
+/** The channels in effect and where they came from: saved here, `.env`'s, or none. */
+export type ContactState = {
+  channels: PublicContactChannel[];
+  source: SettingSource;
+  /** What Reset to default would show: `.env`'s channels, or none. */
+  defaults: PublicContactChannel[];
+};
+
+export function readContactState(env: EnvSource = process.env): ContactState {
+  const fromEnv = contactChannelsFromEnv(env);
+  const list = storedChannels();
+  if (list === null) {
+    return { channels: fromEnv, source: fromEnv.length > 0 ? 'env' : 'default', defaults: fromEnv };
+  }
   const channels: PublicContactChannel[] = [];
   for (const entry of list.slice(0, MAX_CONTACT_CHANNELS)) {
     const checked = validateContactSettings({ channels: [entry] });
     if (checked.ok) channels.push(checked.channels[0]);
     else console.warn('[contact] A stored contact channel no longer passes its check and is not shown.');
   }
-  return channels;
+  return { channels, source: 'admin', defaults: fromEnv };
 }
 
-/** Saves what `validateContactSettings` accepted, and answers with what everybody will now read. */
+/**
+ * The channels as anybody may read them: the saved ones - each re-checked, and
+ * one that no longer passes (a row edited by hand, a rule tightened since) left
+ * out rather than shown, with a line in the log for the operator - or, with
+ * none saved, `.env`'s.
+ */
+export function readContactChannels(): PublicContactChannel[] {
+  return readContactState().channels;
+}
+
+/**
+ * Saves what `validateContactSettings` accepted, and answers with what
+ * everybody will now read. `{ channels: null }` is Reset to default: the row
+ * goes, and `.env`'s channels - else none - are shown again.
+ */
 export function saveContactSettings(input: unknown): ContactValidation {
+  const raw = (input ?? {}) as { channels?: unknown };
+  if (raw && typeof raw === 'object' && 'channels' in raw && raw.channels === null) {
+    deleteSetting(CONTACT_SETTING_KEY);
+    const channels = readContactChannels();
+    return {
+      ok: true,
+      settings: { channels: channels.map(({ type, label, value }) => ({ type, label, value })) },
+      channels,
+    };
+  }
   const checked = validateContactSettings(input);
   if (!checked.ok) return checked;
   setSetting(CONTACT_SETTING_KEY, checked.settings);

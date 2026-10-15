@@ -17,9 +17,12 @@
  *                       model, never gets here, so a script that needs a run
  *                       still going gives every job a posting of its own
  *                       (immediate-run.js's `postingsFor`)
- *   E2E_OUTPUT_DIR      where the run's files go (the admin Output folder
- *                       setting, written at boot) - keep them out of the
- *                       repository's generated/ folder
+ *   E2E_OUTPUT_DIR      where the run's files go - keep them out of the
+ *                       repository's generated/ folder. Handed to the app as
+ *                       OUTPUT_BASE_DIR (when that is not set already), the
+ *                       .env default under the admin Output folder setting,
+ *                       so nothing is stored and the page reads
+ *                       "From .env (OUTPUT_BASE_DIR)"
  */
 
 const path = require('path');
@@ -139,8 +142,8 @@ ai.registerAdapter('claude-cli', () => ({
   },
 }));
 
-if (process.env.E2E_OUTPUT_DIR) {
-  require(path.join(DIST, 'config', 'aiModelConfig'))
-    .updateAppSettings({ outputBaseDir: process.env.E2E_OUTPUT_DIR })
-    .catch((error) => console.error('[e2e stub] could not set the output folder:', error));
+// Before the app loads, so config/env.ts sees it set: the environment wins
+// over .env, as it does for every variable.
+if (process.env.E2E_OUTPUT_DIR && !process.env.OUTPUT_BASE_DIR) {
+  process.env.OUTPUT_BASE_DIR = path.resolve(process.env.E2E_OUTPUT_DIR);
 }

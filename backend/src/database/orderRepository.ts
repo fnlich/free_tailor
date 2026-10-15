@@ -1,7 +1,7 @@
 import crypto from 'crypto';
+import path from 'path';
 import { getDb } from './sqlite';
 import { formatSequenceDate, nextDailyReference } from './dailySequence';
-import { ORDER_OUTPUT_PATH_TEMPLATE } from '../utils/outputStorage';
 
 /**
  * Orders and the resumes they delivered.
@@ -25,7 +25,7 @@ export type OrderState = 'running' | 'done' | 'failed' | 'cancelled' | 'expired'
  *
  * `order` is what the Order button places, and the only kind /orders lists.
  * `immediate` is a Generate Immediately run: it has a row so its resumes are
- * filed under the order tree (unique per run, per account), downloaded through
+ * filed under a run folder of its own (`output_root`), downloaded through
  * owner-checked routes, refundable by order item and swept - but nobody
  * ordered it, so it is never listed, and its files go
  * IMMEDIATE_FILE_RETENTION_MS after it ends rather than days later.
@@ -79,6 +79,12 @@ export type Order = {
   finishedAt?: string;
   expiresAt: string;
   purgedAt?: string;
+  /**
+   * The folder the run files everything under: the output folder and the
+   * administrator's prefix as rendered when it was placed, absolute. Absent
+   * on a run whose folder nothing records (see `ownersOfGeneratedFile`).
+   */
+  outputRoot?: string;
 };
 
 export type OrderItem = {
@@ -137,6 +143,7 @@ type OrderRow = {
   expires_at: string | null;
   purged_at: string | null;
   kind: string | null;
+  output_root: string | null;
 };
 
 type OrderItemRow = {
@@ -159,7 +166,7 @@ type OrderItemRow = {
 };
 
 const ORDER_COLUMNS = `id, number, user_id, batch_id, label, total, state,
-  created_at, updated_at, finished_at, expires_at, purged_at, kind`;
+  created_at, updated_at, finished_at, expires_at, purged_at, kind, output_root`;
 
 const ITEM_COLUMNS = `id, order_id, seq, task_id, profile_id, profile_name, company_name,
   role, source_row_number, state, error, files, cost_milli, provider_id, created_at, updated_at`;
@@ -185,6 +192,7 @@ function toOrder(row: OrderRow): Order {
     ...(row.finished_at ? { finishedAt: row.finished_at } : {}),
     expiresAt: row.expires_at ?? row.created_at,
     ...(row.purged_at ? { purgedAt: row.purged_at } : {}),
+    ...(row.output_root ? { outputRoot: row.output_root } : {}),
   };
 }
 
@@ -275,6 +283,14 @@ export type NewOrder = {
   retentionDays: number;
   /** `order` when absent. An immediate run's expiry is measured from when it ends instead. */
   kind?: OrderKind;
+  /**
+   * The run's folder - `<output folder>/<rendered prefix>` - for the number
+   * the order is given, which is allocated inside the insert: the prefix
+   * holds `{{order_number}}`, so the folder cannot be known before. Absent
+   * (a test, a script) records none: the run then claims only its items'
+   * recorded files.
+   */
+  outputRootFor?: (number: string) => string;
 };
 
 /**
@@ -296,13 +312,14 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
     const id = `ord_${crypto.randomUUID()}`;
     db.prepare(
       `INSERT INTO orders (id, number, user_id, batch_id, label, total, state,
-                           created_at, updated_at, expires_at, kind)
+                           created_at, updated_at, expires_at, kind, output_root)
        VALUES (@id, @number, @userId, @batchId, @label, @total, 'running',
-               @createdAt, @createdAt, @expiresAt, @kind)`
+               @createdAt, @createdAt, @expiresAt, @kind, @outputRoot)`
     ).run({
       id,
       number,
       kind,
+      outputRoot: order.outputRootFor ? path.resolve(order.outputRootFor(number)) : null,
       userId: order.userId,
       batchId: order.batchId ?? null,
       label: order.label ?? '',
@@ -676,49 +693,41 @@ export function listFinishedImmediateRuns(endedBeforeIso: string, limit = 200): 
 }
 
 /**
- * Where the order number sits in an ordered path: the segment of
- * ORDER_OUTPUT_PATH_TEMPLATE that names it, read off the template so the two
- * cannot drift.
+ * The accounts whose run folder holds a file, by its absolute path: one index
+ * seek per folder above it (idx_orders_output_root), compared without regard
+ * to case, as a case-insensitive disk opens a folder under any case of its
+ * name. Only a folder ABOVE the file - a run's folder itself is not a file
+ * anybody downloads.
  */
-const ORDER_NUMBER_SEGMENT = ORDER_OUTPUT_PATH_TEMPLATE.split('/')
-  .filter(Boolean)
-  .findIndex((segment) => /\{\{\s*order number\s*\}\}/i.test(segment));
-
-/**
- * The order a path is filed under, by the number in its order segment.
- *
- * `sanitizePathSegment` writes `FT-20260920-0001` as `ft_20260920_0001` (and
- * `FT-RUN-...` as `ft_run_...`). A number is only ever capitals, digits and
- * dashes, so upper-casing and turning `_` back into `-` is the exact inverse,
- * and the lookup is one seek on the UNIQUE number. Only for a path INSIDE that
- * folder - the folder itself is not a file anybody downloads.
- */
-function ownerOfOrderFolder(spelling: string): string | null {
-  if (ORDER_NUMBER_SEGMENT < 0) return null;
-  const segments = spelling.split('/');
-  if (segments.length <= ORDER_NUMBER_SEGMENT + 1) return null;
-  const segment = segments[ORDER_NUMBER_SEGMENT];
-  if (!/^[a-z0-9_]+$/i.test(segment)) return null;
-  const row = getDb()
-    .prepare(`SELECT user_id AS userId FROM orders WHERE number = ?`)
-    .get(segment.toUpperCase().replace(/_/g, '-')) as { userId: string } | undefined;
-  return row ? row.userId : null;
+function ownersByRunFolder(absolute: string): string[] {
+  const select = getDb().prepare(
+    `SELECT user_id AS userId FROM orders WHERE output_root = @folder COLLATE NOCASE`
+  );
+  const owners = new Set<string>();
+  let folder = path.dirname(path.resolve(absolute));
+  for (;;) {
+    for (const row of select.all({ folder }) as Array<{ userId: string }>) owners.add(row.userId);
+    const parent = path.dirname(folder);
+    if (parent === folder) break;
+    folder = parent;
+  }
+  return [...owners];
 }
 
 /**
- * Every account that owns a generated file, by path - empty when nothing does.
+ * Every account that owns a generated file - empty when nothing does.
  *
- * The question the older download routes have to ask. `/api/generated` and
- * `/api/resume/download` take a path, and were written when a path was an
- * opaque thing you had to be told. An ordered resume - and every queued run is
- * an order row now, Generate Immediately included - is filed under a FIXED,
- * published template whose segments are an email, a date, an order number and
- * a company: derivable rather than guessable, and a derivable path behind a
- * signed-in-only check is a directory of everybody's resumes.
+ * The question `/api/generated` has to ask: it takes a path, and a path is
+ * derivable rather than guessable - every run is filed under the
+ * administrator's prefix and its account's own folder path, whose folders are
+ * an email, a date, an order number, a profile and a company - and a
+ * derivable path behind a signed-in-only check would be a directory of
+ * everybody's resumes.
  *
- * `spellings` are the path as the server will OPEN it (`resolveGeneratedFile`),
- * never the raw parameter: matched exactly against the raw string, `a//b` or
- * `./a/b` was "a path no order claims" and served to anybody. Two claims, either
+ * `spellings` are the path as the server will OPEN it, relative to the output
+ * folder, and `absolutes` the same as absolute paths (both from
+ * `resolveGeneratedFile`), never the raw parameter: matched against the raw
+ * string, `a//b` or `./a/b` was "a path no order claims". Two claims, either
  * of which makes an account an owner:
  *
  *  - an item row that recorded the file. Found with LIKE against the stored
@@ -727,16 +736,19 @@ function ownerOfOrderFolder(spelling: string): string | null {
  *    worth building for a lookup made once per download - then confirmed
  *    properly, so a substring that merely looks similar cannot pass. Compared
  *    without regard to case: on a case-insensitive disk (Windows, macOS) a
- *    change of case is the same file, and folding can only ever narrow what a
- *    stranger gets. LIKE already folds ASCII.
- *  - the run's FOLDER. A file is on disk before its item records it (the rest
- *    of the resume is still being built), and one a failed task wrote is never
- *    recorded at all; both sit in the run's own folder, which is the account's.
+ *    change of case is the same file. LIKE already folds ASCII.
+ *  - the run's FOLDER, `orders.output_root`. A file is on disk before its item
+ *    records it (the rest of the resume is still being built), and one a
+ *    failed task wrote is never recorded at all; both sit in the run's own
+ *    folder, which is the account's. The folder is recorded when the run is
+ *    placed, so a prefix or an output folder changed since does not move it.
+ *    A run placed before folders were recorded, whose files recorded none
+ *    either (migration 10), claims only its recorded files.
  *
  * Every owner is returned rather than the first, so the caller refuses a path
  * any OTHER account has a claim on.
  */
-export function ownersOfGeneratedFile(spellings: readonly string[]): string[] {
+export function ownersOfGeneratedFile(spellings: readonly string[], absolutes: readonly string[] = []): string[] {
   const owners = new Set<string>();
   const select = getDb().prepare(
     `SELECT o.user_id AS userId, i.files AS files
@@ -756,9 +768,10 @@ export function ownersOfGeneratedFile(spellings: readonly string[]): string[] {
     for (const row of rows) {
       if (parseFiles(row.files).some((file) => file.path.toLowerCase() === folded)) owners.add(row.userId);
     }
-
-    const folderOwner = ownerOfOrderFolder(wanted);
-    if (folderOwner) owners.add(folderOwner);
+  }
+  for (const absolute of absolutes) {
+    if (!absolute.trim()) continue;
+    for (const owner of ownersByRunFolder(absolute)) owners.add(owner);
   }
   return [...owners];
 }

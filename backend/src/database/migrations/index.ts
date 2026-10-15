@@ -1,5 +1,8 @@
 import type Database from 'better-sqlite3';
 
+import { ordersOutputRootStep } from './ordersOutputRoot';
+import { settingsDefaultsStep } from './settingsDefaults';
+
 /**
  * Data migrations, run once per process on the first database use.
  *
@@ -7,13 +10,14 @@ import type Database from 'better-sqlite3';
  * rewrites rows whose SHAPE is still valid but whose CONTENT names something
  * the code no longer knows about.
  *
- * There are none now. Every step an older build needed - 001 and 003 to 008 -
- * ran on every install before this build (the startup guard in sqlite.ts
- * refuses a database where they had not), so they were folded away: SCHEMA
- * and the seeded defaults are what they produced. A database created by this
- * build is stamped at `BASELINE_SCHEMA_VERSION`, the version 008 left, and the
- * runner below stays for the next step, which is 9. Never reuse a number below
- * it: a database an older build upgraded already passed every one of them.
+ * Every step an older build needed - 001 and 003 to 008 - ran on every install
+ * before this build (the startup guard in sqlite.ts refuses a database where
+ * they had not), so they were folded away: SCHEMA and the seeded defaults are
+ * what they produced. A database created by this build is stamped at
+ * `BASELINE_SCHEMA_VERSION`, the version 008 left, and the steps below run on
+ * it too - on a fresh database each finds nothing to do. They are numbered
+ * from 9, one file each; never reuse a number: a database at a version has
+ * passed every step up to it.
  */
 
 /** The `schema_meta` key the version is kept under. */
@@ -55,14 +59,25 @@ export type MigrationStep = {
 };
 
 /**
- * The migrations, in order - none yet.
+ * The migrations, in order:
+ *
+ *   9  settings-defaults - the app-settings row keeps only what an
+ *      administrator chose, so the rest follows `.env` (./settingsDefaults.ts).
+ *  10  orders-output-root - every run placed before runs recorded their
+ *      folder is given the one its recorded files name (./ordersOutputRoot.ts).
  *
  * A list rather than a single call so that an install part way along runs
  * only what it is missing, and so the version is written after EACH step: a
  * later migration that throws must not roll an earlier one's version back and
  * have it re-run against rows it has already rewritten.
  */
-const MIGRATIONS: readonly MigrationStep[] = [];
+const MIGRATIONS: readonly MigrationStep[] = [settingsDefaultsStep, ordersOutputRootStep];
+
+/** The version a database is at once every step has run: what a fresh one ends at. */
+export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(
+  (latest, step) => Math.max(latest, step.version),
+  BASELINE_SCHEMA_VERSION
+);
 
 /**
  * Never throws. A migration that cannot run must not stop the server from

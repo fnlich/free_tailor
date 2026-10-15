@@ -171,6 +171,30 @@ export function setReportRateMilli(userId: string, milli: number | null): void {
     .run(milli, now(), userId);
 }
 
+/**
+ * The account's own folder path after the administrator's prefix
+ * (`users.output_path_suffix`, owner decision O3), as stored: null when it has
+ * set none, which means `OUTPUT_PATH_SUFFIX`, else the code's default. A read
+ * of its own like the rate above, so the session payload does not carry it;
+ * services/outputPath.ts checks it and says where the one in effect came
+ * from.
+ */
+export function getOutputPathSuffix(userId: string): string | null {
+  const row = getDb()
+    .prepare('SELECT output_path_suffix FROM users WHERE id = ?')
+    .get(userId) as { output_path_suffix: unknown } | undefined;
+  return typeof row?.output_path_suffix === 'string' && row.output_path_suffix.trim()
+    ? row.output_path_suffix
+    : null;
+}
+
+/** Stores an account's folder path (already validated) or clears it (null): Reset to default. */
+export function setOutputPathSuffix(userId: string, suffix: string | null): void {
+  getDb()
+    .prepare('UPDATE users SET output_path_suffix = ?, updated_at = ? WHERE id = ?')
+    .run(suffix, now(), userId);
+}
+
 export function getUserById(id: string): UserAccount | null {
   const row = getDb()
     .prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`)

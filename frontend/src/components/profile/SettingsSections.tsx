@@ -16,7 +16,6 @@ import type { UpdateDraft } from './parts';
  */
 
 const FILE_NAME_TOKENS = '{{profile name}}, {{company name}}, {{row number}}, {{job title}}, {{date}}';
-const FOLDER_NAME_TOKENS = '{{company name}}, {{row number}}';
 
 export function AiDefaultsSection({
   draft,
@@ -140,20 +139,6 @@ export function GenerationSettingsSection({
             onChange={(event) => set('coverLetterFileNameTemplate', event.target.value)}
             className="tl-input"
             placeholder={DEFAULT_PROFILE_SETTINGS.coverLetterFileNameTemplate}
-          />
-        </Field>
-        <Field
-          label="Company folder name"
-          htmlFor="profile-company-folder-name"
-          hint={<>Available tokens: {FOLDER_NAME_TOKENS}</>}
-        >
-          <input
-            id="profile-company-folder-name"
-            type="text"
-            value={settings.companyFolderNameTemplate}
-            onChange={(event) => set('companyFolderNameTemplate', event.target.value)}
-            className="tl-input"
-            placeholder={DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate}
           />
         </Field>
       </div>

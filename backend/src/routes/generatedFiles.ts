@@ -4,27 +4,29 @@ import { ownersOfGeneratedFile } from '../database/orderRepository';
 import { resolveGeneratedFile } from '../utils/generatedPath';
 
 /**
- * The two older download routes' one question: may this account have the file
- * at this path? Answered with the file to send, or null for 404.
+ * The download route's one question: may this account have the file at this
+ * path? Answered with the file to send, or null for 404.
  *
- * `/api/generated/:filename(*)` (index.ts, below) and
- * `/api/resume/download/:filename(*)` (routes/resume.ts) both take a path out of
- * the URL. Whose file it is is decided on the path as the server will OPEN it
+ * `/api/generated/:filename(*)` (index.ts, below) takes a path out of the URL.
+ * Whose file it is is decided on the path as the server will OPEN it
  * (`resolveGeneratedFile`), never on the parameter as typed - `a//b`, `./a/b`
  * and `x/../a/b` open the same file as `a/b`, and the raw string only ever
- * matched one of them. A file any OTHER account owns
- * (`ownersOfGeneratedFile`: an order or a Generate Immediately run recorded it,
- * or it sits in that run's folder) answers 404 - not 403, for the same reason
- * the order routes use it - an administrator's request included, as it always
- * has. A path nothing claims is a resume built by the older synchronous
- * `POST /api/resume/generate`, under the administrator's template, and is
- * served to any builder exactly as before; narrowing those is a separate change
- * with a separate blast radius.
+ * matched one of them. The file must be the asker's and nobody else's
+ * (`ownersOfGeneratedFile`: a run of theirs recorded it, or it sits in one of
+ * their runs' folders): any other account's claim answers 404 - not 403, for
+ * the same reason the order routes use it - an administrator's request
+ * included. So does a file NOBODY claims: every resume is filed by a queued
+ * run now, which records its folder, so a file no run claims is a run's
+ * placed before folders were recorded that its item never recorded either
+ * (the partial PDF of a build that failed) or something put there by hand -
+ * served to every builder, either could be anybody's. (The synchronous
+ * `POST /api/resume/generate`, whose builds were nobody's, is gone.)
  */
 export async function generatedFileFor(viewerId: string, requested: string): Promise<string | null> {
   const file = await resolveGeneratedFile(requested);
   if (!file) return null;
-  if (ownersOfGeneratedFile(file.spellings).some((owner) => owner !== viewerId)) return null;
+  const owners = ownersOfGeneratedFile(file.spellings, file.absolutes);
+  if (!owners.includes(viewerId) || owners.some((owner) => owner !== viewerId)) return null;
   return file.absolute;
 }
 

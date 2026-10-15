@@ -97,7 +97,6 @@ export const DEFAULT_PROFILE_SETTINGS: DraftSettings = {
   resumePromptId: 'tailor-resume',
   resumeFileNameTemplate: '{{profile name}}',
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
-  companyFolderNameTemplate: '{{row number}}_{{company name}}',
   technicalSkillsLayout: 'categorized',
   // Off, which is what every resume printed before the switches existed - so a
   // profile nobody has touched comes out exactly as it did.
@@ -151,8 +150,6 @@ export function draftSettingsFrom(profile?: Pick<Profile, 'profileSettings'> | n
     resumeFileNameTemplate: stored.resumeFileNameTemplate || DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate,
     coverLetterFileNameTemplate:
       stored.coverLetterFileNameTemplate || DEFAULT_PROFILE_SETTINGS.coverLetterFileNameTemplate,
-    companyFolderNameTemplate:
-      stored.companyFolderNameTemplate || DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
     technicalSkillsLayout: normalizeTechnicalSkillsLayout(stored.technicalSkillsLayout),
     // Only `true` is on: absent, and anything that is not a boolean, read as
     // off on the server too.
@@ -347,8 +344,6 @@ export function draftToPayload(
         settings.resumeFileNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.resumeFileNameTemplate,
       coverLetterFileNameTemplate:
         settings.coverLetterFileNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.coverLetterFileNameTemplate,
-      companyFolderNameTemplate:
-        settings.companyFolderNameTemplate.trim() || DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
       technicalSkillsLayout: normalizeTechnicalSkillsLayout(settings.technicalSkillsLayout),
       includeSoftSkills: settings.includeSoftSkills === true,
       includeStrengths: settings.includeStrengths === true,

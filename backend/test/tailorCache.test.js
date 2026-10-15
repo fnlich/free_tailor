@@ -408,7 +408,7 @@ test('a skill added to the library changes no resume\'s question: a hit', async 
   assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10]);
 });
 
-test('the same resume built again reuses its tailoring from /resume/preview and /resume/generate too', async (t) => {
+test('the same resume built again reuses its tailoring from /resume/preview and /resume/preview-all too', async (t) => {
   // The queue is not the only caller with an analysis: each route passes the
   // cache its context (CLAUDE.md, "The tailoring cache").
   const h = await serveInstall('tailor-cache-routes');
@@ -421,20 +421,12 @@ test('the same resume built again reuses its tailoring from /resume/preview and 
   assert.equal(h.seats.tailorings().length, 1, '/resume/preview asked once');
   assert.equal(h.seats.revisions().length, 1, 'and revised once');
 
-  const generate = {
-    profileId: 'p-claude',
-    companyName: 'Acme',
-    role: 'Engineer',
-    format: 'pdf',
-    includeCoverLetterDocx: true,
-    jobDescription: posting(42),
-  };
-  const first = await h.post('/resume/generate', generate);
+  const previewAll = { profileIds: ['p-claude'], jobDescription: posting(42) };
+  const first = await h.post('/resume/preview-all', previewAll);
   assert.equal(first.status, 200, JSON.stringify(first.body));
-  assert.equal((await h.post('/resume/generate', generate)).status, 200);
-  assert.equal(h.seats.tailorings().length, 2, '/resume/generate tailored its posting once');
-  assert.equal(h.seats.revisions().length, 2, 'revised it once');
-  assert.equal(letters(h.seats).length, 1, 'and wrote its cover letter once');
+  assert.equal((await h.post('/resume/preview-all', previewAll)).status, 200);
+  assert.equal(h.seats.tailorings().length, 2, '/resume/preview-all tailored its posting once');
+  assert.equal(h.seats.revisions().length, 2, 'and revised it once');
 });
 
 test('a queued build reuses its cover letter as well, and another template is a miss', async (t) => {

@@ -38,3 +38,11 @@ export function setSetting(key: string, value: unknown): void {
     .run({ key, value: JSON.stringify(value), updated_at: new Date().toISOString() });
 }
 
+/**
+ * Removes a settings row, so its reader falls back to `.env`'s value, else the
+ * code's - what Reset to default does to a setting kept in a row of its own
+ * (the contact details). True when there was a row to remove.
+ */
+export function deleteSetting(key: string): boolean {
+  return getDb().prepare('DELETE FROM app_settings WHERE key = ?').run(key).changes > 0;
+}

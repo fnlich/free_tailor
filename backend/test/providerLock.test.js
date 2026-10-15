@@ -306,11 +306,11 @@ test('with every seat locked, settings still read - no runnable model, the locks
   assert.deepEqual(admin.providerLocks.map((lock) => lock.id), [...AI_PROVIDER_IDS]);
   assert.ok(admin.aiModels.some((model) => model.id === 'claude-cli-sonnet'), 'the admin still sees every model');
   assert.equal(readSettingRaw(dbDir, 'app-settings'), stored, 'reading does not rewrite the row');
-  assert.equal(
-    JSON.parse(stored).defaultModelId,
-    'claude-cli-sonnet',
-    'the stored default is kept, so lifting the lock restores it'
-  );
+  // Only what was set is stored (owner decision S1): no default model was
+  // chosen, so none is in the row, and lifting the lock resolves the seed
+  // default again rather than a value frozen while nothing could run.
+  assert.equal(JSON.parse(stored).defaultTheme, 'dark');
+  assert.equal('defaultModelId' in JSON.parse(stored), false, 'a default nobody chose is not stored');
 
   // Everybody is told only who can fix it; the locks are the administrator's
   // detail, and the 503 says it is the installation, not the request.

@@ -80,6 +80,10 @@ test('app settings persist in the SQLite settings table', async () => {
 
 test('reading settings does not rewrite an existing settings record', async () => {
   const { rootDir, dbDir } = useTempStorage('settings-readonly');
+  // Opened first, so its data migrations have run - step 9 rewrites a row
+  // whose fields still hold their old defaults, once, as the database opens.
+  // What is pinned here is that READING, after that, never writes.
+  loadFresh('../dist/database/sqlite').getDb();
   const originalJson = `{
   "providersEnabled": {
     "claude-cli": true,
@@ -104,7 +108,10 @@ test('reading settings does not rewrite an existing settings record', async () =
   const config = loadFresh('../dist/config/aiModelConfig');
 
   const loaded = await config.getAdminAppSettings();
-  assert.equal(loaded.outputPathTemplate, '/{{date}}/{{profile name}}/{{company name}}');
+  // The folder template an older build stored is not read (the prefix took
+  // its place, and its default is in effect) - and not rewritten either.
+  assert.equal('outputPathTemplate' in loaded, false);
+  assert.equal(loaded.outputPathPrefix, '/{{user_email}}/{{order_number}}');
   // Keys for anything but the catalog's seats are ignored, and a read
   // rewrites nothing.
   assert.deepEqual(Object.keys(loaded.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
@@ -159,65 +166,67 @@ test('app settings preserve at least one enabled provider, and no key reaches th
   }
 });
 
-test('generated path helpers read output settings from the stored settings', async () => {
+test("generated path helpers file a run under its own place, and anything else under the settings in effect", async () => {
   const { rootDir } = useTempStorage('generated-path');
   const outputDir = path.join(rootDir, 'output');
   const config = loadFresh('../dist/config/aiModelConfig');
   const generatedPath = loadFresh('../dist/utils/generatedPath');
 
-  await config.updateAppSettings({
-    outputBaseDir: outputDir,
-    outputPathTemplate: '/{{profile name}}/{{company name}}/{{job title}}',
-  });
+  await config.updateAppSettings({ outputBaseDir: outputDir, outputPathPrefix: '/runs/{{order_number}}' });
 
-  const result = await generatedPath.getGeneratedOutputPath(
-    { name: 'Jane Doe' },
-    'Acme Inc',
-    'Senior Engineer'
+  // A run's place - fixed when it was submitted - decides, whatever the
+  // settings say now.
+  const output = {
+    baseDir: path.join(rootDir, 'then'),
+    prefix: 'jane_example_com/ft_20261015_0001',
+    suffix: '/{{profile_name}}/{{company_name}}/{{role}}',
+    date: '2026-10-15',
+    accountName: 'jane@example.com',
+    orderNumber: 'FT-20261015-0001',
+  };
+  const placed = await generatedPath.getGeneratedOutputPath({ name: 'Jane Doe' }, 'Acme Inc', 'Senior Engineer', { output });
+  assert.equal(placed.relativeBase, 'jane_example_com/ft_20261015_0001/jane_doe/acme_inc/senior_engineer');
+  assert.equal(placed.storagePathBase, placed.relativeBase);
+  assert.equal(
+    placed.absoluteDir,
+    path.join(rootDir, 'then', 'jane_example_com', 'ft_20261015_0001', 'jane_doe', 'acme_inc', 'senior_engineer')
   );
+  assert.equal(placed.profileSlug, 'jane_doe');
+  assert.equal(placed.roleSlug, 'senior_engineer');
 
-  assert.equal(result.relativeBase, 'jane_doe/acme_inc/senior_engineer');
-  assert.equal(result.absoluteDir, path.join(outputDir, 'jane_doe', 'acme_inc', 'senior_engineer'));
-  assert.equal(result.profileSlug, 'jane_doe');
-  assert.equal(result.companyFolderName, 'acme_inc');
-  assert.equal(result.roleSlug, 'senior_engineer');
+  // Without one (a script, a test): the prefix and the default folder path in
+  // effect, `unknown` for the account and the order.
+  const loose = await generatedPath.getGeneratedOutputPath({ name: 'Jane Doe' }, 'Acme Inc', 'Senior Engineer');
+  const today = generatedPath.getCurrentDateFolder().split('-').join('_');
+  assert.equal(loose.relativeBase, `runs/unknown/${today}/jane_doe/acme_inc/senior_engineer`);
+  assert.equal(loose.absoluteDir, path.join(outputDir, 'runs', 'unknown', today, 'jane_doe', 'acme_inc', 'senior_engineer'));
 });
 
-test('generated path helpers apply per-profile company folder name templates', async () => {
+test('a folder path renders text around tokens as one folder, a row number, and no company folder template', async () => {
   const { rootDir } = useTempStorage('generated-folder-name');
-  const outputDir = path.join(rootDir, 'output');
-  const config = loadFresh('../dist/config/aiModelConfig');
   const generatedPath = loadFresh('../dist/utils/generatedPath');
+  const output = {
+    baseDir: path.join(rootDir, 'output'),
+    prefix: 'jane_example_com/ft_20261015_0001',
+    suffix: '/{{date}}{{profile_name}}/{{row_number}}_{{company_name}}/{{role}}',
+    date: '2026-10-15',
+    accountName: 'jane@example.com',
+    orderNumber: 'FT-20261015-0001',
+  };
 
-  await config.updateAppSettings({
-    outputBaseDir: outputDir,
-    outputPathTemplate: '/{{profile name}}/{{company name}}/{{job title}}',
-  });
-
-  const defaultResult = await generatedPath.getGeneratedOutputPath(
-    { name: 'Jane Doe' },
+  const result = await generatedPath.getGeneratedOutputPath(
+    // A folder template an older profile stored is not read.
+    { name: 'Jane Doe', profileSettings: { companyFolderNameTemplate: '{{company name}}_row_{{row number}}' } },
     'Acme Inc',
     'Senior Engineer',
-    { sourceRowNumber: 12 }
+    { sourceRowNumber: 12, output }
   );
+  assert.equal(result.relativeBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/12_acme_inc/senior_engineer');
+  assert.equal('companyFolderName' in result, false);
 
-  assert.equal(defaultResult.relativeBase, 'jane_doe/12_acme_inc/senior_engineer');
-  assert.equal(defaultResult.companyFolderName, '12_acme_inc');
-
-  const customResult = await generatedPath.getGeneratedOutputPath(
-    {
-      name: 'Jane Doe',
-      profileSettings: {
-        companyFolderNameTemplate: '{{company name}}_row_{{row number}}',
-      },
-    },
-    'Acme Inc',
-    'Senior Engineer',
-    { sourceRowNumber: 12 }
-  );
-
-  assert.equal(customResult.relativeBase, 'jane_doe/acme_inc_row_12/senior_engineer');
-  assert.equal(customResult.companyFolderName, 'acme_inc_row_12');
+  // No row, and no role: the row's text stays, and an empty folder is `unknown`.
+  const bare = await generatedPath.getGeneratedOutputPath({ name: 'Jane Doe' }, 'Acme Inc', '', { output });
+  assert.equal(bare.relativeBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/acme_inc/unknown');
 });
 
 test('generated path helpers apply per-profile output file name templates', async () => {
@@ -226,10 +235,7 @@ test('generated path helpers apply per-profile output file name templates', asyn
   const config = loadFresh('../dist/config/aiModelConfig');
   const generatedPath = loadFresh('../dist/utils/generatedPath');
 
-  await config.updateAppSettings({
-    outputBaseDir: outputDir,
-    outputPathTemplate: '/{{profile name}}/{{company name}}',
-  });
+  await config.updateAppSettings({ outputBaseDir: outputDir });
 
   const result = await generatedPath.getGeneratedOutputPath(
     {

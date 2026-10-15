@@ -48,6 +48,30 @@ export function resetEnvWarningsForTests(): void {
 }
 
 /**
+ * The same once-per-name warning, for a reader whose value is judged outside
+ * this file - a model named by `DEFAULT_MODEL` is only known to be one once the
+ * stored model list is read (config/aiModelConfig.ts), and a `CONTACT_CHANNELS`
+ * entry is checked by the contact rules (services/contact.ts). Sharing the set
+ * keeps "once per variable" true across both, and `resetEnvWarningsForTests`
+ * forgets these too.
+ */
+export function warnEnvOnce(name: string, message: string): void {
+  warnOnce(name, message);
+}
+
+/**
+ * A value read from the environment, and whether the environment supplied it.
+ *
+ * `fromEnv` is false when the variable is unset AND when what it holds was
+ * refused (and warned about): either way the value is the fallback. The
+ * settings an administrator may leave unset (config/settingDefaults.ts) show
+ * that difference on the admin pages - "From .env (NAME)" or "Default" - so
+ * they read through these; every other caller wants only the value and uses the
+ * plain primitive, which is this with `.value`.
+ */
+export type EnvReading<T> = { value: T; fromEnv: boolean };
+
+/**
  * The trimmed value, or null when the variable is unset, empty or whitespace.
  *
  * Exported for the rare reader whose empty case is not simply "the default" and
@@ -207,16 +231,37 @@ export type EnvDollarsOptions = {
  * typed into the app does: at most three decimals ($0.001 is the smallest
  * step), never negative, no exponents. Junk - "five", "0.0005", "-1" - warns
  * once and uses the default; above the ceiling clamps and warns, like envInt.
+ *
+ * A `null` fallback is for an amount whose default is "not set at all" (a
+ * cap that is off unless set), as with envInt: junk there means no amount.
  */
+export function envDollarsMilli(name: string, fallbackMilli: number, opts: EnvDollarsOptions, env?: EnvSource): number;
 export function envDollarsMilli(
   name: string,
-  fallbackMilli: number,
+  fallbackMilli: null,
+  opts: EnvDollarsOptions,
+  env?: EnvSource
+): number | null;
+export function envDollarsMilli(
+  name: string,
+  fallbackMilli: number | null,
   opts: EnvDollarsOptions,
   env: EnvSource = process.env
-): number {
-  const raw = envRaw(name, env);
-  if (raw === null) return fallbackMilli;
+): number | null {
+  return readEnvDollarsMilli(name, fallbackMilli, opts, env).value;
+}
 
+/** `envDollarsMilli`, saying whether the environment supplied the amount (a clamped one counts). */
+export function readEnvDollarsMilli(
+  name: string,
+  fallbackMilli: number | null,
+  opts: EnvDollarsOptions,
+  env: EnvSource = process.env
+): EnvReading<number | null> {
+  const raw = envRaw(name, env);
+  if (raw === null) return { value: fallbackMilli, fromEnv: false };
+
+  const shownFallback = fallbackMilli === null ? 'the default (unset)' : formatMoney(fallbackMilli);
   const parsed = parseDollars(raw);
   if (!parsed.ok) {
     const why =
@@ -225,14 +270,14 @@ export function envDollarsMilli(
         : parsed.problem === 'negative'
           ? 'is negative'
           : 'is not an amount in dollars';
-    warnOnce(name, `${name}=${quote(raw)} ${why}; using ${formatMoney(fallbackMilli)}.`);
-    return fallbackMilli;
+    warnOnce(name, `${name}=${quote(raw)} ${why}; using ${shownFallback}.`);
+    return { value: fallbackMilli, fromEnv: false };
   }
   if (parsed.milli > opts.maxMilli) {
     warnOnce(name, `${name}=${raw} is above ${formatMoney(opts.maxMilli)}; using ${formatMoney(opts.maxMilli)}.`);
-    return opts.maxMilli;
+    return { value: opts.maxMilli, fromEnv: true };
   }
-  return parsed.milli;
+  return { value: parsed.milli, fromEnv: true };
 }
 
 /* ----------------------------------------------------------------- booleans */
@@ -247,18 +292,23 @@ export function envBool(
   _opts: Record<string, never> = {},
   env: EnvSource = process.env
 ): boolean {
+  return readEnvBool(name, fallback, env).value;
+}
+
+/** `envBool`, saying whether the environment supplied the value. */
+export function readEnvBool(name: string, fallback: boolean, env: EnvSource = process.env): EnvReading<boolean> {
   const raw = envRaw(name, env);
-  if (raw === null) return fallback;
+  if (raw === null) return { value: fallback, fromEnv: false };
 
   const word = raw.toLowerCase();
-  if (TRUE_WORDS.has(word)) return true;
-  if (FALSE_WORDS.has(word)) return false;
+  if (TRUE_WORDS.has(word)) return { value: true, fromEnv: true };
+  if (FALSE_WORDS.has(word)) return { value: false, fromEnv: true };
 
   warnOnce(
     name,
     `${name}=${quote(raw)} is not one of 1/true/yes/on or 0/false/no/off; using ${fallback ? 'on' : 'off'}.`
   );
-  return fallback;
+  return { value: fallback, fromEnv: false };
 }
 
 /* -------------------------------------------------------------------- enums */
@@ -276,19 +326,29 @@ export function envEnum<T extends string>(
   opts: EnvEnumOptions<T>,
   env: EnvSource = process.env
 ): T {
+  return readEnvEnum(name, fallback, opts, env).value;
+}
+
+/** `envEnum`, saying whether the environment supplied the value. */
+export function readEnvEnum<T extends string>(
+  name: string,
+  fallback: T,
+  opts: EnvEnumOptions<T>,
+  env: EnvSource = process.env
+): EnvReading<T> {
   const raw = envRaw(name, env);
-  if (raw === null) return fallback;
+  if (raw === null) return { value: fallback, fromEnv: false };
 
   const match = opts.caseInsensitive
     ? opts.values.find((value) => value.toLowerCase() === raw.toLowerCase())
     : opts.values.find((value) => value === raw);
-  if (match !== undefined) return match;
+  if (match !== undefined) return { value: match, fromEnv: true };
 
   warnOnce(
     name,
     `${name}=${quote(raw)} is not one of ${opts.values.join(', ')}; using ${quote(fallback)}.`
   );
-  return fallback;
+  return { value: fallback, fromEnv: false };
 }
 
 /* -------------------------------------------------------------------- lists */

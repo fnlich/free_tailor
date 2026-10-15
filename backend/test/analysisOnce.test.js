@@ -21,7 +21,7 @@ const { posting, serveInstall, until, untilFinished } = require('./analysisHarne
  * | 4 | an order had > 100 postings                   | each posting once, a second order none        |
  * | 5 | an admin edited the analysis prompt           | the prompt is no part of the key              |
  * | 6 | a profile had its own analysis prompt         | per-profile analysis prompts are gone         |
- * | 7 | Generate was pressed again                    | analysisId, or the store by text/link         |
+ * | 7 | Preview (or Generate) was pressed again       | analysisId, or the store by text/link         |
  * | 8 | two requests arrived at once                  | the process-wide in-flight join               |
  * | 9 | a task retried                                | the retry skips the analysis step             |
  * |10 | the Job Filter read the posting itself        | the filter judges the one analysis            |
@@ -177,27 +177,27 @@ test('row 6: a profile that had its own analysis prompt shares the one analysis,
   assert.equal(h.seats.tailorings().length, 2);
 });
 
-test('row 7: Generate pressed again - with the analysisId, and without it - analyses nothing more', async (t) => {
+test('row 7: Preview pressed again - with the analysisId, and without it - analyses nothing more', async (t) => {
   const h = await serveInstall('row7');
   t.after(h.close);
-  const body = { profileId: 'p-claude', companyName: 'Acme', role: 'Engineer', format: 'pdf', includeCoverLetterDocx: false };
-  const first = await h.post('/resume/generate', { ...body, jobDescription: posting(7), jobLink: LINK });
+  const body = { profileId: 'p-claude', companyName: 'Acme', role: 'Engineer' };
+  const first = await h.post('/resume/preview', { ...body, jobDescription: posting(7), jobLink: LINK });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.ok(first.body.analysisId);
 
-  const withId = await h.post('/resume/generate', { ...body, analysisId: first.body.analysisId });
+  const withId = await h.post('/resume/preview', { ...body, analysisId: first.body.analysisId });
   assert.equal(withId.status, 200);
   // Without it: found by its text...
-  await h.post('/resume/generate', { ...body, jobDescription: posting(7) });
+  await h.post('/resume/preview', { ...body, jobDescription: posting(7) });
   // ...and by its link, reworded.
-  await h.post('/resume/generate', { ...body, jobDescription: `${posting(7)} Reposted elsewhere.`, jobLink: `${LINK}/?utm_source=x` });
+  await h.post('/resume/preview', { ...body, jobDescription: `${posting(7)} Reposted elsewhere.`, jobLink: `${LINK}/?utm_source=x` });
   // A batch, the same.
   const { batchId } = await submit(h, { jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(7) }], profileIds: ['p-claude'] });
   await untilFinished(batchId);
   assert.equal(h.seats.analyses().length, 1);
 
   // An analysis OBJECT a page sends is not read; an id nobody stored is refused.
-  const forged = await h.post('/resume/generate', {
+  const forged = await h.post('/resume/preview', {
     ...body,
     jobAnalysis: { jobMeta: { title: 'Forged' }, jobField: 'blockchain-web3' },
     analysisId: 'no-such-analysis',

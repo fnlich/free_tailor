@@ -54,9 +54,12 @@ test('every AI call in the resume route can be cancelled by the caller going awa
   // were not.
   const source = fs.readFileSync(ROUTE, 'utf8');
 
+  // The cover letter is written by the queue's tasks now (the synchronous
+  // /resume/generate is gone), but a call added here later must carry it too.
+  const calledHere = ['tailorResume', 'getOrCreateAnalysis'];
   for (const name of ['tailorResume', 'generateCoverLetter', 'getOrCreateAnalysis']) {
     const calls = callsTo(source, name).filter((call) => call.args.trim().length > 0);
-    assert.ok(calls.length > 0, `${name} should be called by this route`);
+    if (calledHere.includes(name)) assert.ok(calls.length > 0, `${name} should be called by this route`);
     for (const call of calls) {
       assert.match(
         call.args,

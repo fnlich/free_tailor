@@ -202,12 +202,12 @@ app.use(attachUser);
 
 /**
  * Downloading a generated file needs an account that builds resumes
- * (`requireUser`: a user or an administrator, never a reporter), and a file no
- * other account owns - routes/generatedFiles.ts, shared with
- * `/api/resume/download`.
+ * (`requireUser`: a user or an administrator, never a reporter), and a file
+ * that is the asker's and nobody else's - routes/generatedFiles.ts.
  *
- * The filename is derived from the profile, the company and the date, so it is
- * guessable enough that "you would have to know the URL" is not a control.
+ * The path is derived from the email, the order number, the date, the profile
+ * and the company, so it is guessable enough that "you would have to know the
+ * URL" is not a control.
  */
 app.get('/api/generated/:filename(*)', requireUser, downloadGeneratedFile);
 

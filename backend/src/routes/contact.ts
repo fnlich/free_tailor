@@ -8,6 +8,7 @@ import {
   MAX_CONTACT_LABEL,
   MAX_CONTACT_VALUE,
   readContactChannels,
+  readContactState,
   saveContactSettings,
 } from '../services/contact';
 
@@ -44,13 +45,20 @@ export default router;
 export const adminContactRouter = Router();
 adminContactRouter.use(requireAdmin);
 
-/** What the editor needs to draw itself: the channels and the rules it is held to. */
+/**
+ * What the editor needs to draw itself: the channels in effect, the rules
+ * they are held to, and - as every setting with a `.env` default says it -
+ * where they came from (`settingSources.channels`: 'admin' saved here, 'env'
+ * CONTACT_CHANNELS, 'default' none) and what Reset to default would show.
+ */
 function editorPayload() {
-  const channels = readContactChannels();
+  const state = readContactState();
   return {
-    channels,
+    channels: state.channels,
     types: CONTACT_CHANNEL_TYPES,
     limits: { channels: MAX_CONTACT_CHANNELS, label: MAX_CONTACT_LABEL, value: MAX_CONTACT_VALUE },
+    settingSources: { channels: state.source },
+    settingDefaults: { channels: state.defaults },
   };
 }
 
@@ -66,6 +74,8 @@ adminContactRouter.get('/', (req: Request, res: Response) => {
  * Replaces the whole list: `{ channels: [{ type, label, value }] }`. Refused as
  * a whole when any channel fails, with every failure pinned to its place:
  * 400 `{ error, code: 'contact-invalid', fieldErrors: [{ index, field, message }] }`.
+ * `{ channels: null }` is Reset to default: nothing stored, `.env`'s
+ * CONTACT_CHANNELS (else none) shown again. `[]` is "none", saved here.
  */
 adminContactRouter.put('/', (req: Request, res: Response) => {
   try {

@@ -66,7 +66,13 @@ const MOUNTS = [
     module: 'auth',
     access: 'public',
     why: 'signing in, and "who am I", happen before there is a session',
-    except: { 'GET /account': 'account', 'PATCH /account': 'account' },
+    except: {
+      'GET /account': 'account',
+      'PATCH /account': 'account',
+      // Where an account files its own resumes: a reporter builds nothing (O3).
+      'PUT /account': 'builder',
+      'POST /output-path/preview': 'builder',
+    },
   },
   { mount: '/api/contact', module: 'contact', access: 'public', why: 'shown on the sign-in and disabled-account screens (A2)' },
   { mount: '/api/admin/contact', module: 'contact', exportName: 'adminContactRouter', access: 'admin' },

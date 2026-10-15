@@ -1,6 +1,12 @@
 import { envRaw, type EnvSource } from '../../config/envValue';
 import { jobLakeDuplicateWindowDays, OPERATIONAL_INT_BOUNDS } from '../../config/operational';
 import { MAX_REPORT_RATE_MILLI, parseReportRateUsd } from '../../config/reportRate';
+import {
+  envJobLakeDailyCapMilli,
+  envJobLakeReportRateMilli,
+  MAX_DAILY_CAP_MILLI,
+  type SettingSource,
+} from '../../config/settingDefaults';
 import { getSetting, setSetting } from '../../database/settingsRepository';
 import { describeDollarProblem, formatMoney, parseDollars } from '../../utils/money';
 
@@ -11,16 +17,21 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../../utils/mo
  *  - `reportRateMilli`, the GLOBAL rate a reporter is paid per job the lake
  *    accepts (owner decision J7), in thousandths of a dollar. A reporter with
  *    a rate of their own (`users.report_rate_milli`, Admin -> Accounts) is
- *    paid that instead. Unset reads as $0.000: nobody is paid until an
- *    administrator decides what a job is worth, as no model is priced until
- *    one is (M5).
+ *    paid that instead. Unset falls back to `JOB_LAKE_REPORT_RATE_USD` in
+ *    .env, then to $0: nobody is paid until somebody decides what a job is
+ *    worth, as no model is priced until one is (M5).
  *  - `duplicateWindowDays`, the duplicate window (J2b). Unset falls back to
- *    `JOB_LAKE_DUPLICATE_WINDOW_DAYS` in .env, then to 60 - the value set
- *    here WINS over .env, and `resolveDuplicateWindow` says which is in
- *    effect and where it came from, which the page shows.
+ *    `JOB_LAKE_DUPLICATE_WINDOW_DAYS` in .env, then to 60.
  *  - `dailyCapMilli`, the most one reporter earns from the lake in one UTC
- *    day. Unset is no cap. A job past it is still added - the lake wants the
- *    job - and paid only what the cap leaves.
+ *    day. Unset falls back to `JOB_LAKE_DAILY_CAP_USD` in .env, then to no
+ *    cap. A job past it is still added - the lake wants the job - and paid
+ *    only what the cap leaves.
+ *
+ * Each value set here WINS over .env (owner decision S1, as for every setting
+ * with a `.env` default), and the row holds only what an administrator set:
+ * null (or '') removes one, which is Reset to default. `settingSources` says
+ * where each value in effect came from and `settingDefaults` what Reset would
+ * give, which the page shows.
  *
  * Every amount a request sends is dollars, as text, in a field ending `Usd`
  * (`reportRateUsd`, `dailyCapUsd`); every amount served is an integer in a
@@ -30,8 +41,7 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../../utils/mo
 
 export const JOB_LAKE_SETTINGS_KEY = 'job-lake';
 
-/** The daily cap's ceiling: $1,000,000, so an absurd figure is a typo refused rather than a cap. */
-export const MAX_DAILY_CAP_MILLI = 1_000_000_000;
+export { MAX_DAILY_CAP_MILLI };
 
 const WINDOW_BOUNDS = OPERATIONAL_INT_BOUNDS.JOB_LAKE_DUPLICATE_WINDOW_DAYS;
 
@@ -60,12 +70,25 @@ export type DuplicateWindow = {
   envInvalid: boolean;
 };
 
+/** The three settings as the page names them, each with a `.env` default. */
+export type LakeSettingKey = 'reportRateMilli' | 'duplicateWindowDays' | 'dailyCapMilli';
+
 export type LakeSettings = {
+  /** The global rate in effect: the administrator's, else .env's, else $0. */
   reportRateMilli: number;
-  /** False until an administrator saves a global rate: the page says nobody is paid yet. */
+  /**
+   * Whether an administrator saved a global rate (`settingSources.reportRateMilli`
+   * is 'admin'). Without one the rate is .env's JOB_LAKE_REPORT_RATE_USD, or
+   * $0 - nobody is paid - when that is unset too.
+   */
   reportRateSet: boolean;
   duplicateWindow: DuplicateWindow;
+  /** The daily cap in effect: the administrator's, else .env's, else null (no cap). */
   dailyCapMilli: number | null;
+  /** Where each value in effect came from: 'admin' (set here), 'env' or 'default'. */
+  settingSources: Record<LakeSettingKey, SettingSource>;
+  /** Each value with nothing set here: .env's, else the code's - what Reset to default gives. */
+  settingDefaults: { reportRateMilli: number; duplicateWindowDays: number; dailyCapMilli: number | null };
   updatedAt: string | null;
 };
 
@@ -118,11 +141,26 @@ export function resolveDuplicateWindow(env: EnvSource = process.env, stored: Sto
 export function readLakeSettings(env: EnvSource = process.env): LakeSettings {
   const stored = readStored();
   const rate = storedInt(stored, 'reportRateMilli', 0, MAX_REPORT_RATE_MILLI);
+  const cap = storedInt(stored, 'dailyCapMilli', 0, MAX_DAILY_CAP_MILLI);
+  const envRate = envJobLakeReportRateMilli(env);
+  const envCap = envJobLakeDailyCapMilli(env);
+  const duplicateWindow = resolveDuplicateWindow(env, stored);
+  const rateWithoutAdmin = envRate.value ?? 0;
   return {
-    reportRateMilli: rate ?? 0,
+    reportRateMilli: rate ?? rateWithoutAdmin,
     reportRateSet: rate !== null,
-    duplicateWindow: resolveDuplicateWindow(env, stored),
-    dailyCapMilli: storedInt(stored, 'dailyCapMilli', 0, MAX_DAILY_CAP_MILLI),
+    duplicateWindow,
+    dailyCapMilli: cap ?? envCap.value,
+    settingSources: {
+      reportRateMilli: rate !== null ? 'admin' : envRate.fromEnv ? 'env' : 'default',
+      duplicateWindowDays: duplicateWindow.source,
+      dailyCapMilli: cap !== null ? 'admin' : envCap.fromEnv ? 'env' : 'default',
+    },
+    settingDefaults: {
+      reportRateMilli: rateWithoutAdmin,
+      duplicateWindowDays: duplicateWindow.envDays,
+      dailyCapMilli: envCap.value,
+    },
     updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : null,
   };
 }
@@ -144,11 +182,12 @@ function refuse(code: string, error: string, status = 400): LakeSettingsUpdate {
  * An administrator's change, `{ reportRateUsd?, duplicateWindowDays?,
  * dailyCapUsd? }` - each optional, so a page may save one at a time.
  *
- *  - `reportRateUsd`: dollars to $0.001, $0.000-$1000.000; null or '' sets
- *    it back to unset ($0.000).
+ *  - `reportRateUsd`: dollars to $0.001, $0-$1000; null or '' removes the
+ *    administrator's rate, so .env's (or $0) is in effect again.
  *  - `duplicateWindowDays`: a whole number 1-3650; null or '' removes the
  *    administrator's value, so .env (or 60) is in effect again.
- *  - `dailyCapUsd`: dollars to $0.001; null or '' removes the cap.
+ *  - `dailyCapUsd`: dollars to $0.001; null or '' removes the administrator's
+ *    cap, so .env's (or none) is in effect again.
  *
  * An amount in thousandths (`reportRateMilli`, `dailyCapMilli`) is refused:
  * requests carry dollars, responses thousandths, everywhere in this app.

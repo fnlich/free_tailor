@@ -4,7 +4,7 @@ const test = require('node:test');
 // Every seat is a stub. Before any dist module loads.
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
 
-const { freshInstall, posting, serveInstall } = require('./analysisHarness');
+const { freshInstall, posting, serveInstall, untilFinished } = require('./analysisHarness');
 
 /**
  * The revise pass (`revise-resume-coverage`): after a fresh tailoring, a
@@ -642,15 +642,17 @@ test('content a page sends back is re-read, never revised: through the real rout
     tailoredContent: first.body.tailoredContent,
   });
   assert.equal(held.status, 200, JSON.stringify(held.body));
-  const generated = await h.post('/resume/generate', {
-    profileId: 'p-claude',
-    companyName: 'Acme',
-    role: 'Engineer',
+  // Finalised through the queue, the way the builder finalises a preview.
+  const queued = await h.post('/generation/batches', {
+    mode: 'order',
     format: 'pdf',
-    analysisId: first.body.analysisId,
-    tailoredContent: first.body.tailoredContent,
+    includeCoverLetterDocx: false,
+    profileIds: ['p-claude'],
+    jobs: [{ companyName: 'Acme', role: 'Engineer', analysisId: first.body.analysisId }],
+    tailoredContentByProfileId: { 'p-claude': first.body.tailoredContent },
   });
-  assert.equal(generated.status, 200, JSON.stringify(generated.body));
+  assert.equal(queued.status, 202, JSON.stringify(queued.body));
+  assert.equal((await untilFinished(queued.body.batchId)).completed, 1);
   assert.equal(h.seats.tailorings().length, 1);
   assert.equal(h.seats.revisions().length, 1, 'neither re-read asked for a revision');
 });

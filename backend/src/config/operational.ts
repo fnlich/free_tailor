@@ -7,6 +7,7 @@ import {
   type EnvSource,
 } from './envValue';
 import { PROVIDER_MODEL_OPTION_SETTINGS } from './providerModels';
+import { SETTING_DEFAULT_VARIABLES } from './settingDefaults';
 import {
   GEMINI_CLI_INT_SETTINGS,
   GEMINI_CLI_SETTINGS,
@@ -682,6 +683,11 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     current: (env) => (tailorRevisePass(env) ? 'on' : 'off'),
   },
   intEntry('TAILOR_REVISE_MAX_TERMS', 'per-call', 'services/resumeService.ts (tailorResume)', tailorReviseMaxTerms),
+
+  // The defaults under what an administrator sets - Admin -> Settings,
+  // Payments and the Job Data Lake's settings - each in effect while nothing
+  // is stored there (config/settingDefaults.ts, which keeps its own rows).
+  ...SETTING_DEFAULT_VARIABLES,
 ];
 
 /** `NAME=value`, quoted when the value has a space or a comma in it so the line still splits. */

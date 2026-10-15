@@ -5,61 +5,359 @@ import os from 'os';
 import { PublicError } from '../middleware/publicError';
 
 export const DEFAULT_GENERATED_RESUMES_DIR = path.join(__dirname, '..', '..', '..', 'generated');
-export const DEFAULT_OUTPUT_PATH_TEMPLATE = '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
 export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}';
 export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_letter';
-export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company name}}';
 
 /**
- * Where a QUEUED resume is filed - an order's and a Generate Immediately
- * run's alike - and why it is a constant rather than a setting.
+ * Where a resume is filed: `<output folder>/<prefix>/<suffix>/<file name>`
+ * (owner decisions O1-O4).
  *
- * `outputPathTemplate` above belongs to the administrator: they may rearrange
- * it whenever they like, and the one build still filed by it - the
- * synchronous POST /api/resume/generate - lands wherever it currently says.
- * A queued run cannot work that way. (An immediate run used to: with no
- * account segment in the default, two accounts with a same-named profile
- * building the same company on the same day wrote one file, and the download
- * routes served it to either. It has an order row and a number now, and is
- * filed here.) An order cannot work that way. Its files are listed, downloaded, zipped and
- * eventually deleted by path, days after they were written - so a layout edited
- * between the build and the download would strand a live order's files and aim
- * the purge at a directory that no longer holds them.
+ * The PREFIX is the administrator's (Admin -> Settings -> General,
+ * `outputPathPrefix`, else `OUTPUT_PATH_PREFIX`, else this default) and is
+ * the same for every account. It may use only `{{user_email}}`,
+ * `{{order_number}}` and `{{date}}`, and it must hold `{{order_number}}`
+ * exactly once, as a folder of its own: an order number is unique across the
+ * install - account, date, profile and company all repeat, and the email is
+ * sanitized for the file system, so `john.smith@` and `john-smith@` are one
+ * folder - which makes every run's prefix a folder nobody else's files are
+ * in. That folder, rendered under the output folder, is the run's
+ * `orders.output_root`: what its files are claimed by when somebody asks to
+ * download one (database/orderRepository.ts `ownersOfGeneratedFile`), however
+ * the prefix is changed afterwards.
  *
- * The account segment comes first because it makes every file an order owns
- * live under one directory per account, which is what lets the purge prune
- * emptied folders without ever walking into somebody else's tree.
+ * The SUFFIX is each account's own (Settings -> Profile -> Resume files,
+ * `users.output_path_suffix`, else `OUTPUT_PATH_SUFFIX`, else this default):
+ * `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and
+ * `{{row_number}}`, with literal text around them in a folder
+ * (`/{{date}}{{profile_name}}` is one folder).
  *
- * THE ORDER NUMBER IS WHAT MAKES A PATH UNIQUE, and it is here because nothing
- * else in the tree is. Account, date, profile and company are all repeatable:
- * import the same sheet twice in one afternoon and every segment matches, so
- * the second run would overwrite the first - leaving the first order listing
- * files whose contents belong to the second, and its earlier expiry deleting
- * files the second still offers. Worse, the account segment is sanitized, and
- * `john.smith@` and `john-smith@` sanitize to one string, so two DIFFERENT
- * accounts could land on one file. An order number is unique across the
- * install, which settles all of it in one segment.
+ * The two are fixed for a run when it is submitted (the queue's payload
+ * carries them, services/queue/resumeTask.ts), so a setting edited while it
+ * runs cannot split one run between two trees. Each folder is rendered and
+ * THEN sanitized as a whole (`sanitizePathSegment`), so no value - a company
+ * called "../etc", a role with a slash - is ever more than one folder.
+ *
+ * The per-profile file NAME templates below keep their own tokens, spelled as
+ * they always were (`{{profile name}}`): they are stored in profiles.
  */
-export const ORDER_OUTPUT_PATH_TEMPLATE =
-  '/{{account name}}/{{date}}/{{order number}}/{{profile name}}/{{company name}}';
+export const OUTPUT_PATH_TOKENS = [
+  'user_email',
+  'order_number',
+  'date',
+  'profile_name',
+  'company_name',
+  'role',
+  'row_number',
+] as const;
 
-export type OutputTemplateVariables = {
+export type OutputPathToken = (typeof OUTPUT_PATH_TOKENS)[number];
+
+/** What the administrator's prefix may use. */
+export const OUTPUT_PREFIX_TOKENS: readonly OutputPathToken[] = ['user_email', 'order_number', 'date'];
+
+/** What an account's own suffix may use. */
+export const OUTPUT_SUFFIX_TOKENS: readonly OutputPathToken[] = [
+  'date',
+  'profile_name',
+  'company_name',
+  'role',
+  'row_number',
+];
+
+export const DEFAULT_OUTPUT_PATH_PREFIX = '/{{user_email}}/{{order_number}}';
+export const DEFAULT_OUTPUT_PATH_SUFFIX = '/{{date}}/{{profile_name}}/{{company_name}}/{{role}}';
+
+/** The most folders a prefix or a suffix may have. */
+export const MAX_OUTPUT_PATH_SEGMENTS = 8;
+
+/** Which of the two a value is: decides its tokens, its rules and the words a refusal uses. */
+export type OutputPathPart = 'prefix' | 'suffix';
+
+/** The settings field each part is saved under, which a refusal names so a page can pin it. */
+export const OUTPUT_PATH_FIELDS: Record<OutputPathPart, 'outputPathPrefix' | 'outputPathSuffix'> = {
+  prefix: 'outputPathPrefix',
+  suffix: 'outputPathSuffix',
+};
+
+/** Every value a path may be rendered with; an absent or empty one renders as nothing. */
+export type OutputPathValues = Partial<Record<OutputPathToken, string>>;
+
+/** A checked prefix or suffix: its canonical spelling, or every sentence about what is wrong with it. */
+export type OutputPathCheck = { ok: true; value: string } | { ok: false; problems: string[] };
+
+/**
+ * A prefix or suffix refused: a 400 whose sentence is the validator's and
+ * whose `field` names the box it came from (`outputPathPrefix` or
+ * `outputPathSuffix`), so a page can put the sentence under it. Public: it
+ * quotes only what the person typed and the tokens they may use.
+ */
+export class OutputPathError extends PublicError {
+  readonly field: 'outputPathPrefix' | 'outputPathSuffix';
+
+  constructor(part: OutputPathPart, problems: string[]) {
+    const field = OUTPUT_PATH_FIELDS[part];
+    super(problems.join(' '), { status: 400, code: 'output-path-invalid', extra: { field } });
+    this.name = 'OutputPathError';
+    this.field = field;
+  }
+}
+
+const TOKEN_PATTERN = /\{\{([^{}]*)\}\}/g;
+
+function isOutputPathToken(name: string): name is OutputPathToken {
+  return (OUTPUT_PATH_TOKENS as readonly string[]).includes(name);
+}
+
+/** `{{a}}, {{b}} and {{c}}`, for a sentence. */
+function listTokens(tokens: readonly OutputPathToken[]): string {
+  const spelled = tokens.map((token) => `{{${token}}}`);
+  return spelled.length > 1 ? `${spelled.slice(0, -1).join(', ')} and ${spelled[spelled.length - 1]}` : spelled[0];
+}
+
+const PART_LABEL: Record<OutputPathPart, string> = {
+  prefix: 'The output prefix',
+  suffix: 'The folder path',
+};
+
+/** The tokens each part allows, and why the others are not its. */
+const PART_TOKENS: Record<OutputPathPart, readonly OutputPathToken[]> = {
+  prefix: OUTPUT_PREFIX_TOKENS,
+  suffix: OUTPUT_SUFFIX_TOKENS,
+};
+
+const MISPLACED_REASON: Record<OutputPathPart, string> = {
+  prefix: "it belongs in each account's own folder path, which comes after the prefix",
+  suffix: "the administrator's output prefix places it, before your folder path",
+};
+
+/**
+ * One prefix or suffix, checked against its rules. Every problem is reported,
+ * each a sentence naming the token or the folder at fault, so a page can show
+ * them all at once; the value comes back in its canonical spelling - one
+ * leading `/`, no trailing one, each token as `{{name}}`.
+ */
+function checkOutputPath(part: OutputPathPart, value: unknown): OutputPathCheck {
+  const label = PART_LABEL[part];
+  const allowed = PART_TOKENS[part];
+  if (typeof value !== 'string') {
+    return { ok: false, problems: [`${label} must be text.`] };
+  }
+  const text = value.trim().replace(/\\/g, '/');
+  const problems: string[] = [];
+  const say = (sentence: string): void => {
+    if (!problems.includes(sentence)) problems.push(sentence);
+  };
+
+  if (/^\/?[A-Za-z]:/.test(text)) {
+    say(`${label} cannot start with a drive letter ("${text.replace(/^\//, '').slice(0, 2)}"): it is a path inside the output folder.`);
+  }
+  if (/^\/?~/.test(text)) {
+    say(`${label} cannot start with "~": it is a path inside the output folder.`);
+  }
+
+  // One leading and one trailing slash are optional; anything else empty is a
+  // folder with no name.
+  const inner = text.replace(/^\//, '').replace(/\/$/, '');
+  if (!inner) {
+    return {
+      ok: false,
+      problems: [
+        part === 'prefix'
+          ? `${label} is empty. It needs {{order_number}} as a folder of its own, like ${DEFAULT_OUTPUT_PATH_PREFIX}.`
+          : `${label} is empty. Reset it to use the default instead.`,
+      ],
+    };
+  }
+  const segments = inner.split('/');
+  if (segments.length > MAX_OUTPUT_PATH_SEGMENTS) {
+    say(`${label} has ${segments.length} folders; it may have at most ${MAX_OUTPUT_PATH_SEGMENTS}.`);
+  }
+
+  let orderNumbers = 0;
+  const canonical: string[] = [];
+  for (const segment of segments) {
+    const trimmed = segment.trim();
+    if (!trimmed) {
+      say(`${label} has an empty folder (two slashes together).`);
+      continue;
+    }
+    if (trimmed === '.' || trimmed === '..') {
+      say(`${label} cannot have a "${trimmed}" folder.`);
+      continue;
+    }
+    let tokensHere = 0;
+    let orderHere = false;
+    const spelled = trimmed.replace(TOKEN_PATTERN, (match, rawName: string) => {
+      const name = rawName.trim();
+      tokensHere += 1;
+      if (!isOutputPathToken(name)) {
+        say(`${label} uses ${match}, which is not a token. It may use ${listTokens(allowed)}.`);
+        return match;
+      }
+      if (!allowed.includes(name)) {
+        say(`${label} cannot use {{${name}}}: ${MISPLACED_REASON[part]}. It may use ${listTokens(allowed)}.`);
+        return `{{${name}}}`;
+      }
+      if (name === 'order_number') {
+        orderNumbers += 1;
+        orderHere = true;
+      }
+      return `{{${name}}}`;
+    });
+    const literal = spelled.replace(TOKEN_PATTERN, '');
+    if (/[{}]/.test(literal)) {
+      say(`${label} has a stray "{" or "}" in "${trimmed}": write a token as {{name}}, like {{date}}.`);
+    }
+    if (orderHere && (tokensHere > 1 || literal.trim() !== '')) {
+      say(`In ${label.charAt(0).toLowerCase()}${label.slice(1)}, {{order_number}} must be a folder of its own, not part of "${trimmed}".`);
+    }
+    canonical.push(spelled);
+  }
+
+  if (part === 'prefix') {
+    if (orderNumbers === 0) {
+      say(
+        `${label} must contain {{order_number}} as a folder of its own, like ${DEFAULT_OUTPUT_PATH_PREFIX}: ` +
+          "it is what keeps one run's files apart from every other's."
+      );
+    } else if (orderNumbers > 1) {
+      say(`${label} uses {{order_number}} ${orderNumbers} times; it must use it exactly once.`);
+    }
+  }
+
+  return problems.length > 0 ? { ok: false, problems } : { ok: true, value: `/${canonical.join('/')}` };
+}
+
+/** The administrator's prefix, checked: see `checkOutputPath`. */
+export function validateOutputPrefix(value: unknown): OutputPathCheck {
+  return checkOutputPath('prefix', value);
+}
+
+/** An account's own suffix, checked: see `checkOutputPath`. */
+export function validateOutputSuffix(value: unknown): OutputPathCheck {
+  return checkOutputPath('suffix', value);
+}
+
+/** A prefix or suffix in its canonical spelling, or an `OutputPathError` carrying every problem. */
+export function requireValidOutputPath(part: OutputPathPart, value: unknown): string {
+  const check = checkOutputPath(part, value);
+  if (!check.ok) throw new OutputPathError(part, check.problems);
+  return check.value;
+}
+
+function renderSegments(part: OutputPathPart, template: string, values: OutputPathValues): string[] {
+  const value = requireValidOutputPath(part, template);
+  return value
+    .slice(1)
+    .split('/')
+    .map((segment) => {
+      // One pass: a value that itself reads like a token is text, never expanded again.
+      const withValues = segment.replace(TOKEN_PATTERN, (_match, rawName: string) => {
+        const name = rawName.trim() as OutputPathToken;
+        return values[name] ?? '';
+      });
+      // Sanitized as ONE folder, after the values are in: `{{date}}{{profile_name}}`
+      // is one folder, and no value can add another.
+      return sanitizePathSegment(withValues) || 'unknown';
+    });
+}
+
+/** A prefix rendered: `jane_doe_example_com/ft_20261015_0001`, relative and '/'-separated. Throws an `OutputPathError` for one that is not valid. */
+export function renderOutputPrefix(prefix: string, values: OutputPathValues): string {
+  return renderSegments('prefix', prefix, values).join('/');
+}
+
+/** A suffix rendered, relative and '/'-separated. Throws an `OutputPathError` for one that is not valid. */
+export function renderOutputSuffix(suffix: string, values: OutputPathValues): string {
+  return renderSegments('suffix', suffix, values).join('/');
+}
+
+/**
+ * The whole folder a resume is written to, under the output folder: the
+ * prefix's folders, then the suffix's, each sanitized after its values are
+ * in, an empty one as `unknown`.
+ */
+export function renderOutputPath(prefix: string, suffix: string, values: OutputPathValues): string {
+  return [...renderSegments('prefix', prefix, values), ...renderSegments('suffix', suffix, values)].join('/');
+}
+
+/** Whether a suffix files by role - which is when the builder offers its Role box. */
+export function outputSuffixUsesRole(suffix: string): boolean {
+  const check = validateOutputSuffix(suffix);
+  return check.ok && /\{\{role\}\}/.test(check.value);
+}
+
+/**
+ * A day as `{{date}}` spells it before sanitizing - YYYY-MM-DD in the
+ * server's own time zone, as runs have always been filed (and as an order's
+ * number is dated, database/dailySequence.ts).
+ */
+export function outputDateText(at: Date = new Date()): string {
+  const year = at.getFullYear();
+  const month = `${at.getMonth() + 1}`.padStart(2, '0');
+  const day = `${at.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * The values a preview renders with, so a person sees their own folder: their
+ * email (the account folder), a sample order number and today's date, their
+ * first profile's name, and a made-up job. Both previews - an account's folder
+ * path and the administrator's prefix - use these, and only previews do.
+ */
+export function sampleOutputPathValues(
+  options: { email?: string | null; profileName?: string | null; at?: Date } = {}
+): OutputPathValues {
+  const date = outputDateText(options.at);
+  return {
+    user_email: options.email?.trim() || 'jane.doe@example.com',
+    order_number: `FT-${date.split('-').join('')}-0001`,
+    date,
+    profile_name: options.profileName?.trim() || 'Sample Profile',
+    company_name: 'Acme',
+    role: 'Software Engineer',
+    row_number: '2',
+  };
+}
+
+/**
+ * What a valid suffix is worth knowing before it is saved, never a refusal.
+ * One run builds every job for every profile chosen; with no
+ * `{{company_name}}` in the folders, one profile's resumes for two companies
+ * share a folder, and under the default file names (the profile's name) the
+ * second replaces the first.
+ */
+export function outputSuffixNotes(suffix: string): string[] {
+  const check = validateOutputSuffix(suffix);
+  if (!check.ok) return [];
+  const notes: string[] = [];
+  if (!/\{\{company_name\}\}/.test(check.value)) {
+    notes.push(
+      'Without {{company_name}}, the resumes one profile builds for different companies in one run share a ' +
+        "folder, and with file names that do not name the company each replaces the one before."
+    );
+  }
+  return notes;
+}
+
+export type FileNameVariables = {
   date: string;
   profileName: string;
   companyName: string;
   rowNumber?: string;
   jobTitle: string;
-  /**
-   * Optional because most callers have no account in scope - a script, a test,
-   * the admin's template preview. Rendering an absent one gives `unknown`,
-   * which is what every other empty segment already becomes.
-   */
+  /** The account's email, for `{{account name}}`; `unknown` when there is none. */
   accountName?: string;
-  /** Set for an ordered build. Absent everywhere else, and then `unknown`. */
+  /** The run's order number, for `{{order number}}`; `unknown` when there is none. */
   orderNumber?: string;
 };
 
-const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
+/**
+ * The per-profile file NAME templates' tokens, in the spellings profiles have
+ * always stored them in. Not the folder tokens above: a name is one file in
+ * the folder the prefix and suffix chose.
+ */
+const FILE_NAME_TOKEN_ALIASES: Record<string, keyof FileNameVariables> = {
   date: 'date',
   account: 'accountName',
   'account name': 'accountName',
@@ -156,97 +454,25 @@ export async function ensureWritableOutputDir(value: string): Promise<string> {
   return normalized;
 }
 
-export function normalizeOutputPathTemplate(value: unknown): string {
-  const trimmed = typeof value === 'string' && value.trim()
-    ? value.trim()
-    : DEFAULT_OUTPUT_PATH_TEMPLATE;
-  const withForwardSlashes = trimmed.replace(/\\/g, '/');
-  const withLeadingSlash = withForwardSlashes.startsWith('/')
-    ? withForwardSlashes
-    : `/${withForwardSlashes}`;
-  const compact = withLeadingSlash.replace(/\/{2,}/g, '/');
-  if (compact.length > 1 && compact.endsWith('/')) {
-    return compact.slice(0, -1);
-  }
-  return compact;
-}
-
-export function validateOutputPathTemplate(value: unknown): string {
-  const normalized = normalizeOutputPathTemplate(value);
-  const segments = normalized.split('/').filter(Boolean);
-  if (segments.length === 0) {
-    throw new Error('Output path template must contain at least one folder segment');
-  }
-
-  for (const segment of segments) {
-    if (segment === '.' || segment === '..') {
-      throw new Error('Output path template cannot contain "." or ".." segments');
-    }
-
-    for (const match of segment.matchAll(/\{\{\s*([^}]+)\s*\}\}/g)) {
-      const tokenKey = match[1]?.trim().toLowerCase() || '';
-      if (!OUTPUT_TOKEN_ALIASES[tokenKey]) {
-        throw new Error(`Unsupported output path token "{{${match[1]}}}"`);
-      }
-    }
-  }
-
-  return normalized;
-}
-
 /*
- * The file and folder name templates are a profile's own fields, typed by its
- * owner, so a refusal of one is public: it quotes only what they wrote. The
- * output base directory and path template above are an administrator's
- * settings and stay plain errors.
+ * The file name templates are a profile's own fields, typed by its owner, so a
+ * refusal of one is public: it quotes only what they wrote.
  */
-function assertSupportedOutputTokens(
-  template: string,
-  allowedAliases: Record<string, keyof OutputTemplateVariables> = OUTPUT_TOKEN_ALIASES
-): void {
+function assertSupportedFileNameTokens(template: string): void {
   for (const match of template.matchAll(/\{\{\s*([^}]+)\s*\}\}/g)) {
     const tokenKey = match[1]?.trim().toLowerCase() || '';
-    if (!allowedAliases[tokenKey]) {
+    if (!FILE_NAME_TOKEN_ALIASES[tokenKey]) {
       throw new PublicError(`Unsupported output token "{{${match[1]}}}"`);
     }
   }
 }
 
-function resolveTemplateToken(
-  rawToken: string,
-  variables: OutputTemplateVariables,
-  allowedAliases: Record<string, keyof OutputTemplateVariables> = OUTPUT_TOKEN_ALIASES
-): string {
-  const key = rawToken.trim().toLowerCase();
-  const variableName = allowedAliases[key];
+function resolveFileNameToken(rawToken: string, variables: FileNameVariables): string {
+  const variableName = FILE_NAME_TOKEN_ALIASES[rawToken.trim().toLowerCase()];
   if (!variableName) {
     throw new PublicError(`Unsupported output token "{{${rawToken}}}"`);
   }
-
   return variables[variableName] ?? '';
-}
-
-export function renderOutputPathTemplate(
-  template: string,
-  variables: OutputTemplateVariables
-): string {
-  const normalizedTemplate = validateOutputPathTemplate(template);
-  const renderedSegments = normalizedTemplate
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => {
-      const withTokenValues = segment.replace(/\{\{\s*([^}]+)\s*\}\}/g, (_match, rawToken) =>
-        resolveTemplateToken(rawToken, variables)
-      );
-      const sanitized = sanitizePathSegment(withTokenValues);
-      return sanitized || 'unknown';
-    });
-
-  if (renderedSegments.length === 0) {
-    throw new Error('Output path template did not produce a valid folder path');
-  }
-
-  return renderedSegments.join('/');
 }
 
 export function normalizeOutputFileNameTemplate(value: unknown, fallback: string): string {
@@ -255,15 +481,9 @@ export function normalizeOutputFileNameTemplate(value: unknown, fallback: string
     : fallback;
 }
 
-export function normalizeOutputFolderNameTemplate(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim()
-    ? value.trim().replace(/[/\\]+/g, ' ')
-    : fallback;
-}
-
 export function validateOutputFileNameTemplate(value: unknown, fallback: string): string {
   const normalized = normalizeOutputFileNameTemplate(value, fallback);
-  assertSupportedOutputTokens(normalized);
+  assertSupportedFileNameTokens(normalized);
 
   const sample = renderOutputFileNameTemplate(normalized, {
     date: '2026-04-10',
@@ -280,46 +500,16 @@ export function validateOutputFileNameTemplate(value: unknown, fallback: string)
   return normalized;
 }
 
-const COMPANY_FOLDER_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
-  company: 'companyName',
-  'company name': 'companyName',
-  row: 'rowNumber',
-  'row number': 'rowNumber',
-  'sheet row': 'rowNumber',
-  'source row': 'rowNumber',
-};
-
-export function validateOutputFolderNameTemplate(value: unknown, fallback: string): string {
-  const normalized = normalizeOutputFolderNameTemplate(value, fallback);
-  assertSupportedOutputTokens(normalized, COMPANY_FOLDER_TOKEN_ALIASES);
-
-  const sample = renderOutputFolderNameTemplate(normalized, {
-    date: '2026-04-10',
-    profileName: 'Jane Doe',
-    companyName: 'Acme Inc',
-    rowNumber: '12',
-    jobTitle: 'Senior Engineer',
-  }, fallback);
-
-  if (!sample) {
-    throw new PublicError('Output folder name template must produce a valid folder name');
-  }
-
-  return normalized;
-}
-
 export function renderOutputFileNameTemplate(
   template: string,
-  variables: OutputTemplateVariables,
+  variables: FileNameVariables,
   fallback: string
 ): string {
   const normalizedTemplate = normalizeOutputFileNameTemplate(template, fallback);
-  assertSupportedOutputTokens(normalizedTemplate);
+  assertSupportedFileNameTokens(normalizedTemplate);
 
   const rendered = normalizedTemplate
-    .replace(/\{\{\s*([^}]+)\s*\}\}/g, (_match, rawToken) =>
-      resolveTemplateToken(rawToken, variables)
-    )
+    .replace(/\{\{\s*([^}]+)\s*\}\}/g, (_match, rawToken) => resolveFileNameToken(rawToken, variables))
     .replace(/[/\\]+/g, ' ')
     .replace(/\.(pdf|docx)$/i, '');
 
@@ -333,46 +523,6 @@ export function renderOutputFileNameTemplate(
   }
 
   return renderOutputFileNameTemplate(fallback, variables, fallback);
-}
-
-export function renderOutputFolderNameTemplate(
-  template: string,
-  variables: OutputTemplateVariables,
-  fallback: string
-): string {
-  const normalizedTemplate = normalizeOutputFolderNameTemplate(template, fallback);
-  assertSupportedOutputTokens(normalizedTemplate, COMPANY_FOLDER_TOKEN_ALIASES);
-
-  const rendered = normalizedTemplate.replace(/\{\{\s*([^}]+)\s*\}\}/g, (_match, rawToken) =>
-    resolveTemplateToken(rawToken, variables, COMPANY_FOLDER_TOKEN_ALIASES)
-  );
-
-  const sanitized = sanitizePathSegment(rendered);
-  if (sanitized) {
-    return sanitized;
-  }
-
-  if (normalizedTemplate === fallback) {
-    return 'unknown';
-  }
-
-  return renderOutputFolderNameTemplate(fallback, variables, fallback);
-}
-
-export function buildOutputPathPreview(template: string): string {
-  return `/${renderOutputPathTemplate(template, {
-    date: '2026-04-10',
-    accountName: 'jane@example.com',
-    orderNumber: 'FT-20260410-0001',
-    profileName: 'Jane Doe',
-    companyName: 'Acme Inc',
-    rowNumber: '12',
-    jobTitle: 'Senior Engineer',
-  })}`;
-}
-
-export function outputPathTemplateUsesJobTitle(template: string): boolean {
-  return /\{\{\s*(job title|role)\s*\}\}/i.test(normalizeOutputPathTemplate(template));
 }
 
 export function resolveStoredFilePath(baseDir: string, relativePathValue: string): string | null {

@@ -41,6 +41,10 @@ const pricing = require('../dist/config/pricePerResume');
 function fresh(name) {
   const storage = useTempStorage(`model-pricing-${name}`);
   config.invalidateSettingsCache();
+  // Opened before a test writes its raw row, so the data migrations have run
+  // (step 9 rewrites a row still holding its old defaults, once, as the
+  // database opens): what these tests pin is that READING writes nothing.
+  require('../dist/database/sqlite').getDb();
   return storage;
 }
 

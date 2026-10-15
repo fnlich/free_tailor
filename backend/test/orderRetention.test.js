@@ -127,6 +127,36 @@ test('emptied directories are pruned, and the base directory never is', async ()
   assert.equal(fs.existsSync(context.outputBaseDir), true);
 });
 
+test("a run's own folder goes with its last file, wherever the prefix put it, and nothing above it that holds another run", async () => {
+  // Nothing in the sweep knows the prefix: it deletes what the run recorded
+  // and prunes what that emptied, so the run's folder (`output_root`) goes
+  // with its files under any prefix, and the account's folder only once no
+  // other run is in it.
+  const context = setup('run-folder');
+  const runFolder = (number) => path.join(context.outputBaseDir, 'alice_example_com', number);
+  const placed = (batchId, number) =>
+    context.orders.createOrder(
+      { userId: 'u1', batchId, retentionDays: 5, outputRootFor: () => runFolder(number) },
+      [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }]
+    );
+  const expired = placed('bat_old', 'ft_x1');
+  const relative = 'alice_example_com/ft_x1/2026_09_14/ada/acme/Ada.pdf';
+  write(context.outputBaseDir, relative, 'BYTES');
+  context.orders.recordItemOutcome('bat_old', 0, { state: 'done', files: [{ kind: 'resume-pdf', path: relative }] });
+  context.orders.settleOrderIfFinished(expired.id);
+  context.orders.setOrderExpiryForTests(expired.id, '2026-09-19T00:00:00.000Z');
+  // Another run of the same account, still inside its window.
+  placed('bat_new', 'ft_x2');
+  write(context.outputBaseDir, 'alice_example_com/ft_x2/2026_09_19/ada/acme/Ada.pdf', 'KEPT');
+
+  assert.equal(context.orders.getOrder(expired.id).outputRoot, runFolder('ft_x1'));
+  await context.retention.purgeExpiredOrders(AFTER);
+
+  assert.equal(fs.existsSync(runFolder('ft_x1')), false, "the expired run's folder is gone");
+  assert.equal(fs.existsSync(runFolder('ft_x2')), true, "the other run's is not");
+  assert.equal(fs.existsSync(path.join(context.outputBaseDir, 'alice_example_com')), true);
+});
+
 test('a directory holding somebody else\'s file survives the prune', async () => {
   const context = setup('shared-dir');
   seedExpiredOrder(context);

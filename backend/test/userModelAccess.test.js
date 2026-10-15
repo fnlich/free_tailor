@@ -357,10 +357,12 @@ test('a profile save checks a changed model against the list', async () => {
 
 /* ------------------------------------------------------- deleted routes */
 
-test('the synchronous generate-all and multi-job routes are gone', async () => {
+test('the synchronous generate routes are gone, /resume/generate with them', async () => {
+  // Every build is queued (POST /generation/batches); /resume/generate, which
+  // built and charged one resume in the request, had no caller left.
   const server = await serve('deleted-routes');
   try {
-    for (const route of ['/resume/generate-all', '/resume/generate-multi-job']) {
+    for (const route of ['/resume/generate-all', '/resume/generate-multi-job', '/resume/generate']) {
       const response = await server.call('alice', 'POST', route, { companyName: 'Acme', jobs: [] });
       assert.equal(response.status, 404, route);
     }
@@ -387,8 +389,9 @@ const stubAdapter = (id, calls, text = '{"ok":true}') => () => ({
 
 test('the job filter names the analysis model, by its display name, and makes no model call of its own', async () => {
   // The filter judges each posting's ONE analysis (owner decision J8), which
-  // the analysis model makes: the app default until Admin -> Settings names
-  // another, and always a record with a display name.
+  // the analysis model makes: the app default until an administrator (or
+  // ANALYSIS_MODEL in .env) names another, and always a record with a display
+  // name.
   useTempStorage('user-model-access-filter');
   config.invalidateSettingsCache();
   const jobFilter = require('../dist/services/jobFilter');

@@ -102,8 +102,8 @@ import type { UserAccount } from '../../types/account';
  * `RefundItemType`s): a queued resume - an order's, or a Generate Immediately
  * run's (an order row of kind `immediate`) - is its ORDER ITEM, which outlives
  * its batch and carries its charge (`order_items.cost_milli`); a resume built
- * by POST /api/resume/generate is its RESERVATION (`charge`), which is that
- * one resume. A request naming an item type this build does not serve - a
+ * by POST /api/resume/generate - removed since, but its requests still read
+ * and decide - is its RESERVATION (`charge`), which is that one resume. A request naming an item type this build does not serve - a
  * `task:` an older build wrote - reads, and is never refundable (see
  * `unrecognised`).
  *
@@ -354,7 +354,7 @@ function chargeLabel(label: string): string {
 }
 
 /**
- * A resume built by POST /api/resume/generate: its reservation (kind
+ * A resume built by POST /api/resume/generate (removed since): its reservation (kind
  * `request`) is that resume alone, so the reservation IS its name. Delivered
  * means settled - closed with nothing given back; a run that failed released
  * its whole charge.

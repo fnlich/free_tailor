@@ -34,7 +34,7 @@ export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
  * `getOrCreateAnalysis` is the only function in the codebase that runs the
  * analysis prompt - test/analysisGate.test.js reads every module and fails if
  * anything else names it or calls its completion. Every caller comes here:
- * /resume/analyze, the previews, /resume/generate, the queue's tasks (and the
+ * /resume/analyze, the previews, the queue's tasks (and the
  * batch submission before them), the Job Filter, and later the reporter run
  * and the lake's merge. It answers, in order:
  *

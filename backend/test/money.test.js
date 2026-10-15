@@ -149,6 +149,8 @@ const MONEY_SOURCES = [
   'services/refunds/index.ts',
   'routes/refundRequests.ts',
   'config/reportRate.ts',
+  // The .env defaults under the payment limits and the lake's rate and cap.
+  'config/settingDefaults.ts',
   // The Job Data Lake's rewards, revokes, rate and cap.
   'database/jobLakeRepository.ts',
   'services/jobLake/index.ts',

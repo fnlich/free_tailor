@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~60s with the tsc step, 1668 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 1717 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -223,6 +223,38 @@ backend/src/
                       #   as `#NAME=default` with its range, AND to the README's
                       #   Configuration table. The drift test
                       #   test/envExample.test.js fails until all three agree.
+                      #   settingDefaults.ts is the .env half of EVERY setting
+                      #   an administrator may leave unset (owner decisions
+                      #   S1-S3): stored > .env > code default, everywhere.
+                      #   Pure env reads, its rows spread into operational.ts
+                      #   (`SETTING_DEFAULT_VARIABLES`). The app-settings row
+                      #   (aiModelConfig.ts `composeSettings`) stores ONLY what
+                      #   an administrator set of the fields with a .env
+                      #   default (`DEFAULTED_SETTING_KEYS` /
+                      #   `APP_SETTING_ENV_VARIABLES`); every writer starts
+                      #   from `storedRowOf(current)` and changes only what it
+                      #   is about, so a save never freezes a value merely in
+                      #   effect. `null` in PUT /api/admin/settings removes one
+                      #   (Reset to default; `[]` for paymentLimits and '' for
+                      #   defaultModelId too; '' for analysisModelId is the
+                      #   admin's "the default model", stored). The admin
+                      #   payload carries `settingSources` ('admin' | 'env' |
+                      #   'default', where the value IN EFFECT came from) and
+                      #   `settingDefaults` (what Reset gives), never the
+                      #   user payload; the contact editor's and the lake
+                      #   settings' payloads carry the same two maps.
+                      #   DEFAULT_MODEL / ANALYSIS_MODEL are TEXT here (a
+                      #   record id or display name) judged per read against
+                      #   the runnable models, warned once when unusable.
+                      #   OUTPUT_PATH_PREFIX is the `outputPathPrefix` field's;
+                      #   OUTPUT_PATH_SUFFIX is a PER-ACCOUNT default, not an
+                      #   app setting (its source, 'account' | 'env' |
+                      #   'default', is services/outputPath.ts's). A
+                      #   new such field: its env reader here, its name in
+                      #   APP_SETTING_ENV_VARIABLES, its code default, a row
+                      #   in SETTING_DEFAULT_VARIABLES, `readings` and
+                      #   `defaults` in composeSettings, .env.example, README,
+                      #   and a case in test/settingDefaults.test.js.
                       #   providerCatalog.ts is the ONE list of seats (TYPES)
                       #   - `coerceProviderId` answers null for any other id,
                       #   with no alias or retired-id map; aiProviders.ts the
@@ -296,8 +328,11 @@ backend/src/
                       #   stamp): for an EXISTING database (one with a `users`
                       #   table) the startup guard, then SCHEMA; for a fresh
                       #   one SCHEMA, then `stampCurrentDatabase`. Then
-                      #   addMissingColumns (never fatal; ADDED_COLUMNS is
-                      #   empty today, the place a new column goes), then
+                      #   addMissingColumns (never fatal; ADDED_COLUMNS holds
+                      #   only columns added since ac3df79 - today
+                      #   users.output_path_suffix and orders.output_root - and
+                      #   every new column goes there AND in SCHEMA, never in
+                      #   the guard's frozen list), then
                       #   addIndexesAfterColumns (INDEXES_AFTER_COLUMNS: every
                       #   index naming an added column - in SCHEMA it would
                       #   fail every upgraded boot), then the migrations.
@@ -364,15 +399,29 @@ backend/src/
                       #   (never throws; the version is written after EACH
                       #   step; a step may defer, which stops the ones after
                       #   it), `SCHEMA_VERSION_KEY` and BASELINE_SCHEMA_VERSION
-                      #   = 8. MIGRATIONS is empty: 001 and 003-008 ran on
-                      #   every database the guard admits, so what they
-                      #   produced is in SCHEMA and the seeded defaults. The
-                      #   next step is 9 - never a number below it. Adding a
-                      #   seed model needs a step: stored `aiModels` is read
-                      #   verbatim, never unioned with the defaults, so a seed
-                      #   reaches fresh installs only. test/migrationRunner
-                      #   .test.js holds the runner to all of this with steps
-                      #   of its own (9, 10, 11), since none ship.
+                      #   = 8. 001 and 003-008 ran on every database the guard
+                      #   admits, so what they produced is in SCHEMA and the
+                      #   seeded defaults. This build's steps run from 9, one
+                      #   file each, on fresh databases too (stamped at 8, each
+                      #   then finds nothing): 9 settings-defaults
+                      #   (settingsDefaults.ts) takes out of the app-settings
+                      #   row every field with a .env default still EQUAL to
+                      #   its old code default (written out in the step, not
+                      #   read from the code), so it follows .env; idempotent.
+                      #   10 orders-output-root (ordersOutputRoot.ts) gives
+                      #   every run without an `output_root` the folder its
+                      #   recorded files name - up to the folder that is its
+                      #   sanitized order number, under the output folder in
+                      #   effect - and leaves NULL a run that recorded none;
+                      #   defers while the column is missing.
+                      #   `LATEST_SCHEMA_VERSION` is what a fresh database
+                      #   ends at. Adding a seed model needs a step: stored
+                      #   `aiModels` is read verbatim, never unioned with the
+                      #   defaults, so a seed reaches fresh installs only.
+                      #   test/migrationRunner.test.js holds the runner to
+                      #   all of this with steps of its own (9, 10, 11);
+                      #   test/settingDefaults.test.js holds step 9,
+                      #   test/outputPath.test.js step 10.
   extractors/         # reading a template's styles back out of its HTML
   generators/         # PDF (puppeteer), DOCX (html-to-docx), Handlebars.
                       #   pdfGenerator.ts holds THE render gate every output
@@ -425,23 +474,37 @@ backend/src/
                       #   other id 404, an admin's too - then one listing and
                       #   ONE batched read of every tab's row 1), each with
                       #   `layout` job | blank | other, `defaultTab` All;
-                      #   POST / still reads a tab's rows. POST
-                      #   /resume/generate (synchronous, admin output
-                      #   template, refundable as `charge:`) is KEPT for any
-                      #   caller, but the builder queues every build now.
-                      #   generatedFiles.ts is the one owner check of the two
-                      #   path-taking downloads, GET /api/generated/* (its
-                      #   handler, mounted inline by index.ts) and
-                      #   /api/resume/download/* (`generatedFileFor`): asked of
-                      #   the path as the server OPENS it - utils/generatedPath's
+                      #   POST / still reads a tab's rows. There is no POST
+                      #   /resume/generate (and no /resume/download) any more:
+                      #   every build is queued; a `charge:` refund request one
+                      #   made still reads and decides (services/refunds).
+                      #   generatedFiles.ts is the owner check of the one
+                      #   path-taking download, GET /api/generated/* (its
+                      #   handler, mounted inline by index.ts,
+                      #   `generatedFileFor`): asked of the path as the server
+                      #   OPENS it - utils/generatedPath's
                       #   `resolveGeneratedFile` spellings, empty and dot
                       #   segments resolved, then through the native realpath -
                       #   never the raw parameter, which let `a//b` and `./a/b`
-                      #   read another account's run. `ownersOfGeneratedFile`
-                      #   (orderRepository) folds case, and also claims a whole
-                      #   run's folder by its order-number segment, so a file is
-                      #   the run's before (or without) its item recording it;
+                      #   read another account's run. Served only when the
+                      #   asker is its ONE owner: a file nobody claims is
+                      #   nobody's (404). `ownersOfGeneratedFile`
+                      #   (orderRepository) claims by an item's recorded path
+                      #   (case folded) and by the run's FOLDER,
+                      #   `orders.output_root` (absolute `<output folder>/
+                      #   <rendered prefix>`, written by createOrder's
+                      #   `outputRootFor`; one NOCASE index seek per folder
+                      #   above the file, idx_orders_output_root), so a file is
+                      #   the run's before (or without) its item recording it,
+                      #   whatever the prefix says later; a run with a NULL
+                      #   root claims only its recorded files;
                       #   test/orderFileAccess.test.js sends the spellings raw.
+                      #   auth.ts's PUT /account { outputPathSuffix } and POST
+                      #   /output-path/preview are a builder's (requireUser;
+                      #   the name stays PATCH's) - see "Where resumes are
+                      #   filed" below; admin.ts's POST /output-path/preview
+                      #   previews an unsaved prefix, and PUT /settings passes
+                      #   an `OutputPathError`'s `field` and `code` on.
   scripts/            # operator tools, each behind an npm script: mail:doctor,
                       #   sheets:login, sheets:doctor. The doctors share one
                       #   shape -
@@ -493,9 +556,13 @@ backend/src/
                       #   EVERY run gets an `orders` row (`orders.kind`;
                       #   immediate rows number `FT-RUN-...`, are
                       #   hidden from listOrdersForUser and the order routes'
-                      #   `mine()`, and are filed under ORDER_OUTPUT_PATH_TEMPLATE
-                      #   like an order - the admin's output template files
-                      #   only POST /resume/generate's builds). An immediate run is LEASED to
+                      #   `mine()`, and are filed like an order: under the run's
+                      #   place, `payload.output` (`RunOutputPlace` - output
+                      #   folder, rendered prefix, the submitter's folder path
+                      #   and the day, fixed at submit by services/outputPath.ts
+                      #   `planRunOutput` and stamped on every task once the
+                      #   order has its number; the order's `output_root` is
+                      #   the same folder). An immediate run is LEASED to
                       #   its tab (tabLease.ts, `getTabLeases()`): the owner's
                       #   stream with `?tab=` = `shared.tabId` holds it; when the
                       #   last such reader closes, IMMEDIATE_TAB_GRACE_MS starts
@@ -529,10 +596,19 @@ backend/src/
                       #   reservations however old (a restored batch that had
                       #   already finished is settled by the restore itself).
                       #   A job with no role is built for the analysis's
-                      #   `jobMeta.title` (`resolveTaskRole`, which
-                      #   routes/resume.ts uses too) - cover letter, path,
-                      #   files and result alike; the builder has no
-                      #   Fallback Role.
+                      #   `jobMeta.title` (`resolveTaskRole`) - cover letter,
+                      #   the folder path's `{{role}}` (`unknown` when still
+                      #   empty), files and result alike; the builder has no
+                      #   Fallback Role. A task with no `payload.output` (one
+                      #   queued before runs carried their place) is given its
+                      #   run's from the order (`placeOfPlacedRun`: the
+                      #   recorded folder, else the prefix in effect rendered
+                      #   for its number and day).
+  services/outputPath.ts # where an account's resumes are filed: its own
+                      #   folder path and where the one in effect came from,
+                      #   the two previews, and `planRunOutput`, the one place
+                      #   a run's folder is worked out - see "Where resumes are
+                      #   filed" below.
   services/tailorCache.ts # the tailoring cache (owner decision P6): the model's
                       #   answer to a tailoring (revised, when the revise pass
                       #   changed it) or a cover-letter call, reused for the
@@ -562,8 +638,8 @@ backend/src/
                       #   "Profiles, templates and the section switches".
   services/templateChoice.ts # THE answer to "which template is this resume
                       #   drawn with" - resolveTemplateForProfile, for the live
-                      #   preview, /resume/preview, /preview-all,
-                      #   /resume/generate and the queue. Do not write a
+                      #   preview, /resume/preview, /preview-all and the
+                      #   queue. Do not write a
                       #   second copy of the fallback.
   bidAssistant/       # the Bid Assistant's own prompt building, and database.js.
                       #   Its job board is SHARED (deleting a job, which takes
@@ -583,7 +659,7 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 137 files; fixtures/cli, codex and gemini
+  test/               # node:test, 139 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer)
 frontend/src/
@@ -1031,6 +1107,68 @@ descriptions, at most 8 bullets) through the tailored branch, read through
 test/sampleDefaults.test.js fails if any file but pdfGenerator.ts and
 sampleProfile.ts names either sample.
 
+## Where resumes are filed
+
+Owner decisions O1-O4. `<outputBaseDir>/<prefix>/<suffix>/<file name>`, and
+every word of it is utils/outputStorage.ts's: the tokens, spelled the
+owner's way - `{{user_email}}`, `{{order_number}}`, `{{date}}`,
+`{{profile_name}}`, `{{company_name}}`, `{{role}}`, `{{row_number}}` (no
+spaced or aliased spelling) - the two validators and the one renderer.
+
+- **The prefix** is the administrator's: `outputPathPrefix` in the
+  app-settings row (an S2 field: stored > `OUTPUT_PATH_PREFIX` > the code's
+  `/{{user_email}}/{{order_number}}`). `validateOutputPrefix`: only
+  `user_email`, `order_number`, `date` and text, `{{order_number}}` exactly
+  once and ALONE in its folder - it is what makes every run's folder its own.
+  A save is refused with an `OutputPathError` (400 `output-path-invalid`,
+  `field: 'outputPathPrefix'`, PUT /api/admin/settings passes both on); the
+  admin payload carries `outputPathPrefix` and `outputPathPreview` (the whole
+  path, base included, with the default suffix and sample values), and POST
+  /api/admin/output-path/preview `{ outputPathPrefix? }` answers `{ path,
+  problems, notes }` for one not saved yet (`null` = what Reset gives).
+- **The suffix** is each account's: `users.output_path_suffix` (NULL =
+  `OUTPUT_PATH_SUFFIX`, else `/{{date}}/{{profile_name}}/{{company_name}}/{{role}}`),
+  read and written by its own query (`getOutputPathSuffix` /
+  `setOutputPathSuffix`, never on UserAccount or the session).
+  `validateOutputSuffix`: only `date`, `profile_name`, `company_name`, `role`,
+  `row_number` and text around them in a folder. Both: at most 8 folders, no
+  `.`/`..` or empty folder, no leading drive letter or `~`, leading and
+  trailing `/` optional; the canonical spelling is what is stored; every
+  problem is a sentence naming the token or folder at fault (a token in the
+  other half's place is "misplaced", with whose it is). services/outputPath.ts
+  is the account's half: GET /api/auth/account adds `outputPathSuffix`
+  (null when unset), `outputPathSuffixSource` ('account' | 'env' |
+  'default'), `effectiveOutputPathSuffix` and `defaultOutputPathSuffix` - for
+  a builder only, a reporter's says nothing of it; PUT /api/auth/account `{
+  outputPathSuffix }` (requireUser; `''`/`null` resets; a stored one that no
+  longer passes is not used, warned once); POST /api/auth/output-path/preview
+  `{ outputPathSuffix? }` -> `{ path, problems, notes }` (the asker's own
+  email, a sample order number and today, their first profile's name else
+  "Sample Profile", Acme, Software Engineer, row 2; no base - a server path is
+  the administrator's; `notes` is non-refusing advice: no `{{company_name}}`).
+  `outputPathUsesJobTitle` (the builder's Role box) is THE CALLER's suffix
+  using `{{role}}` - GET /api/resume/models passes it to `getUserAppSettings`.
+- **Rendering** (`renderOutputPrefix` / `renderOutputSuffix` /
+  `renderOutputPath`) substitutes each folder's values in one pass, THEN
+  sanitizes it whole (`sanitizePathSegment`): `{{date}}{{profile_name}}` is
+  one folder, no value adds or climbs one, an empty folder is `unknown`.
+  `{{user_email}}` is the account's email (`accountFolderName`). A role
+  still empty after `resolveTaskRole` renders `unknown`.
+- **A run's place is fixed at submit**: POST /generation/batches calls
+  `planRunOutput(account)` (base, prefix, the submitter's suffix, the day),
+  passes `rootFor` to `createOrder` - which renders `orders.output_root`
+  INSIDE its insert, where the number is issued - and stamps `placeFor(number)`
+  on every task as `payload.output` (persisted whole). `getGeneratedOutputPath`
+  files under it; without one (a script, a test) it uses the settings in
+  effect with `unknown` account and order. The per-profile FILE NAME
+  templates stay, with their own old spellings (`{{profile name}}`,
+  `FILE_NAME_TOKEN_ALIASES`); `companyFolderNameTemplate` is gone (a stored
+  one is not read and the next save drops it).
+- **Ownership** is the run's folder (see generatedFiles.ts above); migration
+  10 gave the runs placed before theirs. Retention deletes recorded paths and
+  prunes what that empties up to the output folder, so a run's folder goes
+  with its last recorded file; nothing in it needs the prefix.
+
 ## Money
 
 **A credit is a dollar, counted in thousandths.** Every amount - a balance, a
@@ -1168,8 +1306,9 @@ UNIQUE index on `refund_requests(item_key) WHERE state IN ('requested',
 (`REFUND_ITEM_TYPES`): `payout:<account>` above, `payment:<id>`,
 `order-item:<id>` (durable - `order_items.cost_milli` is copied from the
 task's `costMilli` at `createOrder`, because the task is evicted) and
-`charge:<reservation id>` for a `/resume/generate` build (a `kind: 'request'`
-reservation is that one resume). Every queued run has an order row - a
+`charge:<reservation id>` for a build of the synchronous `/resume/generate`
+(removed since; a `kind: 'request'` reservation is that one resume, and its
+requests still read and decide). Every queued run has an order row - a
 Generate Immediately run's is `orders.kind = 'immediate'` - so a queued resume
 is always its order item (an older build's `task:` reads as unrecognised,
 above). A resume's refund is
@@ -1237,6 +1376,13 @@ scheme - `mailto:`, `tel:`, `x://` - is refused, and a label with a colon,
 is PUBLIC (no session - the sign-in and disabled-account pages need it) and
 re-checks every stored channel on read, so a hand-edited row cannot serve a
 `javascript:` link. Pages render `href` or plain text, never a link of their own.
+With NO row - nothing saved, or `PUT /api/admin/contact { channels: null }`
+(Reset to default, `deleteSetting`) - the channels are `.env`'s
+`CONTACT_CHANNELS` (`contactChannelsFromEnv`: `type:value[|label]` entries,
+each through the same validator, a failing one dropped with ONE warning naming
+positions, never values); a row holding `[]` is the admin's "none" and beats
+it. The editor's payload carries `settingSources.channels` and
+`settingDefaults.channels`.
 
 ## The AI layer
 
@@ -1307,8 +1453,8 @@ Administrators stay exempt.
 Tailored content a preview already wrote is priced at the model that WROTE it,
 not the one the finalising request names: `/resume/preview` and `/preview-all`
 hand back a signed `previewToken` (`services/credits/previewToken.ts`, HMAC with
-a secret kept in `app_settings`), `/resume/generate` and `/generation/batches`
-(`previewTokenByProfileId`, which the quote takes alone) price and run on its
+a secret kept in `app_settings`), `/generation/batches`
+(`previewTokenByProfileId`, which the quote takes alone) prices and runs on its
 model, and supplied content without a valid token is charged at least what the
 profile's own model costs (`resolveSuppliedContentChoice`).
 
@@ -1438,7 +1584,7 @@ bullets and cover letter (a range becomes a hyphen - a dash whose words on
 both sides carry a digit, so `$5M–$10M`, `50%–80%` and `Q1–Q3` stay ranges,
 never lists), and
 `generateCoverLetter`'s result. `runResumeTask` runs client-held preview content
-through the same parse (`finaliseHeldContent`), as `/resume/generate` does.
+through the same parse (`finaliseHeldContent`), as `/resume/preview` does.
 
 **The revise pass** (owner's `revise-resume-coverage`; services/reviseCoverage.ts,
 called inside `tailorResume`, so all five callers get it) runs after a FRESH
@@ -1737,8 +1883,8 @@ table `tailor_cache`, `idx_tailor_cache_key` UNIQUE on `cache_key` and
 pinned by test/tailorCache.test.js). `tailorResume` and `generateCoverLetter`
 take an optional `TailorCacheContext { analysisId, templateId }` and look the
 answer up BEFORE their model call; every caller that has the posting's stored
-analysis passes one (the queue task, /resume/preview, /preview-all,
-/resume/generate). `tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION` (2:
+analysis passes one (the queue task, /resume/preview, /preview-all).
+`tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION` (2:
 the model writes the skills block, roles are restored and capped, and a
 resume's answer may be its revised one), the kind, the profile as the call
 sees it (after `profileForTemplate`) minus `createdAt`/`updatedAt` AND
@@ -1928,7 +2074,10 @@ code's, strictly" above); the analysis
 turn carries no addendum. The analysis model is
 `analysisModelId` in the admin settings ('' = the app default model; a stale
 one falls back with a warning; a save CHANGING it to a model that cannot run
-is refused by name) - never in an ordinary account's payload.
+is refused by name) - never in an ordinary account's payload. With none
+stored it is `.env`'s `ANALYSIS_MODEL` (a runnable record's id or display
+name, else warned once and ''), and `settingSources.analysisModelId` says
+which; a deleted model's stored choice is removed, not blanked.
 
 **The Job Filter** (routes/jobs.ts) makes no model call of its own (J8): a row
 whose link is stored is judged on that analysis with no page fetch; otherwise
@@ -2254,12 +2403,16 @@ version's reward back once (`job-lake-revoke:<id>:<updated_at>`,
 notice to the reporter); a replaced version's reward stays paid.
 
 **Settings** (`services/jobLake/settings.ts`, `app_settings['job-lake']`):
-`reportRateMilli` (global, unset = $0 - nobody paid until set),
-`duplicateWindowDays` (WINS over `JOB_LAKE_DUPLICATE_WINDOW_DAYS`, an
-operational setting, default 60, 1-3650; `resolveDuplicateWindow` says
-`admin | env | default`), `dailyCapMilli` (unset = no cap). PUT takes
-`reportRateUsd`, `duplicateWindowDays`, `dailyCapUsd` (null/'' clears) and
-refuses `*Milli`. Admin -> Accounts' list carries `globalReportRateMilli`.
+`reportRateMilli` (global; unset = `JOB_LAKE_REPORT_RATE_USD`, else $0 -
+nobody paid until set), `duplicateWindowDays` (unset =
+`JOB_LAKE_DUPLICATE_WINDOW_DAYS`, an operational setting, default 60, 1-3650;
+`resolveDuplicateWindow` says `admin | env | default`), `dailyCapMilli` (unset =
+`JOB_LAKE_DAILY_CAP_USD`, else no cap) - the value stored here WINS over .env
+for all three, and `readLakeSettings` serves `settingSources` and
+`settingDefaults` for them (`reportRateSet` is still "an administrator stored
+one"). PUT takes `reportRateUsd`, `duplicateWindowDays`, `dailyCapUsd`
+(null/'' clears: Reset to default) and refuses `*Milli`. Admin -> Accounts'
+list carries `globalReportRateMilli`.
 
 **The reporter run** (`services/jobLake/reportRun.ts`, routes/report.ts under
 `requireReporter`, the caller's OWN sheet only - no spreadsheet id is read from

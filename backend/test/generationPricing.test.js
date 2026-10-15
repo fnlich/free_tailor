@@ -21,8 +21,8 @@ const { storeJobAnalysis, useAdminEmails, useTempStorage } = require('./helpers'
  * submission will charge, without charging anything.
  *
  * No resume is actually built: the temp static directory holds no template, so
- * every task - and `/resume/generate` - fails at its template, after the charge
- * and before any model call. That is what lets these follow the money through a
+ * every task fails at its template, after the charge and before any model
+ * call. That is what lets these follow the money through a
  * real run with nothing spawned: the charge, then the refund of each failure.
  *
  * Modules are required once rather than loaded fresh, so the routes and the
@@ -385,46 +385,6 @@ test('a batch naming a model it may not use is refused before anything is charge
   }
 });
 
-/* ---------------------------------------------------- one resume, in line */
-
-test('/resume/generate resolves the model first and charges its price', async () => {
-  const server = await serve('single');
-  try {
-    credits.setBalance(server.alice.id, 1_000, server.admin.id);
-    // No template in this storage: the run fails after the charge, before any
-    // model call, and the charge comes back.
-    const failed = await server.post('alice', '/resume/generate', { profileId: 'p-opus', companyName: 'Acme' });
-    // The administrator's to fix, so a 503 that says whom to ask, with a ref.
-    assert.equal(failed.status, 503);
-    assert.match(failed.body.error, /No resume template is available right now\. Please contact your administrator\./);
-    assert.match(failed.body.ref, /^ERR-[0-9A-F]{6}$/);
-    const [reserve] = server.ledger(server.alice, 'generation-reserve');
-    assert.equal(reserve.deltaMilli, -23, "Opus's price");
-    assert.equal(reserve.note, 'Ada / Acme - 1 resume: 1 x Claude Opus @ $0.023 = $0.023');
-    assert.equal(server.balance(server.alice), 1_000, 'the run did not finish, so it was given back');
-
-    credits.setBalance(server.alice.id, 22, server.admin.id);
-    const short = await server.post('alice', '/resume/generate', { profileId: 'p-opus', companyName: 'Acme' });
-    assert.equal(short.status, 402);
-    assert.equal(short.body.neededMilli, 23);
-    assert.equal(short.body.balanceMilli, 22);
-
-    // Refused before the charge: a run naming a model it may not use takes nothing.
-    await config.updateAIModel('claude-cli-haiku', { enabled: false });
-    const before = server.ledger(server.alice).length;
-    const refused = await server.post('alice', '/resume/generate', {
-      profileId: 'p-plain',
-      companyName: 'Acme',
-      model: 'claude-cli-haiku',
-    });
-    assert.equal(refused.status, 400);
-    assertModelUnavailable(refused.body);
-    assert.equal(server.ledger(server.alice).length, before, 'nothing reserved, nothing released');
-  } finally {
-    server.close();
-  }
-});
-
 /* ------------------------------------- content a preview already wrote */
 
 const ANALYSIS = {
@@ -547,16 +507,21 @@ test("finalising a preview is charged the model that wrote it, not the one the r
     const written = { summary: 'Written by opus.', hardSkills: [], softSkills: [], experience: [] };
     const reserveNote = () => server.ledger(server.alice, 'generation-reserve').at(0)?.note ?? null;
 
-    // Opus's work, finalised naming the free model: charged Opus. (No template
-    // here, so the run stops after the charge and gives it back.)
-    await server.post('alice', '/resume/generate', {
-      profileId: 'p-plain',
-      companyName: 'Acme',
-      model: 'claude-cli-haiku',
-      tailoredContent: written,
-      previewToken: opusToken,
-    });
-    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ $0.023 = $0.023');
+    // What finalising this content would charge, asked of the quote - the
+    // submission's own pricing (resolveProfileChoices), without a charge.
+    const priced = async (extra) => {
+      const quote = await server.post('alice', '/generation/quote', {
+        jobs: jobsFor(1),
+        profileIds: ['p-plain'],
+        tailoredContentByProfileId: { 'p-plain': written },
+        ...extra,
+      });
+      assert.equal(quote.status, 200, JSON.stringify(quote.body));
+      return quote.body.costMilli;
+    };
+
+    // Opus's work, finalised naming the free model: charged Opus.
+    assert.equal(await priced({ model: 'claude-cli-haiku', previewTokenByProfileId: { 'p-plain': opusToken } }), 23);
 
     // A token for another profile, or a forged one, proves nothing - and
     // content of unknown origin is charged at least what the profile's own
@@ -566,23 +531,12 @@ test("finalising a preview is charged the model that wrote it, not the one the r
       `${opusToken.split('.')[0]}.forged`,
       undefined,
     ]) {
-      await server.post('alice', '/resume/generate', {
-        profileId: 'p-plain',
-        companyName: 'Acme',
-        model: 'claude-cli-haiku',
-        tailoredContent: written,
-        ...(previewToken ? { previewToken } : {}),
-      });
-      assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Sonnet @ $0.01 = $0.01');
+      const tokens = previewToken ? { previewTokenByProfileId: { 'p-plain': previewToken } } : {};
+      assert.equal(await priced({ model: 'claude-cli-haiku', ...tokens }), 10, String(previewToken));
     }
     // ...while naming a dearer model than the profile's is charged that.
-    await server.post('alice', '/resume/generate', {
-      profileId: 'p-plain',
-      companyName: 'Acme',
-      model: 'claude-cli-opus',
-      tailoredContent: written,
-    });
-    assert.equal(reserveNote(), 'Bea / Acme - 1 resume: 1 x Claude Opus @ $0.023 = $0.023');
+    assert.equal(await priced({ model: 'claude-cli-opus' }), 23);
+    assert.deepEqual(server.ledger(server.alice, 'generation-reserve'), [], 'a quote charges nothing');
 
     // The queue the same way, and the quote with it: the tokens alone are
     // enough to price what finalising will charge.

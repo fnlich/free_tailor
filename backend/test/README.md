@@ -51,13 +51,34 @@ Coverage currently focuses on:
   build makes; and the real server spawned on such a database printing that
   one line and exiting 1, no stack trace, never listening; and the README's
   quotes of that line held to the guard's own words
-- the data-migration runner (`migrationRunner.test.js`), with no steps
-  shipped and so given steps of the test's own: each step's version written
-  as it finishes and nothing run twice, a step at or below the database's
-  version never run, a deferred step writing nothing and stopping the ones
-  after it until it runs, a step that throws logged - never thrown - with the
-  steps before it kept, and a database whose version cannot be read left
-  alone
+- the data-migration runner (`migrationRunner.test.js`), given steps of the
+  test's own so it does not depend on what the shipped ones do: each step's
+  version written as it finishes and nothing run twice, a step at or below the
+  database's version never run, a deferred step writing nothing and stopping
+  the ones after it until it runs, a step that throws logged - never thrown -
+  with the steps before it kept, and a database whose version cannot be read
+  left alone; and the shipped steps, from 9, finding nothing to do on an empty
+  database (step 10 is `outputPath.test.js`'s)
+- the settings with a `.env` default (`settingDefaults.test.js`): for every
+  one, the code default with nothing set, `.env`'s over it, an
+  administrator's over `.env`, and `null` putting `.env`'s back - each with
+  its `settingSources` and `settingDefaults`, and the stored row holding only
+  what was set; a save, a model edit, create or delete storing nothing they
+  were not about; a deleted model's stored default or analysis choice removed;
+  a `DEFAULT_MODEL` / `ANALYSIS_MODEL` that names nothing runnable warned once
+  and not used; an empty analysis model kept as the administrator's "default
+  model"; neither map in an ordinary account's payload; PUT /api/admin/settings
+  resetting by `null` and refusing a wrong shape by name; the payment limits
+  from `.env` reaching the buy page (and a method a saved list leaves out),
+  a fraction of a cent or an inverted band warned and not used; a relative
+  `OUTPUT_BASE_DIR` refused; `CONTACT_CHANNELS` used while nothing is saved,
+  a failing entry dropped with one warning naming its position and never its
+  text, `[]` saved beating it and `{ channels: null }` resetting; the lake's
+  rate and cap under the administrator's; the output prefix's `.env` default
+  read in its canonical spelling; and migration 9 - a field still at
+  its old default taken out, a changed one kept, idempotent, a missing or
+  unparsable row left alone, and an upgraded install's row rewritten as it
+  opens
 - app settings persistence, and an id outside the provider catalog - an older
   build's OpenRouter, browser-chat or metered provider - read as unknown, never
   as a seat (`claudeCli.test.js`, `aiFacade.test.js`, `userModelAccess.test.js`)
@@ -78,8 +99,8 @@ Coverage currently focuses on:
   restored tasks included (`modelPricing.test.js`); and through the routes, the
   quote, a mixed-price
   batch charged the sum and refunded per task, the 402, free models, the
-  exempt administrator and `/resume/generate` resolving before it charges
-  (`generationPricing.test.js`)
+  exempt administrator, and finalised content priced at the model that wrote
+  it (`generationPricing.test.js`)
 - what an ordinary account may know of models: the slim `GET
   /api/resume/models`, a stored choice falling back while a requested one is
   refused with one generic sentence, the provider request forms kept for
@@ -264,7 +285,7 @@ Coverage currently focuses on:
   change, another model, an edited prompt and another template each a miss, a
   skill added to the library not one, the key's parts (the revise prompt and
   settings in, the profile's settings out), a cover letter's own key, every caller
-  passing its context (/resume/preview, /resume/generate and the queue's
+  passing its context (/resume/preview, /resume/preview-all and the queue's
   tailoring and cover letter), nothing cached without an analysis id, an
   answer that does not parse or that a fallback model wrote never stored, an
   unreadable stored answer a miss, the one-seek lookup and the prune; the
@@ -506,7 +527,24 @@ Coverage currently focuses on:
   Windows reserves. Each of those takes its platform as an argument rather than
   reading `process.platform`, so both branches are covered from either host and
   a Windows-only regression fails on Linux CI.
-- generated output paths
+- where a resume is filed (`outputPath.test.js`): the administrator's prefix
+  and an account's folder path - every token in its place, an unknown one and
+  the old spellings named, a token in the other half's place refused as
+  misplaced, `{{order_number}}` missing, doubled or not a folder of its own,
+  `.` and `..`, an empty folder, nine folders, a drive letter and `~` - every
+  problem reported; a folder rendered then sanitized whole, an empty one
+  `unknown`, no value adding or climbing a folder; `OUTPUT_PATH_PREFIX` /
+  `OUTPUT_PATH_SUFFIX` refused with one warning each; the account's routes
+  (saved canonically, refused with `field`, reset by `''` or `null`, its
+  source, a reporter refused and told nothing), the preview with the asker's
+  own folder, the builder's Role box following the ASKER's folder path, the
+  admin's prefix refused by name with its field, previewed whole and reset;
+  migration 10 giving an older run the folder its recorded files name, once,
+  and the two new columns reaching a database without them. Who may download
+  a file by its run's folder - after the prefix changed, a run with no folder
+  recorded, a file nobody claims - is `orderFileAccess.test.js`'s, and the
+  run's place fixed at submission `orderLifecycle.test.js`'s
+- generated output paths (`aiModelConfig.test.js`, `utils.test.js`)
 - JSON extraction utilities
 - array utilities
 - output path safety helpers

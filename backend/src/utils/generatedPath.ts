@@ -2,28 +2,25 @@ import fs from 'fs/promises';
 import path from 'path';
 import { Profile } from '../types/profile';
 import {
-  DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE,
   DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
   DEFAULT_RESUME_FILE_NAME_TEMPLATE,
-  renderOutputFolderNameTemplate,
+  outputDateText,
   renderOutputFileNameTemplate,
-  renderOutputPathTemplate,
+  renderOutputPrefix,
+  renderOutputSuffix,
   resolveStoredFilePath,
   sanitizePathSegment,
 } from './outputStorage';
 import { getOutputStorageSettings } from '../config/aiModelConfig';
+import { envOutputPathSuffix } from '../config/settingDefaults';
 
-/** The day an order's files are filed under, and the tree's second segment. */
+/** Today, as `{{date}}` spells it before sanitizing. */
 export function getCurrentDateFolder(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = `${now.getMonth() + 1}`.padStart(2, '0');
-  const day = `${now.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return outputDateText(new Date());
 }
 
 /**
- * The account's own segment of the output tree.
+ * The account's own value for `{{user_email}}`: its email, else `unknown`.
  *
  * The EMAIL rather than the display name: it reads less prettily and is far
  * more likely to be distinct, since a display name is neither unique nor
@@ -31,9 +28,9 @@ export function getCurrentDateFolder(): string {
  *
  * It is NOT a unique key and must not be treated as one. `sanitizePathSegment`
  * lowercases and collapses every non-alphanumeric run, so `john.smith@acme.com`
- * and `john-smith@acme.com` both become `john_smith_acme_com`. This segment is
- * for a person reading the tree; the order number a level below is what
- * actually keeps two orders' files apart.
+ * and `john-smith@acme.com` both become `john_smith_acme_com`. This folder is
+ * for a person reading the tree; the order number the prefix must hold is
+ * what actually keeps two runs' files apart.
  */
 export function accountFolderName(
   account: { name?: string | null; email?: string | null } | null | undefined
@@ -50,13 +47,14 @@ function normalizeSourceRowNumber(value: unknown): string {
 }
 
 export interface GeneratedPathInfo {
+  /** The folder under the output folder, '/'-separated: the rendered prefix, then the rendered suffix. */
   relativeBase: string;
   absoluteDir: string;
+  /** What a written file's recorded path starts with: `relativeBase`, relative to the output folder. */
   storagePathBase: string;
   profileSlug: string;
   resumeFileStem: string;
   coverLetterFileStem: string;
-  companyFolderName: string;
   roleSlug: string;
 }
 
@@ -69,21 +67,54 @@ export function getCoverLetterOutputFilename(pathInfo: GeneratedPathInfo, extens
 }
 
 /**
- * How a build may override where it is filed.
+ * Where ONE run files its resumes, fixed when it was submitted
+ * (routes/generation.ts, onto every task's payload).
  *
- * `pathTemplate` exists for orders, which use the fixed
- * `ORDER_OUTPUT_PATH_TEMPLATE` rather than the administrator's setting - see
- * the comment on that constant for why. `accountName` fills the account
- * segment; it is optional because a script or a test has no account in scope,
- * and an absent one renders as `unknown` like any other empty segment.
+ * Plain strings for the same reason a task names its profile by id: the
+ * payload is written to SQLite and replayed after a restart, and a place
+ * worked out again from settings edited in the meantime - a new prefix, a new
+ * output folder, an account's new folder path, or midnight passing - would put
+ * the second half of a run somewhere the first half is not, outside the folder
+ * its order recorded (`orders.output_root` = `baseDir` + `prefix`).
+ */
+export type RunOutputPlace = {
+  /** The output folder, absolute, as it was at submission. */
+  baseDir: string;
+  /** The administrator's prefix, rendered for this run: relative to `baseDir`, '/'-separated. */
+  prefix: string;
+  /** The submitter's own folder path at submission, validated: rendered per resume, after the role is known. */
+  suffix: string;
+  /** The day the run was placed, YYYY-MM-DD: what the suffix's `{{date}}` renders. */
+  date: string;
+  /** For the file NAME templates' `{{account name}}` and `{{order number}}`. */
+  accountName: string;
+  orderNumber: string;
+};
+
+/**
+ * How a build is filed.
+ *
+ * `output` is the run's place (every queued resume has one). Without it - a
+ * script, a test - the settings in effect are used, with `unknown` for the
+ * account and the order: nothing the routes queue is filed that way.
  */
 export type GeneratedPathOptions = {
   sourceRowNumber?: number;
-  accountName?: string;
-  /** The order's number, which is what makes an ordered path unique. */
-  orderNumber?: string;
-  pathTemplate?: string;
+  output?: RunOutputPlace;
 };
+
+async function currentPlace(): Promise<RunOutputPlace> {
+  const { outputBaseDir, outputPathPrefix } = await getOutputStorageSettings();
+  const date = getCurrentDateFolder();
+  return {
+    baseDir: outputBaseDir,
+    prefix: renderOutputPrefix(outputPathPrefix, { user_email: 'unknown', order_number: 'unknown', date }),
+    suffix: envOutputPathSuffix().value,
+    date,
+    accountName: 'unknown',
+    orderNumber: 'unknown',
+  };
+}
 
 export async function getGeneratedOutputPath(
   profile: Profile,
@@ -91,57 +122,54 @@ export async function getGeneratedOutputPath(
   role: string,
   options: GeneratedPathOptions = {}
 ): Promise<GeneratedPathInfo> {
-  const { outputBaseDir, outputPathTemplate } = await getOutputStorageSettings();
+  const place = options.output ?? (await currentPlace());
+  if (!place.baseDir) {
+    throw new Error('Output base directory is not configured.');
+  }
   const profileSlug = sanitizePathSegment(profile.name) || 'unknown';
   const roleSlug = sanitizePathSegment(role || 'resume') || 'resume';
   const rowNumber = normalizeSourceRowNumber(options.sourceRowNumber);
-  const baseTemplateVariables = {
-    date: getCurrentDateFolder(),
-    accountName: options.accountName || 'unknown',
-    orderNumber: options.orderNumber || 'unknown',
+
+  // The run's prefix as it was rendered when the run was placed, then this
+  // resume's own folders: a missing value is an `unknown` folder, a missing
+  // role included - the role has already fallen back to the posting's title
+  // where the analysis read one (resolveTaskRole).
+  const suffix = renderOutputSuffix(place.suffix, {
+    date: place.date,
+    profile_name: profile.name || '',
+    company_name: companyName || '',
+    role: role || '',
+    row_number: rowNumber,
+  });
+  const relativeBase = [place.prefix, suffix].filter(Boolean).join('/');
+
+  const fileNameVariables = {
+    date: place.date,
+    accountName: place.accountName || 'unknown',
+    orderNumber: place.orderNumber || 'unknown',
     profileName: profile.name || 'unknown',
     companyName: companyName || 'unknown',
     rowNumber,
     jobTitle: role || 'resume',
   };
-  const companyFolderName = renderOutputFolderNameTemplate(
-    profile.profileSettings?.companyFolderNameTemplate || DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE,
-    baseTemplateVariables,
-    DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE
-  );
-  const pathTemplateVariables = {
-    ...baseTemplateVariables,
-    companyName: companyFolderName,
-  };
-  const relativeBase = renderOutputPathTemplate(
-    options.pathTemplate || outputPathTemplate,
-    pathTemplateVariables
-  );
   const resumeFileStem = renderOutputFileNameTemplate(
     profile.profileSettings?.resumeFileNameTemplate || DEFAULT_RESUME_FILE_NAME_TEMPLATE,
-    baseTemplateVariables,
+    fileNameVariables,
     DEFAULT_RESUME_FILE_NAME_TEMPLATE
   );
   const coverLetterFileStem = renderOutputFileNameTemplate(
     profile.profileSettings?.coverLetterFileNameTemplate || DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
-    baseTemplateVariables,
+    fileNameVariables,
     DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE
   );
-  if (!outputBaseDir) {
-    throw new Error('Output base directory is not configured.');
-  }
-
-  const absoluteDir = path.join(outputBaseDir, ...relativeBase.split('/'));
-  const storagePathBase = relativeBase;
 
   return {
     relativeBase,
-    absoluteDir,
-    storagePathBase,
+    absoluteDir: path.join(place.baseDir, ...relativeBase.split('/')),
+    storagePathBase: relativeBase,
     profileSlug,
     resumeFileStem,
     coverLetterFileStem,
-    companyFolderName,
     roleSlug,
   };
 }
@@ -176,11 +204,16 @@ function storedSpellingOf(base: string, file: string): string | null {
  *    path - and everywhere follows symlinks. Left out when the real file lies
  *    outside the output directory, where no order writes.
  *
+ * `absolutes` are the same file as absolute paths - as opened, and as the
+ * operating system names it - for the run folders (`orders.output_root`),
+ * which are recorded absolute so that a later output folder or prefix does
+ * not move them.
+ *
  * Null when the path is empty, leaves the output directory, or names no file.
  */
 export async function resolveGeneratedFile(
   requested: string
-): Promise<{ absolute: string; spellings: string[] } | null> {
+): Promise<{ absolute: string; spellings: string[]; absolutes: string[] } | null> {
   const normalizedValue = requested.replace(/\\/g, '/').trim();
   if (!normalizedValue) return null;
 
@@ -202,7 +235,7 @@ export async function resolveGeneratedFile(
     (spelling): spelling is string => spelling !== null
   );
   if (spellings.length === 0) return null;
-  return { absolute, spellings: [...new Set(spellings)] };
+  return { absolute, spellings: [...new Set(spellings)], absolutes: [...new Set([absolute, realFile])] };
 }
 
 export async function getGeneratedFilePath(relativePathValue: string): Promise<string | null> {

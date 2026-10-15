@@ -12,10 +12,8 @@ import {
   TechnicalSkillsLayout,
 } from '../types/profile';
 import {
-  DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE,
   DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
   DEFAULT_RESUME_FILE_NAME_TEMPLATE,
-  validateOutputFolderNameTemplate,
   validateOutputFileNameTemplate,
 } from '../utils/outputStorage';
 import type { Template } from '../types/template';
@@ -356,8 +354,10 @@ export function normalizeProfileSettings(
     // decision J0), and a cover letter has one prompt too - the built-in, which
     // no page ever let a profile replace. Nor `hardSkillOrdering`: the
     // tailored skills block is printed in the order the model wrote it, and
-    // nothing reorders it. One a profile still stores is not read, and its
-    // next save drops it.
+    // nothing reorders it. Nor `companyFolderNameTemplate`: the folders are
+    // the administrator's prefix and the account's own folder path now
+    // (utils/outputStorage.ts), and a profile names only its files. One a
+    // profile still stores is not read, and its next save drops it.
     resumeFileNameTemplate: validateOutputFileNameTemplate(
       source?.resumeFileNameTemplate ?? existing?.resumeFileNameTemplate,
       DEFAULT_RESUME_FILE_NAME_TEMPLATE
@@ -365,10 +365,6 @@ export function normalizeProfileSettings(
     coverLetterFileNameTemplate: validateOutputFileNameTemplate(
       source?.coverLetterFileNameTemplate ?? existing?.coverLetterFileNameTemplate,
       DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE
-    ),
-    companyFolderNameTemplate: validateOutputFolderNameTemplate(
-      source?.companyFolderNameTemplate ?? existing?.companyFolderNameTemplate,
-      DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE
     ),
     technicalSkillsLayout,
     includeSoftSkills,

@@ -16,7 +16,7 @@ import { getOrCreateAnalysis, loadAnalysis, type StoredJobAnalysis } from '../jo
 import { writeBackFor, type SheetRowRef } from '../jobAnalysis/submit';
 import type { Profile } from '../../types/profile';
 import type { JobAnalysis, TailoredContent } from '../../types/template';
-import { getGeneratedOutputPath } from '../../utils/generatedPath';
+import { getGeneratedOutputPath, type RunOutputPlace } from '../../utils/generatedPath';
 import type { Assignment } from './taskQueue';
 
 /**
@@ -88,16 +88,12 @@ export type ResumeTaskPayload = {
    */
   analysisId?: string;
   /**
-   * Where an ORDERED build files itself, carried rather than looked up.
-   *
-   * Both are plain strings for the same reason the profile is an id: the
-   * payload is written to SQLite and replayed after a restart, and a path
-   * derived from a setting that has since been edited would put the second
-   * half of an order somewhere the first half is not.
+   * Where the run files this resume: its output folder, its rendered prefix,
+   * its submitter's folder path and its day, fixed at submission
+   * (routes/generation.ts, once the order's number is issued). Carried rather
+   * than looked up - see `RunOutputPlace`.
    */
-  accountFolder?: string;
-  orderNumber?: string;
-  pathTemplate?: string;
+  output?: RunOutputPlace;
 };
 
 export type ResumeTaskInput = {
@@ -114,9 +110,8 @@ export type ResumeTaskInput = {
   requestedBy?: string | null;
   /** Called once when THIS task obtained the job's analysis through the gate. */
   onAnalysis?: (stored: StoredJobAnalysis) => void;
-  accountFolder?: string;
-  orderNumber?: string;
-  pathTemplate?: string;
+  /** Where the run files it (`ResumeTaskPayload.output`). */
+  output?: RunOutputPlace;
 };
 
 /** The kind a resume task is registered under. */
@@ -216,7 +211,7 @@ export const __analysisForTests = analysisFor;
 
 /**
  * Content a page held from an earlier preview, finished against the profile
- * as it is NOW - what /resume/generate does with the same content.
+ * as it is NOW - what /resume/preview does with the same content.
  *
  * The preview was tailored for whatever the profile said then, and the person
  * can flip a section switch or edit their headline, roles or strengths before
@@ -257,9 +252,8 @@ export const __finaliseHeldContentForTests = finaliseHeldContent;
  * The role a resume is built for: the one the job carries, trimmed, else the
  * title the analysis read off the posting, else empty.
  *
- * The same rule as the resume routes' `resolveGenerationRole`, because a
- * queued resume and one built on the spot must name the same role for the
- * same row - in the cover letter, the file path and the task's own label.
+ * One rule for the cover letter, the folder path's `{{role}}` and the task's
+ * own label. A role that is still empty renders its folder as `unknown`.
  */
 export function resolveTaskRole(role: unknown, analysis?: JobAnalysis): string {
   if (typeof role === 'string' && role.trim()) return role.trim();
@@ -273,7 +267,7 @@ export async function runResumeTask(
 ): Promise<ResumeTaskResult> {
   const { profile, job, choice } = input;
 
-  // The same choice the preview and /resume/generate make, against the profile
+  // The same choice the preview makes, against the profile
   // as it is NOW: a task queued before its profile changed layout is drawn
   // with a template that fits the layout it renders in.
   const template = await resolveTemplateForProfile(profile, input.templateId);
@@ -299,9 +293,9 @@ export async function runResumeTask(
   }
 
   // The role the sheet or the form gave, else the posting's own title as the
-  // analysis read it - what /resume/generate does. A row with no Job Title
-  // otherwise wrote "Dear Hiring Manager, ... for the  role" and filed the
-  // resume under an empty `{{job title}}` segment.
+  // analysis read it. A row with no Job Title otherwise wrote "Dear Hiring
+  // Manager, ... for the  role" and filed the resume under an `unknown`
+  // `{{role}}` folder.
   const role = resolveTaskRole(job.role, analysis);
 
   const coverLetterBody = tailoredContent?.coverLetter?.trim()
@@ -310,9 +304,7 @@ export async function runResumeTask(
 
   const pathInfo = await getGeneratedOutputPath(profile, job.companyName, role, {
     sourceRowNumber: job.sourceRowNumber,
-    accountName: input.accountFolder,
-    orderNumber: input.orderNumber,
-    pathTemplate: input.pathTemplate,
+    output: input.output,
   });
   const coverLetterPdf = await saveCoverLetter(profile, coverLetterBody, pathInfo);
   const coverLetterDocx = input.includeCoverLetterDocx
@@ -405,6 +397,13 @@ export type AnalysisHooks = {
    * or not started yet - reaches the analysis step again.
    */
   recorded?: (batchId: string, jobIndex: number, analysisId: string) => void;
+  /**
+   * Where a task that carries no place files its resume: the run's own,
+   * worked out from its order (services/outputPath.ts `placeOfPlacedRun`).
+   * Every task the routes queue carries one; this is for one queued before
+   * runs carried theirs, restored after the upgrade.
+   */
+  placeOf?: (batchId: string) => Promise<RunOutputPlace | null>;
 };
 
 export function makeResumeRunner(
@@ -425,6 +424,7 @@ export function makeResumeRunner(
     if (!job) {
       throw new Error('The job this resume was queued for is no longer on the batch.');
     }
+    const output = input.output ?? (await hooks.placeOf?.(input.batchId)) ?? undefined;
 
     // Every call this resume makes of its provider's type goes to the provider
     // whose lane slot it holds (services/ai/providerPool.ts): the lane's width
@@ -438,9 +438,7 @@ export function makeResumeRunner(
         format: input.format,
         includeCoverLetterDocx: input.includeCoverLetterDocx,
         choice: input.choice,
-        accountFolder: input.accountFolder,
-        orderNumber: input.orderNumber,
-        pathTemplate: input.pathTemplate,
+        ...(output ? { output } : {}),
         ...(input.tailoredContent ? { tailoredContent: input.tailoredContent } : {}),
         // The payload's own id first; a job stamped by a sibling task since
         // this one was queued has it too.

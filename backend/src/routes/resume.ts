@@ -1,18 +1,6 @@
 import { Router, Request, Response } from 'express';
-import {
-  describeCharge,
-  newReservationId,
-  releaseReservation,
-  reserveCredits,
-  settleRun,
-} from '../services/credits';
 import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
-import path from 'path';
-import {
-  generateCoverLetter,
-  parseTailoredResumeContent,
-  tailorResume,
-} from '../services/resumeService';
+import { parseTailoredResumeContent, tailorResume } from '../services/resumeService';
 import {
   getOrCreateAnalysis,
   JOB_ANALYSIS_MIN_LENGTH,
@@ -21,26 +9,18 @@ import {
 } from '../services/jobAnalysis/gate';
 import { jobFieldLabel, listJobFieldsForClient } from '../config/jobFields';
 import { resolveAnalysisModel } from '../config/aiModelConfig';
-import { generateResumePDF, generatePreviewHTML } from '../generators/pdfGenerator';
-import { generateResumeDOCX } from '../generators/docxGenerator';
-import { saveCoverLetter, saveCoverLetterDOCX } from '../generators/coverLetterGenerator';
-import { accountFolderName, getGeneratedOutputPath } from '../utils/generatedPath';
-import { generatedFileFor } from './generatedFiles';
+import { generatePreviewHTML } from '../generators/pdfGenerator';
 import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
-// One rule for a role left empty, shared with the queue so a resume built on
-// the spot and a queued one name the same role for the same row.
-import { resolveTaskRole } from '../services/queue/resumeTask';
 import { getUserAppSettings, type ModelRequestOptions } from '../config/aiModelConfig';
+import { effectiveOutputPathSuffix } from '../services/outputPath';
 import {
   normalizeAiPreferences,
   resolveAiChoice,
-  resolvePricedAiChoice,
-  resolveSuppliedContentChoice,
   type AiChoice,
   type AiPreferences,
 } from '../config/aiPreferences';
 import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
-import { issuePreviewToken, readPreviewToken } from '../services/credits/previewToken';
+import { issuePreviewToken } from '../services/credits/previewToken';
 import { PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
@@ -103,9 +83,6 @@ async function timeResumeStage<T>(label: string, action: () => Promise<T>): Prom
   }
 }
 
-function shouldGenerateCoverLetterDocx(value: unknown): boolean {
-  return typeof value === 'boolean' ? value : true;
-}
 
 
 /**
@@ -161,10 +138,12 @@ function analysisResponse(stored: StoredJobAnalysis) {
  * Every account reads this, so it is the slim `UserAppSettings` and nothing
  * more: ids and display names, no providers, CLI model names, prices, locks or
  * the administrator's shared sheets. Admin pages read /api/admin/settings.
+ * `outputPathUsesJobTitle` is the reader's own: whether THEIR folder path
+ * files by `{{role}}`.
  */
 router.get('/models', async (req: Request, res: Response) => {
   try {
-    const settings = await getUserAppSettings();
+    const settings = await getUserAppSettings(effectiveOutputPathSuffix(req.user!.id));
     res.json(settings);
   } catch {
     res.status(500).json({ error: 'Failed to fetch settings' });
@@ -652,226 +631,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
   }
 });
 
-// Generate tailored resume (single profile)
-router.post('/generate', async (req: Request, res: Response) => {
-  const requestStartedAt = process.hrtime.bigint();
-  console.log('[Resume timing] /resume/generate started');
-  try {
-    const {
-      profileId,
-      templateId,
-      companyName,
-      role,
-      sourceRowNumber,
-      model,
-      format = 'pdf',
-      includeCoverLetterDocx,
-    }: GenerateResumeRequest = req.body;
-    const appSettings = await getUserAppSettings();
-
-    if (!profileId) {
-      res.status(400).json({ error: 'Profile ID is required' });
-      return;
-    }
-
-    if (!companyName || !companyName.trim()) {
-      res.status(400).json({ error: 'Company name is required' });
-      return;
-    }
-
-    // Load profile
-    const profile = getProfileFor(req.user ?? null, profileId);
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-    if (profile.disabled) {
-      res.status(400).json({ error: 'Selected profile is disabled' });
-      return;
-    }
-
-    // Resolved BEFORE the charge, because the charge is this model's price.
-    // Not at the top of the handler: the model is a per-profile setting, so
-    // the profile has to be loaded before it can be read. The request's own
-    // override still wins - and one it may not use is refused here, before
-    // anything is taken.
-    //
-    // Content a preview already wrote is priced at the model that wrote it -
-    // named by the preview's token - and not at whatever this request names,
-    // since no model writes it again here (see resolveSuppliedContentChoice).
-    const suppliedContent = Boolean((req.body as GenerateResumeRequest).tailoredContent);
-    const { choice: selectedModel, costMilli } = suppliedContent
-      ? await resolveSuppliedContentChoice(
-          readAiOverrides(req.body),
-          profile,
-          { admin: isAdmin(req) },
-          readPreviewToken((req.body as { previewToken?: unknown }).previewToken, {
-            userId: req.user!.id,
-            profileId: profile.id,
-          })
-        )
-      : await resolvePricedAiChoice(readAiOverrides(req.body), profile, { admin: isAdmin(req) });
-
-    // One resume, one price - however many files it writes. A run asking for
-    // PDF and DOCX plus a cover letter produces four files and is still one
-    // resume, because what was asked for is one tailored resume.
-    //
-    // Note where this ISN'T: /preview below has the identical shape and is NOT
-    // charged, because it writes no file and its tailored output is handed back
-    // for /batches to reuse. Charging both would bill the ordinary
-    // preview-then-generate flow twice for one piece of model work.
-    const singleReservation = newReservationId();
-    reserveCredits(req.user!, costMilli, {
-      kind: 'request',
-      id: singleReservation,
-      label: `${profile.name} / ${companyName.trim()} - ${describeCharge([
-        { modelLabel: selectedModel.modelLabel, costMilli },
-      ])}`,
-    });
-    try {
-
-    // Ensure built-in templates exist, then load requested template
-    const template = await resolveTemplateForProfile(profile, templateId);
-    if (!template) {
-      throw noTemplateAvailable();
-    }
-
-    // If job description provided, tailor the resume. Existing/manual content is
-    // re-read against the profile as it is now (parseTailoredResumeContent) -
-    // never tailored or revised again: a model call is what was paid for.
-    let tailoredContent = (req.body as GenerateResumeRequest).tailoredContent as TailoredContent | undefined;
-    // The analysis the page names, else the posting's own - stored, or made
-    // now, once, on the analysis model (not the model this resume is charged
-    // at: the analysis is the posting's, shared by every resume built on it).
-    const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
-    const analysis = storedAnalysis?.analysis;
-    // Tailoring reads the profile through its template, as the render does: a
-    // switch the template has no section for is off for the model too.
-    const sectionProfile = profileForTemplate(profile, template);
-    if (tailoredContent && analysis) {
-      tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), sectionProfile, analysis);
-    }
-    // With the profile, the model and the prompt, what keys the tailoring and
-    // the cover letter in the cache: the same resume generated again reuses
-    // them, and is charged as usual (owner decision P6).
-    const cacheContext = { analysisId: storedAnalysis?.id ?? null, templateId: template.id ?? null };
-    if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res), cacheContext);
-    }
-    const resolvedRole = resolveTaskRole(role, analysis);
-    if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
-      res.status(400).json({ error: 'Role is required' });
-      return;
-    }
-
-    const generateBoth = (format as string) === 'both';
-    const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
-    const unconfirmedHardSkills = tailoredContent?.unconfirmedHardSkills ?? [];
-    const unconfirmedSoftSkills = tailoredContent?.unconfirmedSoftSkills ?? [];
-    const buildAfterLlmStartedAt = process.hrtime.bigint();
-
-    // Get cover letter body: from tailored content or generate when no job description
-    const coverLetterBody = await timeResumeStage('Cover letter body setup', async () => {
-      if (tailoredContent?.coverLetter?.trim()) {
-        return tailoredContent.coverLetter.trim();
-      }
-      return generateCoverLetter(
-        profile,
-        companyName.trim(),
-        resolvedRole,
-        selectedModel,
-        requestSignal(req, res),
-        cacheContext
-      );
-    });
-
-    const pathInfo = await getGeneratedOutputPath(profile, companyName.trim(), resolvedRole, {
-      sourceRowNumber,
-      accountName: accountFolderName(req.user),
-    });
-    const { coverLetterPdfPath, coverLetterDocxPath } = await timeResumeStage('Cover letter file generation', async () => {
-      const pdfPath = await saveCoverLetter(profile, coverLetterBody, pathInfo);
-      const docxPath = generateCoverLetterDocx
-        ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
-        : undefined;
-      return { coverLetterPdfPath: pdfPath, coverLetterDocxPath: docxPath };
-    });
-
-    if (generateBoth) {
-      const [pdfFilename, docxFilename] = await timeResumeStage('Resume PDF/DOCX generation', () =>
-        Promise.all([
-          generateResumePDF(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole),
-          generateResumeDOCX(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole),
-        ])
-      );
-      console.log(`[Resume timing] Build after LLM finished in ${formatDuration(buildAfterLlmStartedAt, process.hrtime.bigint())}`);
-      console.log(`[Resume timing] /resume/generate finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
-      res.json({
-        pdf: { filename: pdfFilename, downloadUrl: `/api/resume/download/${pdfFilename}` },
-        docx: { filename: docxFilename, downloadUrl: `/api/resume/download/${docxFilename}` },
-        coverLetter: {
-          pdf: { filename: coverLetterPdfPath, downloadUrl: `/api/resume/download/${coverLetterPdfPath}` },
-          ...(coverLetterDocxPath
-            ? {
-                docx: {
-                  filename: coverLetterDocxPath,
-                  downloadUrl: `/api/resume/download/${coverLetterDocxPath}`,
-                },
-              }
-            : {}),
-        },
-        tailored: !!tailoredContent,
-        ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
-        unconfirmedHardSkills,
-        unconfirmedSoftSkills,
-      });
-    } else {
-      const formatNorm = format === 'docx' ? 'docx' : 'pdf';
-      const filename = await timeResumeStage(`Resume ${formatNorm.toUpperCase()} generation`, () =>
-        formatNorm === 'docx'
-          ? generateResumeDOCX(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole)
-          : generateResumePDF(profile, template, tailoredContent, pathInfo, companyName.trim(), resolvedRole)
-      );
-
-      console.log(`[Resume timing] Build after LLM finished in ${formatDuration(buildAfterLlmStartedAt, process.hrtime.bigint())}`);
-      console.log(`[Resume timing] /resume/generate finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
-      res.json({
-        filename,
-        downloadUrl: `/api/resume/download/${filename}`,
-        coverLetter: {
-          pdf: { filename: coverLetterPdfPath, downloadUrl: `/api/resume/download/${coverLetterPdfPath}` },
-          ...(coverLetterDocxPath
-            ? {
-                docx: {
-                  filename: coverLetterDocxPath,
-                  downloadUrl: `/api/resume/download/${coverLetterDocxPath}`,
-                },
-              }
-            : {}),
-        },
-        tailored: !!tailoredContent,
-        format: formatNorm,
-        ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
-        unconfirmedHardSkills,
-        unconfirmedSoftSkills,
-      });
-    }
-    // The resume exists, so its price is spent.
-    settleRun(singleReservation);
-    } finally {
-      // A no-op on the happy path, because `settleRun` above already closed it
-      // with the resume's price spent. On a throw nothing settled it, so this
-      // sweeps the price back - which is the whole reason the body is wrapped
-      // rather than refunded at each exit.
-      releaseReservation(singleReservation, 'The run did not finish.');
-    }
-  } catch (error) {
-    // Too little credit is a 402 with `neededMilli` and `balanceMilli`; a model
-    // the request may not use, a 400. Both are public. Anything else is generic.
-    sendPublicError(req, res, error, 'Failed to generate the resume');
-  }
-});
-
 // Preview resume HTML
 router.post('/preview', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
@@ -945,35 +704,6 @@ router.post('/preview', async (req: Request, res: Response) => {
     });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to generate the preview');
-  }
-});
-
-// Download generated resume (PDF or DOCX)
-router.get('/download/:filename(*)', async (req: Request<{ filename: string }>, res: Response) => {
-  try {
-    // The same question as `/api/generated`, asked by the same function: an
-    // ordered resume's path is derivable from a fixed template, so a
-    // signed-in-only check on a path parameter hands out everybody's files, and
-    // whose file it is has to be decided on the path as it will be OPENED, not
-    // as typed. See routes/generatedFiles.ts. A path no order claims is
-    // unaffected.
-    const filepath = await generatedFileFor(req.user!.id, req.params.filename);
-    if (!filepath) {
-      res.status(404).json({ error: 'File not found' });
-      return;
-    }
-
-    const ext = path.extname(filepath).toLowerCase();
-    const contentType =
-      ext === '.docx'
-        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        : 'application/pdf';
-
-    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filepath)}"`);
-    res.setHeader('Content-Type', contentType);
-    res.download(filepath);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to download file' });
   }
 });
 

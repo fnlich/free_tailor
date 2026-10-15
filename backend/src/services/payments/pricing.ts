@@ -1,8 +1,4 @@
-import {
-  DEFAULT_PAYMENT_LIMITS,
-  getPurchaseSettings,
-  type PaymentTargetLimits,
-} from '../../config/aiModelConfig';
+import { getPurchaseSettings, type PaymentTargetLimits } from '../../config/aiModelConfig';
 import { PublicError } from '../../middleware/publicError';
 import { centsToMilli, formatMoney, isWholeCents, milliToCents, parseDollars } from '../../utils/money';
 
@@ -119,17 +115,23 @@ function rowFor(rows: PaymentTargetLimits[], target?: QuoteTarget): PaymentTarge
 }
 
 /**
- * The bounds for one method, in cents.
- *
- * The method's own row, or - when an administrator removed it and kept the
- * other - the shipped default for that method. Not "no bounds": an unbounded
- * method is one somebody can send $100,000,000 through.
+ * The method's row in effect: its own, or - when an administrator saved a list
+ * without it - the default for that method, `.env`'s
+ * (`PAYMENT_<METHOD>_MIN_USD` / `_MAX_USD`) else the code's. Not "no bounds":
+ * an unbounded method is one somebody can send $100,000,000 through.
  */
+function limitsRowFor(
+  settings: Awaited<ReturnType<typeof getPurchaseSettings>>,
+  target?: QuoteTarget
+): PaymentTargetLimits {
+  const method = target?.method ?? 'card';
+  return rowFor(settings.paymentLimits, target) ?? settings.defaultPaymentLimits.find((entry) => entry.target === method)!;
+}
+
+/** The bounds for one method, in cents. */
 export async function resolveLimits(target?: QuoteTarget): Promise<ResolvedLimits> {
   const settings = await getPurchaseSettings();
-  const method = target?.method ?? 'card';
-  const row =
-    rowFor(settings.paymentLimits, target) ?? DEFAULT_PAYMENT_LIMITS.find((entry) => entry.target === method)!;
+  const row = limitsRowFor(settings, target);
   return {
     target: row.target,
     currency: settings.currency,
@@ -149,9 +151,7 @@ export async function resolveLimits(target?: QuoteTarget): Promise<ResolvedLimit
 export async function presetsFor(target?: QuoteTarget): Promise<Array<{ amountMilli: number }>> {
   const settings = await getPurchaseSettings();
   const limits = await resolveLimits(target);
-  const method = target?.method ?? 'card';
-  const row =
-    rowFor(settings.paymentLimits, target) ?? DEFAULT_PAYMENT_LIMITS.find((entry) => entry.target === method)!;
+  const row = limitsRowFor(settings, target);
 
   return row.presetsCents
     .filter((cents) => cents >= limits.minAmountCents && cents <= limits.maxAmountCents)
