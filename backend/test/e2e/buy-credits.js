@@ -20,9 +20,9 @@
  *      `pi_` rather than a `cs_`.
  *   2. A browser pass over the dialog itself, which by then has a card to list.
  *
- * Before either, the limits themselves (owner decisions S1, S4): they follow
- * PAYMENT_<METHOD>_MIN_USD / _MAX_USD from .env until an administrator sets
- * them; a save of the limits alone makes only them "Set here", the buy page
+ * Before either, the limits themselves (owner decisions S1, S4): each method's
+ * follow PAYMENT_<METHOD>_MIN_USD / _MAX_USD from .env until an administrator
+ * sets them; a save of the limits alone makes only them "Set here", the buy page
  * offers what was saved, and Reset to default (`null`) hands them back -
  * and Admin -> Payments, saved untouched, sends nothing.
  *
@@ -497,9 +497,11 @@ async function main() {
     const sourceLines = () =>
       adminPage.evaluate(() => Array.from(document.querySelectorAll('[data-setting-source]')).map((node) => node.textContent.trim()));
     const shownBefore = await sourceLines();
+    // Four lines: card security, one per payment method (card, crypto) - each
+    // method resolves on its own - and one for every method's limits at once.
     check(
-      'Admin -> Payments says where the limits and card security come from, neither set here',
-      shownBefore.length === 2 && shownBefore.every((line) => /^(Default|From \.env \()/.test(line)),
+      'Admin -> Payments says where card security and each method\'s limits come from, none set here',
+      shownBefore.length === 4 && shownBefore.every((line) => /^(Default|From \.env \()/.test(line)),
       JSON.stringify(shownBefore)
     );
     await adminPage.evaluate(() =>
