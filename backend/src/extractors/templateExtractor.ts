@@ -5,11 +5,12 @@ import { extractTemplateFromPDF } from '../services/resumeService';
 import { Template } from '../types/template';
 import { v4 as uuidv4 } from 'uuid';
 import { getStaticTemplatesDir } from '../config/staticPaths';
+import { isTemplateCategory } from '../config/templateCategories';
 import {
   buildImportedTemplates,
   inferTemplateCapabilities,
-  inferTemplateSkillsLayouts,
-  normalizeSkillsLayouts,
+  inferTemplateNativeSectionOrder,
+  inferTemplatePrintedSections,
   TemplateImportError,
   type ImportedTemplate,
 } from '../services/templateImport';
@@ -57,8 +58,6 @@ export async function extractAndSaveTemplate(
     htmlContent: html,
     cssContent: css || '',
     sections,
-    // Whatever markup the model wrote, read the way any stored template is.
-    skillsLayouts: inferTemplateSkillsLayouts(html),
     source: 'extracted',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -110,19 +109,21 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
     name: typeof record.name === 'string' && record.name.trim() ? record.name : id,
     description: typeof record.description === 'string' ? record.description : '',
     disabled: typeof record.disabled === 'boolean' ? record.disabled : false,
+    ...(isTemplateCategory(record.category) ? { category: record.category } : {}),
     htmlContent,
     cssContent: typeof record.cssContent === 'string' ? record.cssContent : '',
     sections,
     // A saved template's file says where it came from; a built-in's says
     // nothing, and that silence is what makes it a built-in.
     ...(isTemplateSource(record.source) ? { source: record.source } : {}),
-    // A read-time default rather than a migration. Every row written before
-    // layouts existed - imports, PDF extractions, manual templates, legacy
-    // copies - has none, built-ins never live in the table at all, and the
-    // inference has to exist anyway for the next import. A list the row does
-    // carry (an admin's reclassification, an imported file's) is kept.
-    skillsLayouts: normalizeSkillsLayouts(record.skillsLayouts) ?? inferTemplateSkillsLayouts(htmlContent),
+    // Built from the fields a template has, so a key the file carries that is
+    // not one - an older build's `skillsLayouts`, say - is not read.
     ...inferTemplateCapabilities(htmlContent),
+    // Read-time too, by the same locator the compile step moves sections with
+    // (generators/sectionLocator.ts): which kinds the markup prints, and in
+    // what order - what the editor shows a profile with no stored order in.
+    printsSections: inferTemplatePrintedSections(htmlContent),
+    nativeSectionOrder: inferTemplateNativeSectionOrder(htmlContent),
     createdAt,
     updatedAt,
     ...(record.manualConfig && typeof record.manualConfig === 'object'
@@ -140,16 +141,15 @@ function normalizeTemplateId(id: string): string {
   return templateFileId(id) ?? '';
 }
 
+/** A built-in with an administrator's name, description and disabled flag laid over it; any other key in the row is not read. */
 function applyTemplateOverride(template: Template): Template {
   const override = getTemplateOverride(template.id);
   if (!override) return template;
-  const skillsLayouts = normalizeSkillsLayouts(override.skillsLayouts);
   return {
     ...template,
     ...(typeof override.name === 'string' && override.name.trim() ? { name: override.name } : {}),
     ...(typeof override.description === 'string' ? { description: override.description } : {}),
     ...(typeof override.disabled === 'boolean' ? { disabled: override.disabled } : {}),
-    ...(skillsLayouts ? { skillsLayouts } : {}),
     updatedAt: override.updatedAt,
   };
 }
@@ -255,7 +255,7 @@ export async function getTemplateById(id: string): Promise<Template | null> {
 
 export async function updateTemplate(
   id: string,
-  updates: Partial<Pick<Template, 'disabled' | 'name' | 'description' | 'skillsLayouts'>>
+  updates: Partial<Pick<Template, 'disabled' | 'name' | 'description'>>
 ): Promise<Template | null> {
   const template = await getTemplateById(id);
   if (!template) return null;
@@ -578,6 +578,15 @@ function buildManualTemplateHTML(config: ManualTemplateConfig): string {
       : [];
   const leftBlocks = columns === 2 ? leftOrder.map(getBlockForSection).filter(Boolean) : [];
   const rightBlocks = columns === 2 ? rightOrder.map(getBlockForSection).filter(Boolean) : [];
+  // The sections beyond the six above print through the extra-sections macro
+  // (generators/extraSectionsMarkup.ts), after the last block of the main
+  // column, in this template's own classes. The orders above decide where the
+  // TEMPLATE puts each section; a profile's stored order reorders them within
+  // each column at render.
+  const extraSections =
+    '{{> extra-sections sectionClass="section" headingClass="section-title" entryClass="education-item" ' +
+    'titleClass="degree" subClass="institution" datesClass="edu-date" bulletsClass="achievements"}}';
+  (columns === 1 ? sectionBlocks : leftBlocks).push(extraSections);
 
   const mainContent =
     columns === 2
@@ -743,10 +752,6 @@ export async function createManualTemplate(config: ManualTemplateConfig): Promis
     htmlContent: buildManualTemplateHTML(fullConfig),
     cssContent: '',
     sections: sectionOrder,
-    // Its skills block is a grid of one box per entry, which the compile step
-    // turns into category cells for categorized and leaves as one box per
-    // skill for flat - so both are offered.
-    skillsLayouts: ['categorized', 'flat'],
     source: 'manual',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

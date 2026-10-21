@@ -1,5 +1,5 @@
 import type { UserAccount } from '../../types/account';
-import { ensureAccountSheet, resolveAddressableSheet, resolveAddressableTab } from './accountSheet';
+import { ensureAccountSheet, resolveAddressableSheet, resolveAddressableTab, type AccountSheetState } from './accountSheet';
 
 /**
  * Where a job route reads and writes, when the caller does not say.
@@ -15,6 +15,8 @@ import { ensureAccountSheet, resolveAddressableSheet, resolveAddressableTab } fr
 export type JobSheetTarget = {
   spreadsheetId: string;
   tabName: string;
+  /** The account sheet as the ensure just found it: its links, and a name clash it reports (`conflict`). */
+  state: AccountSheetState;
 };
 
 export async function resolveJobSheetTarget(
@@ -27,5 +29,5 @@ export async function resolveJobSheetTarget(
   // the whole run. A reading route trusts it, and is told by Google if not.
   const state = await ensureAccountSheet(account, { verifyTab: options.verifyTab === true });
   const spreadsheetId = await resolveAddressableSheet(account, body?.sheetId, state);
-  return { spreadsheetId, tabName: resolveAddressableTab(body?.tabName) };
+  return { spreadsheetId, tabName: resolveAddressableTab(body?.tabName), state };
 }

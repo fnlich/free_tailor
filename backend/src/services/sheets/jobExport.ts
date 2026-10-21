@@ -4,6 +4,7 @@ import {
   batchGetValues,
   batchUpdateSpreadsheet,
   batchUpdateValuesRaw,
+  boundedWriteChunks,
   inspectJobSheetTab,
   isJobSheetTab,
   JOB_SHEET_COLUMNS,
@@ -12,34 +13,52 @@ import {
   verifyJobSheetTab,
   type JobSheetTabInspection,
   type SheetCellValue,
+  type VerifiedJobSheetTab,
 } from '../../integrations/googleSheets';
 import { PublicError } from '../../middleware/publicError';
 import type { UserAccount } from '../../types/account';
-import { notJobTabError, sheetDateOfCell, sheetDateSerial, sheetDateText } from './accountSheet';
+import { linkKey } from '../jobAnalysis/identity';
+import { normaliseCompany } from '../jobLake/identity';
+import {
+  DEFAULT_TAB,
+  describeConflict,
+  notJobTabError,
+  ownTabNotJobTabSentence,
+  sheetDateOfCell,
+  sheetDateSerial,
+  sheetDateText,
+  TEMP_TAB,
+} from './accountSheet';
 import { descriptionCell } from './analysisColumns';
 import { resolveJobSheetTarget } from './jobSheetTarget';
 
 /**
  * Jobs appended to the caller's OWN job sheet - the tab named, else All - as
- * new rows after the last one used (`appendJobRows`). The writer the removed
- * job search exported with (owner decision F4), kept for the lake's export
- * into a sheet; no route calls it yet.
+ * new rows after the last one used (`appendJobRows`). What Find Jobs' Export
+ * into Sheet writes with (services/jobLake/findJobs.ts): the lake jobs a
+ * person picked, into their own All tab.
  *
  * Each row is Date (today, in SHEET_TIMEZONE, as a real date), NO(DATE) (1 +
  * the highest number already on today's rows, then on), Company, Job Title,
  * Job Link and Job Description - A to F, RAW - and, for a row that carries
  * them, the program's six analysis columns G to L (`analysisColumnValues` of
  * its stored analysis), in the same write. Never a column of the caller's
- * choosing. A tab that is not a job tab is refused before anything is read
- * (an empty one is laid out as one).
+ * choosing. A tab whose name the account sheet reports as a clash - All held
+ * by a tab of the person's own - is refused before anything is read (409
+ * `tab-name-clash`), and so is a tab that is not a job tab (409
+ * `not-job-tab`; an empty one is laid out as one) - for the app's own All or
+ * Temp For AI, whose row 1 was edited since, in words that say how to get the
+ * tab back rather than to choose another.
  *
- * ONE read of A:E gives the duplicate check, the first free row and the day's
- * numbering. Before every write its rows are read again (A:F): a row that is
- * no longer empty - somebody typed there, or another export landed - moves
- * the rest below it rather than being written over (409 `sheet-changed`
- * after five tries). Each write grows the grid when it has to and lays the
- * written rows out at 21 px, clipped (`jobRowLayoutRequests`). Exports to one
- * tab are serialised in this process.
+ * ONE read of A:E gives the duplicate check (`jobDuplicateKeys`: the same
+ * posting's link, else the same company and title), the first free row and
+ * the day's numbering. The rows go in writes of at most 50 rows and about
+ * 1.5 MB of JSON (`boundedWriteChunks`), and before every write its rows are
+ * read again (A:F): a row that is no longer empty - somebody typed there, or
+ * another export landed - moves the rest below it rather than being written
+ * over (409 `sheet-changed` after five tries). Each write grows the grid when
+ * it has to and lays the written rows out at 21 px, clipped
+ * (`jobRowLayoutRequests`). Exports to one tab are serialised in this process.
  */
 
 /** One job to append. */
@@ -56,15 +75,6 @@ export type JobExportRow = {
 /** A row as the duplicate check sees it: what is in C to E of the tab, or about to be. */
 export type JobExportIdentity = { company: string; title: string; link: string };
 
-export type JobExportOptions = {
-  /**
-   * The keys a row counts as already in the tab under: a row sharing any of
-   * them with a row there - or with one written earlier in the same call - is
-   * skipped. Default `companyDuplicateKeys`, a company once per tab.
-   */
-  duplicateKeys?: (row: JobExportIdentity) => string[];
-};
-
 export type JobExportResult = {
   spreadsheetId: string;
   spreadsheetTitle: string;
@@ -80,16 +90,45 @@ export type JobExportResult = {
   lastNo: number | null;
   /** Rows written with no job link. */
   unresolvedJobLinks: number;
-  /** Rows skipped as already in the tab (`JobExportOptions.duplicateKeys`). */
+  /** Rows skipped as already in the tab (`jobDuplicateKeys`). */
   skippedDuplicates: number;
 };
 
-/** How many rows one write sends. */
-const EXPORT_BATCH_SIZE = 50;
+/** No more rows than this in one values write. */
+export const EXPORT_WRITE_MAX_ROWS = 50;
+/** And about this much JSON in one: each row can carry a 50,000-character description and an Analysis cell as long. */
+export const EXPORT_WRITE_MAX_BYTES = 1_500_000;
 /** How often an export looks for free rows again before giving up on a sheet that keeps changing under it. */
 const EXPORT_PLACE_ATTEMPTS = 5;
 /** The six program columns, G to L. */
 const ANALYSIS_CELL_COUNT = JOB_SHEET_COLUMNS.analysis - JOB_SHEET_COLUMNS.jobField + 1;
+
+/** The Google calls an export makes, as a seam the end-to-end stub drives with a fake. */
+export type JobExportSheetsClient = {
+  inspectTab(spreadsheetId: string, tabName: string): Promise<JobSheetTabInspection>;
+  /** `known`: the inspection just made, so the verify does not read the tab again. */
+  verifyTab(spreadsheetId: string, tabName: string, known?: JobSheetTabInspection): Promise<VerifiedJobSheetTab>;
+  readRanges(spreadsheetId: string, ranges: string[]): Promise<string[][][]>;
+  batchUpdate(spreadsheetId: string, requests: Array<Record<string, unknown>>): Promise<void>;
+  writeRaw(spreadsheetId: string, data: Array<{ range: string; values: SheetCellValue[][] }>): Promise<void>;
+};
+
+// The integration's functions, looked up at each call - so a test that swaps
+// one of the module's exports is answered by its swap.
+const realClient: JobExportSheetsClient = {
+  inspectTab: (spreadsheetId, tabName) => inspectJobSheetTab(spreadsheetId, tabName),
+  verifyTab: (spreadsheetId, tabName, known) => verifyJobSheetTab(spreadsheetId, tabName, known),
+  readRanges: (spreadsheetId, ranges) => batchGetValues(spreadsheetId, ranges),
+  batchUpdate: (spreadsheetId, requests) => batchUpdateSpreadsheet(spreadsheetId, requests),
+  writeRaw: (spreadsheetId, data) => batchUpdateValuesRaw(spreadsheetId, data),
+};
+
+let client: JobExportSheetsClient = realClient;
+
+/** Swaps the Google calls for a fake; call with no argument to put the real ones back. */
+export function setJobExportSheetsClientForTests(next?: JobExportSheetsClient): void {
+  client = next ?? realClient;
+}
 
 /** Exports in flight, one per tab at a time in this process: two would number and place their rows over each other. */
 const exportLocks = new Map<string, Promise<unknown>>();
@@ -105,15 +144,25 @@ function serializeExport<T>(key: string, work: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** A company as the duplicate check compares it: trimmed, single-spaced, lower case. */
-function normalizeCompanyName(value: string): string {
+/** A title as the duplicate check compares it: trimmed, single-spaced, lower case. */
+function foldTitle(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-/** The default duplicate rule: `company:<name>`, so a company already in the tab is not exported again. None for no company. */
-export function companyDuplicateKeys(row: Pick<JobExportIdentity, 'company'>): string[] {
-  const company = normalizeCompanyName(row.company ?? '');
-  return company ? [`company:${company}`] : [];
+/**
+ * The keys a row counts as already in the tab under: a row sharing one with a
+ * row there - or with one written earlier in the same export - is skipped.
+ * The same posting: its link as the store of analyses keys it (`linkKey`:
+ * tracking parameters, the scheme and a trailing slash aside) - or, for a row
+ * with no usable link, the company as the lake compares companies ("Acme
+ * Inc" is "Acme") and the title, folded. None for a row with neither.
+ */
+export function jobDuplicateKeys(row: JobExportIdentity): string[] {
+  const link = linkKey(row.link ?? '');
+  if (link) return [`link:${link}`];
+  const company = normaliseCompany(row.company ?? '');
+  const title = foldTitle(row.title ?? '');
+  return company && title ? [`job:${company}\u0000${title}`] : [];
 }
 
 /** A sheet's used rows as an export reads them: where the next row goes, and how far today's numbering got. */
@@ -139,26 +188,47 @@ export function exportPlaceOf(grid: string[][], today: string): ExportPlace {
 
 /**
  * Appends `rows` to the caller's own sheet, tab `tabName` or All. Refuses a
- * tab that is not a job tab (409 `not-job-tab`), a sheet that is not the
- * caller's (404, `resolveJobSheetTarget`), and one that kept changing under
- * the write (409 `sheet-changed`). Google's own refusals are thrown as they
- * come (`GoogleSheetsRequestError`, public).
+ * tab whose name is held by a tab of the person's own (409
+ * `tab-name-clash`), a tab that is not a job tab (409 `not-job-tab`), a sheet
+ * that is not the caller's (404, `resolveJobSheetTarget`), and one that kept
+ * changing under the write (409 `sheet-changed`). Google's own refusals are
+ * thrown as they come (`GoogleSheetsRequestError`, public).
  */
 export async function appendJobRows(
   account: UserAccount,
   tabName: unknown,
-  rows: readonly JobExportRow[],
-  options: JobExportOptions = {}
+  rows: readonly JobExportRow[]
 ): Promise<JobExportResult> {
   // The caller's own sheet, verified: the export writes, and All may have
   // been deleted since the sheet was laid out.
   const target = await resolveJobSheetTarget(account, { tabName }, { verifyTab: true });
-  const inspected = await inspectJobSheetTab(target.spreadsheetId, target.tabName);
-  if (!isJobSheetTab(inspected)) throw notJobTabError(target.tabName, 'exported into');
-  const verified = await verifyJobSheetTab(target.spreadsheetId, target.tabName, inspected);
+  // All held by a tab of the person's own: the ensure left it alone and says
+  // so. Refused in the Job Sheet page's words, before anything is read - the
+  // "not a job tab" sentence would tell them to pick another tab, which
+  // Export into Sheet does not let them do.
+  if (target.state.conflict?.tabs.includes(target.tabName)) {
+    throw new PublicError(describeConflict([target.tabName], 'export again').message, {
+      status: 409,
+      code: 'tab-name-clash',
+    });
+  }
+  const inspected = await client.inspectTab(target.spreadsheetId, target.tabName);
+  if (!isJobSheetTab(inspected)) {
+    // The app's own tab, its row 1 edited since: no clash is on record (its
+    // id still names it), and "choose All or Temp For AI" would send the
+    // person back to it. Renamed or deleted, the next export adds a new one.
+    if (target.tabName === DEFAULT_TAB || target.tabName === TEMP_TAB) {
+      throw new PublicError(ownTabNotJobTabSentence(target.tabName, 'exported into', 'export again'), {
+        status: 409,
+        code: 'not-job-tab',
+      });
+    }
+    throw notJobTabError(target.tabName, 'exported into');
+  }
+  const verified = await client.verifyTab(target.spreadsheetId, target.tabName, inspected);
 
   const written = await serializeExport(`${target.spreadsheetId}\u0000${target.tabName}`, () =>
-    writeExportRows(target.spreadsheetId, target.tabName, verified.gid, inspected, rows, options.duplicateKeys ?? companyDuplicateKeys)
+    writeExportRows(target.spreadsheetId, target.tabName, verified.gid, inspected, rows)
   );
   return {
     spreadsheetId: target.spreadsheetId,
@@ -171,22 +241,26 @@ export async function appendJobRows(
 
 type ExportWriteReport = Omit<JobExportResult, 'spreadsheetId' | 'spreadsheetTitle' | 'tabName' | 'tabUrl'>;
 
+/** About how many bytes of JSON a row adds to a write: its cells, and a little for the date and number. */
+function exportRowBytes(row: JobExportRow): number {
+  return Buffer.byteLength(JSON.stringify([row.company, row.title, row.link, row.description, ...(row.analysis ?? [])]), 'utf8') + 32;
+}
+
 async function writeExportRows(
   sheetId: string,
   tabName: string,
   gid: number,
   inspected: JobSheetTabInspection,
-  jobs: readonly JobExportRow[],
-  duplicateKeys: (row: JobExportIdentity) => string[]
+  jobs: readonly JobExportRow[]
 ): Promise<ExportWriteReport> {
   const today = sheetDateText();
   const serial = sheetDateSerial(today);
   // ONE read of A:E, at the moment of the write, so it is fresh.
-  const [grid = []] = await batchGetValues(sheetId, [a1Columns(tabName, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobLink)]);
+  const [grid = []] = await client.readRanges(sheetId, [a1Columns(tabName, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobLink)]);
   let place = exportPlaceOf(grid, today);
   const seen = new Set<string>();
   for (const row of grid.slice(JOB_SHEET_FIRST_DATA_ROW - 1)) {
-    const keys = duplicateKeys({
+    const keys = jobDuplicateKeys({
       company: String(row[JOB_SHEET_COLUMNS.company - 1] ?? ''),
       title: String(row[JOB_SHEET_COLUMNS.jobTitle - 1] ?? ''),
       link: String(row[JOB_SHEET_COLUMNS.jobLink - 1] ?? ''),
@@ -208,7 +282,7 @@ async function writeExportRows(
   const rows: JobExportRow[] = [];
   for (const job of jobs) {
     const identity = { company: job.company ?? '', title: job.title ?? '', link: (job.link ?? '').trim() };
-    const keys = duplicateKeys(identity);
+    const keys = jobDuplicateKeys(identity);
     if (keys.some((key) => seen.has(key))) {
       report.skippedDuplicates += 1;
       continue;
@@ -224,8 +298,7 @@ async function writeExportRows(
   }
 
   let gridRows = inspected.rowCount ?? null;
-  for (let start = 0; start < rows.length; start += EXPORT_BATCH_SIZE) {
-    const chunk = rows.slice(start, start + EXPORT_BATCH_SIZE);
+  for (const chunk of boundedWriteChunks(rows, { maxRows: EXPORT_WRITE_MAX_ROWS, maxBytes: EXPORT_WRITE_MAX_BYTES }, exportRowBytes)) {
     place = await claimFreeRows(sheetId, tabName, place, chunk.length, today, gridRows);
     const fromRow = place.nextRow;
     const toRow = fromRow + chunk.length - 1;
@@ -238,7 +311,7 @@ async function writeExportRows(
       gridRows = toRow;
     }
     layout.push(...jobRowLayoutRequests(gid, fromRow, toRow));
-    await batchUpdateSpreadsheet(sheetId, layout);
+    await client.batchUpdate(sheetId, layout);
 
     // A to L when any row of the chunk carries its analysis (the others
     // leave G to L blank), else A to F.
@@ -254,7 +327,7 @@ async function writeExportRows(
     ]);
     const lastColumn = withAnalysis ? JOB_SHEET_COLUMNS.analysis : JOB_SHEET_COLUMNS.jobDescription;
     const range = a1Range(tabName, fromRow, toRow, JOB_SHEET_COLUMNS.date, lastColumn);
-    await batchUpdateValuesRaw(sheetId, [{ range, values }]);
+    await client.writeRaw(sheetId, [{ range, values }]);
 
     if (report.rowsWritten === 0) {
       report.startRow = fromRow;
@@ -295,11 +368,11 @@ async function claimFreeRows(
     // Rows past the grid hold nothing, and Google refuses a read of them.
     const readTo = gridRows === null ? lastRow : Math.min(lastRow, gridRows);
     if (readTo < current.nextRow) return current;
-    const [target = []] = await batchGetValues(sheetId, [
+    const [target = []] = await client.readRanges(sheetId, [
       a1Range(tabName, current.nextRow, readTo, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobDescription),
     ]);
     if (target.every((row) => (row ?? []).every((cell) => String(cell ?? '').trim() === ''))) return current;
-    const [grid = []] = await batchGetValues(sheetId, [
+    const [grid = []] = await client.readRanges(sheetId, [
       a1Columns(tabName, JOB_SHEET_COLUMNS.date, JOB_SHEET_COLUMNS.jobDescription),
     ]);
     const now = exportPlaceOf(grid, today);

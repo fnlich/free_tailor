@@ -42,12 +42,28 @@ export const APP_SETTING_ENV_VARIABLES = {
   outputPathPrefix: ['OUTPUT_PATH_PREFIX'],
   paymentLimits: ['PAYMENT_CARD_MIN_USD', 'PAYMENT_CARD_MAX_USD', 'PAYMENT_CRYPTO_MIN_USD', 'PAYMENT_CRYPTO_MAX_USD'],
   requireThreeDSecure: ['REQUIRE_THREE_D_SECURE'],
+  premiumPriceMilli: ['SUBSCRIPTION_PREMIUM_PRICE_USD'],
+  premiumPlusPriceMilli: ['SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD'],
+  premiumMaxPriceMilli: ['SUBSCRIPTION_PREMIUM_MAX_PRICE_USD'],
 } as const;
 
 /** The app-settings fields that resolve stored > `.env` > code default. */
 export type AppSettingKey = keyof typeof APP_SETTING_ENV_VARIABLES;
 
 export const APP_SETTING_KEYS = Object.keys(APP_SETTING_ENV_VARIABLES) as AppSettingKey[];
+
+/**
+ * The field each subscription price is SAVED under: dollars as typed, in a
+ * field ending `Usd`, though the payload serves it in thousandths (`...Milli`,
+ * null = not offered). A save naming the `...Milli` field is refused.
+ */
+export const SUBSCRIPTION_PRICE_REQUEST_FIELDS = {
+  premiumPriceMilli: 'premiumPriceUsd',
+  premiumPlusPriceMilli: 'premiumPlusPriceUsd',
+  premiumMaxPriceMilli: 'premiumMaxPriceUsd',
+} as const satisfies Partial<Record<AppSettingKey, string>>;
+
+export type SubscriptionPriceKey = keyof typeof SUBSCRIPTION_PRICE_REQUEST_FIELDS;
 
 /** The contact list's one field - a copy of the server's `CONTACT_SETTING_ENV_VARIABLES`. */
 export const CONTACT_SETTING_ENV_VARIABLES = { channels: ['CONTACT_CHANNELS'] } as const;
@@ -122,6 +138,16 @@ export function resetBody<K extends string>(key: K): Record<K, null> {
 /** A lake setting's Reset to default, under the field it is saved by. */
 export function lakeResetBody(key: LakeSettingKey): Record<string, null> {
   return resetBody(LAKE_SETTING_REQUEST_FIELDS[key]);
+}
+
+/**
+ * An app setting's Reset to default, under the field it is saved by: a
+ * subscription price under its `...Usd` name, every other field under its own.
+ */
+export function appSettingResetBody(key: AppSettingKey): Record<string, null> {
+  return Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PRICE_REQUEST_FIELDS, key)
+    ? resetBody(SUBSCRIPTION_PRICE_REQUEST_FIELDS[key as SubscriptionPriceKey])
+    : resetBody(key);
 }
 
 /**

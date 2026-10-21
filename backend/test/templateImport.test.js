@@ -5,12 +5,46 @@ const path = require('node:path');
 
 const {
   buildImportedTemplates,
+  inferTemplateNativeSectionOrder,
+  inferTemplatePrintedSections,
   inferTemplateSections,
   normalizeManualConfig,
   readTemplateImportDocument,
   TemplateImportError,
   MAX_TEMPLATES_PER_IMPORT,
 } = require('../dist/services/templateImport');
+
+test('which kinds a template prints and in what order are read off its markup: its own fields, and every kind the macro generates', () => {
+  const own = '<div><h2>Summary</h2><p>{{summary}}</p><h2>Experience</h2>{{#each experience}}<p>{{title}}</p>{{/each}}' +
+    '<h2>Education</h2>{{#each education}}<p>{{degree}}</p>{{/each}}<h2>Skills</h2>{{#each hardSkills}}<span>{{this}}</span>{{/each}}</div>';
+  assert.deepEqual(inferTemplatePrintedSections(own), ['summary', 'skills', 'experience', 'education']);
+  assert.deepEqual(inferTemplateNativeSectionOrder(own), ['summary', 'experience', 'education', 'skills']);
+
+  // Its own certifications loop, and the macro for everything else: the macro
+  // generates the other eight kinds, at its position, canonical order.
+  const withMacro = own.replace('</div>', '<h2>Certifications</h2>{{#each certifications}}<p>{{name}}</p>{{/each}}{{> extra-sections}}</div>');
+  assert.deepEqual(inferTemplatePrintedSections(withMacro), [
+    'summary', 'skills', 'experience', 'education',
+    'certifications', 'projects', 'volunteering', 'awards', 'publications', 'courses', 'languages', 'interests', 'references', 'custom',
+  ]);
+  assert.deepEqual(inferTemplateNativeSectionOrder(withMacro), [
+    'summary', 'experience', 'education', 'skills', 'certifications',
+    'projects', 'volunteering', 'awards', 'publications', 'courses', 'languages', 'interests', 'references',
+  ]);
+
+  // Soft Skills and Strengths exactly as the capability flags say; a macro
+  // mid-document puts the generated kinds there.
+  const sidebar = '<div class="side">{{> extra-sections}}<h3>Strengths</h3>{{#each strengths}}<p>{{title}}</p>{{/each}}</div>' +
+    '<div class="main"><h2>Experience</h2>{{#each experience}}<p>{{title}}</p>{{/each}}</div>';
+  assert.deepEqual(inferTemplateNativeSectionOrder(sidebar), [
+    'certifications', 'projects', 'volunteering', 'awards', 'publications', 'courses', 'languages', 'interests', 'references',
+    'strengths', 'experience',
+  ]);
+  const printed = inferTemplatePrintedSections(sidebar);
+  assert.ok(printed.includes('strengths') && !printed.includes('softSkills') && !printed.includes('summary'));
+  assert.deepEqual(inferTemplatePrintedSections('<div>nothing</div>'), []);
+  assert.deepEqual(inferTemplateNativeSectionOrder('<div>nothing</div>'), []);
+});
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'static', 'templates');
 
@@ -43,11 +77,13 @@ test('a file may hold one template, a list, or a wrapper', () => {
 
 test('every built-in template survives an export and re-import unchanged', () => {
   // The round trip that has to work, run against the real files rather than a
-  // fixture that could drift away from them.
+  // fixture that could drift away from them - the built-ins, the files without
+  // a `source`; a saved template beside them is an administrator's.
   const all = fs
     .readdirSync(TEMPLATES_DIR)
     .filter((file) => file.endsWith('.json'))
-    .map((file) => JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf8')));
+    .map((file) => JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf8')))
+    .filter((template) => !template.source);
   assert.ok(all.length >= 10);
 
   const imported = importIt(all);
@@ -56,9 +92,8 @@ test('every built-in template survives an export and re-import unchanged', () =>
     assert.equal(entry.template.htmlContent, all[index].htmlContent);
     assert.equal(entry.template.cssContent, all[index].cssContent ?? '');
     assert.deepEqual(entry.template.sections, all[index].sections);
-    // The layouts a built-in declares come back as declared, not re-inferred:
-    // charcoal-sidebar reads only skillCategories and still offers both.
-    assert.deepEqual(entry.template.skillsLayouts, all[index].skillsLayouts);
+    // Every template prints both layouts: there is no list to carry across.
+    assert.equal('skillsLayouts' in entry.template, false);
     assert.ok(entry.keptId, 'an import into an empty install keeps its ids');
   }
 });

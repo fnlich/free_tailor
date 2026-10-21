@@ -107,8 +107,9 @@ const FIELDS = new Set(['type', 'label', 'value', 'channels']);
 
 /**
  * The per-field refusals out of a 400 `contact-invalid` body, each checked to
- * be the shape the server sends - an older server, or anything else that
- * answered, yields none, and the page falls back to the sentence alone.
+ * be the shape the server sends - any other answer that reaches here (a
+ * proxy's error page, a 500) yields none, and the page falls back to the
+ * sentence alone.
  */
 export function readContactFieldErrors(body: unknown): ContactFieldError[] {
   const list = (body && typeof body === 'object' ? (body as { fieldErrors?: unknown }).fieldErrors : null) ?? null;

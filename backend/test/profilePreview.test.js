@@ -27,9 +27,19 @@ const { captureErrorLog, useAdminEmails, useTempStorage } = require('./helpers')
 
 const SHIPPED = path.join(__dirname, '..', 'static');
 
-/** The templates and the skill library a render needs, in the temp static dir. */
+/**
+ * The templates and the skill library a render needs, in the temp static dir:
+ * the built-ins only - a saved template beside them (a file with a `source`)
+ * is an administrator's, not the shipped set.
+ */
 function seedStatic(staticDir) {
-  fs.cpSync(path.join(SHIPPED, 'templates'), path.join(staticDir, 'templates'), { recursive: true });
+  const from = path.join(SHIPPED, 'templates');
+  const to = path.join(staticDir, 'templates');
+  fs.mkdirSync(to, { recursive: true });
+  for (const file of fs.readdirSync(from).filter((name) => name.endsWith('.json'))) {
+    const text = fs.readFileSync(path.join(from, file), 'utf8');
+    if (!JSON.parse(text).source) fs.writeFileSync(path.join(to, file), text);
+  }
   fs.cpSync(path.join(SHIPPED, 'skills'), path.join(staticDir, 'skills'), { recursive: true });
 }
 
@@ -177,6 +187,36 @@ test("the draft is laid over the caller's stored profile, and somebody else's is
   }
 });
 
+test('`sample: false` draws the profile as it stands, with nothing from the sample person', async () => {
+  const server = await serve('no-sample');
+  try {
+    // The Profiles page's thumbnail: the stored profile, as the server holds it.
+    const stored = await server.call('alice', { profileId: 'p-alice', profile: {}, sample: false });
+    assert.equal(stored.status, 200, JSON.stringify(stored.body));
+    assert.deepEqual(stored.body.sampled, []);
+    assert.ok(stored.body.html.includes('Stored Ada'));
+    assert.ok(stored.body.html.includes('The stored summary.'));
+    assert.ok(stored.body.html.includes('Stored Certificate'));
+
+    // A draft with no education gets none drawn, rather than the sample's.
+    const plain = await server.call('alice', { profile: draft(), sample: false });
+    assert.equal(plain.status, 200);
+    assert.deepEqual(plain.body.sampled, []);
+    assert.equal(plain.body.html.includes('University of Washington'), false);
+    assert.equal(plain.body.html.includes('Jordan Avery Chen'), false);
+
+    // Only the boolean opts out: anything else is the editor's preview, sampled.
+    for (const sample of ['false', 0, null, true]) {
+      const sampled = await server.call('alice', { profile: draft(), sample });
+      assert.equal(sampled.status, 200);
+      assert.deepEqual(sampled.body.sampled, ['education'], JSON.stringify(sample));
+      assert.ok(sampled.body.html.includes('University of Washington'));
+    }
+  } finally {
+    server.close();
+  }
+});
+
 test('signed out, the preview is a 401', async () => {
   const server = await serve('signed-out');
   try {
@@ -289,7 +329,7 @@ test('the layout and both switches reach the preview', async () => {
   }
 });
 
-test('the template is the requested one, else the draft\'s own, else default - and fits the layout', async () => {
+test("the template is the requested one, else the draft's own, else default", async () => {
   const server = await serve('template-choice');
   try {
     const own = await server.call('alice', { profile: draft({ preferredTemplate: 'ink-ledger' }) });
@@ -301,15 +341,17 @@ test('the template is the requested one, else the draft\'s own, else default - a
     });
     assert.equal(requested.body.templateId, 'developer-mono');
 
-    // Burgundy Rule is offered for the grouped layout only. A plain draft
-    // naming it is drawn the way generation would draw it - with the default -
-    // and the response says so instead of rendering a squeezed grid.
-    const mismatch = await server.call('alice', {
+    // Every template prints both layouts: a Plain draft on Burgundy Rule - a
+    // grid of category cells, once Grouped only - is drawn with it, its one
+    // headless group marked to span the grid's row rather than one squeezed cell.
+    const plainOnGrid = await server.call('alice', {
       profile: draft({ profileSettings: { technicalSkillsLayout: 'flat' } }),
       templateId: 'burgundy-rule',
     });
-    assert.equal(mismatch.status, 200);
-    assert.equal(mismatch.body.templateId, 'default');
+    assert.equal(plainOnGrid.status, 200);
+    assert.equal(plainOnGrid.body.templateId, 'burgundy-rule');
+    assert.match(plainOnGrid.body.html, /<div class="[^"]*\bskill-categories\b[^"]*"[^>]*\sdata-plain-skills\b/);
+    assert.equal(plainOnGrid.body.html.split('id="plain-skills-style"').length - 1, 1);
 
     const unknownOwn = await server.call('alice', { profile: draft({ preferredTemplate: 'deleted-template' }) });
     assert.equal(unknownOwn.body.templateId, 'default', "a draft naming a template that is gone falls back");

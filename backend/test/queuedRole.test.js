@@ -80,7 +80,7 @@ function stubOutputs() {
   });
   swap(generatedPath, 'getGeneratedOutputPath', async (_profile, _company, role) => {
     seen.path.push(role);
-    return { storagePathBase: 'x', absoluteDir: storage.rootDir, roleSlug: role };
+    return { storagePathBase: 'x', absoluteDir: storage.rootDir };
   });
   swap(coverLetters, 'saveCoverLetter', async () => 'x/cover.pdf');
   swap(coverLetters, 'saveCoverLetterDOCX', async () => 'x/cover.docx');

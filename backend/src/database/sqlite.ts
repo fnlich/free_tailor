@@ -680,7 +680,30 @@ const SCHEMA = `
      * default: OUTPUT_PATH_SUFFIX, else the code's. Read by its own query,
      * like the rate above (userRepository's getOutputPathSuffix).
      */
-    output_path_suffix TEXT
+    output_path_suffix TEXT,
+    /*
+     * A tier the account PAID for, from its credit balance, 30 days at a time
+     * (services/subscriptions). All six are NULL unless the tier in
+     * subscription is paid - Default, or a tier an administrator set, is
+     * not. subscription_base is the tier it returns to when the paid one ends
+     * (captured at the first purchase); the period runs from
+     * subscription_period_start to subscription_paid_through, which is also
+     * the renewal sweep's key; subscription_period_price_milli is what this
+     * period cost, in thousandths, which an upgrade's credit is worked out
+     * from; subscription_renews is 1 while it renews (0: cancelled, it ends at
+     * paid_through); subscription_next a lower paid tier it switches to at
+     * renewal. Written only by database/subscriptionRepository.ts - and
+     * cleared by userRepository.updateUser when an administrator sets the
+     * tier, or moves the role away from user. Read by their own queries,
+     * never through USER_COLUMNS, so an install that could not add them loses
+     * billing and nothing else.
+     */
+    subscription_base TEXT,
+    subscription_period_start TEXT,
+    subscription_paid_through TEXT,
+    subscription_period_price_milli INTEGER,
+    subscription_renews INTEGER,
+    subscription_next TEXT
   );
 
   /**
@@ -1001,6 +1024,15 @@ const ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; definition: 
   // The folder a run files everything under (owner decision O4). Migration 10
   // fills it for runs placed before it, from the files they recorded.
   { table: 'orders', column: 'output_root', definition: 'TEXT' },
+  // A tier paid for from the credit balance (services/subscriptions). NULL on
+  // every existing account: every tier set before is an administrator's, and
+  // the first purchase captures it as the base.
+  { table: 'users', column: 'subscription_base', definition: 'TEXT' },
+  { table: 'users', column: 'subscription_period_start', definition: 'TEXT' },
+  { table: 'users', column: 'subscription_paid_through', definition: 'TEXT' },
+  { table: 'users', column: 'subscription_period_price_milli', definition: 'INTEGER' },
+  { table: 'users', column: 'subscription_renews', definition: 'INTEGER' },
+  { table: 'users', column: 'subscription_next', definition: 'TEXT' },
 ];
 
 function addMissingColumns(db: Database.Database): void {
@@ -1061,6 +1093,19 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     table: 'orders',
     columns: ['output_root'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_orders_output_root ON orders (output_root COLLATE NOCASE)',
+  },
+  // The renewal sweep's question, "whose paid 30 days are up?" - partial, so
+  // it holds only the paid accounts, in the order they fall due and then by
+  // rowid, which every index entry carries: the order the sweep pages in
+  // (subscriptionRepository `listDueSubscriptions`; the plan is pinned by
+  // test/subscriptionRenewal.test.js).
+  {
+    name: 'idx_users_subscription_due',
+    table: 'users',
+    columns: ['subscription_paid_through'],
+    sql:
+      'CREATE INDEX IF NOT EXISTS idx_users_subscription_due ON users (subscription_paid_through) ' +
+      'WHERE subscription_paid_through IS NOT NULL',
   },
   // The analysis gate's two lookups, each one index seek whatever the size of
   // the table (test/jobAnalysisStore.test.js pins the plans). UNIQUE, because

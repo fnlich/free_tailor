@@ -132,6 +132,9 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
       'defaultProfileId',
       'defaultResumeDocxEnabled',
       'defaultResumeSelection',
+      // How a profile that chose no tailoring mode is tailored: the editor
+      // says what "the default" is. An .env value, not a secret.
+      'defaultTailorMode',
       'defaultTheme',
       'models',
       'outputPathUsesJobTitle',
@@ -357,12 +360,19 @@ test('a profile save checks a changed model against the list', async () => {
 
 /* ------------------------------------------------------- deleted routes */
 
-test('the synchronous generate routes are gone, /resume/generate with them', async () => {
+test('the synchronous generate routes are gone, /resume/generate with them, and the multi-posting analysis', async () => {
   // Every build is queued (POST /generation/batches); /resume/generate, which
-  // built and charged one resume in the request, had no caller left.
+  // built and charged one resume in the request, had no caller left. Nor had
+  // /resume/analyze-multi-job: a posting is analysed by /resume/analyze, one
+  // per request, through the gate like every other.
   const server = await serve('deleted-routes');
   try {
-    for (const route of ['/resume/generate-all', '/resume/generate-multi-job', '/resume/generate']) {
+    for (const route of [
+      '/resume/generate-all',
+      '/resume/generate-multi-job',
+      '/resume/generate',
+      '/resume/analyze-multi-job',
+    ]) {
       const response = await server.call('alice', 'POST', route, { companyName: 'Acme', jobs: [] });
       assert.equal(response.status, 404, route);
     }

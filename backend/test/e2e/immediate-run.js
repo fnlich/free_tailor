@@ -7,8 +7,10 @@
  * the page's pure decisions. This proves the page and the server are joined
  * up, the part no unit test reaches:
  *
- *   - the first Generate Immediately asks first, with the owner's sentence,
- *     and "Don't show again" stops it asking in this browser
+ *   - the first Generate Immediately asks first, with the owner's sentence
+ *     and what the run takes from the credit balance - nothing, for the stub
+ *     seat's free model - and "Do not show again" stops it asking in this
+ *     browser
  *   - each finished resume reaches the browser's download folder by itself,
  *     and is listed under the progress to download again
  *   - a run queued for this tab is picked back up by this tab after a
@@ -273,8 +275,14 @@ async function main() {
     await until(page, () => Boolean(document.querySelector('[role="dialog"]')), 5000);
     const confirmText = (await dialogText(page)) ?? '';
     check(
-      "the first click asks first, in the owner's words, with Don't show again",
-      confirmText.includes(CONFIRM_SENTENCE) && /Don.t show again/.test(confirmText),
+      "the first click asks first, in the owner's words, with Do not show again",
+      confirmText.includes(CONFIRM_SENTENCE) && /Do not show again/.test(confirmText),
+      confirmText
+    );
+    // The model is free here: the confirm says so, and names no amount to be taken.
+    check(
+      "a free run's confirm names no charge",
+      /nothing is taken from your credit/.test(confirmText) && !/\$\d/.test(confirmText),
       confirmText
     );
     await page.screenshot({ path: `${SHOTS}/immediate-1-confirm.png` });
@@ -347,7 +355,7 @@ async function main() {
       `${againBefore} -> ${completedDownloads.length}: ${completedDownloads.slice(againBefore).join(', ')}`
     );
 
-    // "Don't show again", then a third click that is not asked about.
+    // "Do not show again", then a third click that is not asked about.
     await pressButton(page, 'Generate Immediately');
     await until(page, () => Boolean(document.querySelector('[role="dialog"]')), 5000);
     await page.evaluate(() => {
@@ -359,7 +367,15 @@ async function main() {
     await wait(500);
     await pressButton(page, 'Generate Immediately');
     await wait(700);
-    check("after Don't show again, Generate Immediately starts without asking", (await dialogText(page)) === null);
+    check('after Do not show again, Generate Immediately starts without asking', (await dialogText(page)) === null);
+    check(
+      'remembered for Generate Immediately alone, under its own key',
+      await page.evaluate(
+        () =>
+          window.localStorage.getItem('freeTailor.spendConfirm.immediate.skip') === '1' &&
+          window.localStorage.getItem('freeTailor.spendConfirm.order.skip') === null
+      )
+    );
     await until(page, () => /Built 1 of 1 resume/.test(document.body.innerText), 60_000);
 
     /* ------------------------------------ a reload picks this tab's run up */

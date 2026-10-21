@@ -158,6 +158,16 @@ const MONEY_SOURCES = [
   'services/jobLake/reportRun.ts',
   'routes/jobLake.ts',
   'routes/report.ts',
+  // Subscriptions bought and renewed from the credit balance: the proration,
+  // the conditional debit's caller, the sweep, the notices and the route.
+  'services/subscriptions/billing.ts',
+  'services/subscriptions/errors.ts',
+  'services/subscriptions/index.ts',
+  'services/subscriptions/notices.ts',
+  'services/subscriptions/renewal.ts',
+  'database/subscriptionRepository.ts',
+  'routes/subscription.ts',
+  'config/accountSubscriptions.ts',
 ];
 
 function withoutComments(source) {

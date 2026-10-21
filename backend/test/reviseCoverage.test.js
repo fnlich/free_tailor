@@ -8,18 +8,19 @@ const { freshInstall, posting, serveInstall, untilFinished } = require('./analys
 
 /**
  * The revise pass (`revise-resume-coverage`): after a fresh tailoring, a
- * second call on the model the resume is charged at works the checklist terms
- * the draft left out - and figures, when its bullets carry fewer than five -
- * into the summary and the bullets, "changing as little as possible".
+ * second call on the model the resume is charged at puts back the checklist
+ * terms the draft left out that the profile's own words carry - and the
+ * profile's figures the draft dropped - "changing as little as possible".
  *
  * Pinned here: when it runs and what it is told (the missing terms in
- * priority order, never one carrying a banned word, at most
- * TAILOR_REVISE_MAX_TERMS; the figures sentence), how its answer is folded
- * in (only the summary and whole roles' bullets, matched by company and
- * title), that a failure leaves the draft as the resume and an abort is
- * passed on, and that it never runs on a cached tailoring or on content a
- * page sent back - and that the cache keeps the revised resume, never a
- * revision a fallback model wrote.
+ * priority order, only those the profile names, never one carrying a banned
+ * word, at most TAILOR_REVISE_MAX_TERMS; the profile's own lines whose
+ * figures the draft no longer shows, and never a request for a figure of the
+ * model's making), how its answer is folded in (only the summary and whole
+ * roles' bullets, matched by company and title), that a failure leaves the
+ * draft as the resume and an abort is passed on, and that it never runs on a
+ * cached tailoring or on content a page sent back - and that the cache keeps
+ * the revised resume, never a revision a fallback model wrote.
  *
  * Modules are required once and shared, as the analysis harness asks.
  */
@@ -50,16 +51,22 @@ const ANALYSIS = {
   sourceJobDescription: 'Requirements: Python and Kafka. Docker. Microservices. Ownership. Payments.',
 };
 
+/**
+ * A profile whose own words carry every term of that checklist - the revise
+ * pass is asked only for those - and whose bullets carry no figure, so no
+ * figure of hers can be dropped unless a test gives her one.
+ */
 function profile(extra = {}) {
   return {
     id: 'p-revise',
     name: 'Ada',
     title: 'Backend Engineer',
+    summary: 'Built Python microservices on Kafka and Docker, with ownership of the payment flows.',
     experience: [
       { title: 'Engineer', company: 'Acme', startDate: '2020', endDate: 'Present', location: 'Remote', description: '', achievements: ['Her own bullet.'], skills: [] },
       { title: 'Engineer', company: 'Beta', startDate: '2017', endDate: '2019', location: 'Berlin', description: '', achievements: ['Her older bullet.'], skills: [] },
     ],
-    skills: ['Python'],
+    skills: ['Python', 'Kafka', 'Docker'],
     strengths: [],
     softSkills: [],
     education: [],
@@ -76,7 +83,7 @@ const FIGURED = [
   'Answered 200 pages a year.',
 ];
 
-/** A tailoring that carries every checklist term and five figures: nothing for a revision to do. */
+/** A tailoring that carries every checklist term, and no figure of the profile's to drop: nothing for a revision to do. */
 function completeDraft(extra = {}) {
   return JSON.stringify({
     title: 'Backend Engineer',
@@ -173,36 +180,110 @@ test('figures: a number not glued to a letter; S3, EC2, p99 and OAuth2 are names
   for (const text of ['Moved files to S3.', 'Ran EC2 hosts.', 'Watched p99 latency.', 'Added OAuth2.', 'Shipped v1.2.']) {
     assert.equal(revise.hasFigure(text), false, text);
   }
-  const draft = (bullets) => ({ experience: [{ achievements: bullets }] });
-  assert.deepEqual(revise.figureCount(draft(FIGURED)), { bullets: 5, carried: 5, wanted: 0 });
-  assert.deepEqual(revise.figureCount(draft(['Ran EC2.', 'Wrote 3 tools.', 'Fixed bugs.'])), { bullets: 3, carried: 1, wanted: 2 });
-  // Every bullet already carries one: there is nowhere to put another.
-  assert.deepEqual(revise.figureCount(draft(['Wrote 3 tools.'])), { bullets: 1, carried: 1, wanted: 0 });
-  assert.deepEqual(revise.figureCount(draft([])), { bullets: 0, carried: 0, wanted: 0 });
+  // Its figures as digits: separators dropped, decimals kept, a year left out.
+  assert.deepEqual(
+    revise.figureTokens('Cut deploys from 40 minutes to 6 for 1,200 users, a $5M book and 9.5s pages, in 2019.'),
+    ['40', '6', '1200', '5', '9.5']
+  );
+  assert.deepEqual(revise.figureTokens('Ran EC2, S3 and p99 checks on v1.2.'), []);
+});
+
+test("the figures the draft dropped are the profile's own lines, each under its role - never a figure it never stated", () => {
+  const profile = {
+    experience: [
+      {
+        company: 'Acme',
+        title: 'Engineer',
+        description: 'Owned billing. Served 2M users a day.',
+        achievements: ['Cut deploys from 40 minutes to 6.', 'Wrote the runbooks.', 'Moved 12 queues to Kafka.'],
+      },
+      { company: 'Beta', title: 'Lead', description: '', achievements: ['Mentored 3 engineers.'] },
+    ],
+  };
+  const draft = {
+    summary: 'Engineer.',
+    experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Moved 12 queues to Kafka.', 'Cut deploys to a 6-minute run.'] }],
+  };
+  // A line counts as dropped while ANY of its figures is gone - the 40 here.
+  assert.deepEqual(revise.droppedProfileFigures(profile, draft), [
+    { company: 'Acme', title: 'Engineer', line: 'Cut deploys from 40 minutes to 6.' },
+    { company: 'Acme', title: 'Engineer', line: 'Served 2M users a day.' },
+    { company: 'Beta', title: 'Lead', line: 'Mentored 3 engineers.' },
+  ]);
+  // Carried anywhere on the page, in any spelling of its digits, is carried.
+  assert.deepEqual(
+    revise.droppedProfileFigures(profile, { summary: '40-minute deploys cut to 6, 2M users, 3 engineers, 12 queues.', experience: [] }),
+    []
+  );
+  assert.equal(revise.droppedProfileFigures(profile, { summary: '', experience: [] }, 2).length, 2, 'at most the cap');
+  // A profile that states no figure has none to drop, whatever the draft says.
+  const plain = { experience: [{ company: 'A', title: 'B', description: 'Owned it.', achievements: ['Wrote it.'] }] };
+  assert.deepEqual(revise.droppedProfileFigures(plain, { summary: '', experience: [] }), []);
+  assert.deepEqual(revise.droppedProfileFigures({}, { summary: '', experience: [] }), []);
 
   const values = revise.buildReviseResumeCoveragePromptValues(
     { summary: 'S.', experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Fixed bugs.', 'Wrote 3 tools.'], startDate: '2020' }] },
     ['Docker'],
-    { carried: 1, wanted: 1 }
+    [{ company: 'Acme', title: 'Engineer', line: 'Cut deploys from 40 minutes to 6.' }]
   );
   assert.deepEqual(Object.keys(values).sort(), ['draftJson', 'figuresNote', 'missingTermsJson']);
+  // Each role carries its dates, for the revise prompt's years rule; a date
+  // the role has none of is simply absent.
   assert.deepEqual(JSON.parse(values.draftJson), {
     summary: 'S.',
-    experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Fixed bugs.', 'Wrote 3 tools.'] }],
+    experience: [{ company: 'Acme', title: 'Engineer', startDate: '2020', achievements: ['Fixed bugs.', 'Wrote 3 tools.'] }],
   });
   assert.equal(values.missingTermsJson, '["Docker"]');
   assert.equal(
     values.figuresNote,
-    'FIGURES. 1 of the bullets carry a figure and a resume needs at least five. Add a figure to 1 more bullets, ' +
-      'never to the summary: each a modest quantity the work the bullet already describes implies (how many ' +
-      'services or endpoints a change covered, how many people a review involved, how often a release went out, how ' +
-      'long a job took before and after). Never a result nobody measured, and never a figure attached to work the ' +
-      'draft does not describe.'
+    "FIGURES THE PROFILE STATES AND THE DRAFT DROPPED. Each line below is the candidate's own, from the role named " +
+      'before it, and carries a figure the draft no longer shows. Where a bullet of that role describes the same piece ' +
+      'of work, put the figure back into it exactly as the line states it; where no bullet describes that work, add ' +
+      'nothing. Never a figure these lines do not state, and never one in the summary.\n' +
+      '- Acme, Engineer: Cut deploys from 40 minutes to 6.'
   );
-  assert.equal(revise.buildReviseResumeCoveragePromptValues({ summary: '', experience: [] }, [], { carried: 5, wanted: 0 }).figuresNote, '');
-  assert.equal(revise.revisionWanted([], { wanted: 0 }), false);
-  assert.equal(revise.revisionWanted(['Docker'], { wanted: 0 }), true);
-  assert.equal(revise.revisionWanted([], { wanted: 2 }), true);
+  // The note never asks for a figure of the model's own making.
+  assert.doesNotMatch(values.figuresNote, /modest|implies|at least five/);
+  // A line from a role with neither company nor title is listed bare.
+  assert.ok(
+    revise
+      .buildReviseResumeCoveragePromptValues({ summary: '', experience: [] }, [], [{ company: '', title: '', line: 'Cut it by 4.' }])
+      .figuresNote.endsWith('add nothing. Never a figure these lines do not state, and never one in the summary.\n- Cut it by 4.')
+  );
+  assert.equal(revise.buildReviseResumeCoveragePromptValues({ summary: '', experience: [] }, [], []).figuresNote, '');
+  assert.equal(revise.revisionWanted([], []), false);
+  assert.equal(revise.revisionWanted(['Docker'], []), true);
+  assert.equal(revise.revisionWanted([], [{ company: 'A', title: 'B', line: 'Cut it by 4.' }]), true);
+});
+
+test("only the checklist terms the profile's own words carry are ever asked for - never a company's name", () => {
+  const evidence = revise.profileEvidence({
+    title: 'Backend Engineer',
+    summary: 'Builds payment services.',
+    skills: ['Python', 'Kafka'],
+    skillCategories: [{ category: 'Cloud', skills: ['AWS'] }],
+    softSkills: ['Ownership'],
+    strengths: [{ title: 'Incident response', description: 'Ran the pager.' }],
+    experience: [
+      {
+        company: 'Stripe',
+        title: 'Engineer',
+        description: 'Moved services to microservices.',
+        achievements: ['Shipped Docker images.'],
+        skills: ['Terraform'],
+      },
+    ],
+    certifications: [{ name: 'CKA', issuer: 'CNCF' }],
+    projects: [{ name: 'Ledger', role: 'Go', description: '', achievements: ['Wrote it in Rust.'] }],
+  });
+  assert.deepEqual(
+    revise.supportedTerms(
+      ['Python', 'Kafka', 'AWS', 'Ownership', 'Incident response', 'microservices', 'Docker', 'Terraform', 'CKA', 'Go', 'Rust', 'Stripe', 'Kubernetes', 'GraphQL', 'go'],
+      evidence
+    ),
+    ['Python', 'Kafka', 'AWS', 'Ownership', 'Incident response', 'microservices', 'Docker', 'Terraform', 'CKA', 'Go', 'Rust']
+  );
+  assert.deepEqual(revise.supportedTerms(['Python'], revise.profileEvidence({})), []);
 });
 
 test('the merge reads the summary and whole roles, matched by company and title - nothing else', () => {
@@ -368,7 +449,7 @@ test("a revised line that would not print whole never costs the draft its own", 
 
 /* ======================================================== through tailorResume */
 
-test('a draft that carries every term and five figures is not revised; one missing a term is, and is told exactly that', async () => {
+test('a draft that carries every term the profile names is not revised; one missing a term is, and is told exactly that', async () => {
   install('trigger');
   const complete = seat();
   await tailorResume(profile(), ANALYSIS, CHOICE);
@@ -379,19 +460,64 @@ test('a draft that carries every term and five figures is not revised; one missi
   assert.equal(missing.revisions().length, 1);
   const turn = told(missing.revisions()[0]);
   assert.match(turn, /TERMS THE RESUME IS MISSING[^\n]*\n\["microservices"\]/);
-  assert.doesNotMatch(turn, /FIGURES\./, 'it already carries five figures');
-  assert.match(turn, /"company":"Acme","title":"Engineer","achievements":\["Built 4 Python services for 30 teams\."/);
+  assert.doesNotMatch(turn, /FIGURES THE PROFILE STATES/, 'the profile states no figure the draft dropped');
+  assert.match(
+    turn,
+    /"company":"Acme","title":"Engineer","startDate":"2020","endDate":"Present","achievements":\["Built 4 Python services for 30 teams\."/
+  );
   // On the model the resume is charged at.
   assert.equal(missing.revisions()[0].modelName, 'sonnet');
 
-  // Fewer than five figures, nothing missing: asked for figures only.
+  // A posting term the profile never names is left out on purpose - the
+  // tailoring prompt says so - and is never asked for: no revision at all.
+  const unnamed = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
+  await tailorResume(profile({ summary: 'Built Python services on Kafka and Docker, with ownership of the payment flows.' }), ANALYSIS, CHOICE);
+  assert.equal(unnamed.revisions().length, 0, 'microservices is not hers to claim');
+
+  // Nor a term or a figure that only a sentence about the COMPANY carries:
+  // the tailoring was shown the role without it (its `companyContext`).
+  const roleWith = (description) =>
+    profile({
+      summary: 'Built Python services on Kafka and Docker, with ownership of the payment flows.',
+      experience: [
+        { title: 'Engineer', company: 'Acme', startDate: '2020', endDate: 'Present', location: 'Remote', description, achievements: ['Her own bullet.'], skills: [] },
+        { title: 'Engineer', company: 'Beta', startDate: '2017', endDate: '2019', location: 'Berlin', description: '', achievements: ['Her older bullet.'], skills: [] },
+      ],
+    });
+  const blurb = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
+  await tailorResume(roleWith('Acme is a platform of 75 microservices.'), ANALYSIS, CHOICE);
+  assert.equal(blurb.revisions().length, 0, "the company's own blurb is not hers");
+  // The same words as her own sentence are hers: the term and the figure both.
+  const own = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
+  await tailorResume(roleWith('Ran a platform of 75 microservices.'), ANALYSIS, CHOICE);
+  assert.equal(own.revisions().length, 1);
+  assert.match(told(own.revisions()[0]), /TERMS THE RESUME IS MISSING[^\n]*\n\["microservices"\]/);
+  assert.match(told(own.revisions()[0]), /\n- Acme, Engineer: Ran a platform of 75 microservices\./);
+
+  // Nothing missing, but the draft dropped a figure the profile states: asked
+  // to put that line's figure back, and for nothing else.
   const figures = seat({
     tailor: () => completeDraft({ experience: [{ title: 'Engineer', company: 'Acme', achievements: ['Built Docker images for Kafka.', 'Fixed bugs.'] }] }),
   });
-  await tailorResume(profile(), ANALYSIS, CHOICE);
+  const measured = profile({
+    experience: [
+      { title: 'Engineer', company: 'Acme', startDate: '2020', endDate: 'Present', location: 'Remote', description: '', achievements: ['Cut deploys from 40 minutes to 6.'], skills: [] },
+      { title: 'Engineer', company: 'Beta', startDate: '2017', endDate: '2019', location: 'Berlin', description: '', achievements: ['Her older bullet.'], skills: [] },
+    ],
+  });
+  await tailorResume(measured, ANALYSIS, CHOICE);
   assert.equal(figures.revisions().length, 1);
-  assert.match(told(figures.revisions()[0]), /FIGURES\. 0 of the bullets carry a figure .* Add a figure to 3 more bullets/);
+  assert.match(
+    told(figures.revisions()[0]),
+    /FIGURES THE PROFILE STATES AND THE DRAFT DROPPED\.[^\n]*\n- Acme, Engineer: Cut deploys from 40 minutes to 6\./
+  );
   assert.match(told(figures.revisions()[0]), /TERMS THE RESUME IS MISSING[^\n]*\n\[\]/);
+  // A draft with few figures but none of hers dropped is the resume as it stands.
+  const few = seat({
+    tailor: () => completeDraft({ experience: [{ title: 'Engineer', company: 'Acme', achievements: ['Built Docker images for Kafka.', 'Fixed bugs.'] }] }),
+  });
+  await tailorResume(profile(), ANALYSIS, CHOICE);
+  assert.equal(few.revisions().length, 0, 'no figure is ever asked for that the profile does not state');
 
   // Switched off, never.
   await withEnv({ TAILOR_REVISE_PASS: 'off' }, async () => {

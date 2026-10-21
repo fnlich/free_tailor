@@ -13,15 +13,29 @@
  *   - a reporter reaches Report Jobs, Credits and Settings -> Profile / Job
  *     Sheet, and every other address sends them to Report Jobs without
  *     mounting the page - so not one request of theirs is refused for their
- *     role; a user made a reporter mid-session is taken there too
+ *     role; a user made a reporter mid-session is taken there too, or, on
+ *     a page a reporter keeps, sees Settings -> Profile drawn as a reporter's
  *   - an administrator sets a reporter's rate and records a payout on Accounts
+ *   - what a Default subscription does not include is drawn LOCKED, never
+ *     hidden: Groups in the rail, the builder's multi-profile choices and
+ *     Select Group, each with the lock icon, each opening "Locked: <what>"
+ *     with Go to subscription; the Subscription page's cards, one row wide
+ *     and one column at 390
  *   - hiding is not the protection: the API refuses an ordinary user directly
  *
  * The session is seeded and injected, because there is no offline sign-in -
  * the same trick browser.js uses for the payment walkthrough. Servers are
- * expected to be up already (`npm run dev`), as they are there.
+ * expected to be up already, the backend preloaded with the stub seat and the
+ * sheets stub and sharing DB_DIR with this script, which writes the sessions
+ * and the reporter's balance straight into that database. Not the root dev
+ * script, nor any backend started without a preload: it finds a real Google
+ * credential when backend/ holds one, and every account this signs in gets a
+ * REAL spreadsheet (README.md, at the top). From backend/:
  *
- * Usage:  node test/e2e/shell.js
+ *   DB_DIR=/path/to/db PORT=3001 \
+ *     node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-sheets.js dist/index.js
+ *   # the frontend, built against that backend, in another terminal; then
+ *   DB_DIR=/path/to/db node test/e2e/shell.js
  */
 
 const path = require('path');
@@ -48,6 +62,7 @@ const ROUTES = [
   '/settings/subscription',
   '/orders',
   '/credits',
+  '/jobs',
   '/jobs/filter',
   '/bid-assistant',
   '/calendar',
@@ -233,53 +248,123 @@ async function openSeededJob(page, company) {
  */
 async function openBuilder(page, card) {
   await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
-  await wait(350);
-  const pressed = await page.evaluate((label) => {
-    const button = Array.from(document.querySelectorAll('button')).find((b) => b.textContent.includes(label));
-    button?.click();
-    return Boolean(button);
-  }, card);
+  // Waited for, then pressed until it takes: the card is drawn only once the
+  // account has loaded, and a press that lands before the production page has
+  // hydrated does nothing. Opened is the card gone - the builder replaces the
+  // two entry cards - after at least one press.
+  let pressed = false;
+  try {
+    await page.waitForFunction(
+      (label) => {
+        const button = Array.from(document.querySelectorAll('button')).find((b) => b.textContent.includes(label));
+        if (!button) return window.__e2eBuilderPressed === true;
+        window.__e2eBuilderPressed = true;
+        button.click();
+        return false;
+      },
+      { timeout: 15_000, polling: 300 },
+      card
+    );
+    pressed = true;
+  } catch {
+    pressed = false;
+    const seen = await page.evaluate(() => ({ url: location.href, text: document.body.innerText.slice(0, 400) }));
+    console.log(`        openBuilder(${card}) did not open: ${JSON.stringify(seen)}`);
+  }
   await wait(500);
   return pressed;
 }
 
 /**
  * A group of the builder's target radios as drawn: enabled or not, chosen or
- * not, and the Premium pill beside it - a link to the Subscription page, with
- * the reason on hover - if it has one.
+ * not, its label's text, and the lock beside it - a button marked
+ * `data-locked-feature`, next to the card (components/subscription/
+ * LockedFeature.tsx `ChoiceCard`) - if it has one.
  */
 async function readChoices(page, name) {
   return page.evaluate(
     (radioName) =>
       Array.from(document.querySelectorAll(`input[type="radio"][name="${radioName}"]`)).map((input) => {
-        const pill = input.closest('label')?.querySelector('a[href="/settings/subscription"]');
+        const lock = input.closest('[data-locked-choice]')?.querySelector('button[data-locked-feature]');
         return {
           value: input.value,
           disabled: input.disabled,
           checked: input.checked,
-          pill: pill ? pill.textContent.trim() : null,
-          title: pill ? pill.getAttribute('title') : null,
+          label: input.closest('label')?.textContent.trim() ?? '',
+          lock: lock ? lock.getAttribute('data-locked-feature') : null,
+          lockLabel: lock ? lock.getAttribute('aria-label') : null,
         };
       }),
     name
   );
 }
 
-/** The locked "Select Group" of sheet mode, if drawn: its select's state and its pill. */
+/** The locked "Select Group" of sheet mode, if drawn: a button standing where the select would be. */
 async function readLockedGroup(page) {
   return page.evaluate(() => {
-    const select = document.getElementById('sheets-group-locked');
-    if (!select) return null;
-    const pill = select.parentElement?.querySelector('a[href="/settings/subscription"]');
-    return { disabled: select.disabled, pill: pill ? pill.textContent.trim() : null };
+    const element = document.getElementById('sheets-group-locked');
+    if (!element) return null;
+    return {
+      tag: element.tagName.toLowerCase(),
+      lock: element.getAttribute('data-locked-feature'),
+      text: element.textContent.trim(),
+    };
   });
 }
 
-const ONE_PROFILE = 'Your subscription supports one profile';
-/** Locked as owner decisions B1-B3 say: disabled, with the Premium pill and its reason. */
+/**
+ * Locked as owner decisions B1-B3 and the lock icon say: disabled, a lock
+ * beside it naming what it needs, and no "Premium" pill in its label.
+ */
 const isLocked = (choice) =>
-  Boolean(choice) && choice.disabled && choice.pill === 'Premium' && choice.title === ONE_PROFILE;
-const isOpen = (choice) => Boolean(choice) && !choice.disabled && choice.pill === null;
+  Boolean(choice) &&
+  choice.disabled &&
+  choice.lock === 'many-profiles' &&
+  /^Locked: Building for several profiles\. Needs Premium\.$/.test(choice.lockLabel ?? '') &&
+  !/Premium/.test(choice.label);
+const isOpen = (choice) => Boolean(choice) && !choice.disabled && choice.lock === null;
+
+/**
+ * Presses `selector` and reads the lock's dialog it opens: its title, its
+ * text, where Go to subscription leads - then presses Close and says whether
+ * the dialog went.
+ */
+async function openLock(page, selector) {
+  const pressed = await page.evaluate((target) => {
+    const element = document.querySelector(target);
+    element?.click();
+    return Boolean(element);
+  }, selector);
+  if (!pressed) return null;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const dialog = await page.evaluate(() => {
+    const panel = document.querySelector('[role="dialog"]');
+    if (!panel) return null;
+    const go = Array.from(panel.querySelectorAll('a')).find((a) => a.textContent.trim() === 'Go to subscription');
+    return {
+      title: panel.querySelector('h2')?.textContent.trim() ?? '',
+      text: panel.innerText,
+      goHref: go ? go.getAttribute('href') : null,
+      close: Array.from(panel.querySelectorAll('button')).some((b) => b.textContent.trim() === 'Close'),
+    };
+  });
+  await page.evaluate(() => {
+    const panel = document.querySelector('[role="dialog"]');
+    Array.from(panel?.querySelectorAll('button') ?? []).find((b) => b.textContent.trim() === 'Close')?.click();
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const closed = await page.evaluate(() => !document.querySelector('[role="dialog"]'));
+  return dialog ? { ...dialog, closed } : null;
+}
+
+/** A lock's dialog as the lock icon promises it: "Locked: <what>", Go to subscription, and Close that closes it. */
+const isLockDialog = (dialog, title) =>
+  Boolean(dialog) &&
+  dialog.title === `Locked: ${title}` &&
+  dialog.goHref === '/settings/subscription' &&
+  dialog.close &&
+  dialog.closed &&
+  !/\bplans?\b/i.test(dialog.text);
 
 /** What the shell looks like from inside the page. */
 async function inspect(page) {
@@ -506,14 +591,13 @@ async function main() {
     );
 
     /*
-     * The rail, in the order it was asked for.
-     *
-     * Find Jobs is the account's own job sheet and is offered only once there
-     * is a URL for it - which there is not on a machine with no Google
-     * credentials, so it is allowed to be missing here and nowhere else.
+     * The rail, in the order it was asked for. Find Jobs is a page of the
+     * app now (/jobs), so it is always there - the account's sheet is its
+     * "Go to my sheet" - and opens in the same tab like every other row.
      */
     const RAIL = [
       'Profiles',
+      'Groups',
       'Find Jobs',
       'Build Resumes',
       'Orders',
@@ -524,11 +608,19 @@ async function main() {
       'Templates',
       'Settings',
     ];
-    const railOrder = (labels) => labels.filter((label) => label !== 'Find Jobs').join(' / ');
     check(
-      'user: the rail reads Profiles, Find Jobs, Build Resumes, Orders, Credits | Job Filter, Bid Assistant, Calendar | Templates, Settings',
-      railOrder(shell.navLabels) === railOrder(RAIL),
+      'user: the rail reads Profiles, Groups, Find Jobs, Build Resumes, Orders, Credits | Job Filter, Bid Assistant, Calendar | Templates, Settings',
+      shell.navLabels.join(' / ') === RAIL.join(' / '),
       `saw: ${shell.navLabels.join(', ')}`
+    );
+    const findJobsRow = await page.evaluate(() => {
+      const row = Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item')).find((node) => node.textContent.trim() === 'Find Jobs');
+      return row ? { tag: row.tagName, href: row.getAttribute('href'), target: row.getAttribute('target') } : null;
+    });
+    check(
+      'user: Find Jobs is a same-tab link to /jobs',
+      findJobsRow?.tag === 'A' && findJobsRow.href === '/jobs' && !findJobsRow.target,
+      JSON.stringify(findJobsRow)
     );
     const assistantHeading = await page.evaluate(() =>
       document.querySelector('.tl-sidebar .tl-sidebar-label')?.textContent.trim()
@@ -578,6 +670,40 @@ async function main() {
       /Current subscription/.test(tierCopy) && !/\bplans?\b/i.test(tierCopy),
       tierCopy.slice(0, 300)
     );
+    // The tiers as cards, side by side - Default current - with a price or "Not offered" on each.
+    const tierCards = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-subscription-card]')).map((card) => ({
+        id: card.getAttribute('data-subscription-card'),
+        current: card.getAttribute('aria-current') === 'true',
+        top: Math.round(card.getBoundingClientRect().top),
+        text: card.innerText,
+      }))
+    );
+    check(
+      'user /settings/subscription: four cards in one row at 1440, Default the current one',
+      tierCards.map((card) => card.id).join() === 'default,premium,premium-plus,premium-max' &&
+        new Set(tierCards.map((card) => card.top)).size === 1 &&
+        tierCards.find((card) => card.current)?.id === 'default',
+      JSON.stringify(tierCards.map(({ id, current, top }) => ({ id, current, top })))
+    );
+    await page.setViewport(PHONE);
+    await page.goto(`${APP}/settings/subscription`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const tierPhone = await page.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      columns: new Set(
+        Array.from(document.querySelectorAll('[data-subscription-card]')).map((card) =>
+          Math.round(card.getBoundingClientRect().left)
+        )
+      ).size,
+    }));
+    check(
+      'user /settings/subscription at 390: one card a row, no horizontal scrollbar',
+      tierPhone.overflow <= 1 && tierPhone.columns === 1,
+      JSON.stringify(tierPhone)
+    );
+    await page.screenshot({ path: `${SHOTS}/shell-subscription-phone.png`, fullPage: true });
+    await page.setViewport(WIDE);
 
     // An invoice is a document: no rail and no bar to print around it.
     await page.goto(`${APP}/credits/invoice?payment=no-such-payment`, { waitUntil: 'networkidle2' });
@@ -604,20 +730,51 @@ async function main() {
       `print buttons: ${invoiceChrome.print}`
     );
 
+    /*
+     * Groups is in the rail for every builder, drawn LOCKED below Premium: a
+     * button, not a link, whose press says what it needs and leads to the
+     * Subscription page.
+     */
+    await visit(page, '/orders', 'user');
+    const groupsRow = await page.evaluate(() => {
+      const row = Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item')).find(
+        (item) => item.textContent.trim() === 'Groups'
+      );
+      return row ? { tag: row.tagName.toLowerCase(), lock: row.getAttribute('data-locked-feature') } : null;
+    });
     check(
-      'user: Groups is hidden on the Default subscription',
-      !shell.navLabels.includes('Groups'),
-      `saw: ${shell.navLabels.join(', ')}`
+      'user: Groups is in the rail, locked on the Default subscription',
+      Boolean(groupsRow) && groupsRow.tag === 'button' && groupsRow.lock === 'groups',
+      JSON.stringify(groupsRow)
+    );
+    const groupsLock = await openLock(page, '.tl-sidebar button[data-locked-feature="groups"]');
+    check(
+      'user: pressing it opens "Locked: Groups", with Go to subscription and Close',
+      isLockDialog(groupsLock, 'Groups') && /Groups need a Premium subscription or higher/.test(groupsLock.text),
+      JSON.stringify(groupsLock)
+    );
+    // Typed, the address draws the same lock, never the page or a wall of refusals.
+    await page.goto(`${APP}/admin/groups`, { waitUntil: 'networkidle2' });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const groupsPage = await page.evaluate(() => ({
+      panel: document.querySelector('[data-locked-panel="groups"]')?.innerText ?? '',
+      go: document.querySelector('[data-locked-panel] a')?.getAttribute('href') ?? null,
+    }));
+    check(
+      'user /admin/groups: drawn locked, with Go to subscription',
+      /Locked: Groups/.test(groupsPage.panel) && groupsPage.go === '/settings/subscription',
+      JSON.stringify(groupsPage)
     );
 
     /*
      * The builder's subscription locks (owner decisions B1-B3). A Default
      * subscription supports one profile: Multiple, All profiles, Specific
-     * group and Select Group are drawn DISABLED with a Premium pill that leads
-     * to the Subscription page - shown, so the account learns what Premium
-     * adds - while Single, sheet mode and both ways to run stay open. The
-     * server is the real lock (403 `subscription-too-low`); this checks the
-     * page does not offer a door it would refuse.
+     * group and Select Group are drawn DISABLED with the lock beside them -
+     * shown, so the account learns what Premium adds - and pressing the lock,
+     * or the locked card, opens "Locked: Building for several profiles" with
+     * Go to subscription. Single, sheet mode and both ways to run stay open.
+     * The server is the real lock (403 `subscription-too-low`); this checks
+     * the page does not offer a door it would refuse.
      */
     check('user /: the Building Manually card opens', await openBuilder(page, 'Building Manually'));
     const manualChoices = await readChoices(page, 'generateMode');
@@ -629,9 +786,21 @@ async function main() {
       JSON.stringify(manualChoices)
     );
     check(
-      'user / manual: Multiple is locked, with a Premium pill to /settings/subscription',
+      'user / manual: Multiple is locked, with the lock beside it and no Premium pill',
       isLocked(multiple) && !multiple.checked,
       JSON.stringify(manualChoices)
+    );
+    const manualLock = await openLock(page, '[data-locked-choice="multiple"] button[data-locked-feature]');
+    check(
+      'user / manual: the lock opens "Locked: Building for several profiles" with Go to subscription',
+      isLockDialog(manualLock, 'Building for several profiles'),
+      JSON.stringify(manualLock)
+    );
+    const cardLock = await openLock(page, '[data-locked-choice="multiple"] label');
+    check('user / manual: so does pressing the locked card itself', isLockDialog(cardLock, 'Building for several profiles'), JSON.stringify(cardLock));
+    check(
+      'user / manual: and Multiple is still not chosen',
+      !(await readChoices(page, 'generateMode')).find((choice) => choice.value === 'multiple').checked
     );
     const importButton = await page.evaluate(() =>
       Array.from(document.querySelectorAll('button')).some((b) => /Import from Google Sheet/i.test(b.textContent))
@@ -647,16 +816,22 @@ async function main() {
       JSON.stringify(sheetChoices)
     );
     check(
-      'user / sheet: All profiles and Specific group are locked with the Premium pill',
+      'user / sheet: All profiles and Specific group are locked, each with the lock beside it',
       isLocked(byValue('all')) && isLocked(byValue('group')),
       JSON.stringify(sheetChoices)
     );
+    for (const value of ['all', 'group']) {
+      const dialog = await openLock(page, `[data-locked-choice="${value}"] button[data-locked-feature]`);
+      check(`user / sheet: the ${value} lock opens its dialog`, isLockDialog(dialog, 'Building for several profiles'), JSON.stringify(dialog));
+    }
     const lockedGroup = await readLockedGroup(page);
     check(
-      'user / sheet: Select Group is drawn locked with the Premium pill',
-      Boolean(lockedGroup) && lockedGroup.disabled && lockedGroup.pill === 'Premium',
+      'user / sheet: Select Group is drawn locked - a button where the select would be, with the lock',
+      Boolean(lockedGroup) && lockedGroup.tag === 'button' && lockedGroup.lock === 'many-profiles' && !/Premium/.test(lockedGroup.text),
       JSON.stringify(lockedGroup)
     );
+    const groupSelectLock = await openLock(page, '#sheets-group-locked');
+    check('user / sheet: pressing it opens the lock', isLockDialog(groupSelectLock, 'Building for several profiles'), JSON.stringify(groupSelectLock));
     const sheetPage = await page.evaluate(() => ({
       importButton: Array.from(document.querySelectorAll('button')).some((b) =>
         /Import from Google Sheet/i.test(b.textContent)
@@ -777,12 +952,18 @@ async function main() {
       `saw: ${userReport.navLabels.join(', ')}`
     );
 
-    // The prefix collision that a vertical rail makes obvious.
+    // The prefix collision that a vertical rail makes obvious: /jobs is a prefix of /jobs/filter.
     const filter = await visit(page, '/jobs/filter', 'user');
     check(
       'user /jobs/filter: lights Job Filter alone',
       filter.activeLabels.length === 1 && filter.activeLabels[0] === 'Job Filter',
       `lit: ${filter.activeLabels.join(', ') || 'nothing'}`
+    );
+    const findJobs = await visit(page, '/jobs', 'user');
+    check(
+      'user /jobs: lights Find Jobs alone',
+      findJobs.activeLabels.length === 1 && findJobs.activeLabels[0] === 'Find Jobs',
+      `lit: ${findJobs.activeLabels.join(', ') || 'nothing'}`
     );
 
     // Templates: visible, and read-only.
@@ -1096,6 +1277,21 @@ async function main() {
     check('phone: the drawer opens, with a scrim and a scroll lock', drawer.open && drawer.scrim && drawer.locked, JSON.stringify(drawer));
     await page.screenshot({ path: `${SHOTS}/shell-4-phone-drawer.png` });
 
+    // A locked row in the drawer opens its lock over the page, the drawer
+    // closing under it - and Close gives focus back to the menu button. It fell
+    // to <body> before: the row pressed was inert by the time the dialog
+    // closed, so a keyboard started again from the top of the page.
+    const drawerLock = await openLock(page, '.tl-sidebar button[data-locked-feature="groups"]');
+    const afterDrawerLock = await page.evaluate(() => ({
+      drawer: document.querySelector('.tl-shell')?.dataset.drawer ?? null,
+      focused: document.activeElement?.getAttribute('aria-controls') ?? document.activeElement?.tagName.toLowerCase() ?? null,
+    }));
+    check(
+      'phone: a locked row in the drawer opens its lock, and Close gives focus to the menu button',
+      isLockDialog(drawerLock, 'Groups') && afterDrawerLock.drawer === 'closed' && afterDrawerLock.focused === 'app-sidebar',
+      JSON.stringify({ drawerLock, afterDrawerLock })
+    );
+
     await page.close();
 
     /* ------------------------------------------------------ admin, wide */
@@ -1119,9 +1315,20 @@ async function main() {
     await openBuilder(adminPage, 'Building Manually');
     const adminManual = await readChoices(adminPage, 'generateMode');
     check(
-      'admin / manual: Multiple is open, with no Premium pill',
+      'admin / manual: Multiple is open, with no lock',
       isOpen(adminManual.find((choice) => choice.value === 'multiple')),
       JSON.stringify(adminManual)
+    );
+    const adminGroupsRow = await adminPage.evaluate(() => {
+      const row = Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item')).find(
+        (item) => item.textContent.trim() === 'Groups'
+      );
+      return row ? { tag: row.tagName.toLowerCase(), href: row.getAttribute('href') } : null;
+    });
+    check(
+      'admin: Groups is an open link in the rail, whatever their own subscription',
+      Boolean(adminGroupsRow) && adminGroupsRow.tag === 'a' && adminGroupsRow.href === '/admin/groups',
+      JSON.stringify(adminGroupsRow)
     );
     await openBuilder(adminPage, 'Building Automatically from Google Sheet');
     const adminSheet = await readChoices(adminPage, 'sheetsTargetMode');
@@ -1133,7 +1340,7 @@ async function main() {
 
     check(
       'admin: the same rail as everybody, Settings and Templates at its foot',
-      railOrder(adminShell.navLabels) === railOrder(RAIL),
+      adminShell.navLabels.join(' / ') === RAIL.join(' / '),
       `saw: ${adminShell.navLabels.join(', ')}`
     );
 
@@ -1814,6 +2021,58 @@ async function main() {
     );
     await switchPage.close();
 
+    /*
+     * Made a reporter while on a page they keep, then to Settings -> Profile:
+     * nothing there is refused (the job sheet and their own account are every
+     * role's), so no refusal re-reads the account. Resume files' own read of
+     * it answers with the new role and no folder path, and hands it to the
+     * session - so the page is drawn as a reporter's, rather than a "Could
+     * not load where your resumes are saved" whose Try again never succeeds.
+     */
+    const settler = users.createUser({ email: `e2e-shell-settle-${stamp}@example.com`, name: 'Settling User' });
+    const settlePage = await browser.newPage();
+    await settlePage.setViewport(WIDE);
+    await signIn(settlePage, users.createSession(settler.id));
+    await settlePage.goto(`${APP}/settings/job-sheet`, { waitUntil: 'networkidle2' });
+    await wait(400);
+    users.updateUser(settler.id, { role: 'reporter' });
+    // A client-side move again: the Profile tab, which both roles keep.
+    await settlePage.evaluate(() => {
+      Array.from(document.querySelectorAll('nav.tl-tabs[aria-label="Settings"] .tl-tab'))
+        .find((tab) => tab.textContent.trim() === 'Profile')
+        ?.click();
+    });
+    await settlePage
+      .waitForFunction(
+        () => location.pathname === '/settings' && /Reporter/.test(document.querySelector('.tl-main')?.innerText ?? ''),
+        { timeout: 15_000 }
+      )
+      .catch(() => null);
+    await wait(400);
+    const settled = await settlePage.evaluate(() => ({
+      path: location.pathname,
+      reporter: /Reporter/.test(document.querySelector('.tl-main')?.innerText ?? ''),
+      resumeFiles:
+        Array.from(document.querySelectorAll('.tl-section h2')).some((h) => h.textContent.trim() === 'Resume files') ||
+        Boolean(document.getElementById('settings-output-path-suffix')),
+      alerts: Array.from(document.querySelectorAll('.tl-main [role="alert"]'))
+        .map((node) => node.textContent.trim())
+        .filter(Boolean),
+      tabs: Array.from(document.querySelectorAll('nav.tl-tabs[aria-label="Settings"] .tl-tab')).map((a) => a.textContent.trim()),
+      rail: Array.from(document.querySelectorAll('.tl-sidebar .tl-nav-item')).map((a) => a.textContent.trim()),
+    }));
+    check(
+      'user made a reporter mid-session, then Settings -> Profile: drawn as a reporter\'s, with no Resume files and no failure',
+      settled.path === '/settings' &&
+        settled.reporter &&
+        !settled.resumeFiles &&
+        settled.alerts.length === 0 &&
+        settled.tabs.join(' / ') === 'Profile / Job Sheet' &&
+        settled.rail.join(' / ') === 'Report Jobs / Credits / Settings',
+      JSON.stringify(settled)
+    );
+    await settlePage.close();
+
     /* ------------------------------- hiding is not the protection */
     const asUser = apiAs(userToken);
 
@@ -1830,7 +2089,8 @@ async function main() {
     check('api: an ordinary user cannot create a template', makeTemplate.status === 403, `got ${makeTemplate.status}`);
 
     // The skill library is every account's, and managed from an admin page;
-    // an ordinary account adds to it only by confirming a skill in use.
+    // an ordinary account adds to it only by confirming a skill typed into a
+    // profile.
     const addSkill = await asUser('/resume/skills', {
       method: 'POST',
       body: JSON.stringify({ type: 'soft', skill: 'Nope' }),

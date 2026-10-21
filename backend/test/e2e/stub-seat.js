@@ -25,6 +25,9 @@
  *                       "From .env (OUTPUT_BASE_DIR)"
  */
 
+// First, before anything loads the backend: no real Google credential, whatever this checkout holds.
+require('./no-google');
+
 const path = require('path');
 
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';

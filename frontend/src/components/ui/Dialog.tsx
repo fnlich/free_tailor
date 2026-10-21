@@ -70,6 +70,7 @@ export default function Dialog({
   width = 'md',
   footer,
   onClose,
+  className = '',
   children,
 }: {
   open: boolean;
@@ -79,6 +80,12 @@ export default function Dialog({
   width?: 'md' | 'wide';
   footer?: ReactNode;
   onClose: () => void;
+  /**
+   * Added to the panel, for a page that draws its dialogs in its own look -
+   * the profile editor's Add content. The panel is portalled to <body>, so a
+   * class on the page around it never reaches it.
+   */
+  className?: string;
   children?: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
@@ -131,7 +138,7 @@ export default function Dialog({
         aria-label={title}
         tabIndex={-1}
         data-width={width}
-        className={`tl-dialog p-4 outline-none sm:p-6 ${width === 'wide' ? 'max-w-4xl' : 'max-w-md'}`}
+        className={`tl-dialog p-4 outline-none sm:p-6 ${width === 'wide' ? 'max-w-4xl' : 'max-w-md'} ${className}`}
       >
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">

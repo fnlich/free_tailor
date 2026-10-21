@@ -26,6 +26,8 @@ import {
   payoutProblem,
 } from '@/lib/reporterPay';
 import { ACCOUNT_ROLES, ROLE_LABELS, configuredAdminNotes } from '@/lib/roles';
+import { billingLine, overrideQuestion } from '@/lib/subscriptionDisplay';
+import Dialog from '@/components/ui/Dialog';
 import { Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import styles from './page.module.css';
@@ -222,6 +224,17 @@ function AccountsTable() {
   const [payoutAmount, setPayoutAmount] = useState('');
   const [payoutNote, setPayoutNote] = useState('');
   const [payoutRequestId, setPayoutRequestId] = useState('');
+
+  /**
+   * A change that would end a tier the account PAYS for - its subscription
+   * set here, or its role moved away from user - waiting on its confirm: the
+   * server ends it at once and refunds nothing.
+   */
+  const [override, setOverride] = useState<{
+    row: ManagedAccount;
+    change: 'subscription' | 'role';
+    patch: { subscription?: AccountSubscriptionId; role?: UserRole };
+  } | null>(null);
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<UserRole>('user');
@@ -620,9 +633,15 @@ function AccountsTable() {
                             disabled={busy || isMe}
                             title={isMe ? OWN_ROW_NOTE : configured?.title}
                             aria-label={`Role for ${row.email}`}
-                            onChange={(event) =>
-                              apply(row.id, () => accountsApi.update(row.id, { role: event.target.value as UserRole }))
-                            }
+                            onChange={(event) => {
+                              const role = event.target.value as UserRole;
+                              // A paying user moved to another role loses what they paid for: asked first.
+                              if (row.subscriptionBilling && row.role === 'user' && role !== 'user') {
+                                setOverride({ row, change: 'role', patch: { role } });
+                                return;
+                              }
+                              void apply(row.id, () => accountsApi.update(row.id, { role }));
+                            }}
                             className={`tl-input ${styles.compact}`}
                           >
                             {roles.map((role) => (
@@ -692,13 +711,15 @@ function AccountsTable() {
                             value={row.subscription}
                             disabled={busy}
                             aria-label={`Subscription for ${row.email}`}
-                            onChange={(event) =>
-                              apply(row.id, () =>
-                                accountsApi.update(row.id, {
-                                  subscription: event.target.value as AccountSubscriptionId,
-                                })
-                              )
-                            }
+                            onChange={(event) => {
+                              const subscription = event.target.value as AccountSubscriptionId;
+                              // Setting the tier of one the account pays for ends it: asked first.
+                              if (row.subscriptionBilling) {
+                                setOverride({ row, change: 'subscription', patch: { subscription } });
+                                return;
+                              }
+                              void apply(row.id, () => accountsApi.update(row.id, { subscription }));
+                            }}
                             className={`tl-input ${styles.compact}`}
                           >
                             {subscriptions.map((subscription) => (
@@ -707,6 +728,10 @@ function AccountsTable() {
                               </option>
                             ))}
                           </select>
+                          {row.subscriptionBilling && (
+                            // Bought by the account from its credit (Settings -> Subscription).
+                            <p className="mt-1 text-xs text-subtle">{billingLine(row.subscriptionBilling)}</p>
+                          )}
                         </div>
                       </td>
 
@@ -1010,6 +1035,38 @@ function AccountsTable() {
           </div>
         )}
       </div>
+
+      <Dialog
+        open={override !== null}
+        title="End a paid subscription?"
+        onClose={() => setOverride(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setOverride(null)} className="tl-button-quiet">
+              Keep it
+            </button>
+            <button
+              type="button"
+              className="tl-button"
+              data-tone="danger"
+              onClick={() => {
+                const pending = override;
+                setOverride(null);
+                if (pending) void apply(pending.row.id, () => accountsApi.update(pending.row.id, pending.patch));
+              }}
+            >
+              {override?.change === 'role' ? 'Change the role' : 'Set the subscription'}
+            </button>
+          </>
+        }
+      >
+        {override?.row.subscriptionBilling && (
+          <p className="text-base text-ink">
+            {overrideQuestion(override.row, override.row.subscriptionBilling, override.change)} The answer says how
+            much of it was unused, to give back with +/- beside the balance if you mean to.
+          </p>
+        )}
+      </Dialog>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { requestSignal } from '../middleware/requestSignal';
 import { parseTailoredResumeContent, tailorResume } from '../services/resumeService';
 import {
   getOrCreateAnalysis,
@@ -8,7 +9,6 @@ import {
   type StoredJobAnalysis,
 } from '../services/jobAnalysis/gate';
 import { jobFieldLabel, listJobFieldsForClient } from '../config/jobFields';
-import { resolveAnalysisModel } from '../config/aiModelConfig';
 import { generatePreviewHTML } from '../generators/pdfGenerator';
 import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
 import { getUserAppSettings, type ModelRequestOptions } from '../config/aiModelConfig';
@@ -39,36 +39,9 @@ const router = Router();
 router.use(requireUser);
 
 
-/**
- * A signal that fires when the client goes away before the response is sent.
- *
- * Threaded down to the AI transport so a user who closes the tab mid-batch
- * kills the model calls (and, on the CLI provider, the child processes) rather
- * than leaving them to run out the clock against the subscription seat.
- *
- * Keyed on `res` rather than `req`: `req` emits 'close' on normal completion
- * too, so listening there would abort work that had already succeeded.
- */
-const requestControllers = new WeakMap<Response, AbortController>();
-
-function requestSignal(req: Request, res: Response): AbortSignal {
-  // Memoised per response. All current callers ask once, but the helper reads
-  // as though it were safe to call in a loop - and there it would attach a
-  // listener per iteration and trip Node's max-listeners warning.
-  const existing = requestControllers.get(res);
-  if (existing) {
-    return existing.signal;
-  }
-
-  const controller = new AbortController();
-  requestControllers.set(res, controller);
-  res.on('close', () => {
-    if (!res.writableFinished) {
-      controller.abort();
-    }
-  });
-  return controller.signal;
-}
+// `requestSignal` - the signal that aborts a model call when the client goes
+// away - lives in middleware/requestSignal.ts now, shared with the profile
+// editor's Write with AI route (routes/profiles.ts).
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -153,9 +126,9 @@ router.get('/models', async (req: Request, res: Response) => {
 /*
  * The skill library is ONE store, read for every account's resumes, and
  * managed from the admin Skill Library page. Reading it and confirming a skill
- * found in use (additive and idempotent - the builder's and the profile
- * editor's own flow) stay open to every account; adding one with its category
- * and priority, changing one and deleting one are the library management that
+ * typed into a profile (additive and idempotent - the profile editor's own
+ * flow) stay open to every account; adding one with its category and
+ * priority, changing one and deleting one are the library management that
  * page does, and were open to any signed-in account, which let anybody rename
  * or remove a skill out of everybody's resumes.
  */
@@ -248,122 +221,6 @@ router.post('/analyze-prompt-test', requireAdmin, async (req: Request, res: Resp
 });
 
 /**
- * Several postings at once, each through the gate: one analysis per posting
- * ever, never several postings in one call (owner decision P5). Body
- * `{ jobs: [{ companyName, jobDescription, jobLink?, sourceRowNumber? }] }`.
- */
-router.post('/analyze-multi-job', async (req: Request, res: Response) => {
-  try {
-    const { jobs } = req.body as {
-      jobs?: Array<{
-        companyName?: string;
-        jobDescription?: string;
-        jobLink?: string;
-        sourceRowNumber?: number;
-      }>;
-    };
-
-    if (!Array.isArray(jobs) || jobs.length === 0) {
-      res.status(400).json({ error: 'At least one job is required' });
-      return;
-    }
-
-    const validJobs: Array<{
-      customId: string;
-      companyName: string;
-      jobDescription: string;
-      jobLink: string;
-      sourceRowNumber?: number;
-    }> = [];
-    const failures: Array<{
-      companyName: string;
-      sourceRowNumber?: number;
-      error: string;
-    }> = [];
-
-    for (const [index, job] of jobs.entries()) {
-      const companyName = typeof job.companyName === 'string' ? job.companyName.trim() : '';
-      const jobDescription = typeof job.jobDescription === 'string' ? job.jobDescription.trim() : '';
-
-      if (!companyName) {
-        failures.push({
-          companyName: `Job ${index + 1}`,
-          sourceRowNumber: job.sourceRowNumber,
-          error: 'Company name is required',
-        });
-        continue;
-      }
-
-      if (jobDescription.length < JOB_ANALYSIS_MIN_LENGTH) {
-        failures.push({
-          companyName,
-          sourceRowNumber: job.sourceRowNumber,
-          error: `Job description must be at least ${JOB_ANALYSIS_MIN_LENGTH} characters`,
-        });
-        continue;
-      }
-
-      validJobs.push({
-        customId: `job_${index + 1}`,
-        companyName,
-        jobDescription,
-        jobLink: typeof job.jobLink === 'string' ? job.jobLink.trim() : '',
-        sourceRowNumber: job.sourceRowNumber,
-      });
-    }
-
-    const analyses: Array<{
-      companyName: string;
-      sourceRowNumber?: number;
-      jobDescription: string;
-      analysisId: string;
-      analysis: JobAnalysis;
-    }> = [];
-
-    // At the analysis model's width: one call per posting not yet analysed,
-    // and the gate's in-flight join makes two identical rows one call.
-    const analysisModel = await resolveAnalysisModel();
-    const analysisCapacity = await resolveBatchCapacity({ provider: analysisModel.provider });
-    const analysisOutcomes = await mapWithConcurrency(validJobs, analysisCapacity.limit, (job) =>
-      analysisForRequest(req, res, { jobDescription: job.jobDescription, jobLink: job.jobLink })
-    );
-
-    analysisOutcomes.forEach((outcome, index) => {
-      const job = validJobs[index];
-      if (outcome.ok && outcome.value) {
-        const { analysisId, ...analysis } = analysisResponse(outcome.value);
-        analyses.push({
-          companyName: job.companyName,
-          sourceRowNumber: job.sourceRowNumber,
-          jobDescription: job.jobDescription,
-          analysisId,
-          analysis: analysis as JobAnalysis,
-        });
-        return;
-      }
-      failures.push({
-        companyName: job.companyName,
-        sourceRowNumber: job.sourceRowNumber,
-        error: publicItemError(
-          outcome.ok ? new Error('The posting is too short to analyse.') : outcome.error,
-          'Analysis failed',
-          `analyze-multi-job ${job.customId}`
-        ),
-      });
-    });
-
-    res.json({
-      analyzed: analyses.length,
-      analyses,
-      failed: failures.length,
-      failures,
-    });
-  } catch (error) {
-    sendPublicError(req, res, error, 'Failed to analyze the job descriptions');
-  }
-});
-
-/**
  * The requester's non-disabled profiles, optionally narrowed to a set of ids.
  *
  * Scoped by the viewer, and the narrowing happens AFTER: naming somebody else's
@@ -377,28 +234,6 @@ async function loadAllProfiles(viewer: Viewer, profileIds?: string[]): Promise<P
   return listProfilesFor(viewer)
     .filter((profile) => !selectedIds || selectedIds.has(profile.id))
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
-function collectUnconfirmedSkillMaps(
-  content: TailoredContent | undefined,
-  hardMap: Map<string, string>,
-  softMap: Map<string, string>
-): void {
-  if (!content) return;
-
-  for (const skill of content.unconfirmedHardSkills ?? []) {
-    const key = skill.trim().toLowerCase();
-    if (key && !hardMap.has(key)) {
-      hardMap.set(key, skill.trim());
-    }
-  }
-
-  for (const skill of content.unconfirmedSoftSkills ?? []) {
-    const key = skill.trim().toLowerCase();
-    if (key && !softMap.has(key)) {
-      softMap.set(key, skill.trim());
-    }
-  }
 }
 
 /**
@@ -440,14 +275,10 @@ async function tailorResumesForProfiles(
   /** The model each profile's content was written on, for its preview token. */
   modelIdByProfileId: Map<string, string>;
   failures: Array<{ profileId: string; profileName: string; error: string }>;
-  unconfirmedHardSkills: string[];
-  unconfirmedSoftSkills: string[];
 }> {
   const tailoredByProfileId = new Map<string, TailoredContent>();
   const modelIdByProfileId = new Map<string, string>();
   const failures: Array<{ profileId: string; profileName: string; error: string }> = [];
-  const unconfirmedHardMap = new Map<string, string>();
-  const unconfirmedSoftMap = new Map<string, string>();
 
   // Tailoring is pure model work with no shared state, so running profiles in
   // parallel is only a question of how many at once. It used to be one - a
@@ -481,7 +312,6 @@ async function tailorResumesForProfiles(
     const profile = profiles[index];
     if (outcome.ok) {
       tailoredByProfileId.set(profile.id, outcome.value);
-      collectUnconfirmedSkillMaps(outcome.value, unconfirmedHardMap, unconfirmedSoftMap);
       return;
     }
     failures.push({
@@ -491,13 +321,7 @@ async function tailorResumesForProfiles(
     });
   });
 
-  return {
-    tailoredByProfileId,
-    modelIdByProfileId,
-    failures,
-    unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-    unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
-  };
+  return { tailoredByProfileId, modelIdByProfileId, failures };
 }
 
 // Preview resumes for all profiles
@@ -543,8 +367,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       /** Names the model that wrote `tailoredContent`; finalising is charged for that model. */
       previewToken?: string;
     }> = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const bulkTailoring = analysis
       ? await tailorResumesForProfiles(
           profiles,
@@ -615,7 +437,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
         console.error(`Error previewing resume for profile ${profile.id} (${profile.name}):`, outcome.error);
         continue;
       }
-      collectUnconfirmedSkillMaps(outcome.value.tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
       previews.push(outcome.value.preview);
     }
 
@@ -623,8 +444,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       previews,
       tailored: !!analysis,
       ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
-      unconfirmedHardSkills: bulkTailoring?.unconfirmedHardSkills ?? Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
     });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to preview the resumes');

@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~60s with the tsc step, 1735 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 1776 tests)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -80,7 +80,27 @@ Facts worth knowing before you build:
   directory>/db`, over the environment: a test that loaded the PDF generator
   before `useTempStorage` used to open the REAL database (test/testRunner
   .test.js holds it). `TAILOR_KEEP_TEST_TMP=1` keeps the directory and prints
-  where. A test that writes anywhere but `os.tmpdir()` escapes it.
+  where. A test that writes anywhere but `os.tmpdir()` escapes it. And it
+  sets `TAILOR_GOOGLE_CREDENTIAL_SEARCH=off` with `GOOGLE_CREDENTIALS_PATH`
+  and `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` empty, over the environment and `.env`
+  (an exported empty value counts as set): the credential search
+  (googleSheets.ts `resolveCredentialPath`) also looks beside the compiled
+  code, so a checkout holding the owner's real credential in backend/ lent
+  it to every test, and each test sign-in allocated a REAL spreadsheet in
+  that Drive (440 "Free Tailor - admin@example.com" and kin). test/helpers.js
+  sets the same three as it loads (for a file run with `node --test` alone)
+  and exports `withCredentialSearch`, which turns the search on for one scope
+  - only a test that wrote its own fake credential (and fakes `fetch`) uses
+  it. Every e2e preload (each `stub-*.js` and fake-providers.js, read off the
+  folder) requires test/e2e/no-google.js first, and a backend needing no stub
+  loads that alone; testRunner.test.js holds all of it, every command
+  naming `dist/index.js` - in the e2e README and in each script's own
+  comments - to loading one of them, and fails on a line there that starts a
+  backend another way (the root `npm run dev` and kin, the backend's `dev` /
+  `start`, ts-node-dev: none takes a preload - shell.js named `npm run dev`;
+  two passages telling the root dev script's history are named in the test). Not
+  an operator setting: not in operational.ts or .env.example. NEVER run a
+  test file any other way, and never weaken this.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
   `src/bid-assistant/App.jsx` (lines 271, 305, 381; `src/app/page.tsx`
@@ -157,8 +177,22 @@ Facts worth knowing before you build:
   `npm install --prefix frontend`, never by hand. `next.config.ts` sets `agentRules: false`: under an AI agent
   (Claude Code included) Next 16.3's `next dev` otherwise writes
   frontend/AGENTS.md and a frontend/CLAUDE.md on every start. The installed
-  Next's own docs are in frontend/node_modules/next/dist/docs/. Turbopack's
-  build keeps a cache in `.next/cache/turbopack` from 16.3 (~60 MB).
+  Next's own docs are in frontend/node_modules/next/dist/docs/. **Turbopack's
+  build cache can ship a stale stylesheet.** From 16.3 `next build` keeps a
+  persistent cache in `frontend/.next/cache/turbopack` (~60 MB; on by default,
+  `experimental.turbopackFileSystemCacheForBuild`), and one such cache
+  emitted a globals.css hours older than the source - no `.tl-multiselect*`
+  rules, a removed `.tl-nav-out` back - through `touch globals.css` and
+  "Compiled successfully in 2.1s"; the list boxes rendered unstyled and two
+  e2e claims failed on it. A cold build (the directory deleted) was right; a
+  fresh cache did notice a later change, so a cache can get into this state
+  without always being in it. `next.config.ts` therefore sets
+  `turbopackFileSystemCacheForBuild: false` (owner's decision, 2026-10-20), so
+  a build starts cold and the directory is no longer written. A leftover
+  `frontend/.next/cache/turbopack` from an older build is never read, but
+  delete it if you see old styles; `next dev`'s own cache is
+  `frontend/.next/dev/cache/turbopack`, deleted the same way. A cold compile
+  costs ~5 s against 0.4-2 s warm. README Troubleshooting has the row.
   When the pin was made `npm audit --omit=dev` in frontend/ still listed
   baseline-browser-mapping and source-map-js, both fixable in range by `npm
   audit fix` and left out of the pin.
@@ -196,7 +230,7 @@ order decides nothing, and with neither set there is no administrator.
 
 ```
 backend/src/
-  index.ts            # Express app: mounts 27 routers under /api
+  index.ts            # Express app: mounts 28 routers under /api
   config/             # env loading (.env, UTF-16 aware), browser resolution.
                       #   ENV_PATH resolves from the COMPILED module, so it is
                       #   always <repo root>/.env regardless of cwd - a file at
@@ -265,7 +299,30 @@ backend/src/
                       #   OUTPUT_PATH_PREFIX is the `outputPathPrefix` field's;
                       #   OUTPUT_PATH_SUFFIX is a PER-ACCOUNT default, not an
                       #   app setting (its source, 'account' | 'env' |
-                      #   'default', is services/outputPath.ts's). A
+                      #   'default', is services/outputPath.ts's). The three
+                      #   SUBSCRIPTION PRICES (`premiumPriceMilli`,
+                      #   `premiumPlusPriceMilli`, `premiumMaxPriceMilli`;
+                      #   SUBSCRIPTION_<TIER>_PRICE_USD, `envSubscriptionPriceMilli`)
+                      #   are served in thousandths, null = not offered (the
+                      #   code default), and SAVED as `premiumPriceUsd`...
+                      #   in dollars: '' or $0 stores 0, the admin's "not
+                      #   offered" that beats .env (the override is kept in
+                      #   that stored form), `null` resets, above $10,000 /
+                      #   junk is refused with `field` and code `bad-price`,
+                      #   and a `...PriceMilli` key in a save is refused
+                      #   (`bad-price-field`); .env's 0 is not offered and
+                      #   above $10,000 clamps; a stored price this app never
+                      #   writes is dropped with one warning
+                      #   (`withoutUnsetOverrides`). `getSubscriptionPrices()`
+                      #   is the services' read, and THROWS when the settings
+                      #   cannot be read - the renewal sweep relies on it.
+                      #   Junk in .env (`envSubscriptionPriceMilli`'s
+                      #   `unreadable`) or that dropped stored price, with no
+                      #   price under it, is not offered too, but is no
+                      #   DECISION: `getSubscriptionPriceReading()` (the
+                      #   sweep's read) lists it as `unreadable`
+                      #   (SettingsState.unreadablePrices), and the sweep
+                      #   holds what renews as that tier rather than end it. A
                       #   new such field: its env reader here, its name in
                       #   APP_SETTING_ENV_VARIABLES, its code default, a row
                       #   in SETTING_DEFAULT_VARIABLES, `readings` and
@@ -281,6 +338,11 @@ backend/src/
                       #   (`changedSettings`): a form that sent every box
                       #   would mark every one Set here, frozen at that day's
                       #   .env.
+                      #   profileSections.ts is THE catalogue of a resume's
+                      #   sections and the one place the section order's
+                      #   semantics live (see "Profiles, templates and the
+                      #   section switches" below); pure, mirrored by
+                      #   frontend/src/lib/profileSections.ts, drift-tested.
                       #   providerCatalog.ts is the ONE list of seats (TYPES)
                       #   - `coerceProviderId` answers null for any other id,
                       #   with no alias or retired-id map; aiProviders.ts the
@@ -300,8 +362,16 @@ backend/src/
                       #   (thousandths of a dollar, see "Money" below);
                       #   modelErrors.ts the two model refusals;
                       #   accountSubscriptions.ts the account TIERS (Default,
-                      #   Premium, Premium+, Premium Max) and their profile
-                      #   caps. The tier is a "subscription" in code, API, UI
+                      #   Premium, Premium+, Premium Max), their profile caps
+                      #   and `features` (the Subscription page's card lines,
+                      #   never read as switches), PAID_SUBSCRIPTION_IDS (all
+                      #   but Default), SUBSCRIPTION_PERIOD_DAYS (30),
+                      #   MAX_SUBSCRIPTION_PRICE_MILLI ($10,000) and
+                      #   SUBSCRIPTION_PRICE_FIELDS (each paid tier's setting,
+                      #   request and .env names). SELF-SERVE: an account buys
+                      #   a tier from its credit balance (services/subscriptions,
+                      #   below); an administrator may still set any account's,
+                      #   which ends a paid one. The tier is a "subscription" in code, API, UI
                       #   and database (it was "plan"; the word is not used for
                       #   it anywhere now, and test/subscriptionRename.test.js
                       #   greps frontend/src to keep it so). Not the AI
@@ -356,12 +426,34 @@ backend/src/
                       #   one SCHEMA, then `stampCurrentDatabase`. Then
                       #   addMissingColumns (never fatal; ADDED_COLUMNS holds
                       #   only columns added since ac3df79 - today
-                      #   users.output_path_suffix and orders.output_root - and
+                      #   users.output_path_suffix, orders.output_root and the
+                      #   six users.subscription_* columns of a paid tier - and
                       #   every new column goes there AND in SCHEMA, never in
                       #   the guard's frozen list), then
                       #   addIndexesAfterColumns (INDEXES_AFTER_COLUMNS: every
                       #   index naming an added column - in SCHEMA it would
-                      #   fail every upgraded boot), then the migrations.
+                      #   fail every upgraded boot - idx_users_subscription_due,
+                      #   partial, among them), then the migrations.
+                      #   subscriptionRepository.ts is the ONLY writer of the
+                      #   six subscription_* columns (base, period_start,
+                      #   paid_through, period_price_milli, renews, next; all
+                      #   NULL unless the tier is paid; read by their own
+                      #   queries, never USER_COLUMNS) - bar
+                      #   userRepository.updateUser, which clears them
+                      #   (`BILLING_CLEARED_SQL`) when an administrator CHANGES
+                      #   the tier, or moves the role away from user (the
+                      #   tier then returns to its base). Every change is its
+                      #   `changeSubscription(userId, decide)`: ONE IMMEDIATE
+                      #   transaction reading the row, the caller's `decide`
+                      #   (throw = refuse, nothing written), the charge
+                      #   (creditRepository.debitSubscriptionCharge, a
+                      #   savepoint), then the UPDATE conditional on the
+                      #   paid_through it read; `lapseWhenShort` ends the tier
+                      #   when a renewal's charge is refused. The sweep's
+                      #   `DUE_SUBSCRIPTIONS_SQL` pages by (paid_through,
+                      #   rowid) AFTER the last page - the index's own order,
+                      #   nothing sorted - so due rows left as they were (held,
+                      #   failed) never hide the ones behind them.
                       #   THE STARTUP GUARD (upgradeGuard.ts, owner decision
                       #   L1): the code that upgraded older databases - the
                       #   migrations 001 and 003-008, the switch of credits to
@@ -454,7 +546,23 @@ backend/src/
                       #   goes through (`prepareResumeRenderData` ->
                       #   `applySkillsLimit`) and the compile step's markup
                       #   rewrites - see "Profiles, templates and the section
-                      #   switches" below. coverLetterGenerator.ts adds the
+                      #   switches" below. sectionLocator.ts is the ONE answer
+                      #   to "where is this section in a template's markup"
+                      #   (`SECTION_LOCATORS`, `findSections`, `locateSections`,
+                      #   `parentKeyOf`, `inferNativeSectionOrder`), a leaf the
+                      #   strip/guard, the reorder and the template read all
+                      #   use; extraSectionsMarkup.ts expands the
+                      #   `{{> extra-sections ...}}` macro into the generated
+                      #   blocks of the nine section kinds beyond the classic
+                      #   six and of the custom sections (and holds
+                      #   `insertStyleOnce`, the one way a compile step puts a
+                      #   stylesheet in the head); plainSkillsMarkup.ts is the
+                      #   Plain layout's safety net for a grid of category
+                      #   cells (`fitPlainSkillGroups`, see "Profiles,
+                      #   templates and the section switches" below).
+                      #   docxGenerator.ts prints its blocks in
+                      #   `effectiveSectionOrder`.
+                      #   coverLetterGenerator.ts adds the
                       #   greeting and sign-off the prompts tell the model to
                       #   leave out, and splits paragraphs on a blank line, or
                       #   on every line break when the letter has none
@@ -463,19 +571,37 @@ backend/src/
                       #   Every Sheets/Drive call goes through `fetchWithBackoff`
                       #   (429: jittered exponential backoff, Retry-After
                       #   honoured, 5 retries, 32s cap); analysis data and the
-                      #   filter's verdicts are written RAW, never USER_ENTERED
-  middleware/         # auth, uploads, and publicError.ts - what a failure may
-                      #   tell whom (see "The AI layer" below)
+                      #   filter's verdicts are written RAW, never USER_ENTERED.
+                      #   The credential: the file GOOGLE_CREDENTIALS_PATH (else
+                      #   GOOGLE_SERVICE_ACCOUNT_KEY_PATH) names, then the
+                      #   default names in the cwd, cwd/backend and beside the
+                      #   compiled code - the defaults skipped while
+                      #   TAILOR_GOOGLE_CREDENTIAL_SEARCH=off, which only the
+                      #   test runner, test/helpers.js and test/e2e/no-google.js
+                      #   set (see "`npm test` builds first").
+  middleware/         # auth, uploads, publicError.ts - what a failure may
+                      #   tell whom (see "The AI layer" below) - and
+                      #   requestSignal.ts, the abort signal a model call gets
+                      #   when the client goes away (one controller per
+                      #   response), shared by routes/resume.ts and
+                      #   routes/profiles.ts.
   routes/             # one file per /api/* area. profiles.ts also holds
                       #   POST /profiles/preview, the profile editor's live
                       #   preview (see "Profiles, templates and the section
-                      #   switches" below). accounts.ts refuses an admin
+                      #   switches" below), and POST /profiles/entries/bullets,
+                      #   the editor's Write with AI (services/entryBullets.ts:
+                      #   free, one call per account at a time, the app
+                      #   default model, nothing stored). accounts.ts refuses an admin
                       #   disabling, demoting or deleting their OWN account
                       #   (409 `own-account`; another admin may), and its
                       #   last-admin guard (`wouldStrandInstall`) counts ANY
                       #   role but admin as losing one - not `user` by name.
                       #   It also takes `role` user|reporter|admin (anything
-                      #   else 400 `bad-role`, never a quiet user), serves each
+                      #   else 400 `bad-role`, never a quiet user) and a
+                      #   `subscription` this build has (anything else 400
+                      #   `bad-subscription`; `readRole` / `readSubscription`
+                      #   read both on POST - before anything is created -
+                      #   and PATCH alike), serves each
                       #   row's `roleLabel`, `reportRateMilli` (ADMINS ONLY -
                       #   read by its own query, never on UserAccount or the
                       #   session) and `configuredAdmin` (an ADMIN_EMAILS -
@@ -489,7 +615,12 @@ backend/src/
                       #   see "Money" below).
                       #   refundRequests.ts (a reporter's payout request, an
                       #   account's own requests, and the admin queue - there
-                      #   is no route to ASK for a refund, not even a 410) and
+                      #   is no route to ASK for a refund, not even a 410),
+                      #   subscription.ts (/api/subscription, requireUser: the
+                      #   account's own tier bought from its balance - GET /,
+                      #   POST /subscribe { subscription, chargeUsd },
+                      #   /downgrade, /cancel, /resume; services/subscriptions
+                      #   below) and
                       #   contact.ts (GET /api/contact is PUBLIC, no session)
                       #   are described under "Money" below. generation.ts is
                       #   the queue's HTTP side - see services/queue/ below for
@@ -575,10 +706,11 @@ backend/src/
                       #   and so does `batch.shared`, which is why a batch's
                       #   KIND is there: `shared.kind = 'order' | 'immediate'`
                       #   (`isOrderBatch`, `isImmediateBatch`; submit body
-                      #   `mode`, default immediate, `asOrder: true` an alias
-                      #   for order; a batch naming neither is never one the
-                      #   routes submit - `batchKind` null, no lease, no
-                      #   priority).
+                      #   `mode`, default immediate - nothing else is read
+                      #   for it, so an old script's `asOrder: true` is an
+                      #   immediate run; a batch naming neither kind is never
+                      #   one the routes submit - `batchKind` null, no lease,
+                      #   no priority).
                       #   EVERY run gets an `orders` row (`orders.kind`;
                       #   immediate rows number `FT-RUN-...`, are
                       #   hidden from listOrdersForUser and the order routes'
@@ -635,11 +767,43 @@ backend/src/
                       #   the two previews, and `planRunOutput`, the one place
                       #   a run's folder is worked out - see "Where resumes are
                       #   filed" below.
+  services/subscriptions/ # self-serve tiers paid from the credit balance (see
+                      #   "Money" below): billing.ts the pure rules (days
+                      #   left, the unused credit, the upgrade's charge, the
+                      #   renewal period, `offerFor`, `renewalDecision`; a
+                      #   money module), errors.ts the refusals
+                      #   (`SubscriptionRefusal`, `SubscriptionShortError` -
+                      #   402 `insufficient-credits`), index.ts the view and
+                      #   the four changes, `renewDueSubscriptions` /
+                      #   `renewOrLapse`, `applyAdministratorChange` (Accounts'
+                      #   PATCH: updateUser with the account and its paid
+                      #   period read either side, in ONE IMMEDIATE
+                      #   transaction), `reportEndedByAdministrator` and
+                      #   `describeDisabledPaidTier` (the Accounts notes, and
+                      #   the notice) and the clock seam
+                      #   (`setSubscriptionClockForTests`), notices.ts what an
+                      #   account is told after a change commits, renewal.ts
+                      #   the sweep's timer - started from index.ts's listen
+                      #   callback by `startSubscriptionRenewalAfter`, its
+                      #   first pass once the queue restore's
+                      #   `reconcileCredits` has given back abandoned
+                      #   reservations (a renewal is decided on the balance),
+                      #   never on import, unref'd, never two passes at once.
   services/tailorCache.ts # the tailoring cache (owner decision P6): the model's
                       #   answer to a tailoring (revised, when the revise pass
                       #   changed it) or a cover-letter call, reused for the
                       #   same unchanged profile, posting, model and prompts -
                       #   see "The tailoring cache" below.
+  services/extraSections.ts # the render data of the nine section kinds beyond
+                      #   the classic six and of the custom sections, prepared
+                      #   (dates joined, links policed by the renderer's own
+                      #   rules) under the profile fields' names; pure.
+  services/entryBullets.ts # Write Entry Bullets: the editor's Write with AI /
+                      #   Improve with AI on one experience, project or
+                      #   volunteering entry - the prompt values
+                      #   (`buildWriteEntryBulletsPromptValues`), the refusals
+                      #   by code, the call on the app default model, the
+                      #   answer held to `cleanBullets` and cut to eight.
   services/tailorContract.ts # what the tailoring prompt is promised about the
                       #   code: the lists it is sent (`buildTailorLists`, the
                       #   posting's own spelling, no library), the seeded
@@ -649,14 +813,16 @@ backend/src/
                       #   backstops. Pure; resumeService puts it together - see
                       #   "Prompt variables are the code's, strictly".
   services/reviseCoverage.ts # the revise pass's pure half: missing terms,
-                      #   figures, its prompt values, `mergeRevision`.
+                      #   the profile's evidence for them (`profileEvidence`,
+                      #   `supportedTerms`), the profile's dropped figures
+                      #   (`droppedProfileFigures`), its prompt values,
+                      #   `mergeRevision`.
                       #   resumeService's `tailorResume` makes the call.
   services/sheets/    # each account's OWN job sheet (accountSheet.ts), the
                       #   program's analysis columns (analysisColumns.ts), and
-                      #   jobExport.ts's `appendJobRows` - the writer the
-                      #   removed Apify job search exported with, kept for Find
-                      #   Jobs and called by no route yet (see "The export
-                      #   writer" below).
+                      #   jobExport.ts's `appendJobRows` - the writer Find
+                      #   Jobs' Export into Sheet appends to All with (see
+                      #   "The export writer" below).
   services/skillGroups.ts # THE reader of the model's Technical Skills block
                       #   (`skillGroups`), for the tailoring parse and the
                       #   render gate alike: sanitise the shape, find the
@@ -668,6 +834,11 @@ backend/src/
                       #   queue. Do not write a
                       #   second copy of the fallback.
   bidAssistant/       # the Bid Assistant's own prompt building, and database.js.
+                      #   Every answer is told to use only the candidate data
+                      #   (aiHelper.ts `buildBatchPrompt`, `SYSTEM_PROMPT`, and
+                      #   the default template - kept equal in routes/
+                      #   bidAssistant.ts and the page's lib/promptTemplate.js),
+                      #   and each role is sent with its own bullets.
                       #   Its job board is SHARED (deleting a job, which takes
                       #   every account's answers, and the one Ask AI template
                       #   are requireAdmin); sheet sources carry an `account_id`
@@ -685,20 +856,28 @@ backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 141 files; fixtures/cli, codex and gemini
+  test/               # node:test, 152 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
-                      #   `constructed-` a real envelope around a fake answer)
+                      #   `constructed-` a real envelope around a fake answer).
+                      #   profileSections.test.js, sectionOrder.test.js and
+                      #   entryBullets.test.js hold the section catalogue and
+                      #   order, every built-in's render in a stored order, and
+                      #   Write Entry Bullets.
 frontend/src/
-  app/                # App Router pages: /, /settings/*, /admin/*,
+  app/                # App Router pages: /, /settings/*, /admin/*, /jobs
+                      #   (Find Jobs - see "The Job Data Lake" below),
                       #   /jobs/filter, /orders, /credits (+ /credits/invoice,
                       #   drawn with no shell - navModel's isBareRoute). There
-                      #   is no /jobs page until Find Jobs is built there (the
-                      #   rail's Find Jobs is still the external link to the
-                      #   account's own All tab), and no /account or
-                      #   /settings/plan redirect any more - a Next 404.
+                      #   is no /account or /settings/plan redirect any more -
+                      #   a Next 404.
                       #   /admin/profiles, /admin/profiles/new and
                       #   /admin/profiles/[id] are EVERY builder's own profiles
-                      #   and their editor, whatever the path says. /report
+                      #   and their editor, whatever the path says: My Profiles
+                      #   (FlowCV's "My Resumes" cards), the template chooser
+                      #   (/new with no `template`) or a new profile's editor
+                      #   (/new?template=<id>[&layout=flat]; `template=` alone
+                      #   starts with none - lib/profileGallery.ts
+                      #   `readStartChoice`), and the editor. /report
                       #   (Report Jobs) is a REPORTER's home, behind
                       #   AuthGate's `ReporterOnly` (an admin may open it, a
                       #   user is told what it is for): their rate, earnings
@@ -727,7 +906,18 @@ frontend/src/
                       #   by ROLE: an entry's `roles` names who sees it and
                       #   ABSENT means the builders (user, admin), so a new
                       #   entry is kept from reporters until it names them -
-                      #   `canSee(item, role, subscription)`, `settingsTabsFor`.
+                      #   `canSee(item, role)`, `settingsTabsFor`. A
+                      #   SUBSCRIPTION never hides an entry: one with `needs`
+                      #   (and `feature`, its lock) is drawn LOCKED below that
+                      #   tier - `isNavLocked(item, role, subscription)`,
+                      #   admins exempt - as a button.tl-nav-item that opens
+                      #   the lock's dialog (AppSidebar). Groups is such an
+                      #   entry (`needs: 'premium'`), after Profiles. Every
+                      #   entry is a page of the app (frontendRoles.test.js
+                      #   holds every href to `/`): Find Jobs is /jobs, and a
+                      #   builder's way to their sheet is its "Go to my
+                      #   sheet". AppShell asks GET /api/sheet for a REPORTER
+                      #   only, for the account menu's link.
                       #   A reporter's rail is Report Jobs, Credits, Settings
                       #   (Profile, Job Sheet); their account menu has their
                       #   sheet link, Settings, Contact admin, Log out and no
@@ -745,11 +935,120 @@ frontend/src/
                       #   .tl-tabs, .tl-button(-quiet), .tl-table(-box),
                       #   .tl-section, .tl-input in globals.css are the shared
                       #   pieces, as classes the dark-mode shim never names.
-  components/profile/ # The profile editor: ProfileEditor owns the draft and
-                      #   the save, the sections are split by area
-                      #   (ContentSections, HistorySections, SkillSections,
-                      #   TemplateSection, SettingsSections; parts.tsx), and
-                      #   ProfilePreview frames the server's render in two
+  components/profile/ # The Profiles pages, laid out AND drawn after FlowCV's
+                      #   (owner's requests, 2026-10-19), all on the editor's
+                      #   desk and tokens (app/admin/layout.tsx gives
+                      #   /admin/profiles, /new and /<id> a bare <main>; their
+                      #   pages pad their own loading and error states).
+                      #   THE LIST (app/admin/profiles/page.tsx, "My
+                      #   Profiles"): ProfileCards.tsx - the dashed New profile
+                      #   tile and a card per profile: its first page
+                      #   (POST /profiles/preview with `profile: {}`, its id
+                      #   and `sample: false`, asked once the card is near the
+                      #   screen, keyed by `updatedAt`), "Edited ... ago ·
+                      #   <template>" and ActionMenu.tsx's ⋮ (Edit, Duplicate,
+                      #   Download JSON, Disable/Enable, Delete; a role=menu
+                      #   with arrow keys, opening upward near the window's
+                      #   foot). THE CHOOSER (app/admin/profiles/new/page.tsx
+                      #   without `template`; Suspense around
+                      #   useSearchParams): TemplateChooser.tsx - the filter
+                      #   pills (All Templates + each category some template
+                      #   has), "Import existing resume" (resume PDF or profile
+                      #   JSON, useProfileImport.ts and its transient
+                      #   `chooseFile` input), the grid of gallery previews
+                      #   (PageThumb.tsx: an A4 frame scaled to its box by a
+                      #   ResizeObserver; a profile's page is a srcdoc frame
+                      #   with every sandbox flag off; a new `src` is a new
+                      #   frame - the iframe is keyed by it - because a loaded
+                      #   frame sent elsewhere adds a browser-history entry)
+                      #   and the details dialog (own chrome,
+                      #   `useDialogLayer`; Previous/Next and the arrow keys
+                      #   step through the filtered list - the arrows from
+                      #   anywhere but the switch; a
+                      #   Technical skills switch, role=group aria-label
+                      #   "Technical skills", Grouped / Plain, redraws the page
+                      #   - every template prints both - opening on Grouped
+                      #   and kept across Previous/Next; Use this template off
+                      #   for one another profile uses). Use this template
+                      #   (`onUse(template, layout)`) goes to /new?template=<id>
+                      #   [&layout=flat, the layout shown], whose editor
+                      #   gets `start` (lib/profileDraft.ts
+                      #   `draftForNewProfile`) and asks ImportStartDialog.tsx's
+                      #   "Import your existing resume": Import resume uploads
+                      #   the PDF (the server saves the profile), PUTs the
+                      #   chosen template and layout on it and replaces the
+                      #   address with its editor; Start from blank closes.
+                      #   Their styles are profilePages.module.css; the
+                      #   decisions with no React in them - the filters, a
+                      #   template's gallery page in either layout
+                      #   (`templatePreviewPath`, which Admin -> Templates'
+                      #   View and its own Grouped / Plain switch frame too),
+                      #   its feature lines, the start link and its
+                      #   reading, "Edited ... ago", Duplicate's body (no id,
+                      #   times, template or `disabled`; the model through
+                      #   savableModelChoice), Download's file - are
+                      #   lib/profileGallery.ts, types only, run against the
+                      #   server's categories, save and import by
+                      #   test/frontendEditorHelpers.test.js.
+                      #   THE EDITOR: ProfileEditor owns the draft and the save
+                      #   on that desk. A sticky bar: Profiles (back), the
+                      #   Content / Customize tabs (role=tablist "Editor
+                      #   views"; BOTH panels stay MOUNTED under `hidden`, so
+                      #   #profile-template and the layout radios are in the
+                      #   DOM on either tab), the unsaved state and Save
+                      #   (`form="profile-editor-form"`, outside the form), and
+                      #   under 1100px the Form / Preview switch (role=tablist
+                      #   "Editor", exactly "Form" / "Preview" -
+                      #   e2e/preview-vibration.js clicks it). The look is
+                      #   profileEditor.module.css's: tokens on `.editor` (and
+                      #   `.tokens`, which the portalled Add content dialog
+                      #   carries through Dialog's `className`), restated under
+                      #   html.dark; the kit's .tl-* pieces restyled INSIDE the
+                      #   editor only (its dark input rules out-rank the shim's
+                      #   on purpose); DM Sans from editorFont.ts (next/font,
+                      #   `--font-editor`, read by the editor alone); every grid
+                      #   track `minmax(0, 1fr)` - an `auto` one grew to a
+                      #   nowrap title's width and scrolled a phone sideways.
+                      #   Content is a column of collapsible SECTION CARDS
+                      #   (SectionCard.tsx: h2 > button[aria-expanded] stretched
+                      #   over the whole head, CLOSED until opened - the card
+                      #   Add content just made opens - a body that stays
+                      #   MOUNTED while closed, so the e2e scripts' DOM clicks
+                      #   on #profile-include-* always land; the grip and Move
+                      #   up/down appear on hover or focus, and on a touch
+                      #   screen while the card is open; in SectionSlot.tsx,
+                      #   native HTML5 drag and drop armed from the grip), in
+                      #   the order `effectiveSectionOrder(draft.sectionOrder
+                      #   ?? [], template.nativeSectionOrder ??
+                      #   DEFAULT_SECTION_KINDS, presenceOf(draft))`: the
+                      #   header card (EditorHeaderCard.tsx, its pencil opens
+                      #   the Basics panel), one card per section (EntrySection
+                      #   .tsx for every entry kind and the custom sections;
+                      #   ContentCards.tsx: SummaryCard, InterestsCard,
+                      #   BasicsPanel; SkillCards.tsx: TechnicalSkillsCard,
+                      #   SoftSkillsCard), "+ Add content" (AddContentDialog
+                      #   .tsx: the non-default kinds not yet listed, and a
+                      #   Custom section with a title). Customize is parts.tsx's
+                      #   SettingsCard thrice: TemplateCard and LayoutCard
+                      #   (TemplateCard.tsx: the picker; the layout radios and
+                      #   "Use the template's order") and GenerationSettings
+                      #   Card.tsx. A row opens EntryEditor.tsx in
+                      #   the column's place (the column stays mounted under
+                      #   `hidden`); Done drops a blank entry; its bullets box
+                      #   has Write with AI / Improve with AI (useWriteBullets
+                      #   .ts: one AbortController, aborted on unmount, Undo
+                      #   while the box still holds the answer), through
+                      #   `profilesApi.writeBullets` and nothing else. The
+                      #   first drag, move, add or remove turns a null
+                      #   `draft.sectionOrder` (= follow the template, sent as
+                      #   `[]`) into the displayed list. lib/profileSections.ts
+                      #   is the catalogue mirror (the shared fields of the
+                      #   backend's config/profileSections.ts plus the UI half:
+                      #   icon, entryNoun, fields, rowTitle/rowMeta, aiKind)
+                      #   and the order helpers, `import type` only, held to
+                      #   the backend copy by test/frontendEditorHelpers
+                      #   .test.js. parts.tsx keeps ChipList, AddInput,
+                      #   SectionSwitch, the notes. ProfilePreview frames the server's render in two
                       #   swapping <iframe sandbox="allow-same-origin"> (no
                       #   allow-scripts - same-origin only so the page can
                       #   measure it), debounced, aborting stale requests and
@@ -771,7 +1070,8 @@ frontend/src/
                       #   `hardSkillOrdering`, no `coverLetterPromptId`). An
                       #   unticked Soft Skills / Strengths box shows only its
                       #   switch and "N kept"; nothing is deleted. The
-                      #   switches' copy (SkillSections) says what a TAILORED
+                      #   switches' copy (SkillCards.tsx for Soft skills, the
+                      #   Strengths card in EntrySection.tsx) says what a TAILORED
                       #   resume does with them: Soft Skills on prints the
                       #   posting's soft-skill group in that section (off, it
                       #   is the last group of Technical Skills), Strengths
@@ -813,6 +1113,75 @@ frontend/src/
                       #   with the smaller of what was asked and the balance now,
                       #   and a note, both checked by lib/reporterPay.ts's
                       #   `payoutProblem`, the one Admin -> Accounts uses.
+  components/subscription/ # Settings -> Subscription and the LOCKS.
+                      #   SubscriptionCards.tsx (a card per tier, side by side
+                      #   - subscription.module.css's grid, tokens only, four,
+                      #   two or one across by a container query on the
+                      #   width the cards have, never three and one, which an
+                      #   auto-fit grid drew on most laptop windows - with its
+                      #   price, features and the one action: Subscribe,
+                      #   Upgrade · $X, Switch at renewal, Keep, or the words
+                      #   where there is none), SubscriptionStatus.tsx
+                      #   ("Current subscription": where it came from, the
+                      #   paid period's rows, Cancel and Keep). The page
+                      #   (app/settings/subscription/page.tsx) asks before
+                      #   buy, switch and keep (SpendConfirm kind
+                      #   `subscription`; a purchase through `buyQuestion`,
+                      #   which asks about an Upgrade · $0 the unused days
+                      #   cover as nothing now and the price at its first
+                      #   renewal - $0 now alone would not be asked), Cancel
+                      #   in a kit Dialog of its own, and on 409
+                      #   `charge-changed` reads the view again and says so.
+                      #   What a change did is said in the section it was
+                      #   asked from (a card's above the cards, Cancel's and
+                      #   Keep's under them), scrolled to and focused. Every
+                      #   word and button is lib/subscriptionDisplay.ts's
+                      #   (`cardAction`, `buyQuestion`, `statusSummary`,
+                      #   `changeMessage`, `cancelQuestion`, `billingLine` and
+                      #   `overrideQuestion` for Admin -> Accounts), over
+                      #   lib/subscriptionBilling.ts's client,
+                      #   which sends back the amount shown as `chargeUsd`;
+                      #   test/frontendSubscription.test.js runs both against
+                      #   the real routes. LockedFeature.tsx is every lock:
+                      #   `useLockedFeature` (its dialog, "Locked: <what>",
+                      #   Go to subscription and Close), `LockButton`,
+                      #   `ChoiceCard` (a `.tl-choice` radio card that may be
+                      #   locked - the lock beside the label, never inside it,
+                      #   `data-locked-choice`), `LockedPanel` (a page or part
+                      #   of one: RequiresSubscription's Groups gate,
+                      #   /admin/profiles/new at the limit), `ProfileLimitLink`
+                      #   (after a 402 `profile-limit`). The words are
+                      #   lib/subscriptions.ts `describeLock` (with copies of
+                      #   the tiers' names and profile limits, drift-tested in
+                      #   frontendHelpers.test.js) - and, for what the SERVER
+                      #   refused, `describeTooLowRefusal` /
+                      #   `describeProfileLimitRefusal`, worded from the
+                      #   refusal (below Premium is Default; a 402's `limit`
+                      #   names its tier), never the session, which is behind
+                      #   the server whenever a refusal reaches a page that
+                      #   offered the thing. A locked rail row in the phone
+                      #   drawer hands focus to the menu button first
+                      #   (AppSidebar `onOpenDialog`), which the dialog gives
+                      #   it back to; the icon is IconLock, never
+                      #   a "Premium" pill. At the profile limit New profile and
+                      #   Duplicate are locked, not off (ProfileCards'
+                      #   `locked`, `DuplicateState`).
+  components/SpendConfirm.tsx # What is asked before anything spends credit,
+                      #   with "Do not show again": `useSpendConfirm().ask({
+                      #   kind, title, price }, start)` - skipped kind starts at
+                      #   once; else priced, and asked when lib/spendConfirm.ts
+                      #   `confirmNeeded` says (Generate Immediately always,
+                      #   an order or a subscription only when it takes credit
+                      #   or the cost is unknown); the amount, the balance after,
+                      #   Proceed off when short (`spendFigures`). Nothing
+                      #   starts for a page or dialog that unmounted while its
+                      #   price was worked out (a `mounted` ref). Keys
+                      #   `freeTailor.spendConfirm.{order,immediate,
+                      #   subscription}.skip`, one per kind; the older
+                      #   `freeTailor.immediateConfirm.skip` is never read.
+                      #   Mounted only while open (the box starts unticked).
+                      #   It replaced ImmediateRunConfirm, and keeps owner
+                      #   decision B4's sentence (`IMMEDIATE_WARNING`).
   bid-assistant/      # the largest single feature directory here, and the only
                       #   JSX: its own App, components and stylesheet. Its
                       #   failures go through lib/apiBase.js's readError /
@@ -821,9 +1190,29 @@ frontend/src/
                       #   PageHeader, Section, Card, Field, Notice, ErrorNotice,
                       #   Pill, EmptyState, Spinner), SettingSource.tsx (where
                       #   an admin setting's value came from, and its Reset to
-                      #   default - lib/settingSources.ts decides the words)
+                      #   default - lib/settingSources.ts decides the words),
+                      #   MultiSelect.tsx (a box of several values: chips, then
+                      #   an input that is the combobox over a multiselectable
+                      #   listbox, creatable and split as told; Escape closes
+                      #   the list and stops there - `nativeEvent.
+                      #   stopImmediatePropagation`, because React's listener
+                      #   and Dialog's share the document - never a dialog
+                      #   around it; the active option, moved by the keyboard,
+                      #   scrolled into the LIST's view (its scrollTop, never
+                      #   scrollIntoView; never after the pointer moved it),
+                      #   and one chosen from a filtered list still the active
+                      #   one once the list is whole (`activeAfterChoice`); its
+                      #   decisions lib/multiSelect.ts, its look
+                      #   the .tl-multiselect* rules, with a dark input rule
+                      #   that out-ranks the shim's, the box's dark border the
+                      #   shim's --border-strong like the native boxes beside
+                      #   it, and the active option outlined in --accent-ink
+                      #   - the tint alone was 1.1:1 - and in Highlight under
+                      #   forced colors)
                       #   and Dialog.tsx (the one
-                      #   modal: portal, Escape for the TOP dialog only, one
+                      #   modal - its `className` is added to the panel, for a
+                      #   page that draws its dialogs in its own look - portal,
+                      #   Escape for the TOP dialog only, one
                       #   scroll lock however many are stacked -
                       #   lib/dialogStack.ts's `pageDialogs`) over the .tl-*
                       #   classes in globals.css, which state every colour for
@@ -851,9 +1240,11 @@ frontend/src/
                       #   CSS module. /admin/* pages sit inside app/admin/
                       #   layout.tsx's <main>; the ones that are Settings tabs
                       #   are also under the shell's Settings title, so they
-                      #   open with an h2, not a PageHeader. /admin/profiles
-                      #   (and its editor), /admin/templates and /admin/groups
-                      #   are not tabs, and do open with a PageHeader.
+                      #   open with an h2, not a PageHeader. /admin/templates and
+                      #   /admin/groups are not tabs, and do open with a
+                      #   PageHeader; the Profiles pages draw their own desk and
+                      #   h1 (profilePages.module.css), and the profile editor
+                      #   its own bar, under an sr-only h1.
   app/page.tsx        # Build Resumes. Every build is queued (POST
                       #   /generation/batches) as Generate Immediately (`mode:
                       #   'immediate'` + this tab's `tabId`, lib/generationQueue's
@@ -876,8 +1267,7 @@ frontend/src/
                       #   browser's prompt; an in-app link asks first
                       #   (`leavesBuilder`, a capture-phase click listener) and
                       #   unmounting releases it. The pure parts - tab id,
-                      #   downloads, the release request, the confirm's "Don't
-                      #   show again" (localStorage), how a run ended - are
+                      #   downloads, the release request, how a run ended - are
                       #   lib/immediateRun.ts, and the sheet panel's rows
                       #   (components/SheetsSourcePanel) lib/sheetRows.ts, both
                       #   run by test/immediateRunHelpers.test.js; sheetRows.ts
@@ -889,7 +1279,38 @@ frontend/src/
                       #   `canBuildForManyProfiles` (the backend's
                       #   hasSubscription, admins exempt; frontendHelpers.test.js
                       #   runs both), and the target in effect is DERIVED from it
-                      #   rather than corrected in an effect. A preview's
+                      #   (lib/runChoices.ts `targetInEffect`) rather than
+                      #   corrected in an effect. Locked, they are DRAWN with
+                      #   the lock (components/subscription/LockedFeature.tsx
+                      #   `ChoiceCard`; sheet mode's targets are
+                      #   components/builder/ProfileTargets.tsx, whose locked
+                      #   Select Group is a button, `#sheets-group-locked`), and
+                      #   a run's 403 `subscription-too-low` opens the same
+                      #   lock, worded for Default (`isSubscriptionTooLow`,
+                      #   `describeTooLowRefusal`). Every Generate
+                      #   Immediately and every Order goes through ONE gate,
+                      #   `confirmSpend` -> components/SpendConfirm.tsx's
+                      #   `useSpendConfirm().ask`, priced by
+                      #   lib/generationQueue.ts `estimateRun` (the quote of a
+                      #   `quoteBody` - the profiles, placeholder jobs, the
+                      #   model and, finalising previews, their content AND
+                      #   tokens as the submission carries them: content whose
+                      #   token expired is charged at least the profile's own
+                      #   model); while it prices, the run buttons wait
+                      #   (`runBusy`) and say "Checking the price..." (the
+                      #   button, or CostLine's `pricing` beside the sheet
+                      #   panel's); frontendSpendConfirm.test.js holds every
+                      #   run handler to it, the page read CRLF or LF alike.
+                      #   The cost line
+                      #   is components/builder/CostLine.tsx and an order's
+                      #   receipt (its poll and Cancel) components/orders/
+                      #   OrderReceipt.tsx (`placedOrderFrom`), both moved out
+                      #   for every page that orders - Find Jobs' Order
+                      #   Immediately draws them, and ProfileTargets, too; who
+                      #   a run builds for, the
+                      #   starting target and the files are lib/runChoices.ts
+                      #   (`targetProfiles`, `targetBlocker`, `startingTarget`,
+                      #   `defaultRunFormat`). A preview's
                       #   "Manual Edits (JSON)" box offers only what an edit
                       #   can change (lib/tailoredDraft.ts: title, summary,
                       #   each role's bullets, skillGroups - the soft group
@@ -904,18 +1325,16 @@ frontend/src/
                       #   profile; frontendTailoring.test.js holds the edit to
                       #   finish exactly as the whole content does. There is no
                       #   skill-confirm panel: nothing a tailoring prints is
-                      #   checked against the library, so the server's
-                      #   `unconfirmed*Skills` lists are always [] (the profile
-                      #   editor's add still goes through /skills/confirm).
+                      #   checked against the library, so no answer carries a
+                      #   list of skills to confirm (the profile editor's add
+                      #   still goes through /skills/confirm).
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
                       #   every page, and formatMoney / parseDollars /
                       #   toDollarInput for every amount - see "Money"),
                       #   lib/ledger.ts and lib/paymentDisplay.ts (how a ledger
                       #   row and a payment read), lib/sheet.ts (the spreadsheet range
-                      #   parsers), components/pageChrome.ts (the CARD and LABEL
-                      #   class strings, with the note on why they keep `dark:`),
-                      #   lib/userMessage.ts (userMessage / messageWithDetail -
+                      #   parsers), lib/userMessage.ts (userMessage / messageWithDetail -
                       #   the ONE way a page turns a failure into text; never
                       #   print `err.message`, and render a caught error with
                       #   <ErrorNotice>, which shows an admin's `detail`).
@@ -968,9 +1387,10 @@ copied into the database once, on first use, and read from there. A built-in
 prompt is read from its file until an administrator edits it; from then on its
 database row wins. **Built-in templates are read from `backend/static/templates`
 on every request** and never copied: the database holds only an override row
-per built-in (`template_overrides` - name, description, disabled,
-`skillsLayouts`) laid over the file, so editing a shipped template's JSON
-changes every install at its next request.
+per built-in (`template_overrides` - name, description, disabled; any other
+key a row carries, an older build's `skillsLayouts` among them, is not read)
+laid over the file, so editing a shipped template's JSON changes every install
+at its next request.
 
 **Uploaded, extracted and manual templates are files in the same directory**
 (`database/templateFiles.ts`, through `getStaticTemplatesDir()`, so
@@ -1068,8 +1488,47 @@ INSIDE what is cut (`besidesTheLoop`), and `compileTemplate` parses the result
 (`compilableMarkup`): markup the finds would leave uncompilable is compiled
 with the marked sections only, then with none, logged once per template - a
 find must never stop a template rendering. The stored file is never
-rewritten. Per-item skill loops are rewritten into categories only for
-`categorized` (the compile cache is keyed on the markup plus those choices).
+rewritten. EVERY template prints BOTH layouts, and the compile cache is keyed
+on the markup plus the choices, so each compiles to two variants that differ
+only in Technical Skills. `categorized` rewrites the skills markup into one
+line per group (`rewritePerItemSkillLoops`): the box per skill (`default`,
+`azure-stack`, the manual builder), the item per skill (fourteen built-ins),
+and a JOINED line - a `p|div|li|span|td` holding nothing but an optional bold
+label and `{{join hardSkills "sep"}}` (`JOINED_SKILLS_LINE`; the owner's
+uploaded `ats-*` templates, which printed Grouped as one run-on paragraph) -
+a `p`, `div` or `li` repeated per group, a `span` or `td` kept whole with the
+groups inside it, `<br>` between them (`JOINED_LINE_BLOCKS`: copies of a span
+ran their groups together, copies of a td added table columns);
+`{{#if category}}<strong>{{category}}:</strong> {{/if}}` in the label's place,
+the separator kept; a join in an attribute, beside other text or over
+anything but `hardSkills` is left alone. A span loop over the
+lines (`{{#unless @last}} • {{/unless}}`) is not rewritten:
+`enforceSkillCategoryLineBreaks` turns its lines into heading blocks after
+the render, its separator included. `flat` instead runs the PLAIN NET
+(generators/plainSkillsMarkup.ts `fitPlainSkillGroups`): the element a
+`{{#each skillCategories}}` loop sits directly in, and which holds nothing
+else (only whitespace and `{{#if ...}}` openers before the loop; after its own
+`{{/each}}` - sectionLocator's `sectionLoops` finds it - only whitespace, one
+`{{/if}}` per opener and the element's closing tag; never a void element or
+html/head/body), gets `data-plain-skills`,
+and one `<style id="plain-skills-style">` goes in before `</head>` (else right
+after a leading doctype, else first - `insertStyleOnce`) making each child of
+it span the row: `grid-column:1/-1`, `column-span:all`, no float, width auto,
+`height:auto`, `min-height:0`, all `!important` - which beats a child's own
+inline style, so a holder with a divider, a badge or a photo after the loop
+once took their sizes in Plain; such an element is the template's column, and
+is left as written. Flat reaches such a design as
+ONE headless group, which sat in one third-width cell of Burgundy Rule's and
+Navy Rule's grids; those two also carry a rule of their own in `cssContent`,
+`.skill-category:not(:has(.skill-category-title)) { grid-column: 1 / -1;
+min-height: 0; }`, so their Plain row does not depend on the net finding their
+loop (measured in Chrome: either alone spans the row; neither left the old
+228px cell).
+Charcoal Sidebar's loop follows a closing tag, so it is not marked (its
+sidebar needs nothing). test/templateLayouts.test.js and
+test/skillsLayoutRender.test.js hold all of it, and test/e2e/skills-layouts.js
+lays every template out in a browser in both layouts and drives the two
+Grouped / Plain switches.
 Two guards run on every template's markup, built-in or uploaded, last:
 `guardEmptyCategoryHeadings` (the flat layout's headless group) and
 `guardEmptyDescriptions` - any element holding only `{{description}}` is
@@ -1099,20 +1558,105 @@ tailoring path that skips it prints a section the PDF does not, or routes the
 model's soft-skill group to a Soft Skills section the template does not have,
 where it never prints.
 
-Every template carries `skillsLayouts` (a non-empty subset, in the order
-`['categorized','flat']`): the built-ins state it in their JSON (Burgundy Rule
-and Navy Rule are categorized-only), anything stored without one gets
-`inferTemplateSkillsLayouts(html)` on read (`services/templateImport.ts`), and an
-admin's `PATCH /api/templates/:id { skillsLayouts }` goes into a built-in's
-override row. `supportsSoftSkills` / `supportsStrengths` are derived from the
-markup on every read and stripped before a stored row is written. Templates are
-offered to a profile only for its layout, and `services/templateChoice.ts`
-falls back rather than failing a resume over a mismatch.
+**Every section is reorderable, and nine more kinds exist.**
+`config/profileSections.ts` is THE catalogue (`SECTION_KINDS`: fifteen kinds
+in canonical order - the classic six in the DOCX's fixed order `summary,
+strengths, skills, softSkills, experience, education`, then `certifications,
+projects, volunteering, awards, publications, courses, languages, interests,
+references`; `DEFAULT_SECTION_KINDS` = the classic six + certifications, the
+cards every profile shows; a custom section is `custom:<key>`, the key
+`[a-z0-9-]{1,40}`, client-minted) and the ONE place the order's semantics live
+(`presenceOf`, `cleanSectionOrder`, `sectionSortKey`,
+`effectiveSectionOrder(stored, native, presence)`); the frontend keeps a copy
+(frontend/src/lib/profileSections.ts) that test/frontendEditorHelpers.test.js
+runs beside it. The new kinds are lists on the profile (`projects`,
+`languages`, `awards`, `publications`, `volunteering`, `courses`, `interests`,
+`references`, `customSections`; types/profile.ts), normalised like every other
+list (omitted or non-array keeps, `[]` clears, blank entries dropped, 50 per
+list, 10 custom sections) with no switch: a kind prints when it has an entry.
+`Profile.sectionOrder` is the person's order and the record of added sections:
+ABSENT means the template's own order (every older profile) and the normaliser
+NEVER fills it in; omitted keeps it, re-cleaned against the custom sections
+just saved; `[]` clears it to absent; a list is stored as its valid refs, as
+given, nothing appended (a listed kind with no entries is an added, empty
+section). It is excluded from the tailoring cache's `profileFingerprint` and
+is not in `profileJson`. The PDF honours it at COMPILE time
+(`normalizeTemplateSkillsSections`: expand the macro -> strip/guard the two
+switched sections -> `reorderTemplateSections` only when an order is stored ->
+the skills rewrites (Grouped) or the Plain net (Plain) -> the baseline
+`<style id="xs-style">` in the head):
+`generators/sectionLocator.ts` finds every section (marker class
+`section-<kind>` - every built-in carries them now, default and
+charcoal-sidebar were given theirs - then `data-section`, then the heading
+heuristic the switches always used), groups them by the element they sit in
+(`parentKeyOf`: a section never leaves its template's column), and refills
+each group's slots sorted by `sectionSortKey` (listed: its place; unlisted:
+after the listed ones in the template's order); a result that would not parse
+is dropped for the template's own order, warned once, and an unfound kind is
+warned once per template and kind - never a failed render. The compile cache
+key carries the order and the custom keys (LRU 128). The nine kinds print
+through ONE macro line per template, `{{> extra-sections sectionClass=...}}`,
+which `generators/extraSectionsMarkup.ts` expands BEFORE Handlebars into one
+guarded block per kind the template does not name itself (the owner's
+uploaded `ats-*` templates loop over `certifications`; never printed twice)
+and one per custom section (`{{#with (lookup @root.customSectionsByKey
+"<key>")}}`), each marked like a built-in's section so the reorder can move
+it; every built-in carries the line once, in its main column after Education
+(the manual builder too); an uploaded template prints the kinds nowhere until
+it carries it. `services/extraSections.ts` prepares the lists (dates, a
+link's http(s) href) under the fields' own names, spread after `...profile`
+by `prepareResumeRenderData`. Two more template fields are derived on every
+read and stripped before any write, like `supportsSoftSkills`:
+`printsSections` and `nativeSectionOrder` (`services/templateImport.ts`,
+memoised by markup) - the second is what the editor shows a profile with no
+stored order in, by the same locator the PDF moves with. The DOCX iterates
+`effectiveSectionOrder(stored, canonical, presence)` and prints a filled kind
+whether or not the PDF's template has the macro. test/sectionOrder.test.js
+holds all of it over every built-in; test/profileSections.test.js the
+catalogue and the normalisers.
+
+Every template prints both layouts, so there is NO layout list: `Template`
+has no `skillsLayouts`, the built-ins' JSON states none, and one an older
+build wrote into a saved file or an override row is not read
+(`normalizeTemplateRecord` builds a record from the known fields, and the next
+write of a saved file drops it). `PATCH /api/templates/:id` takes `{ name?,
+description?, disabled? }` and answers a body naming none of them 400 *There
+is nothing to change: send a name, a description or disabled.* - a stale
+page's `{ skillsLayouts }` would otherwise bump `updatedAt` (the gallery's
+order) and rewrite a saved file for nothing. `services/templateChoice.ts`'s
+`resolveTemplateForProfile(profile: Pick<Profile,'preferredTemplate'>,
+requested?, { allowDisabledRequested })` takes the requested template, else the
+profile's own, else `default` - the first that exists and is enabled (a
+disabled REQUESTED one for an administrator's preview) - else the first
+enabled template of `getAllTemplates()` (newest first), else null, which every
+caller turns into `noTemplateAvailable()`; the layout plays no part, and the
+picker (lib/profileDraft.ts `templateOptions`) lists every template.
+The template chooser's details and Admin -> Templates' View each draw a
+Grouped / Plain switch (role=group aria-label "Technical skills") that frames
+`templatePreviewPath(id, layout)`, each layout in a NEW frame (PageThumb keys
+its iframe by `src`, the View by its address): a loaded frame pointed at
+another address adds a browser-history entry per press, and Back then turned
+the page back under a switch still naming the other layout. The details' arrow
+keys leave the switch alone, and the View joins the dialog stack
+(`useDialogLayer`) and takes focus as the details do, giving it back to its
+View on close; test/e2e/skills-layouts.js checks all three. The editor's
+layout radios change only the
+layout. `supportsSoftSkills` / `supportsStrengths` are derived from the
+markup on every read and stripped before a stored row is written. A template's
+`category` (`config/templateCategories.ts`: simple | modern | creative) files it
+under the new-profile chooser's filters: every built-in states one in its JSON
+(test/templateLayouts.test.js holds them, and that each category has some), a
+saved template keeps one its JSON states, and any other word is dropped by the
+reader (`normalizeTemplateRecord`), the import and the file writer alike. No
+route sets it; the frontend's copy of the list is lib/profileGallery.ts's.
 
 `POST /api/profiles/preview` (any signed-in account, body `{ profile,
-profileId?, templateId? }`, answers `{ html, templateId, page: { widthPx,
+profileId?, templateId?, sample? }`, answers `{ html, templateId, page: { widthPx,
 heightPx, contentHeightPx }, sampled }`) renders a DRAFT untailored through the same
-pipeline as generation - with one difference: whatever the draft leaves empty
+pipeline as generation - with one difference, unless the body says `sample:
+false` (the boolean; the Profiles list's thumbnails, which draw the stored
+profile as `{ profile: {}, profileId, sample: false }` and answer `sampled:
+[]`): whatever the draft leaves empty
 is drawn from the gallery's sample person (`withSampleDefaults`,
 `services/sampleProfile.ts`, which also holds `SAMPLE_PROFILE`), per field for
 single values and per section for lists, Strengths and Soft Skills only while
@@ -1237,11 +1781,15 @@ spaced or aliased spelling) - the two validators and the one renderer.
   **Resume files** (components/settings/ResumeFilesSection.tsx, read with
   GET /auth/account - the session's /auth/me carries none of it), its source
   "Your own" or "Default" (`suffixSourceLabel`: never which .env line), Save
-  and Reset to default, and not drawn for a reporter. lib/outputPath.ts's
-  chip lists are held to `OUTPUT_PREFIX_TOKENS` / `OUTPUT_SUFFIX_TOKENS` by
-  test/frontendSettings.test.js, which also drives lib/auth.ts's three calls
-  against the real routes. The profile editor's Company folder name box is
-  gone; its file NAME boxes stay.
+  and Reset to default, and not drawn for a reporter - by the SESSION's role,
+  so an answer saying the account was made one since (GET /auth/account
+  answers every role; no refusal re-reads the session there) goes to
+  AuthContext's `adopt`, which redraws the page without it, and a builder's
+  answer with no folder path is a failed read with Try again.
+  lib/outputPath.ts's chip lists are held to `OUTPUT_PREFIX_TOKENS` /
+  `OUTPUT_SUFFIX_TOKENS` by test/frontendSettings.test.js, which also drives
+  lib/auth.ts's three calls against the real routes. The profile editor's
+  Company folder name box is gone; its file NAME boxes stay.
 
 ## Money
 
@@ -1332,6 +1880,66 @@ again. `MAX_PAYOUT_NOTE`, `PAYOUT_REQUEST_ID` and `readPayoutNote` live in
 services/credits, shared by both places that record one. Reporters cannot buy:
 /api/payments is `requireUser` - a purchase refund gives back the UNSPENT
 balance, which for a reporter is earnings.
+
+**Subscriptions are paid from the balance** (owner decisions, 2026-10-19;
+services/subscriptions, database/subscriptionRepository.ts, routes/subscription.ts).
+A paid tier lasts 30 days from its purchase and is renewed by the SWEEP
+(renewal.ts, every SUBSCRIPTION_RENEWAL_SWEEP_MS, 10 minutes, and at startup
+once `reconcileCredits` has run - `startSubscriptionRenewalAfter`) at the price
+in effect that day; the next period starts at the old end, or at now when a
+whole period was missed. Moving UP is at once: `max(0, new price -
+unused credit)`, the credit `(price x daysLeft - (price x daysLeft) % 30) / 30`
+of the period's own price (`subscription_period_price_milli`), `daysLeft`
+counting a started day (0..30, so it changes once a day); the base - the tier
+held at the FIRST purchase, Default or an administrator's - is kept through
+every upgrade and is where a paid tier returns when it ends. Moving DOWN
+(`next`, a paid tier above the base) and Cancel (`renews = 0`) take effect at
+renewal; Resume undoes either. A purchase carries `chargeUsd`, what the page
+showed; `decide` works the charge out again inside the transaction and a
+difference is 409 `charge-changed` with `chargeMilli` - nobody is charged an
+amount they did not see. Every charge is creditRepository's
+`debitSubscriptionCharge`: ONE conditional UPDATE, `role = 'user' AND disabled
+= 0 AND balance_milli >= amount`, refused never clamped (a reporter's earnings
+are never spent on a tier), its second read naming `not-a-user`, `disabled` or
+`insufficient` in that order, reasons `subscription-purchase` (keyed
+`subscription:<account>:<tier>:<period start>`) and `subscription-renewal`
+(`subscription-renewal:<account>:<the paid_through it renews>`), refKind
+`subscription`; a $0 charge (the credit covers it) writes no row. A purchase the
+balance cannot cover is 402 `insufficient-credits` with nothing moved; a renewal
+it cannot cover ENDS the tier (`lapseWhenShort`), as do a role that is not
+`user` (`promoteIfConfiguredAdmin` changes roles past Accounts), a cancel, a
+DISABLED account (it cannot sign in to use or cancel another period, so it is
+not charged for one; `BillingState.disabled`) and a tier no longer priced -
+each with a notice after the commit (notices.ts; an administrator gets none, a
+reporter's has no link). A change a disabled account's request was already
+making is 403 `account-disabled`. A pass whose price read throws touches
+NOBODY: a settings failure must never read as "not offered". Nor does a price
+that is SET and unreadable (`getSubscriptionPriceReading().unreadable`, above):
+`renewalDecision` HOLDS what renews as that tier - neither renewed nor ended,
+`held` in the report, one warning per pass naming the price - while the rest
+renew. Administrators are exempt (409 `admin-exempt`, the page read-only). An
+administrator SETTING the tier (a different one) or moving the role away from
+user ends paid billing at once and refunds NOTHING (a credit could become a
+reporter's earnings): Accounts' answer carries a `note` with the unused amount
+to give back with +/-, and the account a notice (`reportEndedByAdministrator`);
+DISABLING a paying account ends nothing, and its note says the tier ends at
+its paid_through unless enabled by then (`describeDisabledPaidTier`). Both are
+worked out from reads made in the change's own IMMEDIATE transaction
+(`applyAdministratorChange`), so another server's renewal or purchase cannot
+land between them unmentioned. Rows carry `subscriptionBilling: { paidThrough,
+renews, next } | null` (one `listPaidSubscriptions()` query). The prices are
+admin settings with .env defaults (see config/ above); an unpriced tier is not
+offered. `GET /api/auth/subscriptions` is gone (404): the catalogue is GET
+/api/subscription's `tiers` (frontend lib/subscriptionBilling.ts).
+test/subscriptionBilling, subscriptionRoutes and subscriptionRenewal.test.js
+hold it, the last with the due query's plan (`DUE_SUBSCRIPTIONS_SQL` through
+`idx_users_subscription_due`). The pages: Settings -> Subscription (the cards,
+see components/subscription/ above), Settings -> General's **Subscriptions**
+price boxes (app/admin/settings/subscriptionPriceDraft.ts: dollars as typed,
+only the boxes that changed, '' = not offered, refused in the server's words
+before anything is sent, Reset through `appSettingResetBody`), and Admin ->
+Accounts' *Paid · renews ...* line under a paid tier and a kit Dialog confirm
+before a tier or role change that ends it.
 
 **Payout requests** (owner decisions R1, R2). The ONE thing still asked for:
 `POST /api/refund-requests/payout { reason? }` (`requireReporter`; an admin is
@@ -1424,9 +2032,11 @@ the balance" (a request leaves its sub-cent remainder there), never all spent.
 A refund from the payments list closes the payment's open
 requests (`closeRequestsForRefundedPayment`). The frontend's `lib/credits.ts`
 knows the new ledger reasons, `refund-request` and `purchase-refund-failed`,
-and the lake's `job-report-reward` and `job-report-reward-revoked` (see "The Job
-Data Lake" below; drift-checked by test/frontendMoney.test.js, which also lists
-the lake's money modules among those that may not floor or float-parse).
+the lake's `job-report-reward` and `job-report-reward-revoked` (see "The Job
+Data Lake" below) and the subscriptions' `subscription-purchase` and
+`subscription-renewal` (drift-checked by test/frontendMoney.test.js, which also
+lists the lake's and the subscriptions' money modules among those that may not
+floor or float-parse; test/money.test.js lists the backend's).
 
 **Notifications are for everybody or for one account.** `notifications.recipient_id`
 NULL is an announcement (every row an older build wrote), set is a notice for
@@ -1481,7 +2091,9 @@ first seat not locked, and with all three locked a settings READ still succeeds
 with no runnable models (saves keep their asserts) while a run fails with
 `AiUnavailableError`. The Bid Assistant runs on the app default MODEL - a
 record's provider and model name - like any run that names none, and a
-prompt's model override still decides it. It does NOT decide a resume:
+prompt's model override still decides it; so does Write Entry Bullets
+(services/entryBullets.ts, the profile editor's Write with AI: free, one call
+per account at a time, `runChoiceWins` on the default model). It does NOT decide a resume:
 tailoring, its revise pass and the cover letter pass `runChoiceWins`, so they
 run on the model the run was charged at, whatever the prompt record says. A JOB ANALYSIS runs on the
 administrator's analysis model (`analysisModelId`, see "Job analysis runs once"
@@ -1549,14 +2161,21 @@ profile's own model costs (`resolveSuppliedContentChoice`).
 exactly the variables `PROMPT_FEATURES` declares for it (`promptService.ts`), and
 that list must equal the keys of the feature's value builder -
 `buildTailorResumePromptValues`, `buildAnalyzeJobDescriptionPromptValues`,
-`buildJobFactsPromptValues` and their siblings in `resumeService.ts`;
+`buildJobFactsPromptValues` and their siblings in `resumeService.ts`, and
+`buildWriteEntryBulletsPromptValues` in `services/entryBullets.ts`;
 test/promptVariables.test.js fails when they drift, so a new variable goes in
 both. The features, in this order everywhere (`listPromptFeatureKeys`):
 analysis, Job Facts (Filter) (id `filter-google-sheet-job`, the analysis's
-second call, Extracting), tailoring, Revise Resume Coverage (id
+second call, Extracting), tailoring, Tailor Resume (Fully) (id
+`tailor-resume-full`, Building - see "Partial and Fully tailor" below),
+Revise Resume Coverage (id
 `revise-resume-coverage`, the tailoring's second call, Building), cover
-letter, the two extractors. The
-built-in texts are the owner's, shipped verbatim in `backend/static/prompts`.
+letter, Write Entry Bullets (id `write-entry-bullets`, Building; variables
+`entryJson` - required - `profileJson`, `task`, `instructions`), the two
+extractors. The
+built-in texts are the owner's, shipped verbatim in `backend/static/prompts`
+(the bullets text is this build's, not the owner's, and is not dated by
+`OWNER_PROMPTS_CONTRACT`).
 A variable whose value the CODE fixes and is the same on every call would be
 listed in `STABLE_PROMPT_VARIABLES` (promptService.ts), which promptAssembly
 keeps in the cacheable stable part instead of starting the call's data at it -
@@ -1570,8 +2189,8 @@ record without which cannot produce what the code parses
 `listRequiredPromptVariables(featureKey)`): `jobDescription` for
 analyze-job-description and for filter-google-sheet-job, `profileJson` for
 generate-cover-letter, `profileJson`, `jobAnalysisJson` and
-`softSkillGroupHeading` for tailor-resume (the parse finds the soft-skill group
-by that heading), and `draftJson` and `missingTermsJson` for
+`softSkillGroupHeading` for tailor-resume and tailor-resume-full (the parse
+finds the soft-skill group by that heading), and `draftJson` and `missingTermsJson` for
 revise-resume-coverage. Create and update refuse a text
 without them (400 `Missing required prompt variables: a, b. Every <Label>
 prompt must use [[a]] and [[b]].`); validate and preview report them
@@ -1594,20 +2213,48 @@ per record id and updatedAt. Variables alone cannot catch every older edit:
 an analysis edit from before the job field lists, or a Job Filter edit from
 before its retirement, names only `[[jobDescription]]`, as the owner's new
 texts do. So a feature whose contract changed carries `contractSince`
-(`OWNER_PROMPTS_CONTRACT`, the shipped analysis, job facts and tailoring
-files' `updatedAt` - promptVariables.test.js holds them equal), and a STORED
+(`OWNER_PROMPTS_CONTRACT`, 2026-10-19, the shipped analysis and job facts
+files' `updatedAt`; `TAILORING_PROMPTS_CONTRACT`, 2026-10-20, the two
+tailoring files', the revise pass's and the cover letter's -
+promptVariables.test.js holds each file to its feature's), and a STORED
 record of it saved before then - the admin's edit of the built-in or a
 variant, never the shipped file, and an `updatedAt` that is no time counts as
 before - is `needsUpdate` and `savedForOlderVersion` whatever its variables;
-any save clears it. The cover letter's contract did not change, so its edits
-are not dated. That is how every edit written for an older prompt contract
-gives way to the owner's texts, with no migration. An UNATTACHED record is never flagged (it has no built-in to give
+any save clears it. The 2026-10-19 contract is GROUNDING: every one of the
+five texts was rewritten so a resume or letter claims only what the profile
+says (the tailoring's "THE PROFILE IS THE ONLY SOURCE OF FACT", a posting
+technology only where the profile names it, a figure only where it states
+one, the skills block the candidate's real stack - no fill to thirty, no
+"tools their companies run on" - and a self-check; the analysis extracts
+only what a posting states, with no implied skills and no target counts;
+the revise prompt leaves a term it cannot place honestly missing and adds no
+figure but the profile's) - so an older edit, which may still ask for a
+figure the work "implies", gives way. The 2026-10-20 tailoring contract
+(owner's request) opened two holes in it on purpose, because a profile of
+titles and dates came out with an EMPTY Experience and an EMPTY Technical
+Skills: Partial's skills block leads with every hard skill the posting names,
+whether or not the profile lists it (abilities, practices and concepts stay
+in the prose; 15 to 30 entries; in no sentence about a described role), and
+a role the profile leaves EMPTY - no `companyContext`, no `achievements` - is
+written from the posting (3 to 6 bullets, believable for its title, company
+and years, modest figures allowed there only; the summary may draw on that
+work too) - the owner, asked whether Partial should invent at all, kept this
+(2026-10-20); and Fully tailor exists. An edit of the tailoring saved before
+it leaves an empty role empty, so it gives way, and so do edits of the
+revise pass (its draft now carries each role's dates, for a years rule, and
+after a Fully draft its terms are not the profile's) and of the cover letter
+(told the tailored resume when there is one). promptVariables.test.js's "the shipped
+prompts keep a resume to what the profile says" holds each rule in the
+shipped files and the absence of the ones they replaced. Write Entry Bullets
+is not dated (its text never changed). That is how every edit written for an
+older prompt contract gives way to the shipped texts, with no migration. An UNATTACHED record is never flagged (it has no built-in to give
 way to): one naming a variable it does not declare still fails at render with
 `contains unknown variables`. So no turn carries an override for a prompt
-that predates a variable. FOUR features have one prompt each
+that predates a variable. SIX features have one prompt each
 (`SINGLE_PROMPT_FEATURES`, `listSinglePromptFeatures`): the analysis, the job
-facts, the revise pass and the cover letter, each run by its exact id on a
-model the code chooses (`runChoiceWins`) - so `createPrompt` refuses a variant (and moving a
+facts, Tailor Resume (Fully), the revise pass, the cover letter and Write
+Entry Bullets, each run by
+its exact id on a model the code chooses (`runChoiceWins`) - so `createPrompt` refuses a variant (and moving a
 prompt into one) and `activatePrompt` an old variant, each in its feature's
 own sentence, a stale `activePrompts` entry for one is ignored (and dropped on
 the next write), and a variant an older build saved is listed, never active.
@@ -1642,6 +2289,43 @@ values: they decide how the answer is DRAWN. The Strengths switch reaches the
 model only as `profileJson`'s `strengths` (sent while on), and `softSkills`
 is never sent. Nothing is appended to a tailor-resume turn.
 
+**Partial and Fully tailor** (owner's request, 2026-10-20).
+`ProfileSettings.tailorMode` is `'partial' | 'full'`, read by profileService's
+`getProfileTailorMode`: the profile's own, else `.env`'s `DEFAULT_TAILOR_MODE`
+(settingDefaults.ts `envDefaultTailorMode`, a per-profile default like
+OUTPUT_PATH_SUFFIX's per-account one, in SETTING_DEFAULT_VARIABLES), else
+`partial`. A save takes a mode, `null` clears a stored one, anything else
+keeps it; absent is not stored. `tailorResume` runs `tailor-resume-full`
+(`FULL_TAILOR_PROMPT_ID`, a single-prompt feature declared from tailor-resume's
+own variables by promptService's `withFullyTailoring`) for `full`, whatever
+`resumePromptId` says, and the profile's choice for `partial`;
+`buildTailorResumePromptValues(profile, analysis, mode)` is the one builder,
+and only `profileJson` differs (`buildPromptProfile(profile, mode)`: in Fully
+each role is `{ title, company, startDate, endDate }` and there is no
+`summary` - no description, achievements, role skills or location). In both,
+`totalYearsExperience` is the profile's own, else the whole years from its
+earliest role start to its latest end, "Present" being today
+(`yearsOfExperience`: a model adding dates up does not know today's date,
+and wrote 6 for 7). The parse
+is the same (the facts, location included, come back from the profile). The
+revise pass after a Fully draft is asked for the whole checklist
+(no `supportedTerms` filter) and given no figures note; its `draftJson` has
+each role's dates in both modes, for the revise prompt's years rule. The
+cover letter the tailoring answer brings is written by the same prompt; the
+fallback (`generateCoverLetter`, when the answer brought none) is given, with
+tailored content (`runResumeTask` passes it), the mode's projection with the
+resume's own summary and bullets in place of the profile's
+(`profileAsTheResumeSays`, a role matched by company, title and dates, so
+two stints keep their own), and without it the PARTIAL projection whatever
+the mode - the untailored resume prints the profile's own text. The posting's
+action verbs reach `jobAnalysisJson` without the banned openers
+(`analysisForPrompt`; a live Partial run opened a bullet with the posting's
+"Architected"). The mode is in no cache-key field of its own: the
+prompt id and `profileJson` differ. The editor's Customize -> Generation card
+draws the choice (lib/profileDraft.ts `TAILOR_MODE_CHOICES`, the draft's
+`tailorMode`, null = the default), the default from GET /api/resume/models'
+`defaultTailorMode`. test/tailorModes.test.js holds all of it.
+
 `parseTailoredResumeContent` reads an answer - fresh, cached, or held by a page
 - against the profile as it is NOW, idempotently: the title is the profile's
 headline (else the model's, else the latest role's title - never the kind
@@ -1664,8 +2348,9 @@ like "Twenty-five" or "twenty one" is left as written); no sentence is added. `s
 model wrote them (shape only), the soft group marked `soft: true` and
 `softSkillGroupHeading` stored; `hardSkills` = `skills` the technical groups,
 `softSkills` the soft group's while Soft Skills is on for the template, else
-[]; strengths the profile's own while on; the unconfirmed lists always [].
-With no `skillGroups` in the answer, the profile's own grouping or skills.
+[]; strengths the profile's own while on (and no list of skills to confirm:
+nothing printed is checked against the library). With no `skillGroups` in the
+answer, the profile's own grouping or skills.
 `dashBackstop` takes em/en dashes and a spaced `--` out of the summary,
 bullets and cover letter (a range becomes a hyphen - a dash whose words on
 both sides carry a digit, so `$5M–$10M`, `50%–80%` and `Q1–Q3` stay ranges,
@@ -1677,16 +2362,34 @@ through the same parse (`finaliseHeldContent`), as `/resume/preview` does.
 called inside `tailorResume`, so /resume/preview, /preview-all and the queue
 task all get it) runs after a FRESH
 tailoring only - never on a cache hit or on content a page sent back - when
-TAILOR_REVISE_PASS is on and the draft is missing a checklist term, or its
-bullets carry fewer than five figures and one could carry another (a figure:
-a number not glued to a letter, so S3, EC2, p99 are names). The checklist
-(`TailorLists.checklist`): the top five, the must-include terms, the
+TAILOR_REVISE_PASS is on and the draft is missing a checklist term THE
+PROFILE'S OWN WORDS CARRY, or has dropped a figure the profile states. The
+checklist (`TailorLists.checklist`): the top five, the must-include terms, the
 concepts, the soft skills, the skills, the verbs - not responsibilities or
-domain knowledge. `missingTermsJson` is the ones the summary and bullets lack,
+domain knowledge - filtered to `supportedTerms(checklist,
+profileEvidence(profileAsShown(profile)))`: the same whole-word `containsTerm` over the
+profile's headline, summary, skills and their headings, soft skills,
+strengths, each role's title, description, bullets and skills, and its
+certifications, projects, volunteering, courses, awards and publications -
+never a company name, and each description as the tailoring saw it
+(resumeService `profileAsShown`: its sentences about the company dropped, as
+for `companyContext`; `droppedProfileFigures` reads the same profile). The revise call reads the draft and not the profile,
+and the tailoring is told to leave out a term the profile never names, so
+asking for one would undo that on the one call that cannot check.
+`missingTermsJson` is the supported ones the summary and bullets lack,
 in that order, never one with a banned word or opener
 (`RESUME_BANNED_WORDS`/`RESUME_BANNED_OPENERS`, which the revise prompt bans
-outright), at most TAILOR_REVISE_MAX_TERMS; `figuresNote` the code's sentence
-(`figuresNote`, its wording in the cache key) or ''. The call
+outright), at most TAILOR_REVISE_MAX_TERMS. `figuresNote` is
+`figuresNote(droppedProfileFigures(profile, draft))`: each role's bullets,
+then its description's sentences, in profile order, that carry a figure
+(`figureTokens`: a number not glued to a letter, so S3, EC2, p99 are names;
+separators dropped, a 19xx/20xx year left out) the draft's summary and
+bullets no longer carry anywhere, at most `MAX_DROPPED_FIGURE_LINES` (12),
+each under its company and title, with the one instruction to put the figure
+back where a bullet of that role describes the same work - or '' (its
+wording, `FIGURES_NOTE_WORDING`, is in the cache key). Nothing asks for a
+figure the profile does not state: the old "fewer than five figures" rule,
+whose sentence asked for "modest" figures the work "implies", is gone. The call
 (`callSite: 'revise-resume-coverage'`, the seat's TAILOR timeout) runs on the
 resume's choice with `runChoiceWins` and the same signal, inside the queue's
 provider pin. `mergeRevision` reads only a non-empty `summary` (not the
@@ -1807,7 +2510,8 @@ sends no prompt: `gemini --version`, then the sign-in files under the CLI's home
 Tests never spawn a browser, a subprocess or a network call: each CLI provider
 replays recorded event streams from `test/fixtures/cli`, `test/fixtures/codex`
 and `test/fixtures/gemini` through an injected runner, and storage tests point `DB_DIR` and
-`TAILOR_STATIC_DIR` at temp dirs. No real Google account has answered through
+`TAILOR_STATIC_DIR` at temp dirs, and no test reads a real Google credential
+(`TAILOR_GOOGLE_CREDENTIAL_SEARCH=off`, set by the runner and helpers.js). No real Google account has answered through
 the Gemini seat: its successful fixtures are the real 0.62.0 CLI's envelopes
 around fake answers, and the file names say so.
 
@@ -1975,11 +2679,13 @@ analysis passes one (the queue task, /resume/preview, /preview-all).
 `tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION` (2:
 the model writes the skills block, roles are restored and capped, and a
 resume's answer may be its revised one), the kind, the profile as the call
-sees it (after `profileForTemplate`) minus `createdAt`/`updatedAt` AND
-`profileSettings` (`profileFingerprint`: the layout and the Soft Skills switch
-only decide how the answer is drawn, so flipping them is a hit; the Strengths
-switch reaches the key through `profileJson`, the chosen prompt and model
-through their own fields), canonical JSON, the template id, the analysis id,
+sees it (after `profileForTemplate`) minus `createdAt`/`updatedAt`,
+`profileSettings` AND `sectionOrder` (`profileFingerprint`: the layout, the
+Soft Skills switch and the section order only decide how the answer is drawn,
+so flipping or dragging them is a hit; the Strengths switch reaches the key
+through `profileJson`, the chosen prompt and model through their own fields;
+the nine new section lists are content and change the key, though none is
+in `profileJson` yet), canonical JSON, the template id, the analysis id,
 the provider type, model record id and model name, the prompt record's id and
 the SHA-256 of its text, the SHA-256 of the rendered `promptValues` plus any
 `appendToUserBody` text (built BEFORE the lookup, from the analysis alone - no
@@ -2254,26 +2960,38 @@ own (it leaves a 0 out - All's gid on every new sheet).
 
 **The export writer** (`services/sheets/jobExport.ts`, owner decision F4: the
 Apify job search, its routes and `backend/scrapers/` are gone, and only its
-sheet writer was kept, for Find Jobs; no route calls it yet).
-`appendJobRows(account, tabName, rows, { duplicateKeys? })`: own sheet (404
-otherwise), the tab named or All, a job tab only (409 `not-job-tab` before
-anything is read; an empty tab is laid out). ONE read of A:E gives the
-duplicate check (`duplicateKeys` per row, default `companyDuplicateKeys` - a
-company once per tab; a row sharing a key with one there, or with one written
-earlier in the call, is skipped), the first row after the last used one and
-NO(DATE) - 1 + the highest number on rows dated today (in any form
-`sheetDateOfCell` reads). It writes RAW in chunks of 50 - Date as a serial
-number (a real date), NO(DATE), Company, Job Title, Job Link, Job Description
-(`descriptionCell`) - and, for a `JobExportRow` carrying `analysis`, the six
-G-L cells in the same write (A:L); never a column the caller names. Before
-each chunk its rows are read again (A:F) and a row holding anything moves the
-rest below the last used row (409 `sheet-changed` after five tries), and one
-`:batchUpdate` grows the grid when the chunk runs past it and lays the rows
-out. Writes to one tab are serialised in-process. It answers
-`JobExportResult` (`spreadsheetId, spreadsheetTitle, tabName, tabUrl, date,
-updatedRanges, rowsWritten, startRow, endRow, firstNo, lastNo,
-unresolvedJobLinks, skippedDuplicates`); `exportPlaceOf` is its pure placement.
-test/jobSheetRoutes.test.js drives it.
+sheet writer was kept - for Find Jobs' Export into Sheet, its one caller).
+`appendJobRows(account, tabName, rows)`: own sheet (404 otherwise), the tab
+named or All; a tab the account sheet reports as a name CLASH (`state.conflict`
+from `resolveJobSheetTarget`, which now answers the ensured state too) is 409
+`tab-name-clash` in the Job Sheet page's sentence ending "then export again.",
+before anything is read; a job tab only (409 `not-job-tab` before anything is
+read; an empty tab is laid out) - and the app's own All or Temp For AI, its row
+1 edited, refused in `ownTabNotJobTabSentence`'s words (rename or delete it,
+and the next verifying ensure adds a new one), never the "choose All or Temp
+For AI" of `notJobTabSentence`. ONE read of A:E gives the duplicate check
+(`jobDuplicateKeys`: the row's link as the store keys it - `linkKey`,
+tracking parameters, scheme and a trailing slash aside - else, with no usable
+link, the company as the lake compares it, `normaliseCompany`, and the title
+folded; a row sharing a key with one there, or with one written earlier in the
+call, is skipped), the first row after the last used one and NO(DATE) - 1 +
+the highest number on rows dated today (in any form `sheetDateOfCell` reads).
+It writes RAW in chunks of at most 50 rows and about 1.5 MB of JSON
+(`EXPORT_WRITE_MAX_ROWS`/`_BYTES`, googleSheets.ts `boundedWriteChunks`, which
+the push's chunks use too) - Date as a serial number (a real date), NO(DATE),
+Company, Job Title, Job Link, Job Description (`descriptionCell`) - and, for a
+`JobExportRow` carrying `analysis`, the six G-L cells in the same write (A:L);
+never a column the caller names. Before each chunk its rows are read again
+(A:F) and a row holding anything moves the rest below the last used row (409
+`sheet-changed` after five tries), and one `:batchUpdate` grows the grid when
+the chunk runs past it and lays the rows out. Writes to one tab are serialised
+in-process. Its Google calls are a seam (`setJobExportSheetsClientForTests`,
+the e2e stub's `export-*` events) whose real client looks the integration's
+functions up at each call, so a test swapping one of googleSheets.ts's exports
+is answered by its swap. It answers `JobExportResult` (`spreadsheetId,
+spreadsheetTitle, tabName, tabUrl, date, updatedRanges, rowsWritten, startRow,
+endRow, firstNo, lastNo, unresolvedJobLinks, skippedDuplicates`);
+`exportPlaceOf` is its pure placement. test/jobSheetRoutes.test.js drives it.
 
 **The analysis columns** (G-L, J5): only the app's OWN sheets
 (`isAppOwnedSheet`: allocated to an account) get them, in job tabs. They are a
@@ -2435,11 +3153,60 @@ anyway: `toEntry` / `toHistory` serve `jobType` ('' when not stated),
 `jobTypeLabel` (Remote, Hybrid, Onsite, ''), `clearance` (a boolean),
 `industry` (`not_specified` by default) and `industryLabel` ('' for
 `not_specified`) - never null.
-`LakeQuery` (and GET /api/admin/job-lake) filters on `jobType`
-(`not_specified` = ''), `clearance` (`true`/`false`) and `industry`, with no
+`LakeFilters` (and GET /api/admin/job-lake, and Find Jobs) filters on `jobTypes`
+(`not_specified` = ''), `clearance` (`true`/`false`) and `industries`, with no
 index of their own: the page still reads `idx_job_lake_updated` in order, no
 sort (pinned); the GET answers `options: { jobTypes, industries }` for the
-page's selects.
+page's list boxes.
+
+**The lake's search** (database/jobLakeRepository.ts `lakeReadSql`, read by
+services/jobLake/filters.ts `readLakeFilters(source, { requestedBy })` - the
+ONE reader of Admin -> Job Lake's GET /, its POST /push and Find Jobs' GET
+/api/jobs/lake). `LakeFilters` holds six LISTS - `keywords` (`q`),
+`companies`, `jobFieldIds` (`field`), `requestedBy`, `jobTypes`, `industries`
+- any value of which matches, and the dates, salary range and clearance; a
+list filter is a string, the key repeated, `key[]=` or a JSON array (each
+trimmed, empty and repeated values dropped, a comma never split); a single
+filter refuses a list (*<Label> takes one value.*); a non-text value or
+`key[x]=` is *A filter value must be text.*; at most 10 keywords, 25
+companies, 25 requesters (`LAKE_FILTER_MAX_VALUES`), and the keywords at most
+25 words in all (`LAKE_KEYWORD_MAX_WORDS`, counted by `keywordWords`, the
+index's own split - not a letter or digit, OR one of the 21 code points JS
+calls letters that `unicode61` still calls marks, U+19B0-U+19C0,
+U+19C8-U+19C9, U+1CF2-U+1CF3 (`KEYWORD_SEPARATORS`; jobLakeStore.test.js
+sweeps every NFKC-stable letter and digit through the real tokenizer, so a
+Unicode or SQLite drift fails the build): *Search for at most 25 words in
+all, across the keywords.*), each keyword at most `LAKE_KEYWORD_MAX_LENGTH`
+(100) code points (*A keyword can be at most 100 characters.*, the backstop
+for such a drift); and `requestedBy` from anybody the route does not let name it
+(Find Jobs, for a non-admin) is 403 `not-an-admin`, *Only an administrator can
+filter jobs by who requested them.*, before its count. Checked in that read
+order (q - its count, then each one's length, then its words - company, requestedBy, field, salary,
+dates, jobType, clearance, industry), which lib/jobLakeDisplay.ts
+`lakeFilterProblem` copies. A list is read in ONE pass (`filterValues`: a Set,
+each value judged as it comes - past the cap or off the closed list refused
+right there), as Find Jobs' export ids are (`readLakeIds`): a body of a million
+values once took minutes comparing every pair. `ftsQuery(keywords)`: each
+keyword's words ANDed - `"w"*`, but a word of one or two characters `"w"`,
+matched whole (*Go* is not *Google*, and a short prefix was the costly term) -
+keywords ORed in parentheses, never more than 25 words asked whoever calls; a
+search's word budget, not a keyword's, bounds its FTS5 work (ten keywords of
+twelve one-letter prefixes took seconds on 20,000 jobs). `lakeReadSql` never
+sorts the lake: no filter is exactly
+`LIST_DEFAULT_SQL`/`PUSH_DEFAULT_SQL`; the companies (normalised; none left =
+null, matches nothing), else 1 to `LAKE_MERGE_MAX_ARMS` (25) fields, DRIVE - one
+value a seek on its `(col, updated_at)` index, several one SELECT per value
+joined by UNION ALL and ordered as a whole (`MERGE (UNION ALL)`, no TEMP
+B-TREE), the other indexed filters inside each arm as `+job_field_id` /
+`+requested_by`; no driver walks `idx_job_lake_updated` (requested_by plain,
+so Requested by alone seeks its index and sorts those rows only); keywords are
+`WITH lake_hits(id) AS MATERIALIZED (... MATCH ?)` tested as `+id IN`; the
+count is a separate plain statement. test/jobLakeStore.test.js pins each plan,
+and that no plan pairs a plain `SCAN job_lake` with a TEMP B-TREE.
+`getLakeEntriesByIds` (`lakeEntriesByIdsSql`, a rowid seek each) and
+`suggestLakeCompanies` (`LAKE_COMPANY_PREFIX_SQL`, a `company_key` range from
+the normalised prefix to `prefixUpperBound`, grouped in index order, the newest
+spelling) serve Find Jobs. `requesterLookup` is services/jobLake/requesters.ts.
 
 **`job_reports`** (v6): every posting a reporter reported, ONE row per
 `(account_id, analysis_id)` (UNIQUE `idx_job_reports_account_analysis`), with
@@ -2570,7 +3337,8 @@ At-least-once across a crash between Google's answer and the mark. Seam:
 
 **Push to Google Sheet** (`services/jobLake/push.ts`, owner decision L1;
 POST /api/admin/job-lake/push, filters in the JSON body under the list's own
-names, read by the one `readLakeFilters` that reads GET /'s query string, so a
+names - a list filter's values a JSON array - read by the one `readLakeFilters`
+(services/jobLake/filters.ts) that reads GET /'s query string, so a
 push holds exactly what Search shows and a bad filter is refused in Search's
 words, 400, before Google is asked anything). The CALLER's own sheet and its
 Temp For AI tab only - no spreadsheet or tab is read from the request: one
@@ -2580,7 +3348,7 @@ renamed since is put back; the name held by a tab of the person's own is 409
 `tab-name-clash`, the Job Sheet page's clash sentence ending "then push
 again."); Temp For AI inspected once and refused unless a job tab (409
 `not-job-tab`, `tempTabNotJobTabSentence`), then verified on that read; the
-rows (`listLakeForPush(filters, JOB_LAKE_PUSH_MAX_ROWS)`: `whereOf`, newest
+rows (`listLakeForPush(filters, JOB_LAKE_PUSH_MAX_ROWS)`: `lakeReadSql`, newest
 first by `updated_at DESC, id DESC`, read as cap + 1 with the COUNT in the
 same read transaction; `PUSH_DEFAULT_SQL` walks idx_job_lake_updated, pinned
 by test/jobLakePush.test.js); ONE `:batchUpdate` - `appendDimension` ROWS when
@@ -2589,12 +3357,13 @@ to the end, fields `userEnteredValue,userEnteredFormat.backgroundColor`, so a
 duplicate's red paint goes too - never the header, never a column past L),
 `jobRowLayoutRequests`; then RAW writes of A:L in chunks of at most
 `PUSH_WRITE_MAX_ROWS` (200) rows and `PUSH_WRITE_MAX_BYTES` (1.5 MB of JSON;
-one bigger row goes alone). A row is Date (`sheetDateText` of `updated_at` in
+one bigger row goes alone - googleSheets.ts `boundedWriteChunks`). A row is Date (`sheetDateText` of `updated_at` in
 SHEET_TIMEZONE, sent as `sheetDateSerial`), NO(DATE) (1, 2, ... down each
 day's rows), Company, Job Title, Job Link, Job Description (analysisColumns.ts's
 `descriptionCell`: cut at 50,000 with `ANALYSIS_TRUNCATED_MARKER`, never
 through a surrogate pair) and `analysisColumnValues` of
-the row's stored analysis - six blanks when it has none - so a build from the
+the row's stored analysis (services/jobLake/index.ts `lakeAnalysisCells`, which
+the export uses too) - six blanks when it has none - so a build from the
 tab finds each row's Analysis cell naming its posting's stored analysis and
 asks no model (and writes nothing back) - a cut description with no link
 included, matched by `cellCopyHash` (the hash of `descriptionCell` of the
@@ -2607,20 +3376,31 @@ as `pushMaxRows`, for the page's confirm. Seam: `setLakePushSheetsClientForTests
 /runs/current, /runs/:id) and `/api/admin/job-lake` (GET /, /settings, PUT
 /settings, GET|POST /sync, POST /sheet, GET|POST /merge, POST /push, GET|DELETE
 /:id, POST /:id/revoke-reward - /push declared before /:id), each a row in
-test/routeAccess.test.js. The run's summary
+test/routeAccess.test.js, and Find Jobs' four on the builders' `/api/jobs`
+router (`requireUser`, so no row of their own: GET /lake, /lake/companies,
+POST /lake/export, GET /lake/:id - see "Find Jobs" below). The run's summary
 is `{ added (added + replaced), total, duplicates, unclassified, replaced,
 skipped, failed, alreadyReported, earnedMilli, balanceMilli, sheetUpdated }`.
 
 **The pages.** lib/jobLake.ts is the API's shapes; lib/jobLakeDisplay.ts
-everything the two pages decide, with no React and no runtime import but
-lib/format.ts and lib/reporterPay.ts, so test/frontendJobLake.test.js runs it
-against the server: `readReportRange` is `readRunRange`'s refusal word for
-word, `lakeSettingsProblems` / `lakeSettingsChanges` are `updateLakeSettings`'s
-(only what changed is sent, AS TYPED, '' to clear), `lakeFilterProblem` the
-lake route's 400s (the job type and industry against the route's own
-`options` lists, never a copied one), `lakeFilterBody` the one spelling of
-the filters sent - the query string's parameters and Push to Google Sheet's
-body alike, in `LAKE_FILTER_ORDER` - with `describePushConfirm` /
+everything the three pages decide, with no React and no runtime import but
+lib/format.ts, lib/reporterPay.ts and lib/settingSources.ts, so
+test/frontendJobLake.test.js runs it against the server: `readReportRange` is
+`readRunRange`'s refusal word for word, `lakeSettingsProblems` /
+`lakeSettingsChanges` are `updateLakeSettings`'s (only what changed is sent,
+AS TYPED, '' to clear), `lakeFilterProblem` the lake routes' 400s in their read
+order (the counts against `LAKE_FILTER_MAX_VALUES` and the words against
+`LAKE_KEYWORD_MAX_WORDS` by `keywordWords`, each keyword's length against
+`LAKE_KEYWORD_MAX_LENGTH`, copies, said in
+`LAKE_FILTER_CAP_SENTENCES` - the server's words, which the form's full boxes
+say too; each job type and
+industry against the route's own `options` lists, never a copied one),
+`draftFilters` what Search takes of the draft (`LakeFilterDraft`: the chips,
+and what is typed in Company - one company - and Full text - split on
+`LAKE_KEYWORD_SPLIT`), `lakeFilterBody` the one spelling of the filters sent -
+the query string's parameters (`lakeQueryString`: a list's values each under
+its own key) and Push to Google Sheet's body (a JSON array) alike, in
+`LAKE_FILTER_ORDER`; `sameLakeFilters` ignores a list's order - with `describePushConfirm` /
 `describePushResult` drawn from a real push's answer (the cap sentence names
 JOB_LAKE_PUSH_MAX_ROWS), `notJobTabMessage` the run's own
 refusal, the statuses' labels and `JOB_REPORT_OUTCOME_LABELS` (the "(Added)"
@@ -2647,14 +3427,27 @@ reaches an href only through `safeWebLink` (http(s), a host, no credentials).
 **/admin/job-lake** (app/admin/job-lake/: page.tsx, LakeTab, MergeTab,
 SettingsTab) is a Settings -> Administration tab (navModel's
 SETTINGS_ADMIN_TABS), its own tabs in `?tab=` (lake, merge, settings) as
-Payments keeps them; the lake's filter boxes are drawn FROM
-`LAKE_FILTER_ORDER` and `LAKE_FILTER_LABELS` - the owner's order: Updated
-from, Updated to, Requested by, Job field, Job type, Clearance, Industry,
-Company, Salary from, Salary to, Full text (frontendJobLake.test.js pins it
-and that LakeTab maps it) - Job type offering `LAKE_JOB_TYPE_CHOICES` (a copy
-of `listJobTypesForClient` less `not_specified`, drift-tested), Clearance
-Required / Not required, Industry the route's own `options.industries`; the
-filters apply on Search (a bumped epoch on usePagedList). **Push to Google
+Payments keeps them; the lake's filter form is components/jobLake/
+LakeFilterForm.tsx - the ONE form, Find Jobs' too - its boxes drawn FROM
+`lakeFilterOrderFor(requesters !== null)` (`LAKE_FILTER_ORDER`, without
+Requested by when the page hands it no people) and `LAKE_FILTER_LABELS` - the
+owner's order: Updated from, Updated to, Requested by, Job field, Job type,
+Clearance, Industry, Company, Salary from, Salary to, Full text
+(frontendJobLake.test.js pins it, the form's `FILTER_INPUT_IDS`, and that both
+pages draw `<LakeFilterForm`) - the six list filters as components/ui/
+MultiSelect.tsx boxes: Job field grouped by area, Job type offering
+`LAKE_JOB_TYPE_CHOICES` (a copy of `listJobTypesForClient` less
+`not_specified`, drift-tested), Industry the route's own
+`options.industries`, Requested by `email (role)`, Company creatable with
+suggestions from GET /api/jobs/lake/companies (asked 200 ms after the typing
+stops, the request before aborted), Full text creatable and split on commas;
+Clearance a select, Required / Not required; the dates and salary plain
+boxes. The filters apply on Search (a bumped epoch on usePagedList), which
+turns what was typed into chips. What is typed into the four lists that take
+no value of their own (Job field, Job type, Industry, Requested by) only
+narrows them; it is the form's own (`filterText`), and Search and Clear both
+empty it - Clear is pressable for it alone, and then asks the page nothing. The table's cells are components/jobLake/
+LakeCells.tsx (`Cell`, `WebLink`). **Push to Google
 Sheet**, beside Search, pushes `applied` - the search on the page, never boxes
 changed since, which its kit Dialog confirm says - after naming the count THAT
 search's latest answer gave (`searched`, guarded against an older answer
@@ -2674,6 +3467,78 @@ test/e2e/lake-push.js drives the filter form and the push against
 stub-lake-push-sheets.js (every account its own spreadsheet, the cells written
 to a JSON file in DB_DIR for the script to read), then builds from the pushed
 rows: their cells are read and nothing is written back.
+
+**Find Jobs** (`/jobs`, owner's request; app/jobs/page.tsx,
+OrderJobsDialog.tsx, FindJobDialog.tsx; routes/jobs.ts, services/jobLake/
+findJobs.ts) is the lake for every builder - the rail's Find Jobs, a page now,
+not the external link to the sheet it was (`NavItem.external` is gone). GET
+/api/jobs/lake reads `readLakeFilters(req.query, { requestedBy: isAdmin })` and
+answers `{ rows, total, limit, offset, options, exportMaxRows }`; a row is
+`findJobsRow`'s explicit ALLOWLIST - `id, company, title, url, jobFieldId,
+jobFieldLabel, salary, jobType(Label), clearance, industry(Label), updatedAt,
+analysisId`, an administrator's adding `requestedBy, requester, source` -
+never a spread of `LakeEntry` (no reward, seen count, hash, key or sync, for
+anybody: test/findJobs.test.js holds the key sets). GET /lake/companies
+(`?prefix=`, a string, cut at 100; `limit` 1-25, default 10) is
+`suggestLakeCompanies`; GET /lake/:id the row plus `jobDescription`, no
+history (`readLakeId`: 404 for junk). POST /lake/export `{ ids }` is
+`exportLakeJobs`: `readLakeIds` (400 *Choose the jobs to export.* / *Each job
+is named by its number in the lake.* / `too-many-jobs` past
+`JOB_LAKE_EXPORT_MAX_ROWS`, an operational setting, 200, 1-1000, with
+`maxRows`), `getLakeEntriesByIds` (none: 404 `jobs-not-found`), then
+`appendJobRows(account, All, ...)` with each job's `lakeAnalysisCells` -
+answered `{ exported, skippedDuplicates, missing, tabName, tabUrl, startRow,
+endRow, maxRows }`; a sheet or tab in the body is never read. The app's own
+All (or Temp For AI) whose row 1 was edited keeps its recorded id, so no clash
+is on record: the writer refuses it in `ownTabNotJobTabSentence`'s words (409
+`not-job-tab`, *... so nothing was exported into it. Rename or delete that tab
+in Google Sheets, then export again: a new All tab is added.* - the push's
+`tempTabNotJobTabSentence` is the same function), never "choose another tab",
+which Find Jobs has none of. The page:
+PageHeader with **Go to my sheet** (the sheet's `defaultTabUrl` through
+`safeWebLink`, else the session's `sheetUrl` through `sheetLinkFor`; off, with
+a warn Notice of the server's sentence, when Sheets is not set up), the form
+(Requested by for an administrator alone, with `accountsApi.list`), a toolbar
+(`describeLakeTotal`, `describeSelection` and Clear selection, **Export into
+Sheet** and **Order Immediately**, each off with its `exportBlocker` /
+`orderBlocker` sentence as its title - every reason those reach is also said
+on the page), the pager, and the table with a box per
+row and the page's select-all (`pageSelectionState`, indeterminate by a ref),
+`tr[data-selected]` tinted (globals.css; find-jobs.js compares the cells' computed colours, light and dark - the attribute alone passed with the rule lost). The table is `data-density="compact"` (8px side padding; a `hyphens-auto` cell hyphenates only a word of 12 letters or more), Updated the date with the full time as its title, Requested by cut to the column with the whole of it as its title, and Details `data-sticky-end` (held at the box's right edge while it scrolls). NO column can be widened by its rows: Company, Job field, Title (WebLink's `wrap-anywhere`), Salary and Industry each have a `min-w-*` floor and break inside a word wider than it - a catalogue label such as *Telecommunications* or *Localization and internationalization* (Job field and Industry also `hyphens-auto`; Chrome never hyphenates a capitalised word, so *Telecommunications*, the one industry word wider than 96px of text, breaks without a hyphen), a long title, a raw salary - and the rest are fixed (`whitespace-nowrap`, the box, Details) or capped (Requested by), so no row can widen the table past its floors: at most 1073px for an administrator in Geist (narrower with short Requested by addresses), inside the box at 1440px - 1118px, or 1103px beside Windows Chrome's 15px scrollbar. A user's is at most 945px, which fits the 958px box at 1280 only where scrollbars take no room (overlay ones, or puppeteer's hidden ones); beside a classic desktop scrollbar (15-17px, the box 941-943px) it scrolls 2-4px sideways, Details held in view. A wider floor, or a column that can grow with its text, brings back the sideways scroll an administrator had with real labels. Opaque, Details would hide a control the Tab key reaches under it, so the box's `onFocus` is lib/stickyColumn.ts's `keepFocusClearOfStickyEnd` (`stickyEndShift`: scrolled clear of the column, or back to the left edge; Details itself never moves the box; frontendFindJobs.test.js runs the sum and the handler) - for a KEYBOARD focus only (`:focus-visible`): a mouse press or a tap focuses a checkbox or a link on its way down, and a box moved then took a half-hidden one out from under the pointer, so the click landed on the cell - the box unticked, the link unopened. find-jobs.js checks 1440 for both roles with the catalogues' widest words, long titles and salaries on top, every row's Details at 1280 for an administrator, and at 390 a press on a checkbox half cut off at the left edge (ticked) and on each line of a Title link half under Details (reached), the box unmoved, then Shift+Tab to that link (scrolled clear). The selection is a Map kept across
+pages (`toggleSelected` / `togglePageSelected`, at most `exportMaxRows` -
+*You can select at most N jobs at a time.*), let go by Search, Clear and an
+order, kept after an export. Details' footer picks the job with a box, *Select
+this job* (a box, as the row's; `pick` answers the cap's sentence, which the
+dialog says itself, over the page's). Focus is never dropped: Clear selection
+hands it to the select-all box, the form's Clear (off once nothing is left) to Search, Export into Sheet stays focusable while it exports (`aria-disabled`, presses ignored), Order Immediately stays pressable while its
+modal dialog is open (only an export blocks it) so Cancel gives it back there,
+and a placed order's receipt (`[data-order-result]`, `tabIndex=-1`; the
+receipt itself `role=status`) takes it. **Order Immediately** (OrderJobsDialog) is an
+ORDER: `ProfileTargets` (Single / Several profiles / All profiles / Specific
+group, all but the first locked below Premium via `useLockedFeature`; Several
+is the dialog's alone - `selectedProfileIds` and `onProfileIdsChange` draw the
+card and an inline MultiSelect of the enabled profiles, `order-profiles`, and
+Build Resumes passes neither, keeping its three cards - the kind in effect
+`targetInEffect`, the start `startingTarget`, which never names Several),
+`AiPreferenceFields`
+(`order-ai`), `CostLine` from a quote of exactly the order - or, in its
+place while who it is for cannot be built for, `targetBlocker`'s sentence
+(`[data-order-blocker]`, aria-live) - and Place order
+through `useSpendConfirm().ask({ kind: 'order', ... estimateRun(body) })`
+before `generationApi.submit({ label: lakeOrderLabel(n), mode: 'order',
+profileIds, jobs: lakeOrderJobs(rows).jobs, ...defaultRunFormat })` - each job
+`{ companyName, role, jobLink, analysisId }`, a row with no analysis left out
+and said (`describeOrderSkipped`); a 403 `subscription-too-low` opens the lock
+(`describeTooLowRefusal`) and re-reads the account, a 402 is the cost line's
+shortfall; placed, the page shows `OrderReceipt`, lets the selection go and
+re-reads the account (the top bar's balance). Closed while its price is worked
+out (Cancel, Escape, the backdrop), the dialog unmounts and `useSpendConfirm`
+starts nothing for a hook that has gone - a free or exempt order was once
+placed behind the person's back. test/frontendFindJobs.test.js
+holds the MultiSelect's decisions, the targets against
+`assertProfileScopeAllowed` and the order's wiring; test/e2e/find-jobs.js
+drives the page, the export and the order against stub-lake-push-sheets.js
+(its export seam) and stub-seat.js.
 
 ## Conventions from the history
 

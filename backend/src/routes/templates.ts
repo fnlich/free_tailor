@@ -14,11 +14,10 @@ import {
   uploadJsonTemplates,
   type ManualTemplateConfig,
 } from '../extractors/templateExtractor';
-import { TECHNICAL_SKILLS_LAYOUTS, TemplateImportError } from '../services/templateImport';
+import { TemplateImportError } from '../services/templateImport';
 import { isTemplateStoreError } from '../database/templateFiles';
 import { sendPublicError } from '../middleware/publicError';
 import { generateTemplatePreviewHTML, PREVIEW_CONTENT_SECURITY_POLICY } from '../generators/pdfGenerator';
-import type { TechnicalSkillsLayout } from '../types/profile';
 
 const router = Router();
 
@@ -191,11 +190,8 @@ router.post('/create-manual', requireAdmin, async (req: Request, res: Response) 
  * Takes one template, a list of them, or `{ "templates": [ ... ] }` - the three
  * shapes an export actually produces - and saves all of them or none.
  *
- * The response carries BOTH shapes on purpose. `templates` and the counts are
- * what a client that knows about multi-template files reads; the first
- * template's fields are spread alongside them so a client written against the
- * old single-template response keeps working across a deploy, which for a
- * browser tab that has not been reloaded is not a hypothetical.
+ * Answers 201 `{ templates, imported, keptIds }`: every template saved, how
+ * many, and how many kept the id their file gave them.
  */
 router.post('/upload-json', requireAdmin, uploadJson.single('template'), async (req: Request, res: Response) => {
   try {
@@ -206,7 +202,6 @@ router.post('/upload-json', requireAdmin, uploadJson.single('template'), async (
     const imported = await uploadJsonTemplates(req.file.buffer);
     const templates = imported.map((entry) => entry.template);
     res.status(201).json({
-      ...templates[0],
       templates,
       imported: templates.length,
       keptIds: imported.filter((entry) => entry.keptId).length,
@@ -293,42 +288,27 @@ router.put('/:id/update-manual', requireAdmin, async (req: Request<{ id: string 
 });
 
 /**
- * A `skillsLayouts` an administrator sent, checked strictly: a non-empty list
- * of known layouts, returned de-duplicated in the canonical order - or the
- * reason it is not one. Strict here where the read is lenient, because this is
- * the one place a person can be told what they got wrong.
+ * Update a template (protected): its name, description or disabled flag - a
+ * built-in's go in its override row, a saved template's into its file. There
+ * is nothing else to change: every template prints both Technical Skills
+ * layouts, and a `skillsLayouts` sent by an older page is not read. A body
+ * naming none of the three is refused rather than answered 200, which would
+ * bump `updatedAt` - the gallery's order - and rewrite a saved file for nothing.
  */
-function parseSkillsLayoutsUpdate(value: unknown): { layouts: TechnicalSkillsLayout[] } | { error: string } {
-  const reason =
-    'skillsLayouts must be a list naming at least one of "categorized" (Grouped) and "flat" (Plain), and nothing else.';
-  if (!Array.isArray(value) || value.length === 0) return { error: reason };
-  if (!value.every((entry) => (TECHNICAL_SKILLS_LAYOUTS as readonly unknown[]).includes(entry))) {
-    return { error: reason };
-  }
-  return { layouts: TECHNICAL_SKILLS_LAYOUTS.filter((layout) => value.includes(layout)) };
-}
-
-// Update template (protected) - e.g. toggle disabled, name, description, and
-// which skills layouts it is offered for (a built-in's goes in its override row)
 router.patch('/:id', requireAdmin, async (req: Request<{ id: string }>, res: Response) => {
   try {
-    const { disabled, name, description, skillsLayouts } = req.body as {
-      disabled?: boolean;
-      name?: string;
-      description?: string;
-      skillsLayouts?: unknown;
+    const { disabled, name, description } = (req.body ?? {}) as {
+      disabled?: unknown;
+      name?: unknown;
+      description?: unknown;
     };
-    const updates: { disabled?: boolean; name?: string; description?: string; skillsLayouts?: TechnicalSkillsLayout[] } = {};
+    const updates: { disabled?: boolean; name?: string; description?: string } = {};
     if (typeof disabled === 'boolean') updates.disabled = disabled;
     if (typeof name === 'string') updates.name = name.trim();
     if (typeof description === 'string') updates.description = description.trim();
-    if (typeof skillsLayouts !== 'undefined') {
-      const parsed = parseSkillsLayoutsUpdate(skillsLayouts);
-      if ('error' in parsed) {
-        res.status(400).json({ error: parsed.error });
-        return;
-      }
-      updates.skillsLayouts = parsed.layouts;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'There is nothing to change: send a name, a description or disabled.' });
+      return;
     }
     const updated = await updateTemplate(req.params.id, updates);
     if (!updated) {

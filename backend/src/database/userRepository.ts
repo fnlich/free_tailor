@@ -8,6 +8,7 @@ import { readStoredReportRateMilli } from '../config/reportRate';
 import { sessionTtlMs } from '../config/operational';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 import { getDb } from './sqlite';
+import { BILLING_CLEARED_SQL } from './subscriptionRepository';
 
 /**
  * Accounts, sessions and the emailed login codes.
@@ -387,6 +388,24 @@ export function findOrCreateUser(input: CreateUserInput): { account: UserAccount
   return { account: createUser(input), created: true };
 }
 
+/**
+ * An administrator's change to an account (Admin -> Accounts).
+ *
+ * Setting the tier makes it an ADMINISTRATOR'S tier: a tier the account paid
+ * for from its balance (services/subscriptions) ends at once - its paid period
+ * is cleared, so nothing renews and nothing is charged again - and nothing is
+ * refunded here; routes/accounts.ts tells the administrator how much was
+ * unused, and the account why. Setting the tier it already has does nothing,
+ * so a paid one carries on. Moving the role away from user ends a paid tier
+ * the same way, the account returning to the tier it paid from: a reporter's
+ * balance is earnings and buys no tier, and an administrator is never charged.
+ * Both in the same UPDATE as the change, whose SET expressions all read the
+ * row as it was. Disabling leaves a paid tier alone: it runs to the end of the
+ * 30 days paid for, and is not renewed while the account is disabled
+ * (services/subscriptions `renewalDecision`). Admin -> Accounts calls this
+ * through services/subscriptions `applyAdministratorChange`, which reads the
+ * paid period either side of it in the same transaction.
+ */
 export function updateUser(id: string, update: AccountUpdate): UserAccount | null {
   const existing = getUserById(id);
   if (!existing) return null;
@@ -398,9 +417,16 @@ export function updateUser(id: string, update: AccountUpdate): UserAccount | nul
     patch.push('role = @role');
     values.role = update.role;
   }
-  if (update.subscription !== undefined) {
-    patch.push('subscription = @subscription');
+  const tierChanges = update.subscription !== undefined && update.subscription !== existing.subscription;
+  const leavesUser = update.role !== undefined && update.role !== 'user' && existing.role === 'user';
+  if (update.subscription !== undefined && (tierChanges || leavesUser)) {
+    patch.push('subscription = @subscription', BILLING_CLEARED_SQL);
     values.subscription = update.subscription;
+  } else if (leavesUser) {
+    patch.push(
+      "subscription = CASE WHEN subscription_paid_through IS NULL THEN subscription ELSE COALESCE(subscription_base, 'default') END",
+      BILLING_CLEARED_SQL
+    );
   }
   // NO `credits` BRANCH. It used to be here, as an absolute SET, and that is
   // exactly why it had to go: two debits arriving together composed as "last one

@@ -53,6 +53,10 @@ type SinglePromptRule = {
  * - The analysis and the job facts are the two calls of a posting's ONE
  *   analysis, for every profile (owner decisions J0, O1), on the analysis
  *   model.
+ * - Tailor Resume (Fully) is the tailoring of every profile set to Fully
+ *   tailor, run by its exact id whatever tailoring prompt the profile chose
+ *   for Partial - a variant of it would be a second idea of what "write the
+ *   experience" means, and nothing would choose it.
  * - The revise pass is the tailoring's second call, run by its exact id on
  *   the model the resume is charged at, whichever tailoring prompt the
  *   profile chose.
@@ -79,12 +83,20 @@ const SINGLE_PROMPT_FEATURES: ReadonlyMap<PromptFeatureKey, SinglePromptRule> = 
     },
   ],
   [
+    'tailor-resume-full',
+    {
+      variant:
+        'Fully tailoring has one prompt, the built-in Tailor Resume (Fully), which every profile set to Fully ' +
+        'tailor runs. Edit that prompt instead of adding another.',
+      activation: 'Every Fully tailored resume runs the built-in Tailor Resume (Fully) prompt. Edit that prompt instead.',
+    },
+  ],
+  [
     'revise-resume-coverage',
     {
       variant:
         'The revise pass has one prompt, the built-in Revise Resume Coverage, which runs after a tailoring that left ' +
-        'checklist terms out or whose bullets carry fewer than five figures. Edit that prompt instead of adding ' +
-        'another.',
+        'checklist terms out or dropped a figure the profile states. Edit that prompt instead of adding another.',
       activation: 'Every revise pass runs the built-in Revise Resume Coverage prompt. Edit that prompt instead.',
     },
   ],
@@ -94,6 +106,15 @@ const SINGLE_PROMPT_FEATURES: ReadonlyMap<PromptFeatureKey, SinglePromptRule> = 
       variant:
         'A cover letter has one prompt, the built-in Generate Cover Letter. Edit that prompt instead of adding another.',
       activation: 'Every cover letter runs the built-in Generate Cover Letter prompt. Edit that prompt instead.',
+    },
+  ],
+  [
+    'write-entry-bullets',
+    {
+      variant:
+        "Writing an entry's bullets has one prompt, the built-in Write Entry Bullets. Edit that prompt instead of " +
+        'adding another.',
+      activation: 'Every Write with AI run uses the built-in Write Entry Bullets prompt. Edit that prompt instead.',
     },
   ],
 ]);
@@ -120,8 +141,9 @@ export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set<string>();
 
 /**
  * When the prompt contract of the owner's texts took effect (owner decision
- * O1): the `updatedAt` of the shipped analysis, job facts and tailoring files,
- * which test/promptVariables.test.js holds equal to it. A STORED record of
+ * O1): the `updatedAt` of the shipped analysis and job facts files, which
+ * test/promptVariables.test.js holds equal to it (the tailoring, the revise
+ * pass and the cover letter moved on since: `TAILORING_PROMPTS_CONTRACT`). A STORED record of
  * those features saved before then was written for an older contract, and
  * some of those name only variables that are still supplied - an analysis
  * edit from before the job field lists asked for "bare infinitive verbs" and
@@ -129,7 +151,23 @@ export const STABLE_PROMPT_VARIABLES: ReadonlySet<string> = new Set<string>();
  * retired - so no reading of its variables can tell it from the owner's new
  * text. Its date can: see `contractSince`.
  */
-export const OWNER_PROMPTS_CONTRACT = '2026-10-12T00:00:00.000Z';
+export const OWNER_PROMPTS_CONTRACT = '2026-10-19T00:00:00.000Z';
+
+/**
+ * When the tailoring's contract last changed (owner's request, 2026-10-20):
+ * two modes, a role the profile leaves empty written from the posting rather
+ * than printed blank, and a skills block that leads with the posting's own
+ * hard skills whether or not the profile lists them (the owner kept the empty
+ * role's rule when asked, 2026-10-20). The `updatedAt` of the shipped Tailor
+ * Resume, Tailor Resume (Fully), Revise Resume Coverage (sent each role's dates
+ * now, and after a Fully draft terms the profile never names) and Generate
+ * Cover Letter (told the tailored resume when there is one) files. An edit of
+ * the tailoring stored before then was written for a prompt that leaves an
+ * empty role empty - which is how a profile of titles and dates printed a
+ * resume with no Skills and no Experience - so it gives way to the shipped
+ * text, and so do the other two's.
+ */
+export const TAILORING_PROMPTS_CONTRACT = '2026-10-20T00:00:00.000Z';
 
 type PromptFeatureDefinition = {
   key: PromptFeatureKey;
@@ -199,7 +237,7 @@ function isProfileScopedPromptFeature(featureKey?: PromptFeatureKey): boolean {
   return Boolean(featureKey && PROFILE_SCOPED_PROMPT_FEATURES.has(featureKey));
 }
 
-const PROMPT_FEATURES: PromptFeatureDefinition[] = [
+const PROMPT_FEATURES: PromptFeatureDefinition[] = withFullyTailoring([
   {
     key: 'analyze-job-description',
     label: 'Analyze Job Description',
@@ -210,7 +248,7 @@ const PROMPT_FEATURES: PromptFeatureDefinition[] = [
       'architecture, responsibilities, domain knowledge and the ATS keywords a resume is checked against.',
     usage:
       'The first of the two calls of the one job analysis (the second is Job Facts (Filter)). Every posting is ' +
-      'analysed once, ever, on the analysis model chosen under Admin -> Settings; an edit here reaches only ' +
+      'analysed once, ever, on the analysis model chosen under Admin -> Models; an edit here reaches only ' +
       'postings never analysed before.',
     responseFormat: 'json',
     contractSince: OWNER_PROMPTS_CONTRACT,
@@ -272,15 +310,17 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     id: 'tailor-resume',
     name: 'Tailor Resume',
     description:
-      'Writes the tailored resume from a profile and a posting\'s analysis: the headline the code builds on, the ' +
-      'summary, every role\'s bullets, the Technical Skills block in groups (the posting\'s soft skills last) and a ' +
-      'cover letter.',
+      'Partial tailor: rewrites the candidate\'s own summary and each role\'s description and achievements for a ' +
+      'posting\'s analysis - writing a role the profile leaves empty from the posting - with the headline the code ' +
+      'builds on, the Technical Skills block in groups (the posting\'s hard skills first, its soft skills last) and ' +
+      'a cover letter.',
     usage:
-      'Runs for every resume, on the model it is charged at; a profile may choose a variant of its own. The code ' +
-      'composes the title, restores each role\'s facts from the profile, keeps eight bullets a role and prints the ' +
-      'skill groups as written. Revise Resume Coverage may follow it.',
+      'Runs for every resume of a profile set to Partial tailor (the default), on the model it is charged at; a ' +
+      'profile may choose a variant of its own. The code composes the title, restores each role\'s facts from the ' +
+      'profile, keeps eight bullets a role and prints the skill groups as written. Revise Resume Coverage may ' +
+      'follow it.',
     responseFormat: 'json',
-    contractSince: OWNER_PROMPTS_CONTRACT,
+    contractSince: TAILORING_PROMPTS_CONTRACT,
     requiredVariables: ['profileJson', 'jobAnalysisJson', 'softSkillGroupHeading'],
     allowedVariables: [
       {
@@ -371,34 +411,44 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     id: 'revise-resume-coverage',
     name: 'Revise Resume Coverage',
     description:
-      'Works the checklist terms a tailored draft left out - and the figures its bullets lack - into its summary ' +
-      'and bullets, changing as little as possible.',
+      'Puts back into a tailored draft\'s summary and bullets the checklist terms it left out - after a Partial ' +
+      'tailoring only those the profile itself names - and the profile\'s figures it dropped, changing as little ' +
+      'as possible.',
     usage:
-      'Runs after a fresh tailoring that left checklist terms out, or whose bullets carry fewer than five figures, ' +
-      'on the model the resume is charged at. Never on a reused tailoring or on content a page sent back. ' +
-      'TAILOR_REVISE_PASS turns it off.',
+      'Runs after a fresh tailoring that left out checklist terms, or dropped a figure the profile\'s own lines ' +
+      'state, on the model the resume is charged at. After a Partial tailoring a posting term the profile never ' +
+      'names is never asked for; after a Fully one, any checklist term the draft lacks is, and no figure. Never on ' +
+      'a reused tailoring or on content a page sent back. TAILOR_REVISE_PASS turns it off.',
     responseFormat: 'json',
+    contractSince: TAILORING_PROMPTS_CONTRACT,
     requiredVariables: ['draftJson', 'missingTermsJson'],
     allowedVariables: [
       {
         name: 'draftJson',
-        description: 'The tailored draft as it would print: its summary, and each role\'s company, title and bullets.',
-        sampleValue: `{"summary":"7 years of backend engineering across payment platforms.","experience":[{"company":"Acme","title":"Senior Software Engineer","achievements":["Rewrote the settlement endpoints in Node.js, taking approval time from 9s to 1.4s."]}]}`,
+        description:
+          'The tailored draft as it would print: its summary, and each role\'s company, title, dates and bullets.',
+        sampleValue: `{"summary":"7 years of backend engineering across payment platforms.","experience":[{"company":"Acme","title":"Senior Software Engineer","startDate":"01/2022","endDate":"Present","achievements":["Rewrote the settlement endpoints in Node.js, taking approval time from 9s to 1.4s."]}]}`,
       },
       {
         name: 'missingTermsJson',
         description:
           'The checklist terms the summary and bullets do not carry, in priority order (TAILOR_REVISE_MAX_TERMS at ' +
-          'most). Never a term with a banned word in it.',
+          'most), never one with a banned word in it. After a Partial tailoring only those the profile\'s own words ' +
+          'carry; after a Fully one, any of them.',
         sampleValue: `["incident response","Datadog","Communication skills"]`,
       },
       {
         name: 'figuresNote',
         description:
-          'A sentence asking for more figures in the bullets when they carry fewer than five, or empty.',
+          'The profile\'s own lines whose figures the draft no longer shows, each under the role it is from, with ' +
+          'the one instruction to put the figure back where a bullet of that role describes the same work and ' +
+          'otherwise add nothing. Empty when the draft dropped none.',
         sampleValue:
-          'FIGURES. 3 of the bullets carry a figure and a resume needs at least five. Add a figure to 2 more ' +
-          'bullets, never to the summary.',
+          'FIGURES THE PROFILE STATES AND THE DRAFT DROPPED. Each line below is the candidate\'s own, from the role ' +
+          'named before it, and carries a figure the draft no longer shows. Where a bullet of that role describes ' +
+          'the same piece of work, put the figure back into it exactly as the line states it; where no bullet ' +
+          'describes that work, add nothing. Never a figure these lines do not state, and never one in the summary.\n' +
+          '- Acme, Senior Software Engineer: Cut the nightly settlement run from 40 minutes to 6.',
       },
     ],
   },
@@ -410,13 +460,61 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     description: 'Generates a concise cover letter body using the profile and application details.',
     usage:
       'Writes the cover letter when the tailoring answer brought none (or there is no posting to tailor to), ' +
-      'on the model the resume is charged at.',
+      'on the model the resume is charged at. The profile is its only source of fact - the tailored resume\'s ' +
+      'summary and bullets in place of the profile\'s own when one was written.',
     responseFormat: 'text',
+    contractSince: TAILORING_PROMPTS_CONTRACT,
     requiredVariables: ['profileJson'],
     allowedVariables: [
       { name: 'profileJson', description: 'Serialized candidate profile JSON.' },
       { name: 'companyName', description: 'Target company name.', sampleValue: 'Acme' },
       { name: 'role', description: 'Target role title.', sampleValue: 'Senior Software Engineer' },
+    ],
+  },
+  {
+    key: 'write-entry-bullets',
+    label: 'Write Entry Bullets',
+    id: 'write-entry-bullets',
+    name: 'Write Entry Bullets',
+    description:
+      'Writes or improves the achievement bullets of one entry of a profile - a role, a project or a ' +
+      'volunteering entry - from the facts typed into it.',
+    usage:
+      'Runs when a builder presses Write with AI or Improve with AI in the profile editor, on the app ' +
+      'default model. Free: no credit is reserved, one call per account at a time. The code keeps up to ' +
+      "eight bullets, each sanitised like a tailored resume's and cut at 300 characters.",
+    responseFormat: 'json',
+    requiredVariables: ['entryJson'],
+    allowedVariables: [
+      {
+        name: 'entryJson',
+        description:
+          'The entry as typed: kind, title or name, company or organisation, dates, location, description, ' +
+          'its current bullets and its skills.',
+        sampleValue:
+          '{"kind":"experience","title":"Senior Software Engineer","organization":"Acme","startDate":"01/2022",' +
+          '"endDate":"Present","location":"Remote","description":"Owns the billing services.",' +
+          '"bullets":["Cut invoice latency from 2s to 300ms"],"skills":["Node.js","PostgreSQL"]}',
+      },
+      {
+        name: 'profileJson',
+        description:
+          'Who the entry belongs to: name, headline, years, summary and skills. No contact details, no other entries.',
+        sampleValue:
+          '{"name":"Jane Doe","title":"Senior Software Engineer","totalYearsExperience":7,' +
+          '"summary":"Backend engineer.","skills":["Node.js","TypeScript"]}',
+      },
+      {
+        name: 'task',
+        description:
+          "The code's sentence for what is asked: write new bullets from the facts, or improve the existing ones.",
+        sampleValue: 'Write 3 to 8 new bullets for this entry from the facts in it. It has no bullets yet.',
+      },
+      {
+        name: 'instructions',
+        description: "The builder's own note for this run, or empty.",
+        sampleValue: 'Emphasise the migration work.',
+      },
     ],
   },
   {
@@ -482,7 +580,51 @@ Node.js, TypeScript, PostgreSQL, AWS`,
       },
     ],
   },
-];
+]);
+
+/**
+ * The feature list with Tailor Resume (Fully) placed right after Tailor
+ * Resume, whose variables it takes: the same builder fills both
+ * (resumeService.ts `buildTailorResumePromptValues`, by the profile's mode),
+ * so one list keeps them from drifting apart. Only `profileJson` reads
+ * differently - in Fully, each role is its title, company and dates.
+ */
+function withFullyTailoring(features: PromptFeatureDefinition[]): PromptFeatureDefinition[] {
+  const at = features.findIndex((feature) => feature.key === 'tailor-resume');
+  const partial = features[at];
+  const fully: PromptFeatureDefinition = {
+    key: 'tailor-resume-full',
+    label: 'Tailor Resume (Fully)',
+    id: 'tailor-resume-full',
+    name: 'Tailor Resume (Fully)',
+    description:
+      'Fully tailor: writes every role\'s bullets and the summary for a posting\'s analysis from each role\'s ' +
+      'title, company and dates alone, with modest, plausible figures - and the headline the code builds on, the ' +
+      'Technical Skills block in groups (the posting\'s hard skills first, its soft skills last) and a cover letter.',
+    usage:
+      'Runs for every resume of a profile set to Fully tailor, on the model it is charged at, whatever tailoring ' +
+      'prompt the profile chose for Partial. The profile\'s descriptions, achievements, role skills and summary ' +
+      'are not sent. The code composes the title, restores each role\'s facts from the profile, keeps eight bullets ' +
+      'a role and prints the skill groups as written. Revise Resume Coverage may follow it.',
+    responseFormat: partial.responseFormat,
+    contractSince: TAILORING_PROMPTS_CONTRACT,
+    requiredVariables: partial.requiredVariables,
+    allowedVariables: partial.allowedVariables.map((variable) =>
+      variable.name === 'profileJson'
+        ? {
+            ...variable,
+            description:
+              'The candidate as Fully tailor sends them: name, headline, years, skills, education and ' +
+              'certifications, and each role as its title, company and dates only - no summary, no description, ' +
+              'no achievements, no role skills. Strengths only while the Strengths switch is on. No contact ' +
+              'details and no settings.',
+            sampleValue: `{"name":"Jane Doe","title":"Senior Software Engineer","totalYearsExperience":7,"experience":[{"title":"Senior Software Engineer","company":"Acme","startDate":"01/2022","endDate":"Present"}],"skills":["Node.js","TypeScript","PostgreSQL","AWS"],"education":[],"certifications":[]}`,
+          }
+        : { ...variable }
+    ),
+  };
+  return [...features.slice(0, at + 1), fully, ...features.slice(at + 1)];
+}
 
 const FEATURE_KEYS = new Set<PromptFeatureKey>(PROMPT_FEATURES.map((feature) => feature.key));
 

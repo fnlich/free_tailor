@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { requireUser } from '../middleware/auth';
-import { publicItemError, sendPublicError } from '../middleware/publicError';
+import { listIndustriesForClient } from '../config/industries';
+import { jobLakeExportMaxRows } from '../config/operational';
+import { getLakeEntry, queryLake, suggestLakeCompanies } from '../database/jobLakeRepository';
+import { isAdmin, requireUser } from '../middleware/auth';
+import { PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
 import {
   a1Columns,
   batchGetValues,
@@ -21,17 +24,108 @@ import {
 import { findStoredAnalysis, getOrCreateAnalysis } from '../services/jobAnalysis/gate';
 import { attachCompanyName } from '../database/jobAnalysisRepository';
 import { extractJobPageContent } from '../services/jobPageContent';
+import { listJobTypesForClient } from '../services/jobAnalysis/facts';
+import { readLakeFilters, readLakeId } from '../services/jobLake/filters';
+import { exportLakeJobs, findJobsDetail, findJobsRow } from '../services/jobLake/findJobs';
+import { requesterLookup } from '../services/jobLake/requesters';
+import { readPage } from './paging';
 
 /**
- * The job routes over the caller's own job sheet: the Job Filter. (The Apify
- * job search and its export into the sheet were removed, owner decision F4;
- * the sheet writer it used is services/sheets/jobExport.ts.)
+ * The job routes for everybody who builds resumes: Find Jobs over the Job Data
+ * Lake, and the Job Filter over the caller's own job sheet.
+ *
+ *   GET  /lake              ?q=&company=&field=&jobType=&industry=&clearance=&salaryMin=&salaryMax=
+ *                            &updatedFrom=&updatedTo=&limit=&offset= - each of the first five as many times
+ *                            as it has values (`field=backend&field=devops`), `requestedBy` an
+ *                            administrator's only -> { rows, total, limit, offset, options, exportMaxRows }
+ *   GET  /lake/companies    ?prefix=&limit= -> { companies: [{ name, jobs }] }, for the Company box
+ *   POST /lake/export       { ids } -> the jobs into the All tab of the caller's own sheet
+ *   GET  /lake/:id          -> { entry }: one job, with the posting's text
+ *   POST /filter-google-sheet - the Job Filter
+ *
+ * The lake's filters are read by services/jobLake/filters.ts, the one reader
+ * Admin -> Job Lake uses too. A row is services/jobLake/findJobs.ts's
+ * allowlist: never a reward, a seen count, a hash or the sync, and who
+ * reported a job only for an administrator.
  *
  * Everything here needs an account that builds resumes - at the router rather
  * than per route, so a route added later is protected by default.
  */
 const router = Router();
 router.use(requireUser);
+
+/** What the job type and industry filters may be, in the server's words. */
+function lakeOptions() {
+  return { jobTypes: listJobTypesForClient(), industries: listIndustriesForClient() };
+}
+
+/** The most companies one suggestion list holds, and its default. */
+const MAX_COMPANY_SUGGESTIONS = 25;
+const DEFAULT_COMPANY_SUGGESTIONS = 10;
+
+/**
+ * Find Jobs' search: a page of the lake, newest first. Who reported a job
+ * is an administrator's to filter on and to see; anybody else naming
+ * `requestedBy` is refused (403 `not-an-admin`).
+ */
+router.get('/lake', (req: Request, res: Response) => {
+  try {
+    const admin = isAdmin(req);
+    const page = readPage(req, 50, 200);
+    const filters = readLakeFilters(req.query as Record<string, unknown>, { requestedBy: admin });
+    const { rows, total } = queryLake({ ...filters, limit: page.limit, offset: page.offset });
+    const lookup = admin ? requesterLookup() : null;
+    res.json({
+      rows: rows.map((row) => findJobsRow(row, lookup)),
+      total,
+      limit: page.limit,
+      offset: page.offset,
+      options: lakeOptions(),
+      // The most jobs one Export into Sheet takes - and so the most the page lets anybody select.
+      exportMaxRows: jobLakeExportMaxRows(),
+    });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to read the job lake');
+  }
+});
+
+/** The companies in the lake whose name starts with what was typed, for the Company box. */
+router.get('/lake/companies', (req: Request, res: Response) => {
+  try {
+    const prefix = typeof req.query.prefix === 'string' ? req.query.prefix.slice(0, 100) : '';
+    const asked = typeof req.query.limit === 'string' && /^\d{1,3}$/.test(req.query.limit) ? Number(req.query.limit) : 0;
+    const limit = asked >= 1 ? Math.min(asked, MAX_COMPANY_SUGGESTIONS) : DEFAULT_COMPANY_SUGGESTIONS;
+    res.json({ companies: suggestLakeCompanies(prefix, limit) });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to read the companies in the job lake');
+  }
+});
+
+/**
+ * Export into Sheet: the jobs the body names, by their lake ids, into the All
+ * tab of the caller's OWN job sheet - a spreadsheet or tab in the body is
+ * never read. Declared before `/lake/:id`, which would otherwise take
+ * `export` for an id (and refuse a POST).
+ */
+router.post('/lake/export', async (req: Request, res: Response) => {
+  try {
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+    res.json(await exportLakeJobs(req.user!, body.ids));
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to export the jobs to your sheet');
+  }
+});
+
+/** One job, with the posting's text: Find Jobs' Details. No history - that is the administrators' lake. */
+router.get('/lake/:id', (req: Request<{ id: string }>, res: Response) => {
+  try {
+    const entry = getLakeEntry(readLakeId(req.params.id));
+    if (!entry) throw new PublicError('That job was not found in the lake.', { status: 404 });
+    res.json({ entry: findJobsDetail(entry, isAdmin(req) ? requesterLookup() : null) });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to read the job');
+  }
+});
 
 function toPositiveInteger(fieldName: string, value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value);

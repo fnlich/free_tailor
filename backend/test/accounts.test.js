@@ -190,9 +190,10 @@ test('the subscription caps how many profiles an account may keep', () => {
   assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
   profiles.saveProfile(profile('a1', 'One', alice.id));
   assert.throws(() => profiles.assertCanAddProfile(alice), /Default subscription allows 1 profile/);
+  // Says where to move up: the account's own Subscription page, bought from its credit.
   assert.throws(
     () => profiles.assertCanAddProfile(alice),
-    (error) => error.subscriptionLabel === 'Default' && /higher subscription\.$/.test(error.message)
+    (error) => error.subscriptionLabel === 'Default' && /higher subscription on the Subscription page\.$/.test(error.message)
   );
 
   // A DISABLED profile still occupies its slot. Not counting it would make the

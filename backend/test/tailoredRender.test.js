@@ -22,8 +22,9 @@ const { useTempStorage } = require('./helpers');
  *   - "anything past the eighth bullet is DISCARDED";
  *   - the title is printed as composed, separators and all;
  *
- * in every built-in, both layouts it offers, both switch states, and in the
- * DOCX; and the gallery's sample is drawn the same way.
+ * in every built-in, both layouts, both switch states, and in the DOCX; and
+ * the gallery's sample is drawn the same way. Every built-in: the files
+ * without a `source` - a saved template beside them is an administrator's.
  */
 
 const SHIPPED = path.join(__dirname, '..', 'static');
@@ -35,11 +36,13 @@ function seeded(name) {
   return storage;
 }
 
+/** The built-in templates as shipped: the files without a `source`. */
 function shippedTemplates() {
   return fs
     .readdirSync(TEMPLATES_DIR)
     .filter((file) => file.endsWith('.json'))
-    .map((file) => JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf8')));
+    .map((file) => JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf8')))
+    .filter((template) => !template.source);
 }
 
 /** The rendered document after its stylesheets, so CSS naming a class is not read as content. */
@@ -152,8 +155,6 @@ function modelContent(extra = {}) {
     skills: PLAIN,
     hardSkills: PLAIN,
     softSkills: SOFT.skills,
-    unconfirmedSoftSkills: [],
-    unconfirmedHardSkills: [],
     strengths: [{ title: 'Model strength', description: 'Written for this job.' }],
     ...extra,
   };
@@ -380,7 +381,7 @@ test('the title is printed as composed: separators kept, other symbols dropped',
 
 /* --------------------------------------------------------- the built-ins */
 
-test('every built-in prints a tailored resume as promised, in each layout and both switch states', async () => {
+test('every built-in prints a tailored resume as promised, in both layouts and both switch states', async () => {
   seeded('built-ins');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   const { inferTemplateCapabilities } = require('../dist/services/templateImport');
@@ -390,7 +391,7 @@ test('every built-in prints a tailored resume as promised, in each layout and bo
   for (const template of templates) {
     const { supportsSoftSkills, supportsStrengths } = inferTemplateCapabilities(template.htmlContent);
     const perItem = /\{\{#each\s+(?:hardSkills|skills)\s*\}\}/.test(template.htmlContent);
-    for (const layout of template.skillsLayouts) {
+    for (const layout of ['categorized', 'flat']) {
       for (const softOn of [false, true]) {
         const label = `${template.id} (${layout}, soft ${softOn ? 'on' : 'off'})`;
         const settings = { technicalSkillsLayout: layout, includeSoftSkills: softOn, includeStrengths: true };

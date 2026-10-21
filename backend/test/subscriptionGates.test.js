@@ -120,7 +120,7 @@ test('a Default subscription is refused every multi-profile run, as Generate Imm
   const server = await serve('default-refused');
   try {
     for (const [shape, ids] of MULTI_SHAPES) {
-      for (const mode of [{}, { mode: 'immediate' }, { mode: 'order' }, { asOrder: true }]) {
+      for (const mode of [{}, { mode: 'immediate' }, { mode: 'order' }]) {
         const response = await server.post('dora', '/generation/batches', { jobs: JOBS, ...ids('dora'), ...mode });
         assertLocked(response, `${shape} ${JSON.stringify(mode)}`);
       }

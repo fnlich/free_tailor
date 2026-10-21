@@ -8,10 +8,11 @@ const ts = require('typescript');
 /**
  * The builder's Generate Immediately bookkeeping (frontend/src/lib/immediateRun.ts):
  * which id a tab goes by, which finished resumes still have to be downloaded,
- * the request that stops a run as the page goes, when leaving asks first, and
- * the "Don't show again" on the confirm. Loaded the way frontendHelpers.test.js
- * loads its modules: transpiled with the backend's TypeScript, importing
- * nothing at runtime.
+ * the request that stops a run as the page goes, and when leaving asks first.
+ * (The question asked before a run starts, and its "Do not show again", is
+ * lib/spendConfirm.ts's: test/frontendSpendConfirm.test.js.) Loaded the way
+ * frontendHelpers.test.js loads its modules: transpiled with the backend's
+ * TypeScript, importing nothing at runtime.
  */
 
 const SRC = path.join(__dirname, '..', '..', 'frontend', 'src');
@@ -303,17 +304,6 @@ test('leaving Build Resumes asks first only for a plain click to another page of
   // The same page, or another site (whose leave prompt is the browser's own).
   assert.equal(run.leavesBuilder({ href: '/#top' }, plain, here), false);
   assert.equal(run.leavesBuilder({ href: 'https://docs.google.com/x' }, plain, here), false);
-});
-
-test("the Generate Immediately confirm shows until Don't show again, per browser", () => {
-  const browser = memoryStorage();
-  assert.equal(run.confirmsImmediate(browser), true);
-  run.skipImmediateConfirm(browser);
-  assert.equal(run.confirmsImmediate(browser), false);
-  // Storage that cannot be read keeps asking rather than skipping silently.
-  assert.equal(run.confirmsImmediate(null), true);
-  assert.equal(run.confirmsImmediate(throwingStorage), true);
-  assert.doesNotThrow(() => run.skipImmediateConfirm(throwingStorage));
 });
 
 // -- the sheet panel's rows ----------------------------------------------------- //

@@ -8,7 +8,7 @@ const nodePath = require('node:path');
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
 
 const { analysisAnswer, posting, serveInstall, untilFinished } = require('./analysisHarness');
-const { loadFresh, storeJobAnalysis } = require('./helpers');
+const { loadFresh, storeJobAnalysis, withCredentialSearch } = require('./helpers');
 const identity = require('../dist/services/jobAnalysis/identity');
 
 /**
@@ -676,7 +676,8 @@ async function withGoogle(handler, action) {
   try {
     const sheets = loadFresh('../dist/integrations/googleSheets');
     sheets.setSheetsRetryPolicyForTests({ sleep: async () => {}, random: () => 0.5 });
-    return await action(sheets, requests);
+    // Its own fake key, in the directory it runs from: the search on, for this action alone.
+    return await withCredentialSearch(() => action(sheets, requests));
   } finally {
     process.chdir(cwd);
     globalThis.fetch = realFetch;

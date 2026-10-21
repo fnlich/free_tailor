@@ -3,6 +3,7 @@ import path from 'path';
 import { randomBytes } from 'crypto';
 
 import { getStaticTemplatesDir } from '../config/staticPaths';
+import { isTemplateCategory } from '../config/templateCategories';
 import type { Template, TemplateSource } from '../types/template';
 
 /**
@@ -147,16 +148,18 @@ function fileContent(template: Template, fileId: string, source: TemplateSource)
   const {
     supportsSoftSkills: _soft,
     supportsStrengths: _strengths,
+    printsSections: _prints,
+    nativeSectionOrder: _native,
     isBuiltIn: _builtIn,
     id: _id,
     source: _source,
     name,
     description,
+    category,
     disabled,
     htmlContent,
     cssContent,
     sections,
-    skillsLayouts,
     manualConfig,
     createdAt,
     updatedAt,
@@ -167,12 +170,14 @@ function fileContent(template: Template, fileId: string, source: TemplateSource)
       id: fileId,
       name,
       description,
+      // After the description, where the built-ins state it; a word that is
+      // not a category is not written (it would not be read either).
+      ...(isTemplateCategory(category) ? { category } : {}),
       source,
       ...(disabled ? { disabled: true } : {}),
       htmlContent,
       cssContent,
       sections,
-      ...(skillsLayouts ? { skillsLayouts } : {}),
       ...(manualConfig ? { manualConfig } : {}),
       // Anything a newer build added that this one does not know about, kept
       // rather than dropped by an edit made here.

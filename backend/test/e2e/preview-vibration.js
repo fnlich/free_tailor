@@ -23,16 +23,22 @@
  * Puppeteer hides scrollbars by default (`--hide-scrollbars`), which is why
  * no earlier screenshot or walkthrough ever saw it. This one launches with
  * real scrollbars, opens the editor for one profile, picks each template in
- * turn, and reads the page's width, the well's width and both scrollbars on
- * EVERY animation frame for a few seconds. A template passes when none of
- * them changes once the page has settled.
+ * turn, in each Technical Skills layout - every template prints both, and
+ * Plain changes the page's height, which is what the shake depends on - and
+ * reads the page's width, the well's width and both scrollbars on EVERY
+ * animation frame for a few seconds. A template passes, in a layout, when
+ * none of them changes once the page has settled.
  *
  * Not part of `npm test`: it needs both servers up. Servers are expected to be
- * running already, as for shell.js, and DB_DIR must name the backend's
- * database, because the session is seeded straight into it.
+ * running already - the backend with a preload that keeps it off Google
+ * (README.md, at the top: one started without any gives the account this
+ * signs in a REAL spreadsheet when backend/ holds a credential) - and DB_DIR
+ * must name the backend's database, because the session is seeded straight
+ * into it.
  *
- * Usage:
- *   node test/e2e/preview-vibration.js
+ * Usage, from backend/:
+ *   DB_DIR=/path/to/db PORT=3001 node --require ./test/e2e/no-google.js dist/index.js   # the backend
+ *   DB_DIR=/path/to/db node test/e2e/preview-vibration.js
  *
  * Settings, all optional:
  *   E2E_APP        the frontend (default http://127.0.0.1:3000)
@@ -220,10 +226,14 @@ async function main() {
         await wait(400);
       }
 
+      // Each template once per layout: the picker offers every template in
+      // both, and the page the pane scales is a different height in each.
       const probed = new Set();
       for (const layout of ['categorized', 'flat']) {
         // Through the DOM, not the mouse: in the narrow layout the form is
-        // behind the Preview tab and has no box to click.
+        // behind the Preview tab and has no box to click. The template select
+        // and the layout radios are on the editor's Customize tab, mounted
+        // while hidden (components/profile/TemplateCard.tsx).
         const switched = await page.evaluate((value) => {
           const radio = document.querySelector(`input[type=radio][value="${value}"]`);
           if (!radio || radio.checked) return false;
@@ -237,9 +247,9 @@ async function main() {
             .map((option) => ({ id: option.value, name: option.textContent.trim().replace(/ \(.*\)$/, '') }))
         );
         for (const option of options) {
-          if (probed.has(option.id)) continue;
+          if (probed.has(`${layout}:${option.id}`)) continue;
           if (ONLY_TEMPLATES.length > 0 && !ONLY_TEMPLATES.includes(option.id)) continue;
-          probed.add(option.id);
+          probed.add(`${layout}:${option.id}`);
           await page.select('#profile-template', option.id);
           const current = await waitForCurrent(page, option.name);
           // Long enough for the swap, the ResizeObserver and a re-render to
@@ -250,7 +260,7 @@ async function main() {
           if (shakes) shaking += 1;
           rows.push({ viewport: `${viewport.width}x${viewport.height}`, layout, template: option.id, current, ...summary });
           console.log(
-            `${shakes ? 'SHAKES' : 'still '}  ${viewport.width}x${viewport.height}  ${option.id.padEnd(20)} ` +
+            `${shakes ? 'SHAKES' : 'still '}  ${viewport.width}x${viewport.height}  ${layout.padEnd(11)} ${option.id.padEnd(20)} ` +
               `doc ${summary.docHeights.join('/')}px  page ${summary.widths.join(' <-> ')}px  ` +
               `well ${summary.wellWidths.join(' <-> ')}px  bar ${summary.bars.join(' <-> ')}px  ` +
               `window bar ${summary.winBars.join(' <-> ')}px  ` +
@@ -267,7 +277,7 @@ async function main() {
     require('fs').writeFileSync(process.env.E2E_JSON, JSON.stringify(rows, null, 2));
   }
   console.log(
-    `\n${rows.length} template/viewport pair(s) watched for ${SECONDS}s each: ` +
+    `\n${rows.length} template/layout/viewport combination(s) watched for ${SECONDS}s each: ` +
       `${shaking === 0 ? 'none shook.' : `${shaking} shook.`}`
   );
   process.exit(shaking === 0 ? 0 : 1);

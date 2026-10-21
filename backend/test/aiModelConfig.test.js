@@ -185,20 +185,20 @@ test("generated path helpers file a run under its own place, and anything else u
     orderNumber: 'FT-20261015-0001',
   };
   const placed = await generatedPath.getGeneratedOutputPath({ name: 'Jane Doe' }, 'Acme Inc', 'Senior Engineer', { output });
-  assert.equal(placed.relativeBase, 'jane_example_com/ft_20261015_0001/jane_doe/acme_inc/senior_engineer');
-  assert.equal(placed.storagePathBase, placed.relativeBase);
+  assert.equal(placed.storagePathBase, 'jane_example_com/ft_20261015_0001/jane_doe/acme_inc/senior_engineer');
+  assert.equal('relativeBase' in placed, false);
+  assert.equal('roleSlug' in placed, false);
   assert.equal(
     placed.absoluteDir,
     path.join(rootDir, 'then', 'jane_example_com', 'ft_20261015_0001', 'jane_doe', 'acme_inc', 'senior_engineer')
   );
   assert.equal(placed.profileSlug, 'jane_doe');
-  assert.equal(placed.roleSlug, 'senior_engineer');
 
   // Without one (a script, a test): the prefix and the default folder path in
   // effect, `unknown` for the account and the order.
   const loose = await generatedPath.getGeneratedOutputPath({ name: 'Jane Doe' }, 'Acme Inc', 'Senior Engineer');
   const today = generatedPath.getCurrentDateFolder().split('-').join('_');
-  assert.equal(loose.relativeBase, `runs/unknown/${today}/jane_doe/acme_inc/senior_engineer`);
+  assert.equal(loose.storagePathBase, `runs/unknown/${today}/jane_doe/acme_inc/senior_engineer`);
   assert.equal(loose.absoluteDir, path.join(outputDir, 'runs', 'unknown', today, 'jane_doe', 'acme_inc', 'senior_engineer'));
 });
 
@@ -221,12 +221,12 @@ test('a folder path renders text around tokens as one folder, a row number, and 
     'Senior Engineer',
     { sourceRowNumber: 12, output }
   );
-  assert.equal(result.relativeBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/12_acme_inc/senior_engineer');
+  assert.equal(result.storagePathBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/12_acme_inc/senior_engineer');
   assert.equal('companyFolderName' in result, false);
 
   // No row, and no role: the row's text stays, and an empty folder is `unknown`.
   const bare = await generatedPath.getGeneratedOutputPath({ name: 'Jane Doe' }, 'Acme Inc', '', { output });
-  assert.equal(bare.relativeBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/acme_inc/unknown');
+  assert.equal(bare.storagePathBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/acme_inc/unknown');
 });
 
 test('generated path helpers apply per-profile output file name templates', async () => {

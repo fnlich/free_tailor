@@ -27,13 +27,17 @@ import type { Profile } from '../types/profile';
  *
  *   - the profile as the call sees it (`profileForTemplate`) - its whole
  *     content minus the two timestamps a save moves without changing a word,
- *     and minus its settings (`profileFingerprint`) - so one character changed
- *     anywhere is another key. The settings are not what a model is told: the
- *     layout and the Soft Skills switch decide how the model's skills block is
- *     DRAWN, which the parse and the render work out again on a hit; the
- *     Strengths switch decides whether the profile's strengths are in
- *     `profileJson`, which the values below carry; the prompt and the model a
- *     profile chose are keyed on their own;
+ *     minus its settings and minus its section order (`profileFingerprint`) -
+ *     so one character changed anywhere is another key. The settings and the
+ *     order are not what a model is told: the layout, the Soft Skills switch
+ *     and the order the sections print in decide how the answer is DRAWN,
+ *     which the parse and the render work out again on a hit; the Strengths
+ *     switch decides whether the profile's strengths are in `profileJson`,
+ *     which the values below carry; the prompt and the model a profile chose
+ *     are keyed on their own - and so is its tailoring mode, with no field of
+ *     its own: Partial and Fully tailor run different prompts (`tailor-resume`
+ *     or its variant, `tailor-resume-full`) with a different `profileJson`, so
+ *     switching a profile's mode is a miss, and switching it back a hit;
  *   - the template it is drawn with;
  *   - the posting's stored analysis (`job_analyses.id`, which is never
  *     rewritten - services/jobAnalysis/gate.ts);
@@ -48,7 +52,7 @@ import type { Profile } from '../types/profile';
  *     library, so a skill an administrator adds or anybody confirms changes
  *     no resume's key;
  *   - `extra`: for a resume, what its revise pass was made of - the revise
- *     prompt's id and text (hashed), the figures sentence the code writes into
+ *     prompt's id and text (hashed), the wording of the figures note the code writes into
  *     it, and the TAILOR_REVISE_PASS / TAILOR_REVISE_MAX_TERMS settings - and
  *     for a cover letter, the company and the role it is addressed to;
  *   - and `TAILOR_CACHE_VERSION`, bumped when the code around the prompt
@@ -112,14 +116,26 @@ function sha256(text: string): string {
 
 /**
  * The profile's part of a key: everything in it but `createdAt` and
- * `updatedAt`, which a save moves without changing what a model is told, and
+ * `updatedAt`, which a save moves without changing what a model is told,
  * `profileSettings` - how the answer is drawn, which prompt and model run it,
  * and whether strengths are sent, each of which reaches the key another way
- * (see the module note). A Grouped/Plain flip, or a Soft Skills switch, is
- * the same question: a hit, drawn the new way.
+ * (see the module note) - and `sectionOrder`, which only says where each
+ * section prints. A Grouped/Plain flip, a Soft Skills switch or a dragged
+ * section is the same question: a hit, drawn the new way. The nine section
+ * lists beyond the classic six are content, and a new entry is a new key,
+ * though none of them is in `profileJson` yet.
  */
 export function profileFingerprint(profile: Profile): string {
-  const { createdAt: _created, updatedAt: _updated, profileSettings: _settings, ...content } = profile as Profile & {
+  // The section order goes with the settings: it only decides how the answer
+  // is DRAWN (where each section prints), never what the model is asked, so
+  // dragging a section is a hit, as flipping the layout is.
+  const {
+    createdAt: _created,
+    updatedAt: _updated,
+    profileSettings: _settings,
+    sectionOrder: _order,
+    ...content
+  } = profile as Profile & {
     createdAt?: unknown;
     updatedAt?: unknown;
   };

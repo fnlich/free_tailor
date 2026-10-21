@@ -26,8 +26,26 @@ import {
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { OUTPUT_PREFIX_TOKEN_CHIPS } from '@/lib/outputPath';
-import { appSettingSourceLabel, canReset, changedSettings, resetBody, type AppSettingKey } from '@/lib/settingSources';
+import { formatMoney } from '@/lib/format';
+import {
+  appSettingResetBody,
+  appSettingSourceLabel,
+  canReset,
+  changedSettings,
+  type AppSettingKey,
+  type SubscriptionPriceKey,
+} from '@/lib/settingSources';
 import { ApiResponseError } from '@/lib/api';
+import {
+  SUBSCRIPTION_PRICE_KEYS,
+  SUBSCRIPTION_PRICE_LABELS,
+  priceChanges,
+  priceDraftOf,
+  priceKeyOfField,
+  priceProblems,
+  toPriceDrafts,
+  type PriceDrafts,
+} from './subscriptionPriceDraft';
 import { Card, ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { seatHolds } from '@/lib/seatHolds';
@@ -54,7 +72,7 @@ type SettingsFormState = {
   outputPathPrefix: string;
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'reset';
+type SaveSection = 'output' | 'providers' | 'defaults' | 'prices' | 'reset';
 
 /** The Builder Defaults fields that have a `.env` default: each shows where it came from, and saves only when changed. */
 const BUILDER_SETTING_KEYS = [
@@ -309,6 +327,9 @@ function AdminSettingsPageBody() {
   const [error, setError] = useState('');
   /** A save's refusal of the output prefix, in the server's words, under its box until it is edited. */
   const [prefixRefusal, setPrefixRefusal] = useState('');
+  /** The three subscription prices as typed (subscriptionPriceDraft.ts), and each box's refusal. */
+  const [priceDrafts, setPriceDrafts] = useState<PriceDrafts | null>(null);
+  const [priceRefusals, setPriceRefusals] = useState<Partial<Record<SubscriptionPriceKey, string>>>({});
   /**
    * Why the settings could not be read, kept whole rather than as text, so the
    * notice can show the server's sentence, its reference and - this page being
@@ -351,6 +372,8 @@ function AdminSettingsPageBody() {
       setGroups(groupsData);
       setProfiles(profilesData.filter((profile) => !profile.disabled));
       setForm(toFormState(settingsData));
+      setPriceDrafts(toPriceDrafts(settingsData));
+      setPriceRefusals({});
     } catch (err) {
       setLoadError(err);
     } finally {
@@ -383,15 +406,21 @@ function AdminSettingsPageBody() {
       const updated = await adminApi.updateSettings(payload);
       setSettings(updated);
       setForm((current) => (current ? mergeSavedSection(current, updated, section) : toFormState(updated)));
+      // Only the prices' own save puts their boxes back to what is in effect:
+      // another section's save must not wipe a price being typed.
+      if (section === 'prices') setPriceDrafts(toPriceDrafts(updated));
       if ('defaultTheme' in payload) {
         applySavedThemeDefault(updated.defaultTheme);
       }
       setSuccessMessage(nextMessage);
       return true;
     } catch (err) {
-      // The server names the prefix box when it refuses one: the sentence goes under it.
+      // The server names the box when it refuses one: the sentence goes under it.
+      const priceKey = err instanceof ApiResponseError ? priceKeyOfField(err.body?.field) : null;
       if (err instanceof ApiResponseError && err.body?.field === 'outputPathPrefix') {
         setPrefixRefusal(err.message);
+      } else if (priceKey) {
+        setPriceRefusals((current) => ({ ...current, [priceKey]: err instanceof Error ? err.message : '' }));
       } else {
         setError(messageWithDetail(err, 'Failed to update settings'));
       }
@@ -429,9 +458,15 @@ function AdminSettingsPageBody() {
       setSavingSection('reset');
       setError('');
       setSuccessMessage('');
-      const updated = await adminApi.updateSettings(resetBody(key));
+      // A price resets under the field it is saved by (`premiumPriceUsd`...), every other setting under its own.
+      const updated = await adminApi.updateSettings(appSettingResetBody(key));
       setSettings(updated);
       setForm((current) => (current ? { ...current, ...pickResetField(updated, key) } : toFormState(updated)));
+      const priceKey = (SUBSCRIPTION_PRICE_KEYS as readonly string[]).includes(key) ? (key as SubscriptionPriceKey) : null;
+      if (priceKey) {
+        setPriceDrafts((current) => (current ? { ...current, [priceKey]: priceDraftOf(updated[priceKey]) } : current));
+        setPriceRefusals((current) => ({ ...current, [priceKey]: undefined }));
+      }
       if (key === 'outputPathPrefix') setPrefixRefusal('');
       if (key === 'defaultTheme') applySavedThemeDefault(updated.defaultTheme);
       setSuccessMessage(`${name} reset to its default.`);
@@ -502,6 +537,24 @@ function AdminSettingsPageBody() {
       return;
     }
     await saveSection('defaults', changes, 'Builder defaults saved.');
+  };
+
+  /**
+   * Only the prices that changed, each as typed. A box the server would
+   * refuse is said under it first, in the server's own sentence, and nothing
+   * is sent.
+   */
+  const handleSavePrices = async () => {
+    if (!settings || !priceDrafts) return;
+    const problems = priceProblems(priceDrafts);
+    setPriceRefusals(problems);
+    if (Object.keys(problems).length > 0) return;
+    const changes = priceChanges(priceDrafts, settings);
+    if (Object.keys(changes).length === 0) {
+      setSuccessMessage('Nothing to save: the subscription prices are as they were.');
+      return;
+    }
+    await saveSection('prices', changes, 'Subscription prices saved.');
   };
 
   if (isLoading) {
@@ -984,6 +1037,66 @@ function AdminSettingsPageBody() {
           </button>
         </div>
       </Section>
+
+      {priceDrafts && (
+        <Section
+          title="Subscriptions"
+          description="What each paid subscription costs for 30 days, taken from the account's credit balance when it is bought and at every renewal. Leave a box empty and that subscription is not offered: its card asks people to contact you."
+        >
+          <div className="grid gap-6 sm:grid-cols-3">
+            {SUBSCRIPTION_PRICE_KEYS.map((key) => {
+              const label = SUBSCRIPTION_PRICE_LABELS[key];
+              const id = `subscription-price-${key}`;
+              const fallback = defaults[key];
+              return (
+                <Field key={key} label={label} htmlFor={id}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted" aria-hidden>
+                      $
+                    </span>
+                    <input
+                      id={id}
+                      type="text"
+                      inputMode="decimal"
+                      value={priceDrafts[key]}
+                      placeholder="Not offered"
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setPriceDrafts((current) => (current ? { ...current, [key]: value } : current));
+                        setPriceRefusals((current) => ({ ...current, [key]: undefined }));
+                      }}
+                      disabled={savingSection === 'prices'}
+                      aria-invalid={priceRefusals[key] ? true : undefined}
+                      aria-describedby={priceRefusals[key] ? `${id}-refusal` : undefined}
+                      className="tl-input tabular-nums"
+                    />
+                  </div>
+                  {priceRefusals[key] && (
+                    <p id={`${id}-refusal`} className="tl-status mt-2" data-tone="error" role="alert">
+                      {priceRefusals[key]}
+                    </p>
+                  )}
+                  {sourceOf(key, `${label} price`, fallback === null ? 'not offered' : formatMoney(fallback))}
+                </Field>
+              );
+            })}
+          </div>
+          <p className="text-sm text-subtle">
+            In dollars, to $0.001, up to $10,000. A renewal takes the price in effect that day; a purchase takes the
+            amount its buyer was shown, so a change here reaches the next purchase and the next renewal.
+          </p>
+          <div>
+            <button
+              type="button"
+              onClick={() => void handleSavePrices()}
+              disabled={savingSection !== null && savingSection !== 'prices'}
+              className="tl-button"
+            >
+              {savingSection === 'prices' ? 'Saving...' : 'Save Subscriptions'}
+            </button>
+          </div>
+        </Section>
+      )}
 
       <ContactEditor />
     </div>

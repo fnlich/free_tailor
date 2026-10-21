@@ -59,16 +59,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   /**
-   * The account's own job sheet, for the Find Jobs entry.
+   * A reporter's own job sheet, for the account menu's "Your job sheet" -
+   * their reports come from that sheet.
    *
-   * Fetched here rather than in the sidebar because the shell survives every
+   * Fetched here rather than in the menu because the shell survives every
    * client-side navigation - one request per page load instead of one per
-   * route. Administrators included now: every account has a sheet of its own,
-   * and Find Jobs is the second row of every builder's rail. A reporter's
-   * account menu offers the same link - their reports come from that sheet.
+   * route - and for a reporter only: a builder's way to the sheet is Find
+   * Jobs' "Go to my sheet", which asks for it there.
    */
+  const isReporter = role === 'reporter';
   const [sheetUrl, setSheetUrl] = useState('');
   useEffect(() => {
+    if (!isReporter) return;
     let alive = true;
     void (async () => {
       try {
@@ -85,9 +87,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [account?.id]);
+  }, [account?.id, isReporter]);
 
   const closeDrawer = useCallback(() => setDrawerRequested(false), []);
+
+  /**
+   * A rail row that opens a dialog rather than a page (a locked entry): the
+   * drawer closes with focus on its button, which the dialog gives focus back
+   * to when it closes - the row itself is inert by then.
+   */
+  const closeDrawerForDialog = useCallback(() => {
+    if (drawerOpen) triggerRef.current?.focus();
+    setDrawerRequested(false);
+  }, [drawerOpen]);
 
   useDismissable(drawerOpen, closeDrawer, sidebarRef, triggerRef);
 
@@ -125,7 +137,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <AppTopBar
         balanceMilli={account?.balanceMilli ?? 0}
         role={role}
-        sheetUrl={sheetUrl}
+        sheetUrl={isReporter ? sheetUrl : ''}
         drawerOpen={drawerOpen}
         onToggleDrawer={toggleDrawer}
         triggerRef={triggerRef}
@@ -135,10 +147,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
         pathname={pathname}
         role={role}
         subscription={account?.subscription}
-        sheetUrl={sheetUrl}
         isCompact={isCompact}
         drawerOpen={drawerOpen}
         onNavigate={closeDrawer}
+        onOpenDialog={closeDrawerForDialog}
         panelRef={sidebarRef}
       />
 

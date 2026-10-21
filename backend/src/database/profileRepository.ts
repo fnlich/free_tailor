@@ -158,8 +158,10 @@ export class ProfileLimitError extends PublicError {
 
   constructor(subscriptionLabel: string, limit: number, used: number) {
     super(
+      // The account holder moves up on their own Subscription page now
+      // (services/subscriptions): a tier is bought from the credit balance.
       `The ${subscriptionLabel} subscription allows ${limit} profile${limit === 1 ? '' : 's'} and this ` +
-        `account has ${used}. Delete one, or ask an administrator to move the account to a higher subscription.`,
+        `account has ${used}. Delete one, or move up to a higher subscription on the Subscription page.`,
       // 402: the subscription, not the request, is what is short - the same
       // status a run refused for want of credits answers.
       { status: 402, code: 'profile-limit', extra: { limit } }

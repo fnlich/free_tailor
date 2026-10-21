@@ -360,6 +360,7 @@ async function main() {
     );
 
     // A company spelled another way finds the job: the lake compares companies normalised.
+    // Typed and not picked: Search takes what is typed into the Company box as it stands.
     await adminPage.type('#lake-company', 'acme inc');
     check('Search is pressed', await pressButton(adminPage, 'Search'));
     await until(adminPage, () => /1 job match/.test(document.body.innerText), 10_000);

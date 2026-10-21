@@ -1,7 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { isIndustryId, listIndustriesForClient } from '../config/industries';
-import { isJobFieldId } from '../config/jobFields';
+import { listIndustriesForClient } from '../config/industries';
 import { jobLakePushMaxRows } from '../config/operational';
 import {
   deleteLakeEntry,
@@ -10,12 +9,9 @@ import {
   queryLake,
   revokeLakeReward,
   type LakeEntry,
-  type LakeFilters,
-  type LakeQuery,
   type RevokeOutcome,
 } from '../database/jobLakeRepository';
 import { createNotification } from '../database/notificationRepository';
-import { getUserById } from '../database/userRepository';
 import { requireAdmin } from '../middleware/auth';
 import { PublicError, sendPublicError } from '../middleware/publicError';
 import {
@@ -25,9 +21,11 @@ import {
   requestAdminLakeSync,
   syncAdminLakeSheet,
 } from '../services/jobLake/adminSheet';
-import { listJobTypesForClient, type JobTypeId } from '../services/jobAnalysis/facts';
+import { listJobTypesForClient } from '../services/jobAnalysis/facts';
+import { readLakeFilters, readLakeId } from '../services/jobLake/filters';
 import { listMergeCandidates, mergeAnalyses } from '../services/jobLake/merge';
 import { pushLakeToSheet } from '../services/jobLake/push';
+import { requesterLookup, type Requester } from '../services/jobLake/requesters';
 import { readLakeSettings, updateLakeSettings } from '../services/jobLake/settings';
 import { formatMoney } from '../utils/money';
 import { readPage } from './paging';
@@ -39,16 +37,22 @@ import { readPage } from './paging';
  * rate per job, the duplicate window and where it comes from, the daily cap -
  * and the admin sheet with its sync.
  *
- *   GET    /                 ?q=&company=&field=&salaryMin=&salaryMax=&requestedBy=&updatedFrom=&updatedTo=
- *                             &jobType=&clearance=&industry=&limit=&offset=
+ *   GET    /                 ?q=&company=&field=&requestedBy=&jobType=&industry=   (each as many times as it
+ *                             has values: `field=backend&field=devops`)
+ *                             &salaryMin=&salaryMax=&updatedFrom=&updatedTo=&clearance=&limit=&offset=
  *                             -> { rows, total, limit, offset, options: { jobTypes, industries }, pushMaxRows }
  *   GET    /settings         PUT /settings { reportRateUsd?, duplicateWindowDays?, dailyCapUsd? }
  *   GET    /sync             POST /sync - "Retry now"
  *   POST   /sheet            { recreate? } - create (or replace) and share the admin sheet now
  *   GET    /merge            ?limit=&offset=     POST /merge { analysisIds } | { all: true }
- *   POST   /push             { q?, company?, field?, ... } - the list's filters, as a JSON body: the
- *                             matching jobs, newest first, into the caller's OWN Temp For AI tab
+ *   POST   /push             { q?, company?, field?, ... } - the list's filters, as a JSON body (a list
+ *                             filter's values as a JSON array): the matching jobs, newest first, into the
+ *                             caller's OWN Temp For AI tab
  *   GET    /:id              DELETE /:id ?revokeReward=1     POST /:id/revoke-reward
+ *
+ * The filters are read by services/jobLake/filters.ts - the one reader the
+ * list, the push and Find Jobs share, so a push holds exactly what Search
+ * showed and a value one refuses, every one refuses in the same words.
  *
  * Every amount served is thousandths of a dollar in a field ending `Milli`;
  * every amount sent is dollars in one ending `Usd`.
@@ -57,112 +61,8 @@ import { readPage } from './paging';
 const router = Router();
 router.use(requireAdmin);
 
-type Requester = { id: string; email: string; name: string } | null;
-
-/** The accounts a list names, looked up once each, `null` for one deleted since. */
-function requesterLookup(): (id: string | null) => Requester {
-  const cache = new Map<string, Requester>();
-  return (id) => {
-    if (!id) return null;
-    if (!cache.has(id)) {
-      const account = getUserById(id);
-      cache.set(id, account ? { id: account.id, email: account.email, name: account.name } : null);
-    }
-    return cache.get(id) ?? null;
-  };
-}
-
 function withRequester(entry: LakeEntry, lookup: (id: string | null) => Requester) {
   return { ...entry, requester: lookup(entry.requestedBy) };
-}
-
-/**
- * A filter's value as text: a string trimmed, and - for a JSON body - a
- * finite number or a boolean as the text the query string would carry for
- * it. Anything else is absent.
- */
-function filterText(source: Record<string, unknown>, name: string): string {
-  const value = source[name];
-  if (typeof value === 'string') return value.trim();
-  if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') return String(value);
-  return '';
-}
-
-/** A filter's number, or undefined when absent; a 400 for anything else. */
-function readNumber(value: string, label: string): number | undefined {
-  if (value === '') return undefined;
-  const number = /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN;
-  if (!Number.isFinite(number)) throw new PublicError(`${label} must be a number.`, { status: 400 });
-  return number;
-}
-
-/** A date or a time; a bare date is the start of that day (UTC) for `from`, its end for `to`. */
-function readTime(text: string, label: string, end: boolean): string | undefined {
-  if (!text) return undefined;
-  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(text);
-  const at = Date.parse(dateOnly ? `${text}T${end ? '23:59:59.999' : '00:00:00.000'}Z` : text);
-  if (!Number.isFinite(at)) throw new PublicError(`${label} must be a date, like 2026-10-05.`, { status: 400 });
-  return new Date(at).toISOString();
-}
-
-/**
- * The lake's filters, read and checked the one way for the list's query
- * string (GET /) and Push to Google Sheet's JSON body (POST /push), so a push
- * holds exactly the rows Search showed - and a value Search refuses, the push
- * refuses in the same words.
- */
-export function readLakeFilters(source: Record<string, unknown>): LakeFilters {
-  const text = (name: string) => filterText(source, name);
-  const field = text('field');
-  if (field && field !== 'unclassified' && !isJobFieldId(field)) {
-    throw new PublicError('That job field is not one of the list.', { status: 400 });
-  }
-  const filters: LakeFilters = {};
-  if (text('q')) filters.text = text('q');
-  if (text('company')) filters.company = text('company');
-  if (field) filters.jobFieldId = field;
-  if (text('requestedBy')) filters.requestedBy = text('requestedBy');
-  const salaryMin = readNumber(text('salaryMin'), 'The lowest salary');
-  const salaryMax = readNumber(text('salaryMax'), 'The highest salary');
-  if (salaryMin !== undefined) filters.salaryMin = salaryMin;
-  if (salaryMax !== undefined) filters.salaryMax = salaryMax;
-  const from = readTime(text('updatedFrom'), 'Updated from', false);
-  const to = readTime(text('updatedTo'), 'Updated to', true);
-  if (from) filters.updatedFrom = from;
-  if (to) filters.updatedTo = to;
-  // The three facts: a job type (`not_specified` for a posting that does not
-  // say), a clearance as true or false, an industry id (`not_specified` too).
-  const jobType = text('jobType');
-  if (jobType) {
-    if (!JOB_TYPE_FILTERS.has(jobType)) throw new PublicError('That job type is not one of the list.', { status: 400 });
-    filters.jobType = (jobType === 'not_specified' ? '' : jobType) as JobTypeId;
-  }
-  const clearance = text('clearance');
-  if (clearance) {
-    if (clearance !== 'true' && clearance !== 'false') {
-      throw new PublicError('Clearance must be true or false.', { status: 400 });
-    }
-    filters.clearance = clearance === 'true';
-  }
-  const industry = text('industry');
-  if (industry) {
-    if (!isIndustryId(industry)) throw new PublicError('That industry is not one of the list.', { status: 400 });
-    filters.industry = industry;
-  }
-  return filters;
-}
-
-function readLakeQuery(req: Request): LakeQuery {
-  const page = readPage(req, 50, 200);
-  return { ...readLakeFilters(req.query as Record<string, unknown>), limit: page.limit, offset: page.offset };
-}
-
-const JOB_TYPE_FILTERS = new Set(listJobTypesForClient().map((option) => option.id));
-
-function readId(req: Request<{ id: string }>): number {
-  const id = /^\d{1,15}$/.test(req.params.id) ? Number(req.params.id) : Number.NaN;
-  if (!Number.isSafeInteger(id) || id < 1) throw new PublicError('That job was not found in the lake.', { status: 404 });
-  return id;
 }
 
 /** Tells the reporter that a reward of theirs was taken back - after the fact, never able to undo it. */
@@ -188,14 +88,15 @@ function settingsBody() {
 
 router.get('/', (req: Request, res: Response) => {
   try {
-    const query = readLakeQuery(req);
-    const { rows, total } = queryLake(query);
+    const page = readPage(req, 50, 200);
+    const filters = readLakeFilters(req.query as Record<string, unknown>, { requestedBy: true });
+    const { rows, total } = queryLake({ ...filters, limit: page.limit, offset: page.offset });
     const lookup = requesterLookup();
     res.json({
       rows: rows.map((row) => withRequester(row, lookup)),
       total,
-      limit: query.limit,
-      offset: query.offset,
+      limit: page.limit,
+      offset: page.offset,
       // What the job type and industry filters may be, in the server's words.
       options: { jobTypes: listJobTypesForClient(), industries: listIndustriesForClient() },
       // The most rows one Push to Google Sheet writes (JOB_LAKE_PUSH_MAX_ROWS),
@@ -283,7 +184,7 @@ router.post('/merge', (req: Request, res: Response) => {
 router.post('/push', async (req: Request, res: Response) => {
   try {
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
-    res.json(await pushLakeToSheet(req.user!, readLakeFilters(body)));
+    res.json(await pushLakeToSheet(req.user!, readLakeFilters(body, { requestedBy: true })));
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to push the jobs to your sheet');
   }
@@ -291,7 +192,7 @@ router.post('/push', async (req: Request, res: Response) => {
 
 router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
   try {
-    const entry = getLakeEntry(readId(req));
+    const entry = getLakeEntry(readLakeId(req.params.id));
     if (!entry) throw new PublicError('That job was not found in the lake.', { status: 404 });
     const lookup = requesterLookup();
     res.json({
@@ -305,7 +206,7 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
 
 router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
   try {
-    const id = readId(req);
+    const id = readLakeId(req.params.id);
     const revokeReward =
       req.query.revokeReward === '1' || req.query.revokeReward === 'true' || req.body?.revokeReward === true;
     const { deleted, revoke } = deleteLakeEntry(id, { revokeReward, actorId: req.user!.id });
@@ -319,7 +220,7 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
 
 router.post('/:id/revoke-reward', (req: Request<{ id: string }>, res: Response) => {
   try {
-    const id = readId(req);
+    const id = readLakeId(req.params.id);
     const entry = getLakeEntry(id);
     if (!entry) throw new PublicError('That job was not found in the lake.', { status: 404 });
     const revoke = revokeLakeReward(id, req.user!.id);

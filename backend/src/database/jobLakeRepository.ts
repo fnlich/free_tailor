@@ -698,123 +698,264 @@ export function listLakeHistory(lakeId: number): LakeHistoryEntry[] {
   return (getDb().prepare(HISTORY_SQL).all(lakeId) as HistoryRow[]).map(toHistory);
 }
 
-export type LakeQuery = {
-  /** Free text over company, title and description (FTS5), every word a prefix. */
-  text?: string;
-  /** A company as typed: compared after normalising, exactly as the hash compares it. */
-  company?: string;
-  jobFieldId?: string;
+/* ------------------------------------------------------ the lake's search -- */
+
+/**
+ * What the lake is searched by: Admin -> Job Lake's Search and its Push to
+ * Google Sheet, and Find Jobs - read the one way for all three by
+ * services/jobLake/filters.ts. The six list filters take several values each,
+ * and a job matching ANY value of a filter passes it; every filter given must
+ * pass. An empty list is no filter.
+ */
+export type LakeFilters = {
+  /**
+   * Full text over company, title and description (FTS5): a job matching ANY
+   * keyword is a hit, and a keyword of several words needs every one of them,
+   * each a prefix - one of one or two characters a whole word (`ftsQuery`).
+   */
+  keywords?: readonly string[];
+  /** Companies as typed: compared after normalising, exactly as the hash compares them. */
+  companies?: readonly string[];
+  /** Job field ids (`unclassified` is accepted, and no lake row has it). */
+  jobFieldIds?: readonly string[];
+  /** Account ids: who reported each job (or whose build produced it, for a merge). */
+  requestedBy?: readonly string[];
+  /** Job types as stored: 'remote', 'hybrid', 'on_site', or '' for "the posting does not say". */
+  jobTypes?: readonly JobTypeId[];
+  /** config/industries.ts ids, `not_specified` included. */
+  industries?: readonly string[];
   /** A salary range: rows whose stated range reaches it. Rows stating no salary are left out. */
   salaryMin?: number;
   salaryMax?: number;
-  requestedBy?: string;
   /** ISO times, inclusive. */
   updatedFrom?: string;
   updatedTo?: string;
-  /** A job type as stored: 'remote', 'hybrid', 'on_site', or '' for "the posting does not say". */
-  jobType?: JobTypeId;
   /** Whether the posting requires a clearance. */
   clearance?: boolean;
-  /** A config/industries.ts id, or `not_specified`. */
-  industry?: string;
-  limit: number;
-  offset: number;
 };
 
+/** A page of a search. */
+export type LakeQuery = LakeFilters & { limit: number; offset: number };
+
 /**
- * Free text as an FTS5 query that cannot be a syntax error: split where the
- * index's tokenizer splits (anything not a letter or a digit - so `node.js`
- * is `node` and `js`, as it was indexed), every word quoted and made a
- * prefix, all of them required. Null when there is no word to look for.
+ * The most words a search's keywords hold in all - every Full text chip
+ * together. Each word is a term FTS5 looks up, and the work of a match grows
+ * with them: ten keywords of twelve one-letter words held the server for
+ * seconds on a lake of 20,000 jobs. The reader refuses a search past it
+ * (services/jobLake/filters.ts); `ftsQuery` never asks for more, whoever
+ * calls it.
  */
-export function ftsQuery(text: string): string | null {
-  const words = text
-    .normalize('NFKC')
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean)
-    .slice(0, 12);
-  return words.length > 0 ? words.map((word) => `"${word}"*`).join(' ') : null;
-}
+export const LAKE_KEYWORD_MAX_WORDS = 25;
 
-/** The WHERE clause and its values for a query, on the indexes the plans test pins. */
-function whereOf(query: LakeQuery, companyKey: string | null): { sql: string; params: unknown[] } {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  if (query.jobFieldId) {
-    clauses.push('job_field_id = ?');
-    params.push(query.jobFieldId);
-  }
-  if (companyKey !== null) {
-    clauses.push('company_key = ?');
-    params.push(companyKey);
-  }
-  if (query.requestedBy) {
-    clauses.push('requested_by = ?');
-    params.push(query.requestedBy);
-  }
-  if (query.updatedFrom) {
-    clauses.push('updated_at >= ?');
-    params.push(query.updatedFrom);
-  }
-  if (query.updatedTo) {
-    clauses.push('updated_at <= ?');
-    params.push(query.updatedTo);
-  }
-  if (query.salaryMin !== undefined) {
-    clauses.push('COALESCE(salary_max, salary_min) >= ?');
-    params.push(query.salaryMin);
-  }
-  if (query.salaryMax !== undefined) {
-    clauses.push('COALESCE(salary_min, salary_max) <= ?');
-    params.push(query.salaryMax);
-  }
-  // The three facts have no index of their own: a handful of values each,
-  // read while the page walks idx_job_lake_updated (or a narrower index
-  // another filter picks) in its order - never a sort of the whole lake.
-  if (query.jobType !== undefined) {
-    clauses.push('job_type = ?');
-    params.push(query.jobType);
-  }
-  if (query.clearance !== undefined) {
-    clauses.push('clearance = ?');
-    params.push(query.clearance ? 1 : 0);
-  }
-  if (query.industry !== undefined) {
-    clauses.push('industry = ?');
-    params.push(query.industry);
-  }
-  const match = query.text ? ftsQuery(query.text) : null;
-  if (match) {
-    clauses.push('id IN (SELECT rowid FROM job_lake_fts WHERE job_lake_fts MATCH ?)');
-    params.push(match);
-  }
-  return { sql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '', params };
+/**
+ * A word shorter than this is matched whole, never as the start of a longer
+ * one: `"go"` finds Go where `"go"*` also found Google and good - and a short
+ * prefix is the costly term, read across every word of the index that starts
+ * so (one hundred and twenty one-letter prefixes took seconds; as whole words,
+ * milliseconds).
+ */
+const LAKE_PREFIX_MIN_LENGTH = 3;
+
+/**
+ * The most characters (code points) one keyword holds. The reader refuses a
+ * longer one, so a drift between KEYWORD_SEPARATORS and the tokenizer - a
+ * later Unicode or SQLite - can never turn one keyword into hundreds of index
+ * terms.
+ */
+export const LAKE_KEYWORD_MAX_LENGTH = 100;
+
+/**
+ * Where the index's tokenizer (`unicode61 remove_diacritics 2`) splits text:
+ * anything not a letter or a digit, and the 21 code points JavaScript calls
+ * letters that SQLite's table still calls marks - the New Tai Lue signs
+ * U+19B0-U+19C0 and U+19C8-U+19C9, and the Vedic signs U+1CF2-U+1CF3. Kept
+ * inside a word, `a<U+19B0>c` counted as one word and reached FTS5 as a
+ * one-letter prefix. jobLakeStore.test.js sweeps every letter and digit
+ * through the real tokenizer to hold this to it.
+ */
+const KEYWORD_SEPARATORS = /(?:[^\p{L}\p{N}]|[ᦰ-ᧀᧈᧉᳲᳳ])+/u;
+
+/**
+ * A keyword's words, split where the index's tokenizer splits
+ * (KEYWORD_SEPARATORS - so `node.js` is `node` and `js`, as it was indexed),
+ * after NFKC: what `ftsQuery` looks for, and what LAKE_KEYWORD_MAX_WORDS
+ * counts.
+ */
+export function keywordWords(keyword: string): string[] {
+  return typeof keyword === 'string' ? keyword.normalize('NFKC').split(KEYWORD_SEPARATORS).filter(Boolean) : [];
 }
 
 /**
- * A page of the lake, newest first, and how many rows match. A company that
- * normalises to nothing matches nothing, rather than everything.
+ * Keywords as an FTS5 query that cannot be a syntax error. Each keyword's
+ * words (`keywordWords`) are quoted - a word of three characters or more made
+ * a prefix, a shorter one matched whole - and ALL required; several keywords
+ * are ORed - `("machine"* "learn"*) OR ("rust"*)` - FTS5's implicit AND
+ * binding tighter than OR, and a quoted `"NOT"*` being a word, never an
+ * operator. The same keyword twice, case aside, is asked once. At most
+ * LAKE_KEYWORD_MAX_WORDS words in all: the rest are not asked. Null when
+ * there is no word to look for.
+ */
+export function ftsQuery(keywords: readonly string[]): string | null {
+  const groups: string[] = [];
+  const seen = new Set<string>();
+  let room = LAKE_KEYWORD_MAX_WORDS;
+  for (const keyword of keywords) {
+    const words = keywordWords(keyword).slice(0, room);
+    if (words.length === 0) continue;
+    const group = words.map((word) => ([...word].length < LAKE_PREFIX_MIN_LENGTH ? `"${word}"` : `"${word}"*`)).join(' ');
+    if (seen.has(group.toLowerCase())) continue;
+    seen.add(group.toLowerCase());
+    groups.push(group);
+    room -= words.length;
+    if (room <= 0) break;
+  }
+  if (groups.length === 0) return null;
+  return groups.length === 1 ? groups[0] : groups.map((group) => `(${group})`).join(' OR ');
+}
+
+/**
+ * The most values of one column a read takes as merge arms. The companies are
+ * capped at 25 by the reader, so they always drive; more job fields than this
+ * ride along on the walk of idx_job_lake_updated instead.
+ */
+export const LAKE_MERGE_MAX_ARMS = 25;
+
+/** One statement and its values, in order. */
+export type LakeRead = { sql: string; params: unknown[] };
+
+type Clause = { sql: string; params: unknown[] };
+
+/** `column = ?` for one value, `column IN (?, ...)` for several. */
+function oneOf(column: string, values: readonly unknown[]): Clause {
+  return values.length === 1
+    ? { sql: `${column} = ?`, params: [values[0]] }
+    : { sql: `${column} IN (${values.map(() => '?').join(', ')})`, params: [...values] };
+}
+
+function distinct<T>(values: readonly T[] | undefined): T[] {
+  return [...new Set(values ?? [])];
+}
+
+/** The keyword hits, matched once, for every arm of a read to test membership in. */
+const LAKE_HITS_CTE = 'WITH lake_hits(id) AS MATERIALIZED (SELECT rowid FROM job_lake_fts WHERE job_lake_fts MATCH ?)';
+
+/**
+ * The two statements a search runs - a page of rows, newest first, and how
+ * many match - built so the lake is never sorted whole. Exported so
+ * test/jobLakeStore.test.js runs EXPLAIN QUERY PLAN on exactly these. Null
+ * when the filters match nothing without asking: companies asked for, none of
+ * which normalises to anything.
+ *
+ *  - No filter: exactly LIST_DEFAULT_SQL (PUSH_DEFAULT_SQL `withDescription`),
+ *    read off idx_job_lake_updated in its order.
+ *  - A DRIVER: the companies when there are any, else 1 to
+ *    LAKE_MERGE_MAX_ARMS job fields. One value is a seek on its
+ *    `(column, updated_at)` index, read in order; several are one SELECT per
+ *    value joined by UNION ALL and ordered as a whole, which SQLite runs as a
+ *    `MERGE (UNION ALL)` of those ordered seeks - never a TEMP B-TREE. The
+ *    other indexed filters ride inside each arm as `+job_field_id` and
+ *    `+requested_by`, so neither can pull an arm off its driving index.
+ *  - No driver (no company, and no field or more than 25): the read walks
+ *    idx_job_lake_updated in order, the fields as `+job_field_id IN (...)` -
+ *    unless Requested by narrows it, which seeks idx_job_lake_requested_by and
+ *    sorts the named people's rows alone, as one person always did.
+ *  - The job type, clearance and industry have no index: tested on each row
+ *    the read reaches, in its order.
+ *  - Keywords are a MATERIALIZED CTE - the FTS5 match, once - tested on each
+ *    row as `+id IN (...)`: a membership test, so a common keyword never turns
+ *    the read into a sort of every one of its hits.
+ *  - The count is one plain statement, the driver as `=` or `IN` and the
+ *    keywords as a plain `id IN (...)`: it has no ORDER BY, so any seek does.
+ *
+ * Values in order: the keyword match, each arm's own, then the page.
+ */
+export function lakeReadSql(
+  filters: LakeFilters,
+  page: { limit: number; offset?: number; withDescription?: boolean }
+): { rows: LakeRead; count: LakeRead } | null {
+  const offset = page.offset ?? 0;
+  const asked = (filters.companies ?? []).filter((company) => typeof company === 'string' && company.trim() !== '');
+  const companyKeys = distinct(asked.map((company) => normaliseCompany(company)).filter(Boolean));
+  // "OpenAI, Inc." alone finds Open AI LLC; "!!!" alone finds nothing, rather than everything.
+  if (asked.length > 0 && companyKeys.length === 0) return null;
+  const fields = distinct(filters.jobFieldIds);
+  const requesters = distinct(filters.requestedBy);
+  const jobTypes = distinct(filters.jobTypes);
+  const industries = distinct(filters.industries);
+  const match = filters.keywords ? ftsQuery(filters.keywords) : null;
+
+  const driver =
+    companyKeys.length > 0
+      ? { column: 'company_key', values: companyKeys }
+      : fields.length > 0 && fields.length <= LAKE_MERGE_MAX_ARMS
+        ? { column: 'job_field_id', values: fields }
+        : null;
+
+  // What every arm tests besides its driver - and the same for the count, every column plain there.
+  const arm: Clause[] = [];
+  const counted: Clause[] = [];
+  const both = (clause: Clause) => {
+    arm.push(clause);
+    counted.push(clause);
+  };
+  if (fields.length > 0 && driver?.column !== 'job_field_id') {
+    arm.push(oneOf('+job_field_id', fields));
+    counted.push(oneOf('job_field_id', fields));
+  }
+  if (requesters.length > 0) {
+    arm.push(oneOf(driver ? '+requested_by' : 'requested_by', requesters));
+    counted.push(oneOf('requested_by', requesters));
+  }
+  if (filters.updatedFrom) both({ sql: 'updated_at >= ?', params: [filters.updatedFrom] });
+  if (filters.updatedTo) both({ sql: 'updated_at <= ?', params: [filters.updatedTo] });
+  if (filters.salaryMin !== undefined) both({ sql: 'COALESCE(salary_max, salary_min) >= ?', params: [filters.salaryMin] });
+  if (filters.salaryMax !== undefined) both({ sql: 'COALESCE(salary_min, salary_max) <= ?', params: [filters.salaryMax] });
+  if (jobTypes.length > 0) both(oneOf('job_type', jobTypes));
+  if (filters.clearance !== undefined) both({ sql: 'clearance = ?', params: [filters.clearance ? 1 : 0] });
+  if (industries.length > 0) both(oneOf('industry', industries));
+  if (match) {
+    arm.push({ sql: '+id IN (SELECT id FROM lake_hits)', params: [] });
+    counted.push({ sql: 'id IN (SELECT rowid FROM job_lake_fts WHERE job_lake_fts MATCH ?)', params: [match] });
+  }
+
+  if (!driver && arm.length === 0) {
+    return {
+      rows: page.withDescription
+        ? offset > 0
+          ? { sql: `${PUSH_DEFAULT_SQL} OFFSET ?`, params: [page.limit, offset] }
+          : { sql: PUSH_DEFAULT_SQL, params: [page.limit] }
+        : { sql: LIST_DEFAULT_SQL, params: [page.limit, offset] },
+      count: { sql: 'SELECT COUNT(*) AS total FROM job_lake', params: [] },
+    };
+  }
+
+  const columns = page.withDescription ? `${LIST_COLUMNS}, job_description` : LIST_COLUMNS;
+  const where = (clauses: Clause[]) => clauses.map((clause) => clause.sql).join(' AND ');
+  const values = (clauses: Clause[]) => clauses.flatMap((clause) => clause.params);
+  const arms = driver ? driver.values.map((value) => [{ sql: `${driver.column} = ?`, params: [value] }, ...arm]) : [arm];
+  const rows: LakeRead = {
+    sql:
+      `${match ? `${LAKE_HITS_CTE} ` : ''}` +
+      arms.map((clauses) => `SELECT ${columns} FROM job_lake WHERE ${where(clauses)}`).join(' UNION ALL ') +
+      ' ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?',
+    params: [...(match ? [match] : []), ...arms.flatMap(values), page.limit, offset],
+  };
+  const total = [...(driver ? [oneOf(driver.column, driver.values)] : []), ...counted];
+  return { rows, count: { sql: `SELECT COUNT(*) AS total FROM job_lake WHERE ${where(total)}`, params: values(total) } };
+}
+
+/**
+ * A page of the lake, newest first, and how many rows match - on the
+ * statements `lakeReadSql` builds.
  */
 export function queryLake(query: LakeQuery): { rows: LakeEntry[]; total: number } {
-  let companyKey: string | null = null;
-  if (query.company !== undefined && query.company.trim()) {
-    companyKey = normaliseCompany(query.company);
-    if (!companyKey) return { rows: [], total: 0 };
-  }
-  const where = whereOf(query, companyKey);
+  const read = lakeReadSql(query, { limit: query.limit, offset: query.offset });
+  if (!read) return { rows: [], total: 0 };
   const db = getDb();
-  const rows = (where.sql
-    ? db
-        .prepare(`SELECT ${LIST_COLUMNS} FROM job_lake ${where.sql} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`)
-        .all(...where.params, query.limit, query.offset)
-    : db.prepare(LIST_DEFAULT_SQL).all(query.limit, query.offset)) as LakeRow[];
-  const total = (db.prepare(`SELECT COUNT(*) AS total FROM job_lake ${where.sql}`).get(...where.params) as { total: number })
-    .total;
+  const rows = db.prepare(read.rows.sql).all(...read.rows.params) as LakeRow[];
+  const total = (db.prepare(read.count.sql).get(...read.count.params) as { total: number }).total;
   return { rows: rows.map(toEntry), total };
 }
-
-/** What a query filters on, without its page: what Push to Google Sheet takes. */
-export type LakeFilters = Omit<LakeQuery, 'limit' | 'offset'>;
 
 /**
  * Push to Google Sheet's read with no filter: newest first, read off
@@ -835,31 +976,106 @@ export type LakePushRows = {
 
 /**
  * The rows Push to Google Sheet writes: the same filters as the admin page's
- * list (`whereOf`, so a push holds exactly what Search showed), newest first,
- * at most `cap`. Read as `cap + 1` - the extra row only says the cap was
- * reached - with the count in the same read transaction, so the two agree.
+ * list (`lakeReadSql`, so a push holds exactly what Search showed), newest
+ * first, at most `cap`. Read as `cap + 1` - the extra row only says the cap
+ * was reached - with the count in the same read transaction, so the two agree.
  */
 export function listLakeForPush(filters: LakeFilters, cap: number): LakePushRows {
   // A whole count from the caller (the operational setting); anything else reads as one row.
   const limit = Number.isSafeInteger(cap) && cap > 0 ? cap : 1;
-  let companyKey: string | null = null;
-  if (filters.company !== undefined && filters.company.trim()) {
-    companyKey = normaliseCompany(filters.company);
-    if (!companyKey) return { rows: [], matched: 0, capped: false };
-  }
-  const where = whereOf({ ...filters, limit, offset: 0 }, companyKey);
+  const read = lakeReadSql(filters, { limit: limit + 1, withDescription: true });
+  if (!read) return { rows: [], matched: 0, capped: false };
   const db = getDb();
   return db.transaction((): LakePushRows => {
-    const read = (where.sql
-      ? db
-          .prepare(`SELECT ${LIST_COLUMNS}, job_description FROM job_lake ${where.sql} ORDER BY updated_at DESC, id DESC LIMIT ?`)
-          .all(...where.params, limit + 1)
-      : db.prepare(PUSH_DEFAULT_SQL).all(limit + 1)) as LakeRow[];
-    const matched = (
-      db.prepare(`SELECT COUNT(*) AS total FROM job_lake ${where.sql}`).get(...where.params) as { total: number }
-    ).total;
-    return { rows: read.slice(0, limit).map(toEntry), matched, capped: read.length > limit };
+    const rows = db.prepare(read.rows.sql).all(...read.rows.params) as LakeRow[];
+    const matched = (db.prepare(read.count.sql).get(...read.count.params) as { total: number }).total;
+    return { rows: rows.slice(0, limit).map(toEntry), matched, capped: rows.length > limit };
   })();
+}
+
+/**
+ * Find Jobs' read of the jobs a person picked (Export into Sheet): every
+ * column, the description included, newest first - a rowid seek per id, the
+ * sort over those rows alone, which the export's cap bounds. Exported for the
+ * plan test.
+ */
+export function lakeEntriesByIdsSql(count: number): string {
+  return (
+    `SELECT ${LIST_COLUMNS}, job_description FROM job_lake WHERE id IN (${Array.from({ length: count }, () => '?').join(', ')}) ` +
+    'ORDER BY updated_at DESC, id DESC'
+  );
+}
+
+/** The lake rows these ids name, newest first, each with its description; an id no row has is left out. */
+export function getLakeEntriesByIds(ids: readonly number[]): LakeEntry[] {
+  const wanted = distinct(ids.filter((id) => Number.isSafeInteger(id) && id > 0));
+  if (wanted.length === 0) return [];
+  const db = getDb();
+  const rows: LakeRow[] = [];
+  for (let start = 0; start < wanted.length; start += 500) {
+    const chunk = wanted.slice(start, start + 500);
+    rows.push(...(db.prepare(lakeEntriesByIdsSql(chunk.length)).all(...chunk) as LakeRow[]));
+  }
+  // Several reads are each in order; the whole is put in it too.
+  if (wanted.length > 500) {
+    rows.sort((a, b) => (a.updated_at === b.updated_at ? b.id - a.id : a.updated_at < b.updated_at ? 1 : -1));
+  }
+  return rows.map(toEntry);
+}
+
+/**
+ * The companies whose key starts with a typed prefix, for Find Jobs' Company
+ * box: one range seek on idx_job_lake_company_updated, grouped in the index's
+ * order, stopped at the limit - each key once, with its newest row's spelling
+ * (SQLite's bare column beside a single MAX()) and how many jobs it has.
+ * Exported for the plan test.
+ */
+export const LAKE_COMPANY_PREFIX_SQL =
+  'SELECT company_key, company, MAX(updated_at) AS latest, COUNT(*) AS jobs FROM job_lake ' +
+  'WHERE company_key >= ? AND company_key < ? GROUP BY company_key ORDER BY company_key LIMIT ?';
+
+/** The same, for a prefix with no upper bound (one ending in U+10FFFF): filtered by the prefix afterwards. */
+const LAKE_COMPANY_FROM_SQL =
+  'SELECT company_key, company, MAX(updated_at) AS latest, COUNT(*) AS jobs FROM job_lake ' +
+  'WHERE company_key >= ? GROUP BY company_key ORDER BY company_key LIMIT ?';
+
+/**
+ * The first key past every key that starts with `key`: its last code point
+ * one higher (the surrogates skipped, which no well-formed text holds).
+ * SQLite compares text as UTF-8 bytes, which is code-point order, so
+ * `[key, bound)` is exactly the keys with that prefix. Null past U+10FFFF.
+ */
+export function prefixUpperBound(key: string): string | null {
+  const points = [...key];
+  const last = points.pop();
+  if (last === undefined) return null;
+  let next = (last.codePointAt(0) ?? 0) + 1;
+  if (next >= 0xd800 && next <= 0xdfff) next = 0xe000;
+  if (next > 0x10ffff) return null;
+  return points.join('') + String.fromCodePoint(next);
+}
+
+export type LakeCompanySuggestion = { name: string; jobs: number };
+
+/**
+ * Up to `limit` companies in the lake whose normalised name starts with the
+ * normalised `typed` - "open" finds OpenAI, Inc. - in key order, each named
+ * the way its newest job spells it. Nothing for text that normalises to
+ * nothing.
+ */
+export function suggestLakeCompanies(typed: string, limit: number): LakeCompanySuggestion[] {
+  const key = typeof typed === 'string' ? normaliseCompany(typed) : '';
+  const max = Number.isSafeInteger(limit) && limit > 0 ? limit : 10;
+  if (!key) return [];
+  const upper = prefixUpperBound(key);
+  const db = getDb();
+  type Found = { company_key: string; company: string; jobs: number };
+  const found = (
+    upper === null
+      ? (db.prepare(LAKE_COMPANY_FROM_SQL).all(key, max) as Found[]).filter((row) => row.company_key.startsWith(key))
+      : (db.prepare(LAKE_COMPANY_PREFIX_SQL).all(key, upper, max) as Found[])
+  );
+  return found.map((row) => ({ name: row.company, jobs: row.jobs }));
 }
 
 /** How many jobs an account has in the lake now (rows whose current version it reported or produced). */

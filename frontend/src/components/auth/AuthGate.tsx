@@ -5,10 +5,11 @@ import { useEffect, type ReactNode } from 'react';
 
 import ThemeToggle from '@/components/ThemeToggle';
 import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
+import { LockedPanel } from '@/components/subscription/LockedFeature';
 import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { canOpenReportJobs, redirectFor } from '@/lib/roles';
-import { hasSubscription, type AccountSubscriptionId } from '@/lib/subscriptions';
+import { describeLock, hasSubscription, type LockedFeatureId } from '@/lib/subscriptions';
 import SignInPanel from './SignInPanel';
 
 /**
@@ -152,41 +153,36 @@ export function AdminOnly({ children }: { children: ReactNode }) {
 /**
  * The same idea again, for a section an account's SUBSCRIPTION does not include.
  *
- * Separate from `AdminOnly` because the remedy is different and the sentence has
- * to say so: "ask an administrator" is right for a settings page and useless for
- * a subscription limit, where what is needed is a different subscription on
- * your own account.
+ * Separate from `AdminOnly` because the remedy is different: what is needed is
+ * a higher subscription on your own account, which the account buys itself on
+ * the Subscription page. So the section is drawn LOCKED (components/
+ * subscription/LockedFeature.tsx `LockedPanel`): what it needs, in
+ * lib/subscriptions.ts `describeLock`'s words, and Go to subscription.
  *
  * It lets administrators through, as the backend's `requireSubscription` does
  * (owner decision B1: an administrator is exempt from the tiers, as from
  * credits and the profile cap). A gate that disagreed with the backend either
  * shows somebody a page whose every request then fails, or hides one that
- * would have worked - `hasSubscription` is the shared rule.
+ * would have worked - `hasSubscription` is the shared rule, at the tier the
+ * lock names.
  */
 export function RequiresSubscription({
-  minimum,
-  label,
+  feature,
   children,
 }: {
-  minimum: AccountSubscriptionId;
-  /** How the subscription reads to a person, e.g. "Premium". */
-  label: string;
+  /** What the section is, for the lock's words and the tier it needs. */
+  feature: Exclude<LockedFeatureId, 'more-profiles'>;
   children: ReactNode;
 }) {
   const { account, loading } = useAuth();
 
   if (loading) return <p className="text-sm text-subtle">Loading...</p>;
 
-  if (!hasSubscription(account, minimum)) {
+  const lock = describeLock(feature, account);
+  if (!hasSubscription(account, lock.needs)) {
     return (
-      <div className="tl-notice m-4 p-6 sm:m-8" data-tone="warn">
-        <p className="font-semibold">Needs a {label} subscription</p>
-        <p className="mt-1">
-          This part of the app is included from {label} upwards, and your account&apos;s
-          subscription is <strong>{account?.subscriptionLabel ?? 'one that does not include it'}</strong>.
-          Subscriptions are set by an administrator of this installation, so ask them to move your
-          account. <ContactAdminLink />
-        </p>
+      <div className="m-4 sm:m-8">
+        <LockedPanel lock={lock} />
       </div>
     );
   }

@@ -74,8 +74,11 @@ test('the signal is one controller per response, not one per call', () => {
   // Several of these call sites sit in a loop over profiles. A helper that made
   // a fresh controller each time would attach a listener per iteration and trip
   // Node's max-listeners warning, and - worse - only the last one would ever be
-  // aborted.
-  const source = fs.readFileSync(ROUTE, 'utf8');
+  // aborted. The helper lives in middleware/requestSignal.ts, shared with the
+  // profile editor's Write with AI route, and the resume route imports it.
+  const route = fs.readFileSync(ROUTE, 'utf8');
+  assert.match(route, /import \{ requestSignal \} from '\.\.\/middleware\/requestSignal'/);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'middleware', 'requestSignal.ts'), 'utf8');
   assert.match(source, /WeakMap<Response, AbortController>/);
   assert.match(source, /requestControllers\.get\(res\)/);
 });

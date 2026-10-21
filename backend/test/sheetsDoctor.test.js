@@ -81,6 +81,11 @@ async function withCredentials(files, body, { fakeFetch, env = {} } = {}) {
 
   for (const name of CREDENTIAL_VARIABLES) delete process.env[name];
   for (const [name, value] of Object.entries(env)) process.env[name] = value.replace('<dir>', dir);
+  // Files of its own, in the directory it runs from: the default search on for
+  // this scope (test/helpers.js keeps it off, or the search would also find a
+  // real credential beside the compiled code). With none it stays off.
+  const searchWas = process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH;
+  if (Object.keys(files).length > 0) process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH = 'on';
   process.chdir(dir);
   console.warn = (...args) => warnings.push(args.join(' '));
   if (fakeFetch) globalThis.fetch = fakeFetch;
@@ -95,6 +100,8 @@ async function withCredentials(files, body, { fakeFetch, env = {} } = {}) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    if (searchWas === undefined) delete process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH;
+    else process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH = searchWas;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

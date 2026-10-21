@@ -1018,7 +1018,7 @@ test('several key files on disk are reported rather than silently ranked', async
   const fs = require('fs');
   const os = require('os');
   const nodePath = require('path');
-  const { loadFresh } = require('./helpers');
+  const { loadFresh, withCredentialSearch } = require('./helpers');
 
   // Five paths are searched and the FIRST wins. Two keys on disk - an old one
   // at the repo root and the new one in backend/ - is the trap: the new key is
@@ -1042,7 +1042,7 @@ test('several key files on disk are reported rather than silently ranked', async
   process.chdir(root);
   try {
     const sheets = loadFresh('../dist/integrations/googleSheets');
-    const chosen = await sheets.resolveCredentialPath();
+    const chosen = await withCredentialSearch(() => sheets.resolveCredentialPath());
     assert.equal(chosen, first, 'the first candidate still wins - only the silence changes');
     const said = warnings.join('\n');
     // At least these two; a developer's own credentials can add to the count.
@@ -1053,6 +1053,53 @@ test('several key files on disk are reported rather than silently ranked', async
     process.chdir(cwd);
     console.warn = realWarn;
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('with the credential search off (every test run) no default location is read, only a file a variable names', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const nodePath = require('path');
+  const { loadFresh } = require('./helpers');
+
+  // helpers.js turned the search off as it loaded, and blanked both path variables.
+  assert.equal(process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH, 'off');
+  assert.equal(process.env.GOOGLE_CREDENTIALS_PATH, '');
+  assert.equal(process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH, '');
+
+  // A credential in the working directory - a default location - is not found.
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-search-off-'));
+  fs.writeFileSync(nodePath.join(dir, 'google-oauth-credentials.json'), '{}');
+  const named = nodePath.join(dir, 'named-key.json');
+  fs.writeFileSync(named, '{}');
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    let sheets = loadFresh('../dist/integrations/googleSheets');
+    await assert.rejects(
+      () => sheets.resolveCredentialPath(),
+      (error) => error.message === 'Google Sheets is not set up on this server yet.'
+    );
+
+    // A file a variable names is used.
+    process.env.GOOGLE_CREDENTIALS_PATH = named;
+    sheets = loadFresh('../dist/integrations/googleSheets');
+    assert.equal(await sheets.resolveCredentialPath(), named);
+
+    // One it names that is not there says the defaults are not searched instead.
+    process.env.GOOGLE_CREDENTIALS_PATH = nodePath.join(dir, 'gone.json');
+    sheets = loadFresh('../dist/integrations/googleSheets');
+    await assert.rejects(() => sheets.resolveCredentialPath());
+    assert.match(warnings.join('\n'), /does not exist.*The default locations are not searched either \(TAILOR_GOOGLE_CREDENTIAL_SEARCH=off\)\./s);
+    assert.doesNotMatch(warnings.join('\n'), /Searching the default locations instead/);
+  } finally {
+    process.env.GOOGLE_CREDENTIALS_PATH = '';
+    process.chdir(cwd);
+    console.warn = realWarn;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1093,7 +1140,7 @@ test('the owner is invited as a WRITER, on the file, by email', async () => {
   const fs = require('fs');
   const os = require('os');
   const nodePath = require('path');
-  const { loadFresh } = require('./helpers');
+  const { loadFresh, withCredentialSearch } = require('./helpers');
 
   const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-share-'));
   fs.writeFileSync(
@@ -1123,7 +1170,7 @@ test('the owner is invited as a WRITER, on the file, by email', async () => {
   process.chdir(dir);
   try {
     const sheets = loadFresh('../dist/integrations/googleSheets');
-    await sheets.shareSpreadsheetWithEmail('sheet-1', 'alice@example.com');
+    await withCredentialSearch(() => sheets.shareSpreadsheetWithEmail('sheet-1', 'alice@example.com'));
 
     const share = requests.find((entry) => entry.url.includes('/permissions'));
     assert.ok(share, 'no Drive permissions request was made');
@@ -1153,7 +1200,7 @@ test('going private withdraws only the link, leaving the owner their grant', asy
   const fs = require('fs');
   const os = require('os');
   const nodePath = require('path');
-  const { loadFresh } = require('./helpers');
+  const { loadFresh, withCredentialSearch } = require('./helpers');
 
   const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'tailor-revoke-'));
   fs.writeFileSync(
@@ -1184,7 +1231,7 @@ test('going private withdraws only the link, leaving the owner their grant', asy
   process.chdir(dir);
   try {
     const sheets = loadFresh('../dist/integrations/googleSheets');
-    assert.equal(await sheets.setSpreadsheetVisibility('sheet-1', 'private'), 'private');
+    assert.equal(await withCredentialSearch(() => sheets.setSpreadsheetVisibility('sheet-1', 'private')), 'private');
 
     // Only the anyone-with-the-link grant goes. The owner's own grant is what
     // keeps them able to open it at all, so revoking it would be the lockout
@@ -1201,7 +1248,7 @@ test('the downloaded OAuth client is not a credential, and says which half it is
   const fs = require('fs');
   const os = require('os');
   const nodePath = require('path');
-  const { loadFresh } = require('./helpers');
+  const { loadFresh, withCredentialSearch } = require('./helpers');
 
   // Exactly what the Cloud console downloads. Saving it under the OUTPUT name
   // is the trap: the app prefers that name over a working service account key,
@@ -1228,10 +1275,10 @@ test('the downloaded OAuth client is not a credential, and says which half it is
   console.warn = () => {};
   try {
     const sheets = loadFresh('../dist/integrations/googleSheets');
-    assert.match(await sheets.resolveCredentialPath(), /google-oauth-credentials\.json$/);
+    assert.match(await withCredentialSearch(() => sheets.resolveCredentialPath()), /google-oauth-credentials\.json$/);
 
     await assert.rejects(
-      () => sheets.getAccessToken(sheets.SHEETS_SCOPE),
+      () => withCredentialSearch(() => sheets.getAccessToken(sheets.SHEETS_SCOPE)),
       (error) => {
         // It must name the file, say what is missing, and say what to run -
         // the three things somebody staring at a 403 does not have. In the

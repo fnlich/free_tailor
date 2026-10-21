@@ -143,11 +143,9 @@ type SubmitBody = {
    * button). An order runs whether or not anybody is watching, is listed on
    * /orders and answers with an order number; an immediate run is leased to
    * the tab that started it (`tabId`) and goes ahead of orders in its lane.
-   * See `readRunKind`.
+   * Absent is `immediate`. See `readRunKind`.
    */
   mode?: unknown;
-  /** The older spelling of `mode: 'order'`, still read when `mode` is absent. */
-  asOrder?: boolean;
   /**
    * The starting tab's own id, for `immediate`: the tab whose stream
    * (`?tab=`) holds the run's lease and whose page may release it. A random
@@ -174,15 +172,17 @@ export class SubmitError extends PublicError {
  * `mode` decides when it is there; it must be `immediate` or `order`, and
  * anything else is refused rather than guessed - a typo that silently placed a
  * three-hundred-row order as a run tied to one tab would stop the moment the
- * tab closed. Without `mode`, the older `asOrder: true` still means an order,
- * and anything else is Generate Immediately.
+ * tab closed. Without `mode` it is Generate Immediately, and nothing else in
+ * the body is read for it: an older script's `asOrder: true` now places an
+ * immediate run, which the tab lease stops (and refunds) when nothing reads
+ * its stream - such a script sends `mode: 'order'`.
  */
-export function readRunKind(body: Pick<SubmitBody, 'mode' | 'asOrder'>): BatchKind {
+export function readRunKind(body: Pick<SubmitBody, 'mode'>): BatchKind {
   if (body.mode !== undefined && body.mode !== null) {
     if (body.mode === ORDER_BATCH_KIND || body.mode === IMMEDIATE_BATCH_KIND) return body.mode;
     throw new SubmitError('mode must be "immediate" or "order".');
   }
-  return body.asOrder === true ? ORDER_BATCH_KIND : IMMEDIATE_BATCH_KIND;
+  return IMMEDIATE_BATCH_KIND;
 }
 
 /** What a tab id may look like: what a page mints (a UUID, say), and nothing that needs escaping anywhere. */
@@ -335,8 +335,10 @@ async function resolveProfileChoices(
   const choices = new Map<string, PricedAiChoice>();
   for (const profile of profiles) {
     // A preview's token names the model that wrote this profile's content, and
-    // that is the model it runs - and is priced - on. The quote is sent the
-    // tokens without the content, which is why a token counts on its own.
+    // that is the model it runs - and is priced - on; a valid token counts on
+    // its own. Content without one (expired, forged, never given) is priced
+    // by `resolveSuppliedContentChoice`, so the builder sends a quote the
+    // content too, as its submission will.
     const previewModelId = options.userId
       ? readPreviewToken(tokens[profile.id], { userId: options.userId, profileId: profile.id })
       : null;
@@ -454,21 +456,10 @@ function collectOutcome(batchId: string, admin: boolean) {
   const results: ResumeTaskResult[] = [];
   const failures: Array<{ profileId: string; profileName: string; companyName: string; error: string }> =
     [];
-  const hard = new Map<string, string>();
-  const soft = new Map<string, string>();
 
   for (const task of batch.tasks) {
     if (task.state === 'done' && task.value) {
-      const value = task.value as ResumeTaskResult;
-      results.push(value);
-      for (const skill of value.unconfirmedHardSkills) {
-        const key = skill.trim().toLowerCase();
-        if (key && !hard.has(key)) hard.set(key, skill.trim());
-      }
-      for (const skill of value.unconfirmedSoftSkills) {
-        const key = skill.trim().toLowerCase();
-        if (key && !soft.has(key)) soft.set(key, skill.trim());
-      }
+      results.push(task.value as ResumeTaskResult);
     } else if (task.state === 'failed' || task.state === 'cancelled') {
       failures.push({
         profileId: task.label.profileId,
@@ -484,8 +475,6 @@ function collectOutcome(batchId: string, admin: boolean) {
     failures,
     failedCompanies: [...new Set(failures.map((failure) => failure.companyName))],
     tailored: results.some((result) => result.tailored),
-    unconfirmedHardSkills: [...hard.values()],
-    unconfirmedSoftSkills: [...soft.values()],
   };
 }
 

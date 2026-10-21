@@ -139,6 +139,11 @@ test('import, extraction and the manual builder each write <id>.json with its so
       ])
     );
     assert.equal(imported.status, 201, JSON.stringify(imported.body));
+    // The answer is the list and its counts, and nothing spread beside them.
+    assert.deepEqual(Object.keys(imported.body).sort(), ['imported', 'keptIds', 'templates']);
+    assert.equal('htmlContent' in imported.body, false);
+    assert.equal(imported.body.imported, 2);
+    assert.equal(imported.body.keptIds, 1);
     const [kept, minted] = imported.body.templates;
     // Folded into the file alphabet: Windows and macOS would see `Team_Layout`
     // and `team_layout` as one file.

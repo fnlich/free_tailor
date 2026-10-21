@@ -1,3 +1,4 @@
+import type { Profile } from '../types/profile';
 import type { TailoredContent, TailoredExperience } from '../types/template';
 import { extractJSON } from '../utils/json';
 import { containsBannedVocabulary, containsTerm } from './tailorContract';
@@ -7,38 +8,53 @@ import { containsBannedVocabulary, containsTerm } from './tailorContract';
  * resume is measured on, what the second call is sent, and how its answer is
  * folded back in. Pure; resumeService's `tailorResume` makes the call.
  *
- * The tailoring prompt asks for every checklist term on the page and at least
- * five figures in the bullets. A first draft rarely manages all of it, so the
- * owner's revise prompt is given the draft, the terms it is missing and - when
- * it needs them - a sentence asking for figures, and asked to "change as
- * little as possible". It returns only what it changed.
+ * The tailoring prompt asks for every checklist term the profile supports on
+ * the page, and for every figure the profile states. A first draft rarely
+ * manages all of it, so the owner's revise prompt is given the draft, the
+ * terms it is missing and - when the draft dropped any - the profile's own
+ * lines whose figures it no longer shows, and asked to "change as little as
+ * possible": a term goes in only where the draft describes work that involved
+ * it, a figure only back into the bullet about the work the profile states it
+ * for. It returns only what it changed.
  */
 
 export const REVISE_PROMPT_ID = 'revise-resume-coverage';
 
-/** How many figures the bullets must carry: "AT LEAST FIVE FIGURES ON THE PAGE". */
-export const FIGURES_WANTED = 5;
+/**
+ * One line of `[[figuresNote]]`: a sentence of the profile - a role's bullet,
+ * or a sentence of its description - carrying a figure the draft dropped, and
+ * the role it is from.
+ */
+export type DroppedFigureLine = { company: string; title: string; line: string };
 
 /**
- * `[[figuresNote]]` when the bullets carry fewer than five figures. The revise
- * prompt forbids "any figure already in a sentence, unless you are asked above
- * for more" and any outcome not in the draft, so this sentence is where the
- * tailoring prompt's own guard - modest, implied by the work, never a result
- * nobody measured, never in the summary - is restated. Its wording is part of
- * the tailoring cache's key (`FIGURES_NOTE_WORDING`): a merged answer was
+ * `[[figuresNote]]` when the draft dropped a figure the profile states: the
+ * profile's own lines that carry one, each under its role, and the one thing
+ * to do with them - put the figure back into the bullet about that same work,
+ * exactly as stated, or add nothing. The tailoring prompt writes a figure only
+ * where the profile states one, and the revise prompt forbids any figure
+ * "except one the FIGURES lines above state", so this is the only road a
+ * figure takes into a revision, and every one of them is the candidate's own.
+ * (The sentence that used to ask here for "modest" figures the work "implies"
+ * is gone: it was an invitation to invent a measurement.) Its wording is part
+ * of the tailoring cache's key (`FIGURES_NOTE_WORDING`): a merged answer was
  * written to it.
  */
-export function figuresNote(carried: number | string, more: number | string): string {
+export function figuresNote(dropped: readonly DroppedFigureLine[]): string {
+  const lines = dropped.map((entry) => {
+    const role = [entry.company, entry.title].filter(Boolean).join(', ');
+    return role ? `- ${role}: ${entry.line}` : `- ${entry.line}`;
+  });
   return (
-    `FIGURES. ${carried} of the bullets carry a figure and a resume needs at least five. Add a figure to ${more} ` +
-    'more bullets, never to the summary: each a modest quantity the work the bullet already describes implies (how ' +
-    'many services or endpoints a change covered, how many people a review involved, how often a release went out, ' +
-    'how long a job took before and after). Never a result nobody measured, and never a figure attached to work ' +
-    'the draft does not describe.'
+    "FIGURES THE PROFILE STATES AND THE DRAFT DROPPED. Each line below is the candidate's own, from the role named " +
+    'before it, and carries a figure the draft no longer shows. Where a bullet of that role describes the same piece ' +
+    'of work, put the figure back into it exactly as the line states it; where no bullet describes that work, add ' +
+    'nothing. Never a figure these lines do not state, and never one in the summary.\n' +
+    lines.join('\n')
   );
 }
 
-export const FIGURES_NOTE_WORDING = figuresNote('{n}', '{k}');
+export const FIGURES_NOTE_WORDING = figuresNote([{ company: '{company}', title: '{title}', line: '{line}' }]);
 
 /**
  * A figure: a number that is not glued to a letter before it - so "37%", "40
@@ -56,12 +72,58 @@ function bulletsOf(content: Pick<TailoredContent, 'experience'>): string[] {
   );
 }
 
-/** The bullets, how many carry a figure, and how many more could: one per bullet without one, up to five in all. */
-export function figureCount(content: Pick<TailoredContent, 'experience'>): { bullets: number; carried: number; wanted: number } {
-  const bullets = bulletsOf(content);
-  const carried = bullets.filter(hasFigure).length;
-  const wanted = carried >= FIGURES_WANTED ? 0 : Math.min(FIGURES_WANTED - carried, bullets.length - carried);
-  return { bullets: bullets.length, carried, wanted };
+/**
+ * The figures of a text, as digits: each number not glued to a letter before
+ * it, thousands separators dropped, decimals kept - "9s to 1.4s" is 9 and 1.4,
+ * "1,200 users" is 1200, "$5M" is 5 - less a four-digit year, which is a date.
+ * p99, S3 and v1.2 are nothing (`hasFigure`).
+ */
+export function figureTokens(text: string): string[] {
+  const tokens: string[] = [];
+  for (const match of text.matchAll(/(?<![A-Za-z0-9.])\d[\d,]*(?:\.\d+)?/g)) {
+    const token = match[0].replace(/,/g, '');
+    if (!/^(?:19|20)\d\d$/.test(token)) tokens.push(token);
+  }
+  return tokens;
+}
+
+/** How many of the profile's lines `[[figuresNote]]` lists at most. */
+export const MAX_DROPPED_FIGURE_LINES = 12;
+
+/**
+ * The profile's own lines - each role's bullets, then the sentences of its
+ * description, in profile order - that carry a figure the draft's summary and
+ * bullets no longer show, at most `max` of them. A figure is carried by its
+ * digits wherever they stand ("40 minutes" by "40-minute", "1,200" by "1200");
+ * a role the parse restored with the profile's own bullets has dropped
+ * nothing, and a figure the profile never stated is not looked for.
+ */
+export function droppedProfileFigures(
+  profile: Pick<Profile, 'experience'>,
+  draft: Pick<TailoredContent, 'summary' | 'experience'>,
+  max: number = MAX_DROPPED_FIGURE_LINES
+): DroppedFigureLine[] {
+  const carried = new Set(figureTokens(resumeProse(draft)));
+  const dropped: DroppedFigureLine[] = [];
+  for (const role of Array.isArray(profile.experience) ? profile.experience : []) {
+    if (!role || typeof role !== 'object') continue;
+    const description = typeof role.description === 'string' ? role.description : '';
+    const lines: unknown[] = [
+      ...(Array.isArray(role.achievements) ? role.achievements : []),
+      ...description.split(/(?<=[.!?])\s+/),
+    ];
+    for (const raw of lines) {
+      if (dropped.length >= max) return dropped;
+      const line = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+      if (!line || !figureTokens(line).some((token) => !carried.has(token))) continue;
+      dropped.push({
+        company: typeof role.company === 'string' ? role.company : '',
+        title: typeof role.title === 'string' ? role.title : '',
+        line,
+      });
+    }
+  }
+  return dropped;
 }
 
 /** What a scanner reads of the resume: the summary and the bullets. */
@@ -71,7 +133,8 @@ export function resumeProse(content: Pick<TailoredContent, 'summary' | 'experien
 
 /**
  * The checklist terms (services/tailorContract.ts `buildTailorLists`, in its
- * priority order) the summary and bullets do not carry, at most `max` of them.
+ * priority order - the caller passes only those the profile carries,
+ * `supportedTerms`) the summary and bullets do not carry, at most `max` of them.
  * A term carrying a banned word or opener is never among them - the revise
  * prompt bans those words with no exception, so asking for one is an
  * instruction it cannot obey.
@@ -91,24 +154,87 @@ export function missingTerms(
   return missing;
 }
 
+function strings(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  return Array.isArray(value) ? value.flatMap(strings) : [];
+}
+
+function fieldsOf(list: unknown, keys: readonly string[]): string[] {
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((item) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? keys.flatMap((key) => strings((item as Record<string, unknown>)[key]))
+      : []
+  );
+}
+
 /**
- * Whether the pass runs: a term is missing, or the bullets carry fewer than
- * five figures and one of them could take one. A draft with no bullets has
- * nothing to put a figure in - the prompt widens sentences, it adds none.
+ * The candidate's own words, as one text a checklist term is looked up in:
+ * the headline and summary, every skill they list (and the headings they
+ * grouped them under), their soft skills and strengths, and the lines that
+ * describe their work - each role's title, description, bullets and skills,
+ * and their certifications, projects, volunteering, courses, awards and
+ * publications. Never a company's name: having worked at Stripe is not having
+ * used Stripe. The caller passes the profile as the tailoring call saw it
+ * (resumeService's `profileAsShown`: a description's sentences about the
+ * company dropped), so a term only the company's own blurb names is not one.
  */
-export function revisionWanted(missing: readonly string[], figures: { wanted: number }): boolean {
-  return missing.length > 0 || figures.wanted > 0;
+export function profileEvidence(profile: Partial<Profile>): string {
+  const source = profile as Record<string, unknown>;
+  return [
+    ...strings(source.title),
+    ...strings(source.summary),
+    ...strings(source.skills),
+    ...fieldsOf(source.skillCategories, ['category', 'skills']),
+    ...strings(source.softSkills),
+    ...fieldsOf(source.strengths, ['title', 'description']),
+    ...fieldsOf(source.experience, ['title', 'description', 'achievements', 'skills']),
+    ...fieldsOf(source.certifications, ['name', 'issuer']),
+    ...fieldsOf(source.projects, ['name', 'role', 'description', 'achievements']),
+    ...fieldsOf(source.volunteering, ['role', 'description', 'achievements']),
+    ...fieldsOf(source.courses, ['name']),
+    ...fieldsOf(source.awards, ['title', 'description']),
+    ...fieldsOf(source.publications, ['title', 'description']),
+  ]
+    .map((text) => text.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * The checklist terms the candidate's own words carry (`profileEvidence`, the
+ * same whole-word match the draft is measured with), in the checklist's
+ * order. Only these are ever handed to the revise pass. It reads the draft
+ * and not the profile, so it cannot know whether the candidate has a term the
+ * profile never names - and the tailoring prompt is told to leave exactly
+ * such a term out. Asked for one, the revise pass would undo that, on the one
+ * call that cannot check.
+ */
+export function supportedTerms(checklist: readonly string[], evidence: string): string[] {
+  return checklist.filter((term) => containsTerm(evidence, term));
+}
+
+/**
+ * Whether the pass runs: a term is missing, or the draft dropped a figure the
+ * profile states. A draft carrying every term and every figure is the resume
+ * as it stands.
+ */
+export function revisionWanted(missing: readonly string[], dropped: readonly DroppedFigureLine[]): boolean {
+  return missing.length > 0 || dropped.length > 0;
 }
 
 /**
  * The revise prompt's values: the draft as it would print - the summary and,
- * per role, its company, title and bullets - the missing terms, and the
- * figures sentence ('' when no more figures are wanted).
+ * per role, its company, title, dates and bullets - the missing terms, and the
+ * figures note ('' when the draft dropped no figure of the profile's). The
+ * dates are there for the prompt's years rule: after a Fully tailored draft
+ * the terms asked for include technologies the profile never names, and
+ * without them one could land in a role it postdates.
  */
 export function buildReviseResumeCoveragePromptValues(
   draft: Pick<TailoredContent, 'summary' | 'experience'>,
   missing: readonly string[],
-  figures: { carried: number; wanted: number }
+  dropped: readonly DroppedFigureLine[]
 ): Record<string, string> {
   return {
     draftJson: JSON.stringify({
@@ -116,11 +242,13 @@ export function buildReviseResumeCoveragePromptValues(
       experience: (Array.isArray(draft.experience) ? draft.experience : []).map((role) => ({
         company: role.company,
         title: role.title,
+        startDate: role.startDate,
+        endDate: role.endDate,
         achievements: role.achievements,
       })),
     }),
     missingTermsJson: JSON.stringify(missing),
-    figuresNote: figures.wanted > 0 ? figuresNote(figures.carried, figures.wanted) : '',
+    figuresNote: dropped.length > 0 ? figuresNote(dropped) : '',
   };
 }
 

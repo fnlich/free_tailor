@@ -557,11 +557,21 @@ html.dark .shadow-2xl {
   color: var(--rail-icon);
 }
 
-/* The small arrow after a label that leaves the app. */
-.tl-nav-item > svg.tl-nav-out {
+/*
+ * An entry the account's subscription does not include (navModel.ts
+ * `isNavLocked`): a button, not a link - it opens the lock's dialog - drawn
+ * as the rows around it, with the lock at the end of the row.
+ */
+button.tl-nav-item {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tl-nav-item > svg.tl-nav-lock {
   height: 0.875rem;
   width: 0.875rem;
-  margin-left: -0.375rem;
+  margin-left: auto;
 }
 
 .tl-nav-item:hover {
@@ -837,11 +847,13 @@ html.dark .shadow-2xl {
   white-space: nowrap;
 }
 
-.tl-button-quiet:hover:not(:disabled) {
+.tl-button-quiet:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--surface-muted);
 }
 
-.tl-button-quiet:disabled {
+/* aria-disabled: a control busy under the focus keeps it (Export into Sheet while it exports). */
+.tl-button-quiet:disabled,
+.tl-button-quiet[aria-disabled='true'] {
   opacity: 0.45;
 }
 
@@ -909,6 +921,50 @@ html.dark .shadow-2xl {
 
 .tl-table [data-valign='top'] {
   vertical-align: top;
+}
+
+/*
+ * A wide table that should fit its box at a desktop width - Find Jobs, eleven
+ * columns - takes narrower side padding. A cell that lets the browser
+ * hyphenate (`hyphens-auto`) does so only in a word of twelve letters or
+ * more, five kept either side; a shorter one wraps whole.
+ */
+.tl-table[data-density='compact'] th,
+.tl-table[data-density='compact'] td {
+  padding-inline: 0.5rem;
+}
+
+.tl-table[data-density='compact'] td {
+  hyphenate-limit-chars: 12 5 5;
+}
+
+/*
+ * A row's action column held at the box's right edge while the table scrolls
+ * sideways under it (a phone, a narrow window), so every row's button stays in
+ * view. Opaque, so the cells scrolling under it do not show through; a picked
+ * row's tint is laid over the surface. Opaque, it would also hide a control
+ * the Tab key reaches under it: the box takes lib/stickyColumn.ts's
+ * `keepFocusClearOfStickyEnd` as its onFocus, which moves a keyboard focus
+ * only (a pressed control moved would lose the press).
+ */
+.tl-table [data-sticky-end] {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface-secondary);
+}
+
+.tl-table th[data-sticky-end] {
+  background: var(--rail);
+}
+
+.tl-table tbody tr[data-selected='true'] > td[data-sticky-end] {
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--surface-secondary);
+}
+
+/* A row picked for something - Find Jobs' selection - tinted across. */
+.tl-table tbody tr[data-selected='true'] > td {
+  background: var(--accent-soft);
 }
 
 /*
@@ -1353,6 +1409,223 @@ html.dark textarea.tl-input:disabled,
 html.dark select.tl-input:disabled {
   background-color: var(--surface-muted);
   color: var(--text-subtle);
+}
+
+/*
+ * A box of several values (components/ui/MultiSelect.tsx): chips, then the
+ * input that types into it, framed as one .tl-input - over a list that may
+ * hold several. Variables only, so it is right in either theme.
+ */
+.tl-multiselect {
+  position: relative;
+  margin-top: 0.5rem;
+}
+
+.tl-multiselect-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2.5rem;
+  padding: 0.3125rem 2rem 0.3125rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  background: var(--surface-secondary);
+  color: var(--foreground);
+  cursor: text;
+}
+
+/*
+ * In dark mode the shim gives every native control, .tl-input included, the
+ * stronger border; the box beside them takes it too, or it reads as disabled.
+ */
+html.dark .tl-multiselect-box {
+  border-color: var(--border-strong);
+}
+
+.tl-multiselect-box:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.tl-multiselect[data-disabled] .tl-multiselect-box {
+  background: var(--surface-muted);
+  color: var(--text-subtle);
+  cursor: not-allowed;
+}
+
+.tl-multiselect-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tl-multiselect-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.125rem 0.25rem 0.125rem 0.5rem;
+  border-radius: 9999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.tl-multiselect-chip > button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  color: inherit;
+}
+
+.tl-multiselect-chip > button:hover:not(:disabled) {
+  background: var(--surface-muted);
+}
+
+.tl-multiselect-chip > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tl-multiselect-input {
+  flex: 1 1 6rem;
+  min-width: 6rem;
+  padding: 0.1875rem 0.375rem;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+}
+
+.tl-multiselect-input:focus {
+  outline: none;
+}
+
+/*
+ * The shim restyles every bare input in dark mode - a surface and a stronger
+ * border - which would draw a box inside the box. This names as much as it
+ * does, plus the class.
+ */
+html.dark input.tl-multiselect-input:not([type='radio']):not([type='checkbox']):not([type='color']) {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+.tl-multiselect-chevron {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.625rem;
+  color: var(--text-subtle);
+  pointer-events: none;
+}
+
+.tl-multiselect-chevron > svg {
+  transform: rotate(90deg);
+}
+
+.tl-multiselect[data-open] .tl-multiselect-chevron > svg {
+  transform: rotate(-90deg);
+}
+
+.tl-multiselect-list {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  z-index: var(--layer-page-overlay);
+  max-height: min(16rem, 50vh);
+  overflow-y: auto;
+  padding: 0.25rem;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  box-shadow: 0 18px 44px rgba(2, 6, 23, 0.18);
+}
+
+/* Inside a dialog that scrolls, the list takes room in the flow rather than being clipped by it. */
+.tl-multiselect[data-inline] .tl-multiselect-list {
+  position: static;
+  margin-top: 0.25rem;
+  box-shadow: none;
+}
+
+.tl-multiselect-group {
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tl-multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.375rem;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+/*
+ * The keyboard's option: the tint alone is 1.1:1 against the list, so an
+ * outline marks it too - plainly in both themes, and kept by forced colors
+ * (Windows high contrast), which drops backgrounds.
+ */
+.tl-multiselect-option[data-active] {
+  background: var(--surface-muted);
+  /* accent-ink: the accent in light, a lighter one in dark (--accent there is under 3:1 on the list). */
+  outline: 2px solid var(--accent-ink);
+  outline-offset: -2px;
+}
+
+@media (forced-colors: active) {
+  .tl-multiselect-option[data-active] {
+    outline-color: Highlight;
+  }
+}
+
+.tl-multiselect-option[aria-selected='true'] {
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.tl-multiselect-option[aria-disabled='true'] {
+  color: var(--text-subtle);
+  cursor: not-allowed;
+}
+
+.tl-multiselect-hint {
+  flex: none;
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+}
+
+.tl-multiselect-check {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  visibility: hidden;
+}
+
+.tl-multiselect-option[aria-selected='true'] > .tl-multiselect-check {
+  visibility: visible;
+}
+
+.tl-multiselect-empty {
+  padding: 0.5rem 0.625rem;
+  color: var(--text-subtle);
+  font-size: 0.875rem;
 }
 
 @media (max-width: 767.98px) {

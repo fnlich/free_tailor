@@ -104,8 +104,9 @@ test("parseTailoredResumeContent keeps the model's skill groups as written, and 
   assert.deepEqual(parsed.hardSkills, ['React', 'TypeScript', 'Secure backend logic', 'PostgreSQL', 'AWS Textract']);
   assert.equal(parsed.hardSkills.includes('Model Pick'), false);
   assert.deepEqual(parsed.skills, parsed.hardSkills);
-  assert.deepEqual(parsed.unconfirmedHardSkills, []);
-  assert.deepEqual(parsed.unconfirmedSoftSkills, []);
+  // Nothing to confirm: no printed skill is checked against the library, so no list says so.
+  assert.equal('unconfirmedHardSkills' in parsed, false);
+  assert.equal('unconfirmedSoftSkills' in parsed, false);
 });
 
 test('parseJobAnalysisKeywords removes employer-perspective job posting slogans', () => {

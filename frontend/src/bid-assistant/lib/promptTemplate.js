@@ -14,7 +14,9 @@ Question: {{question}}
 
 Write a professional, natural-sounding answer from the candidate's perspective.
 Keep it under {{charLimit}} characters.
-Avoid corporate buzzwords and make it sound like a real person.`;
+Avoid corporate buzzwords and make it sound like a real person.
+Use only facts from the candidate data above; never invent an employer, a date, a number of years, a tool, a degree, or an eligibility or availability status.
+If the candidate data does not answer the question, say so plainly instead of guessing.`;
 
 export const PROMPT_TOKENS = [
   '{{candidateName}}',

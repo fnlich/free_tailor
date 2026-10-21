@@ -1,16 +1,36 @@
 import { normalizeAiPreferences } from '../config/aiPreferences';
 import {
+  cleanSectionOrder,
+  isCustomSectionKey,
+  MAX_INTEREST_LENGTH,
+  MAX_PROFILE_CUSTOM_SECTIONS,
+  MAX_PROFILE_INTERESTS,
+  MAX_PROFILE_SECTION_ENTRIES,
+  presenceOf,
+} from '../config/profileSections';
+import {
+  Award,
   Certification,
   Contact,
+  Course,
   CreateProfileDTO,
+  CustomSection,
+  CustomSectionEntry,
   Education,
   Experience,
+  Language,
   Profile,
   ProfileSettings,
+  Project,
+  Publication,
+  Reference,
   SkillCategoryGroup,
   Strength,
+  TailorMode,
   TechnicalSkillsLayout,
+  Volunteering,
 } from '../types/profile';
+import { envDefaultTailorMode, TAILOR_MODES } from '../config/settingDefaults';
 import {
   DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
   DEFAULT_RESUME_FILE_NAME_TEMPLATE,
@@ -20,6 +40,8 @@ import type { Template } from '../types/template';
 import { inferTemplateCapabilities } from './templateImport';
 
 export const DEFAULT_RESUME_PROMPT_ID = 'tailor-resume';
+/** The one prompt a profile set to Fully tailor runs (promptService's single-prompt features). */
+export const FULL_TAILOR_PROMPT_ID = 'tailor-resume-full';
 export const DEFAULT_COVER_LETTER_PROMPT_ID = 'generate-cover-letter';
 /** Categories on, because that is how every built-in template renders today. */
 export const DEFAULT_TECHNICAL_SKILLS_LAYOUT: TechnicalSkillsLayout = 'categorized';
@@ -165,6 +187,21 @@ export function getProfileIncludeStrengths(profile?: Pick<Profile, 'profileSetti
   return profile?.profileSettings?.includeStrengths === true;
 }
 
+export function isTailorMode(value: unknown): value is TailorMode {
+  return typeof value === 'string' && (TAILOR_MODES as readonly string[]).includes(value);
+}
+
+/**
+ * How this profile is tailored: its own choice (the editor's Generation card),
+ * else `.env`'s `DEFAULT_TAILOR_MODE`, else `partial` - read per call, so a
+ * `.env` edit reaches every profile that never chose. A stored value this
+ * build does not know reads as no choice.
+ */
+export function getProfileTailorMode(profile?: Pick<Profile, 'profileSettings'> | null): TailorMode {
+  const stored = profile?.profileSettings?.tailorMode;
+  return isTailorMode(stored) ? stored : envDefaultTailorMode().value;
+}
+
 /**
  * The three rendering choices a profile makes about its resume's sections.
  *
@@ -176,6 +213,14 @@ export interface ResumeSectionChoices {
   layout: TechnicalSkillsLayout;
   softSkills: boolean;
   strengths: boolean;
+  /**
+   * The stored section order, or null for the template's own; and the custom
+   * sections' keys, which the extra-sections macro expands a block for each
+   * of. Optional, and filled by the renderer from `getProfileSectionLayout`,
+   * so every caller of the three switches above compiles as it did.
+   */
+  sectionOrder?: string[] | null;
+  customKeys?: string[];
 }
 
 export function getProfileResumeSections(
@@ -186,6 +231,20 @@ export function getProfileResumeSections(
     softSkills: getProfileIncludeSoftSkills(profile),
     strengths: getProfileIncludeStrengths(profile),
   };
+}
+
+/**
+ * How a profile's sections are laid out: the stored order, or null for the
+ * template's own (config/profileSections.ts has the semantics), and the custom
+ * sections' keys. A stored list that cleans to nothing - a hand-written `[]`,
+ * refs to sections that are gone - reads as absent too.
+ */
+export function getProfileSectionLayout(
+  profile: Pick<Profile, 'sectionOrder' | 'customSections'>
+): { sectionOrder: string[] | null; customKeys: string[] } {
+  const { customKeys } = presenceOf(profile);
+  const stored = cleanSectionOrder(profile.sectionOrder, customKeys);
+  return { sectionOrder: stored.length > 0 ? stored : null, customKeys };
 }
 
 /**
@@ -240,30 +299,45 @@ export const MAX_PROFILE_SOFT_SKILLS = 50;
 export const MAX_SOFT_SKILL_LENGTH = 100;
 
 /**
- * A profile's soft skills: names only, trimmed, the first spelling of each
- * kept when the same skill is written twice in different case, bounded.
+ * A short list of names: trimmed, the first spelling of each kept when the
+ * same name is written twice in different case, bounded in count and length.
+ * The soft skills' rule, shared with the interests.
  */
-export function normalizeSoftSkillsList(value: unknown): string[] {
+function normalizeShortTextList(value: unknown, max: number, maxLength: number): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   const result: string[] = [];
   for (const entry of value) {
-    if (result.length >= MAX_PROFILE_SOFT_SKILLS) break;
+    if (result.length >= max) break;
     if (typeof entry !== 'string') continue;
-    const skill = entry.trim().replace(/\s+/g, ' ').slice(0, MAX_SOFT_SKILL_LENGTH).trim();
-    if (!skill) continue;
-    const key = skill.toLowerCase();
+    const name = entry.trim().replace(/\s+/g, ' ').slice(0, maxLength).trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push(skill);
+    result.push(name);
   }
   return result;
+}
+
+/**
+ * A profile's soft skills: names only, trimmed, the first spelling of each
+ * kept when the same skill is written twice in different case, bounded.
+ */
+export function normalizeSoftSkillsList(value: unknown): string[] {
+  return normalizeShortTextList(value, MAX_PROFILE_SOFT_SKILLS, MAX_SOFT_SKILL_LENGTH);
 }
 
 /** Omitted keeps what is stored, like every other field here; anything else is normalized. */
 function normalizeSoftSkills(value: unknown, existing?: string[]): string[] {
   if (typeof value === 'undefined') return normalizeSoftSkillsList(existing);
   return normalizeSoftSkillsList(value);
+}
+
+/** The interests, by the soft skills' rule; omitted keeps what is stored. */
+function normalizeInterests(value: unknown, existing?: string[]): string[] {
+  const source = typeof value === 'undefined' ? existing : value;
+  return normalizeShortTextList(source, MAX_PROFILE_INTERESTS, MAX_INTEREST_LENGTH);
 }
 
 function normalizeContact(input: CreateProfileDTO['contact'] | undefined, existing?: Contact): Contact {
@@ -327,6 +401,197 @@ function normalizeCertifications(certifications: CreateProfileDTO['certification
     }));
 }
 
+/*
+ * The other section kinds (config/profileSections.ts), one normaliser shape
+ * for all of them.
+ *
+ * Omitted - or not a list at all - keeps what is stored: the list normalisers
+ * above `.map` a truthy non-array and answer a 500, and the preview's `list()`
+ * is the only thing standing between a client mid-edit and that today, so the
+ * new kinds are lenient here as well. In a list, anything that is not an
+ * object is dropped, every field is read as text, and an entry with nothing
+ * typed into it (`typed`) is dropped rather than stored as a row of empty
+ * strings, which is what an "Add entry" abandoned in the editor would be.
+ * Capped, like the soft skills, against a pasted or runaway import.
+ */
+function normalizeEntryList<T>(
+  value: unknown,
+  existing: T[] | undefined,
+  read: (item: Record<string, unknown>) => T,
+  typed: (entry: T) => boolean
+): T[] {
+  if (!Array.isArray(value)) return existing ?? [];
+  return value
+    .filter((item): item is Record<string, unknown> => isPlainRecord(item))
+    .map(read)
+    .filter(typed)
+    .slice(0, MAX_PROFILE_SECTION_ENTRIES);
+}
+
+function normalizeProjects(value: unknown, existing?: Project[]): Project[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Project => ({
+      name: toSafeString(item.name),
+      role: toSafeString(item.role),
+      startDate: toSafeString(item.startDate),
+      endDate: toSafeString(item.endDate),
+      link: toSafeString(item.link),
+      description: toSafeString(item.description),
+      achievements: normalizeStringList(item.achievements),
+    }),
+    (entry) => Boolean(entry.name || entry.role || entry.description || entry.achievements.length)
+  );
+}
+
+function normalizeLanguages(value: unknown, existing?: Language[]): Language[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Language => ({ language: toSafeString(item.language), proficiency: toSafeString(item.proficiency) }),
+    (entry) => Boolean(entry.language)
+  );
+}
+
+function normalizeAwards(value: unknown, existing?: Award[]): Award[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Award => ({
+      title: toSafeString(item.title),
+      issuer: toSafeString(item.issuer),
+      date: toSafeString(item.date),
+      description: toSafeString(item.description),
+    }),
+    (entry) => Boolean(entry.title || entry.issuer)
+  );
+}
+
+function normalizePublications(value: unknown, existing?: Publication[]): Publication[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Publication => ({
+      title: toSafeString(item.title),
+      publisher: toSafeString(item.publisher),
+      date: toSafeString(item.date),
+      link: toSafeString(item.link),
+      description: toSafeString(item.description),
+    }),
+    (entry) => Boolean(entry.title)
+  );
+}
+
+function normalizeVolunteering(value: unknown, existing?: Volunteering[]): Volunteering[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Volunteering => ({
+      role: toSafeString(item.role),
+      organization: toSafeString(item.organization),
+      startDate: toSafeString(item.startDate),
+      endDate: toSafeString(item.endDate),
+      location: toSafeString(item.location),
+      description: toSafeString(item.description),
+      achievements: normalizeStringList(item.achievements),
+    }),
+    (entry) => Boolean(entry.role || entry.organization)
+  );
+}
+
+function normalizeCourses(value: unknown, existing?: Course[]): Course[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Course => ({
+      name: toSafeString(item.name),
+      institution: toSafeString(item.institution),
+      date: toSafeString(item.date),
+    }),
+    (entry) => Boolean(entry.name)
+  );
+}
+
+function normalizeReferences(value: unknown, existing?: Reference[]): Reference[] {
+  return normalizeEntryList(
+    value,
+    existing,
+    (item): Reference => ({
+      name: toSafeString(item.name),
+      title: toSafeString(item.title),
+      company: toSafeString(item.company),
+      email: toSafeString(item.email),
+      phone: toSafeString(item.phone),
+    }),
+    (entry) => Boolean(entry.name)
+  );
+}
+
+function readCustomSectionEntry(item: Record<string, unknown>): CustomSectionEntry {
+  return {
+    heading: toSafeString(item.heading),
+    subheading: toSafeString(item.subheading),
+    startDate: toSafeString(item.startDate),
+    endDate: toSafeString(item.endDate),
+    location: toSafeString(item.location),
+    description: toSafeString(item.description),
+    achievements: normalizeStringList(item.achievements),
+  };
+}
+
+/**
+ * The custom sections. A section's key is the client's to make (the editor
+ * mints `cs-<8 hex>`), so one that is not well formed, or repeats an earlier
+ * one, drops the whole section rather than being repaired here - a repaired
+ * key would no longer match the `custom:<key>` ref the order carries. A
+ * section survives on its title alone, so an added, empty card keeps its name.
+ */
+function normalizeCustomSections(value: unknown, existing?: CustomSection[]): CustomSection[] {
+  if (!Array.isArray(value)) return existing ?? [];
+  const seen = new Set<string>();
+  const result: CustomSection[] = [];
+  for (const item of value) {
+    if (result.length >= MAX_PROFILE_CUSTOM_SECTIONS) break;
+    if (!isPlainRecord(item)) continue;
+    const key = toSafeString(item.key);
+    if (!isCustomSectionKey(key) || seen.has(key)) continue;
+    const title = toSafeString(item.title);
+    const entries = normalizeEntryList(
+      item.entries,
+      undefined,
+      readCustomSectionEntry,
+      (entry) => Boolean(entry.heading || entry.subheading || entry.description || entry.achievements.length)
+    );
+    if (!title && entries.length === 0) continue;
+    seen.add(key);
+    result.push({ key, title, entries });
+  }
+  return result;
+}
+
+/**
+ * The section order (config/profileSections.ts has the semantics). Omitted,
+ * or not a list at all, keeps the stored order re-cleaned against the custom
+ * sections just saved, so a section deleted in this save loses its ref; `[]`
+ * clears it - back to the template's own order, stored as absent; a list is
+ * stored as its valid refs, once each, in the order given. NOTHING is appended
+ * or filled in: a resume moves only once its person arranges the cards, and
+ * the order is completed where it is read (`effectiveSectionOrder`) or drawn
+ * (`sectionSortKey`). A list with no valid ref in it clears too - a client
+ * that sent only junk arranged nothing.
+ */
+function normalizeSectionOrder(
+  value: unknown,
+  existing: string[] | undefined,
+  customSections: CustomSection[]
+): string[] | undefined {
+  const customKeys = customSections.map((section) => section.key);
+  const source = Array.isArray(value) ? value : existing;
+  const cleaned = cleanSectionOrder(source, customKeys);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 export function normalizeProfileSettings(
   input: CreateProfileDTO['profileSettings'] | undefined,
   existing?: ProfileSettings
@@ -345,6 +610,18 @@ export function normalizeProfileSettings(
     typeof source?.includeSoftSkills === 'boolean' ? source.includeSoftSkills : existing?.includeSoftSkills === true;
   const includeStrengths =
     typeof source?.includeStrengths === 'boolean' ? source.includeStrengths : existing?.includeStrengths === true;
+  // A mode this build knows decides; `null` is "use the default" and clears a
+  // stored choice; anything else - omitted, junk - keeps what is stored. Left
+  // out of the record when there is none, so a profile nobody set keeps
+  // following DEFAULT_TAILOR_MODE.
+  const sentMode = source ? (source as Record<string, unknown>).tailorMode : undefined;
+  const tailorMode = isTailorMode(sentMode)
+    ? sentMode
+    : sentMode === null
+      ? undefined
+      : isTailorMode(existing?.tailorMode)
+        ? existing.tailorMode
+        : undefined;
 
   return {
     resumePromptId:
@@ -369,6 +646,7 @@ export function normalizeProfileSettings(
     technicalSkillsLayout,
     includeSoftSkills,
     includeStrengths,
+    ...(tailorMode ? { tailorMode } : {}),
     // Only values this build understands survive, and an omitted one keeps
     // whatever was stored: a client that predates these fields must not blank
     // them by saving a profile without them.
@@ -381,6 +659,8 @@ export function normalizeProfilePayload(
   data: CreateProfileDTO,
   existing?: Profile
 ): Omit<Profile, 'id' | 'createdAt' | 'updatedAt'> {
+  const customSections = normalizeCustomSections(data.customSections, existing?.customSections);
+  const sectionOrder = normalizeSectionOrder(data.sectionOrder, existing?.sectionOrder, customSections);
   return {
     name: toSafeString(data.name, existing?.name ?? 'Untitled Profile'),
     title: toSafeString(data.title, existing?.title ?? 'Professional'),
@@ -396,6 +676,18 @@ export function normalizeProfilePayload(
     softSkills: normalizeSoftSkills(data.softSkills, existing?.softSkills),
     education: normalizeEducation(data.education, existing?.education),
     certifications: normalizeCertifications(data.certifications, existing?.certifications),
+    projects: normalizeProjects(data.projects, existing?.projects),
+    languages: normalizeLanguages(data.languages, existing?.languages),
+    awards: normalizeAwards(data.awards, existing?.awards),
+    publications: normalizePublications(data.publications, existing?.publications),
+    volunteering: normalizeVolunteering(data.volunteering, existing?.volunteering),
+    courses: normalizeCourses(data.courses, existing?.courses),
+    interests: normalizeInterests(data.interests, existing?.interests),
+    references: normalizeReferences(data.references, existing?.references),
+    customSections,
+    // Last, because it is cleaned against the custom sections just saved; and
+    // left out entirely when absent, so "no order" is not stored as a key.
+    ...(sectionOrder ? { sectionOrder } : {}),
   };
 }
 
@@ -538,9 +830,21 @@ export function buildPreviewProfile(draft: unknown, existing?: Profile | null): 
     strengths: list('strengths') as CreateProfileDTO['strengths'],
     education: list('education') as CreateProfileDTO['education'],
     certifications: list('certifications') as CreateProfileDTO['certifications'],
+    projects: list('projects'),
+    languages: list('languages'),
+    awards: list('awards'),
+    publications: list('publications'),
+    volunteering: list('volunteering'),
+    courses: list('courses'),
+    references: list('references'),
+    customSections: list('customSections'),
     ...(typeof source.skills !== 'undefined' ? { skills: source.skills } : {}),
     ...(typeof source.skillCategories !== 'undefined' ? { skillCategories: source.skillCategories } : {}),
     ...(Array.isArray(source.softSkills) ? { softSkills: source.softSkills } : {}),
+    ...(Array.isArray(source.interests) ? { interests: source.interests } : {}),
+    // The order is content, not a setting: a draft that sends [] previews in
+    // the template's own order, exactly as the save would print.
+    ...(Array.isArray(source.sectionOrder) ? { sectionOrder: source.sectionOrder } : {}),
   };
 
   const placeholder = {

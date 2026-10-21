@@ -32,6 +32,17 @@
  * database, written by the suite, and refused by the startup guard when it is
  * one an older build left unfinished.
  *
+ * And no test may use a real Google credential. The credential search also
+ * looks beside the compiled code, so a checkout holding one (backend/
+ * google-oauth-credentials.json once `sheets:login` has run) lent it to every
+ * test, and a test that signed an account in allocated a REAL spreadsheet in
+ * that Google account - one owner's Drive collected four hundred and more
+ * "Free Tailor - admin@example.com" and the like. TAILOR_GOOGLE_CREDENTIAL_SEARCH
+ * turns the search off, and the two path variables are blanked over the
+ * environment and the root `.env` alike (an exported empty value counts as
+ * set, so the file cannot fill them in). test/helpers.js does the same for a
+ * file run with `node --test` on its own.
+ *
  * TAILOR_KEEP_TEST_TMP=1 keeps the root and prints where it is, for looking at
  * what a failing test left behind.
  */
@@ -52,7 +63,16 @@ const args = ['--test', ...(patterns.length > 0 ? patterns : ['test/*.test.js'])
 
 const child = spawn(process.execPath, args, {
   cwd: BACKEND_DIR,
-  env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root, DB_DIR: dbDir },
+  env: {
+    ...process.env,
+    TMPDIR: root,
+    TEMP: root,
+    TMP: root,
+    DB_DIR: dbDir,
+    TAILOR_GOOGLE_CREDENTIAL_SEARCH: 'off',
+    GOOGLE_CREDENTIALS_PATH: '',
+    GOOGLE_SERVICE_ACCOUNT_KEY_PATH: '',
+  },
   stdio: 'inherit',
 });
 

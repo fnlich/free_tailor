@@ -1,5 +1,3 @@
-import type { TechnicalSkillsLayout } from './profile';
-
 /** Stored config for manual templates; enables edit. Matches ManualTemplateConfig shape. */
 export interface ManualTemplateConfigStored {
   name: string;
@@ -29,31 +27,30 @@ export interface ManualTemplateConfigStored {
  */
 export type TemplateSource = 'uploaded' | 'extracted' | 'manual';
 
+/** The style a template is filed under in the new-profile chooser (config/templateCategories.ts). */
+export type TemplateCategory = 'simple' | 'modern' | 'creative';
+
 export interface Template {
   id: string;
   name: string;
   description: string;
   disabled?: boolean;
+  /**
+   * Simple, Modern or Creative - the chooser's filters. A built-in states it
+   * in its JSON; a template without one is listed under All only.
+   */
+  category?: TemplateCategory;
   /** Present on a saved template, absent on a built-in. See `TemplateSource`. */
   source?: TemplateSource;
   htmlContent: string;
   cssContent: string;
   sections: string[];
-  /**
-   * The Technical Skills layouts this template renders well - a non-empty
-   * subset of `['categorized', 'flat']`, in that order.
-   *
-   * A list rather than one value because most templates render both once the
-   * compile step is layout-aware; the two whose skills block is a grid of
-   * category cells say `['categorized']`. A profile is offered only templates
-   * that list its layout, and generation falls back (see
-   * `services/templateChoice`) rather than failing when they disagree.
-   *
-   * Built-ins declare it in their static JSON; anything stored without it gets
-   * it from `inferTemplateSkillsLayouts` when it is read, so no row needs
-   * migrating.
+  /*
+   * There is no list of the Technical Skills layouts a template prints: every
+   * template prints both, Grouped and Plain (the compile step in
+   * generators/pdfGenerator.ts sees to it). A `skillsLayouts` key an older
+   * build wrote into a saved file or an override row is not read.
    */
-  skillsLayouts: TechnicalSkillsLayout[];
   /**
    * Read-only, worked out from the markup on every read and never stored:
    * whether the template has anywhere to put the Soft Skills and Strengths
@@ -63,6 +60,16 @@ export interface Template {
    */
   supportsSoftSkills?: boolean;
   supportsStrengths?: boolean;
+  /**
+   * Read-only like the two above, derived from the markup on every read and
+   * never stored: which section kinds the template prints (config/
+   * profileSections.ts ids, plus 'custom' for the custom sections - every
+   * kind the extra-sections macro generates counts), and the order its own
+   * markup prints them in, which is what a profile with no stored
+   * `sectionOrder` is drawn and shown in.
+   */
+  printsSections?: string[];
+  nativeSectionOrder?: string[];
   createdAt: string;
   updatedAt: string;
   /** Stored config for manual templates; enables edit */
@@ -253,9 +260,6 @@ export interface TailoredContent {
    * profile's own when this is empty.
    */
   softSkills: string[];
-  /** The posting's soft skills the library does not know yet; empty when the section is off. */
-  unconfirmedSoftSkills: string[];
-  unconfirmedHardSkills: string[];
   /**
    * Never printed: with the Strengths switch on the render prints the
    * profile's OWN strengths, whatever a model or an older build put here.

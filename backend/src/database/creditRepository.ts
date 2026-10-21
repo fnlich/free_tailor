@@ -534,6 +534,95 @@ export function debitReporterPayout(input: {
   }).immediate();
 }
 
+export type SubscriptionChargeOutcome =
+  | { ok: true; balance: number; entry: LedgerEntry }
+  | {
+      ok: false;
+      reason: 'no-account' | 'not-a-user' | 'disabled' | 'insufficient' | 'already-charged';
+      balance: number;
+    };
+
+/**
+ * Takes a subscription's price off the balance - a purchase or an upgrade
+ * (`subscription-purchase`), or a renewal (`subscription-renewal`) - and
+ * writes its row, or takes nothing.
+ *
+ * Like `debitReporterPayout` it never clamps: a subscription the balance
+ * cannot cover is not bought, or not renewed, and a row saying less was
+ * taken than the tier costs would be a wrong record. ONE conditional UPDATE
+ * decides all of it - the account builds resumes (`role = 'user'`: a
+ * reporter's balance is earnings and is never spent on a tier, and an
+ * administrator is never charged), is not disabled (it cannot sign in to use
+ * what it would pay for - services/subscriptions ends such a tier at its
+ * renewal instead, and this is the backstop) AND holds at least the amount -
+ * so neither a role change, a disable nor a second charge landing at the same
+ * moment can slip between a check and the debit. When it changes nothing, a
+ * second read says which condition failed.
+ *
+ * Once per key: a key already used answers `already-charged` and moves
+ * nothing, so a renewal the sweep meets twice, or a purchase sent twice, is
+ * charged once. Called inside services/subscriptions' own transaction
+ * (subscriptionRepository `changeSubscription`), where it is a savepoint: the
+ * charge and the tier it pays for commit together or not at all.
+ */
+export function debitSubscriptionCharge(input: {
+  userId: string;
+  amountMilli: number;
+  reason: Extract<CreditReason, 'subscription-purchase' | 'subscription-renewal'>;
+  idempotencyKey: string;
+  refId: string;
+  note: string;
+}): SubscriptionChargeOutcome {
+  if (!Number.isSafeInteger(input.amountMilli) || input.amountMilli <= 0) {
+    throw new Error(
+      `A subscription charge must be a positive whole number of thousandths of a dollar, not ${input.amountMilli}.`
+    );
+  }
+  const db = getDb();
+  const timestamp = now();
+
+  return db.transaction((): SubscriptionChargeOutcome => {
+    if (keyUsed(input.idempotencyKey)) {
+      return { ok: false, reason: 'already-charged', balance: readBalance(input.userId) };
+    }
+
+    const changed = db
+      .prepare(
+        `UPDATE users SET balance_milli = balance_milli - @amount, updated_at = @timestamp
+          WHERE id = @userId AND role = 'user' AND disabled = 0 AND balance_milli >= @amount`
+      )
+      .run({ amount: input.amountMilli, userId: input.userId, timestamp }).changes;
+
+    if (changed === 0) {
+      const account = db.prepare('SELECT role, disabled, balance_milli FROM users WHERE id = ?').get(input.userId) as
+        | { role: string; disabled: number; balance_milli: number }
+        | undefined;
+      if (!account) return { ok: false, reason: 'no-account', balance: 0 };
+      return {
+        ok: false,
+        // In the order of the WHERE: a balance is only "short" for an account
+        // that could have been charged at all.
+        reason: account.role !== 'user' ? 'not-a-user' : account.disabled !== 0 ? 'disabled' : 'insufficient',
+        balance: account.balance_milli,
+      };
+    }
+
+    const balance = readBalance(input.userId);
+    insertLedger({
+      userId: input.userId,
+      deltaMilli: -input.amountMilli,
+      balanceAfterMilli: balance,
+      reason: input.reason,
+      refKind: 'subscription',
+      refId: input.refId,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+    });
+    const row = db.prepare('SELECT * FROM credit_ledger WHERE idempotency_key = ?').get(input.idempotencyKey) as LedgerRow;
+    return { ok: true, balance, entry: toEntry(row) };
+  }).immediate();
+}
+
 /* ------------------------------------------------------- job lake rewards */
 
 export type JobRewardOutcome = {

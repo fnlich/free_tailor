@@ -35,6 +35,18 @@ const nextConfig: NextConfig = {
    * that block points at, are in node_modules/next/dist/docs/ either way.
    */
   agentRules: false,
+  experimental: {
+    /*
+     * Turbopack's persistent BUILD cache (.next/cache/turbopack, on by default
+     * since 16.3) once shipped a globals.css older than the file on disk -
+     * deterministically, and past a `touch` - so new controls rendered
+     * unstyled and removed rules came back. A cold compile costs a few
+     * seconds, which is cheaper than a stale stylesheet nobody can see the
+     * cause of. The dev server's own cache (turbopackFileSystemCacheForDev) is
+     * left on.
+     */
+    turbopackFileSystemCacheForBuild: false,
+  },
   allowedDevOrigins: [
     "http://localhost:3000",
     "http://127.0.0.1:3000",

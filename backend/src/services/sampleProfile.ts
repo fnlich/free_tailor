@@ -248,8 +248,6 @@ export const SAMPLE_TAILORED_CONTENT: TailoredContent = {
   hardSkills: SAMPLE_TECHNICAL_SKILLS,
   skills: SAMPLE_TECHNICAL_SKILLS,
   softSkills: SAMPLE_SKILL_GROUPS[SAMPLE_SKILL_GROUPS.length - 1].skills,
-  unconfirmedSoftSkills: [],
-  unconfirmedHardSkills: [],
   strengths: [],
 };
 

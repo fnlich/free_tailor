@@ -6,7 +6,9 @@ import {
   getToken,
   type AiRequestOverrides,
 } from './api';
+import { formatMoney } from './format';
 import type { OrderFileKind } from './orders';
+import type { SpendEstimate } from './spendConfirm';
 import {
   claimTabId,
   contentDispositionName,
@@ -362,3 +364,37 @@ export const generationApi = {
       signal
     ),
 };
+
+/** What the spend confirm says a run is: `7 resumes at $0.023 each`, or `7 resumes` when they cost different amounts. */
+function describeRunSpend(quote: GenerationQuote): string {
+  const resumes = `${quote.resumes} resume${quote.resumes === 1 ? '' : 's'}`;
+  return quote.pricePerResumeMilli !== null && quote.resumes > 1
+    ? `${resumes} at ${formatMoney(quote.pricePerResumeMilli)} each`
+    : resumes;
+}
+
+/**
+ * What a run will take, for the spend confirm (components/SpendConfirm.tsx):
+ * the server's quote for exactly the body about to be sent, priced the way the
+ * real submission is. A quote that fails - offline, a model no longer on
+ * offer - is a cost NOT KNOWN, never $0: the confirm then says it could not be
+ * worked out, and the balance is the account's as the page last read it.
+ * `what` names what is being paid for.
+ */
+export async function estimateRun(
+  body: SubmitBatchRequest,
+  fallback: { balanceMilli: number | null; exempt: boolean }
+): Promise<{ estimate: SpendEstimate; what: string | null }> {
+  try {
+    const quote = await generationApi.quote(body);
+    return {
+      estimate: { costMilli: quote.costMilli, balanceMilli: quote.balanceMilli, exempt: quote.exempt, chargedOn: null },
+      what: describeRunSpend(quote),
+    };
+  } catch {
+    return {
+      estimate: { costMilli: null, balanceMilli: fallback.balanceMilli, exempt: fallback.exempt, chargedOn: null },
+      what: null,
+    };
+  }
+}

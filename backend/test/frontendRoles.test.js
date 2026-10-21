@@ -142,12 +142,12 @@ test("the rail and the Settings tabs offer a reporter exactly their pages, and e
   const nav = loadFrontend('components/shell/navModel.ts');
   const roles = loadFrontend('lib/roles.ts');
   const rail = [...nav.SIDEBAR_MAIN, ...nav.SIDEBAR_ASSISTANT, ...nav.SIDEBAR_BOTTOM];
-  const offered = (role, subscription = 'default') =>
-    rail.filter((item) => nav.canSee(item, role, subscription)).map((item) => item.label);
+  const offered = (role) => rail.filter((item) => nav.canSee(item, role)).map((item) => item.label);
 
   assert.deepEqual(offered('reporter'), ['Report Jobs', 'Credits', 'Settings']);
+  // Groups is a builder's on every subscription - drawn locked below Premium, never hidden.
   const builders = [
-    'Profiles', 'Find Jobs', 'Build Resumes', 'Orders', 'Credits',
+    'Profiles', 'Groups', 'Find Jobs', 'Build Resumes', 'Orders', 'Credits',
     'Job Filter', 'Bid Assistant', 'Calendar', 'Templates', 'Settings',
   ];
   assert.deepEqual(offered('user'), builders);
@@ -156,9 +156,14 @@ test("the rail and the Settings tabs offer a reporter exactly their pages, and e
   assert.deepEqual(offered('owner'), []);
   assert.deepEqual(offered(undefined), []);
 
+  // Every entry is a page of the app - Find Jobs included, which used to leave it for the sheet.
+  for (const item of rail) assert.match(item.href, /^\//, `${item.label} is a page of the app`);
+  assert.equal(rail.find((item) => item.label === 'Find Jobs').href, '/jobs');
+  assert.ok(appRoutes().includes('/jobs'), 'Find Jobs is a page');
+  assert.equal(roles.reporterMayOpen('/jobs'), false, "and not a reporter's: they are sent to Report Jobs");
+
   // Nothing offered to a reporter is a page AuthGate would bounce them from.
-  for (const item of rail.filter((entry) => nav.canSee(entry, 'reporter', 'default'))) {
-    assert.equal(item.external, undefined, `${item.label} leaves the app`);
+  for (const item of rail.filter((entry) => nav.canSee(entry, 'reporter'))) {
     assert.equal(roles.reporterMayOpen(item.href), true, item.label);
   }
 
@@ -173,14 +178,35 @@ test("the rail and the Settings tabs offer a reporter exactly their pages, and e
 
   // The safe default: an entry that names no roles is the builders', so one
   // added later is kept from reporters until somebody names them on it.
-  assert.equal(nav.canSee({}, 'reporter', 'premium-max'), false);
-  assert.equal(nav.canSee({}, 'user', 'default'), true);
-  // A tier on top of the role, which an administrator is exempt from (B1).
+  assert.equal(nav.canSee({}, 'reporter'), false);
+  assert.equal(nav.canSee({}, 'user'), true);
+  // A tier on top of the role never hides an entry: it LOCKS it - and an
+  // administrator is exempt (B1), as from the backend's requireSubscription.
   const premium = { needs: 'premium' };
-  assert.equal(nav.canSee(premium, 'user', 'default'), false);
-  assert.equal(nav.canSee(premium, 'user', 'premium'), true);
-  assert.equal(nav.canSee(premium, 'admin', 'default'), true);
-  assert.equal(nav.canSee({ roles: ['reporter'], needs: 'premium' }, 'reporter', 'default'), false);
+  assert.equal(nav.canSee(premium, 'user'), true);
+  assert.equal(nav.isNavLocked(premium, 'user', 'default'), true);
+  assert.equal(nav.isNavLocked(premium, 'user', 'premium'), false);
+  assert.equal(nav.isNavLocked(premium, 'user', 'premium-max'), false);
+  assert.equal(nav.isNavLocked(premium, 'admin', 'default'), false);
+  assert.equal(nav.isNavLocked({}, 'user', 'default'), false);
+  // An entry the role is not offered is not drawn at all, so it is not "locked" either.
+  assert.equal(nav.isNavLocked({ needs: 'premium' }, 'reporter', 'default'), false);
+  assert.equal(nav.isNavLocked({ roles: ['reporter'], needs: 'premium' }, 'reporter', 'default'), true);
+
+  // Groups, by name: locked for a Default user, open from Premium and for an administrator,
+  // whose dialog is the Groups lock - and the backend's gate is the same tier.
+  const groups = rail.find((item) => item.label === 'Groups');
+  const { MULTI_PROFILE_SUBSCRIPTION } = require('../dist/config/accountSubscriptions');
+  assert.equal(groups.href, '/admin/groups');
+  assert.equal(groups.needs, MULTI_PROFILE_SUBSCRIPTION);
+  assert.equal(groups.feature, 'groups');
+  assert.deepEqual(
+    ['default', 'premium', 'premium-plus', 'premium-max'].map((tier) => nav.isNavLocked(groups, 'user', tier)),
+    [true, false, false, false]
+  );
+  assert.equal(nav.isNavLocked(groups, 'admin', 'default'), false);
+  // Every entry that needs a tier says which lock it is.
+  for (const item of rail.filter((entry) => entry.needs)) assert.ok(item.feature, item.label);
 });
 
 test("a reporter's sheet link is the shell's, else the session's, and only ever an https address", () => {

@@ -43,6 +43,88 @@ export interface Certification {
   credentialId?: string;
 }
 
+/*
+ * The section kinds a resume commonly carries beyond the classic six, each a
+ * list of entries on the profile (config/profileSections.ts is the catalogue).
+ * A kind prints only when it has an entry; there is no on/off switch for them
+ * as there is for Soft Skills and Strengths. Links are stored as typed, like
+ * `contact.github`; the renderer keeps only http(s) ones.
+ */
+export interface Project {
+  name: string;
+  role: string;
+  startDate: string;
+  endDate: string;
+  link: string;
+  description: string;
+  achievements: string[];
+}
+
+export interface Language {
+  language: string;
+  proficiency: string;
+}
+
+export interface Award {
+  title: string;
+  issuer: string;
+  date: string;
+  description: string;
+}
+
+export interface Publication {
+  title: string;
+  publisher: string;
+  date: string;
+  link: string;
+  description: string;
+}
+
+export interface Volunteering {
+  role: string;
+  organization: string;
+  startDate: string;
+  endDate: string;
+  location: string;
+  description: string;
+  achievements: string[];
+}
+
+export interface Course {
+  name: string;
+  institution: string;
+  date: string;
+}
+
+export interface Reference {
+  name: string;
+  title: string;
+  company: string;
+  email: string;
+  phone: string;
+}
+
+export interface CustomSectionEntry {
+  heading: string;
+  subheading: string;
+  startDate: string;
+  endDate: string;
+  location: string;
+  description: string;
+  achievements: string[];
+}
+
+/**
+ * A section the person titles themselves. `key` is client-generated,
+ * `[a-z0-9-]{1,40}`, unique in the profile, and `sectionOrder` refers to the
+ * section as `custom:<key>`.
+ */
+export interface CustomSection {
+  key: string;
+  title: string;
+  entries: CustomSectionEntry[];
+}
+
 /**
  * One heading in the Technical Skills block, and the skills under it.
  *
@@ -69,6 +151,23 @@ export interface SkillCategoryGroup {
  */
 export type TechnicalSkillsLayout = 'categorized' | 'flat';
 
+/**
+ * How a tailoring treats the candidate's own experience (owner's request,
+ * 2026-10-20):
+ *
+ * - `partial`: each role's description and achievements and the summary are
+ *   sent, and rewritten for the posting (the `tailor-resume` prompt); a role
+ *   left empty is written from the posting.
+ * - `full`: only each role's title, company and dates are sent, and the whole
+ *   experience and the summary are written for the posting
+ *   (`tailor-resume-full`).
+ *
+ * Either way the skills block leads with the posting's own hard skills.
+ * Absent means the default: `.env`'s `DEFAULT_TAILOR_MODE`, else `partial`
+ * (profileService.ts `getProfileTailorMode`).
+ */
+export type TailorMode = 'partial' | 'full';
+
 export interface ProfileSettings {
   resumePromptId?: string;
   resumeFileNameTemplate?: string;
@@ -87,6 +186,11 @@ export interface ProfileSettings {
   includeSoftSkills?: boolean;
   /** Whether the resume carries a Strengths section. Absent means false, for the same reason. */
   includeStrengths?: boolean;
+  /**
+   * Partial or Fully tailor (`TailorMode`). Absent follows the default, so a
+   * profile nobody has set keeps following `.env`'s `DEFAULT_TAILOR_MODE`.
+   */
+  tailorMode?: TailorMode;
   /**
    * This profile's default model.
    *
@@ -148,6 +252,31 @@ export interface Profile {
   softSkills?: string[];
   education: Education[];
   certifications?: Certification[];
+  /*
+   * The other section kinds (config/profileSections.ts). Optional because every
+   * profile written before them has none; absent and empty read the same, and a
+   * kind prints only when it has an entry.
+   */
+  projects?: Project[];
+  languages?: Language[];
+  awards?: Award[];
+  publications?: Publication[];
+  volunteering?: Volunteering[];
+  courses?: Course[];
+  interests?: string[];
+  references?: Reference[];
+  customSections?: CustomSection[];
+  /**
+   * The order the resume's sections print in - every kind, classic and new,
+   * by config/profileSections.ts id, or `custom:<key>`. ABSENT means the
+   * template's own order (every profile saved before this existed), and the
+   * normaliser never fills it in: a resume moves only once its person arranges
+   * the cards. A kind listed here with nothing in it is an added, empty
+   * section: kept, shown as an empty card, and printed as nothing. A template
+   * still decides which column a section lives in; the order applies within
+   * that column.
+   */
+  sectionOrder?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -174,4 +303,25 @@ export interface CreateProfileDTO {
   softSkills?: unknown;
   education?: Partial<Education>[];
   certifications?: Certification[];
+  /*
+   * Each a list of entries; anything in it that is not an object is dropped,
+   * and an entry with nothing typed into it is dropped too. Omitted (or not a
+   * list at all) keeps what is stored; an empty list clears it.
+   */
+  projects?: unknown;
+  languages?: unknown;
+  awards?: unknown;
+  publications?: unknown;
+  volunteering?: unknown;
+  courses?: unknown;
+  /** A list of names, like softSkills. */
+  interests?: unknown;
+  references?: unknown;
+  customSections?: unknown;
+  /**
+   * The section order: kind ids and `custom:<key>` refs. Omitted keeps the
+   * stored order; `[]` clears it, back to the template's own order; anything
+   * in a list that is not a known ref is dropped.
+   */
+  sectionOrder?: unknown;
 }

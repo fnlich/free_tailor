@@ -29,6 +29,8 @@ import contactRoutes, { adminContactRouter } from './routes/contact';
 import sheetRoutes from './routes/sheet';
 import reportRoutes from './routes/report';
 import jobLakeRoutes from './routes/jobLake';
+import subscriptionRoutes from './routes/subscription';
+import { describeRenewalInterval, startSubscriptionRenewalAfter } from './services/subscriptions/renewal';
 import { requestAdminLakeSync } from './services/jobLake/adminSheet';
 import { backfillAccountSheets } from './services/sheets/accountSheet';
 import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
@@ -53,6 +55,7 @@ import {
   immediateFileRetentionMs,
   jsonBodyMaxMb,
   serverPort,
+  subscriptionRenewalSweepMs,
   tailorCacheDays,
 } from './config/operational';
 import { normalizeOrigin, publicBaseUrl } from './config/publicUrl';
@@ -221,6 +224,8 @@ app.use('/api/contact', contactRoutes);
 app.use('/api/admin/contact', adminContactRouter);
 app.use('/api/admin/accounts', accountRoutes);
 app.use('/api/credits', creditRoutes);
+// An account's own subscription, bought from its balance: a builder's.
+app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/sheet', sheetRoutes);
 // The Job Data Lake: a reporter's Report Jobs (reporters and administrators),
@@ -365,7 +370,10 @@ const server = app.listen(PORT, HOST, () => {
   // And told WHICH batches came back: age alone cannot tell an abandoned
   // reservation from an order that was six hours into its run when the
   // process stopped, and releasing that one built the rest of it for free.
-  void restoreGenerationQueue().then((restored) => {
+  //
+  // The renewal sweep below waits for this too: what the reconciliation
+  // releases goes back on balances a renewal is charged from.
+  const creditBooksReconciled = restoreGenerationQueue().then((restored) => {
     reconcileCredits(Date.now(), { liveBatchIds: restored.batchIds });
   });
   // Gives a spreadsheet to accounts created before this feature existed. Serial
@@ -391,6 +399,17 @@ const server = app.listen(PORT, HOST, () => {
    * it never holds the process open.
    */
   startOrderRetention();
+  // Paid subscriptions whose 30 days are up are renewed from the balance, or
+  // ended, now and every SUBSCRIPTION_RENEWAL_SWEEP_MS after - started here,
+  // never on import, and unref'd like the sweep above. "Now" is once the
+  // credit books are straight (above): a renewal decided before the credit of
+  // a run that never finished came back ended a subscription that credit paid.
+  const renewalIntervalMs = subscriptionRenewalSweepMs();
+  startSubscriptionRenewalAfter(creditBooksReconciled, renewalIntervalMs);
+  console.log(
+    '[subscriptions] Paid subscriptions renew every 30 days; due ones are checked every ' +
+      `${describeRenewalInterval(renewalIntervalMs)}.`
+  );
   // Tailored answers older than TAILOR_CACHE_DAYS go now and once a day after
   // (services/tailorCache.ts). Never fatal; unref'd like the sweep above.
   startTailorCachePrune();

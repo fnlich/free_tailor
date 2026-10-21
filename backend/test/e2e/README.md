@@ -10,12 +10,36 @@ a frontend) that are already running. None of them is part of `npm test`.
 | `refunds.js` | A reporter's payout request, the refund requests left from before, and Contact admin, with no provider at all | [Running it](#running-it), step 5 |
 | `preview-vibration.js` | The profile preview holding still with real scrollbars | [The profile preview, held still](#the-profile-preview-held-still) |
 | `section-switches.js` | The profile preview with Strengths and Soft Skills unticked, on uploaded-style templates and a built-in | [The profile preview, sections switched off](#the-profile-preview-sections-switched-off) |
+| `skills-layouts.js` | Every template laid out in both Technical Skills layouts, and the Grouped / Plain switch in the template chooser and Admin -> Templates | [Both skills layouts, in a browser](#both-skills-layouts-in-a-browser) |
 | `immediate-run.js`, `sheet-panel.js` | Generate Immediately, Order and the sheet panel, against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Building resumes, with the seat stubbed](#building-resumes-with-the-seat-stubbed) |
+| `subscription.js` | Settings -> Subscription bought from the credit balance, the spend alert, the renewal sweep, and the locks, against a stubbed seat | [Subscriptions, the locks and the spend alert](#subscriptions-the-locks-and-the-spend-alert) |
 | `report-run.js` | Report Jobs and Admin -> Job Lake, against a stubbed sheet and seat (`stub-report-sheets.js`) | [Report Jobs and the job lake](#report-jobs-and-the-job-lake-with-google-stubbed) |
 | `lake-push.js` | Admin -> Job Lake's filter form and Push to Google Sheet, and a build from the pushed rows, against a stubbed sheet and seat (`stub-lake-push-sheets.js`) | [Push to Google Sheet](#push-to-google-sheet-with-google-stubbed) |
+| `find-jobs.js` | Find Jobs: the lake searched with several values, rows picked across pages, Export into Sheet and Order Immediately, against the same stubbed sheet and a stubbed seat | [Find Jobs](#find-jobs-with-google-stubbed) |
 | `providers.js` | Admin -> Models -> Providers, against a stubbed seat | [Providers, with the seat stubbed](#providers-with-the-seat-stubbed) |
 | `shell.js` | Every page as a user, an administrator and a reporter | [The shell, as every role](#the-shell-as-every-role) |
 | `dev-reload.js` | A second tab must not reload the first, in each mode the frontend can be served in | [A second tab, in each dev mode](#a-second-tab-in-each-dev-mode) |
+
+**Start every e2e backend with a preload from here** - the script's own
+sheets stub (`--require ./test/e2e/stub-sheets.js` or its kin), and for a
+backend that needs no stub at all, `--require ./test/e2e/no-google.js`. A
+backend finds `backend/google-oauth-credentials.json` or a service-account
+key by itself, beside its own compiled code, and blanking `GOOGLE_*` in the
+environment does not stop that search: every account a script signs in then
+gets a REAL spreadsheet in that Google account (its job sheet is made at
+sign-in). `no-google.js` turns the search off
+(`TAILOR_GOOGLE_CREDENTIAL_SEARCH=off`) and blanks both path variables, as
+`npm test` does; every stub and `fake-providers.js` requires it first, before
+anything loads the backend. A backend started with NO preload still finds a
+real credential. The startup log says so - *Using user credentials* or
+*Using service account* - and a backend that prints either is talking to
+Google.
+
+**Build the frontend with `npm run build --prefix frontend`** before a run
+that judges what it draws. Next 16.3's build cache once shipped a stylesheet
+older than `globals.css` (the list boxes unstyled, a removed rule back), so
+`next.config.ts` now switches it off for builds and every build is cold; if
+you see old styles anyway, `rm -rf frontend/.next/cache/turbopack` first.
 
 ## Buying credits
 
@@ -98,12 +122,13 @@ node test/e2e/browser.js       # the OLD buy page; needs playwright, which may n
 #    would make it succeed. Stop step 2's server and start it bare, with the
 #    Stripe keys blanked - an exported empty value beats the one in .env -
 #    then point the script at the same DB_DIR the server uses.
-STRIPE_SECRET_KEY= STRIPE_PUBLISHABLE_KEY= STRIPE_WEBHOOK_SECRET= DB_DIR=/path/to/db node dist/index.js
+STRIPE_SECRET_KEY= STRIPE_PUBLISHABLE_KEY= STRIPE_WEBHOOK_SECRET= DB_DIR=/path/to/db \
+  node --require ./test/e2e/no-google.js dist/index.js
 DB_DIR=/path/to/db node test/e2e/refunds.js
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `report-run.js`, `lake-push.js` and `providers.js` use puppeteer, which the backend
+`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `subscription.js`, `report-run.js`, `lake-push.js`, `find-jobs.js` and `providers.js` use puppeteer, which the backend
 already installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
@@ -126,11 +151,14 @@ your own unless you mean to replace the screenshots committed here.
 preview for the shake a scrollbar used to cause (README, Troubleshooting). It
 launches puppeteer **with real scrollbars** - the default `--hide-scrollbars`
 is why nothing else here could ever see it - opens one profile's editor, picks
-each template in turn and reads the page's width and both scrollbars on every
-animation frame. It needs the two servers up and `DB_DIR` naming the backend's
-database, like the others:
+each template in turn, **in each layout** (every template prints both, and
+Plain changes the page's height, which is what the shake depends on), and
+reads the page's width and both scrollbars on every animation frame. It needs
+the two servers up and `DB_DIR` naming the backend's database, like the
+others:
 
 ```bash
+DB_DIR=/path/to/db PORT=3001 node --require ./test/e2e/no-google.js dist/index.js   # the backend
 DB_DIR=/path/to/db node test/e2e/preview-vibration.js
 # E2E_VIEWPORTS=1920x937,1080xband  E2E_TEMPLATES=default  E2E_SECONDS=3
 # E2E_NO_GUTTER=1 turns scrollbar-gutter off, to prove the editor's own guard
@@ -164,6 +192,7 @@ again at the end. It needs the two servers up and `DB_DIR` naming the
 backend's database:
 
 ```bash
+DB_DIR=/path/to/db PORT=3001 node --require ./test/e2e/no-google.js dist/index.js   # the backend
 DB_DIR=/path/to/db node test/e2e/section-switches.js
 # E2E_SHOTS=/some/dir saves the preview pane in every state
 ```
@@ -172,6 +201,47 @@ Against the finder before these templates were covered, 6 of its 15 states
 failed: the sidebar went with its photo and *References*, and the Soft Skills
 heading under its divider, the bold *Strengths* label and the `join`
 section's heading all stayed.
+
+## Both skills layouts, in a browser
+
+`skills-layouts.js` checks what only a browser can say about the two
+Technical Skills layouts, which every template prints. It draws every enabled
+template - the built-ins and whatever the installation has saved - from the
+gallery route in each layout, lays it out at the printed page's size
+(794x1123), and asks: in **Plain**, does every child of an element the Plain
+net marked (`data-plain-skills`) span its holder's width with no minimum
+height (Burgundy Rule's and Navy Rule's one headless group used to fill one
+third-width cell of their grid), and are those two marked at all; in
+**Grouped**, does any line of a leaf block - a `p`, `li`, `td` or a `div` with
+no block children, a line ending at a `<br>` - hold both the sample's
+*Languages* and *Frameworks* headings (the owner's ATS templates used to print
+Grouped as one run-on paragraph). Then it saves an uploaded-style three-column
+grid through the admin upload, checks it the same way and deletes it; opens a
+template's details in the chooser, presses **Plain** in its *Technical
+skills* switch, and checks that the page frame asks for `layout=flat` and
+that **Use this template** opens the editor at `&layout=flat` with Plain
+ticked (nothing is saved); and on **Admin → Templates** presses **View**, then
+**Plain**, and checks that the frame and *Open in new tab* ask for
+`layout=flat` and that the viewer stayed open - its overlay closes on any
+click that reaches it. On both pages, **Plain**, **Grouped** and **Plain**
+again - each page loaded before the next press - must add nothing to the
+browser's history (a loaded frame sent to another address added an entry a
+press, and Back then turned the page back under the switch). In the details,
+the arrow keys pressed on the switch must not step to another template; the
+viewer must take focus when it opens and give it back to **View** when Escape
+closes it. Both pages are checked at
+1440x900 and 390x844, where the switch must sit inside the window with nothing
+scrolling sideways. It needs the two servers up and `DB_DIR` naming the
+backend's database; point the backend's `TAILOR_STATIC_DIR` at a copy of
+`backend/static`, so the template it saves for a moment never lands beside
+your own:
+
+```bash
+TAILOR_STATIC_DIR=/path/to/static-copy DB_DIR=/path/to/db PORT=3001 \
+  node --require ./test/e2e/no-google.js dist/index.js   # the backend
+DB_DIR=/path/to/db node test/e2e/skills-layouts.js
+# E2E_SHOTS=/some/dir saves the details and the viewer with Plain pressed, at both widths
+```
 
 ## Building resumes, with the seat stubbed
 
@@ -214,8 +284,9 @@ salary (no currency, as the facts prompt asks for none), company category and
 job field; the tailoring in the shipped prompt's shape (`skillGroups` with the
 soft skills last, no role description), its summary carrying every term of
 that analysis, so a profile whose role it names gets no revise pass; and a
-revise call, when one comes (a profile with other roles, whose own bullets
-carry fewer than five figures), with no change - one more delayed call.
+revise call, when one comes (a profile whose own words name a checklist term
+that summary lacks, or whose own bullets carry a figure the stub's answer
+drops), with no change - one more delayed call.
 Everything else is the shipping code:
 routes, the analysis gate and its trust rule, the queue, the tab lease, order
 rows, files.
@@ -253,11 +324,14 @@ needs a run still going when it acts has to do the same, per job and not per
 submission, or jobs 2..N of a run hit the cache the moment the first is
 tailored.
 
-`immediate-run.js` — 32 claims, on the Default subscription. It first saves
+`immediate-run.js` — 34 claims, on the Default subscription. It first saves
 the account's own folder path, the owner's example
 `/{{date}}{{profile_name}}/{{company_name}}/{{role}}`. The first
-Generate Immediately asks first, in the owner's sentence, with *Don't show
-again*, and after it is ticked the next click goes straight through; the run
+Generate Immediately asks first, in the owner's sentence, with *Do not show
+again* - and, the stub seat's model being free, says nothing is taken from the
+credit and names no amount - and after it is ticked the next click goes
+straight through, remembered for Generate Immediately alone
+(`freeTailor.spendConfirm.immediate.skip`); the run
 shows progress and Stop, ends saying what it built, and its resume reaches the
 browser's download folder by itself, named for the company and the person, and
 is listed under the progress to download again. On the server, the run's
@@ -283,7 +357,7 @@ real person sees (README, Troubleshooting) and why the page lists the run's
 files to download again. The handed-over count is the page's promise; the saved
 count only has to be more than nothing.
 
-`sheet-panel.js` — 36 claims. The sheet card has no *Import from Google Sheet*
+`sheet-panel.js` — 37 claims. The sheet card has no *Import from Google Sheet*
 button, no sheet to choose and no column mapping (the own sheet and its
 columns are the app's); the Tab select lists every tab in the spreadsheet's
 order and starts on **All**, the daily tab in an older build's layout listed
@@ -300,7 +374,8 @@ Salary - for the row whose Analysis cell is filled, and *When built* for the
 others, and the line above it counts them (*1 of 3 already analysed*); a tab
 with nothing in its analysis columns has no row that skips.
 Another tab (*Notes*) drops what was loaded and loads its own rows. Order answers with an
-order number and Cancel on the receipt asks, cancels, and the order reads
+order number - free, it is placed without a spend alert, which an Order asks
+only when it takes credit - and Cancel on the receipt asks, cancels, and the order reads
 cancelled on Orders; Generate Immediately builds the loaded rows here and
 hands each of their twelve files to the browser once - and, reloaded after it,
 every row says *Skips analysis*: the two it analysed (or found stored) were
@@ -315,6 +390,53 @@ verdict on the page - *1 pass, 3 not judged*: Today Inc passes on its stored
 analysis with no page fetched, Now LLC's `javascript:` link cannot be opened,
 and the two rows with no link say so - and writes nothing into the sheet (the
 stub answers the filter's tab inspection and its one read of C:E).
+
+## Subscriptions, the locks and the spend alert
+
+`subscription.js` buys a subscription from the credit balance in a browser,
+and needs the renewal sweep to run every second, so it can watch a renewal and
+a lapse happen. The backend runs with the stub seat (nothing is built) and
+`SUBSCRIPTION_RENEWAL_SWEEP_MS=1000`, sharing `DB_DIR` with the script, which
+writes the accounts, a profile and - to bring a renewal forward -
+`subscription_paid_through` straight into it:
+
+```bash
+cd backend
+npm run build
+SUBSCRIPTION_RENEWAL_SWEEP_MS=1000 DB_DIR=/tmp/e2e-sub-db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-sheets.js dist/index.js
+# the frontend, built against that backend, in another terminal; then
+DB_DIR=/tmp/e2e-sub-db node test/e2e/subscription.js   # E2E_SHOTS=<dir> saves the cards, the alert, 390 and General
+```
+
+`subscription.js` — 45 claims. The prices are set through the server
+(Premium $9.99, Premium+ $19.99, Premium Max an emptied box: not offered) and
+the user given $50. The four tiers are cards in one row at 1440 with Default
+current, the prices on them, Premium Max *Not offered* with its Contact admin
+link, and no "plan" on the page; at 1024 and 1200 they are two by two, never
+three and one. Subscribe asks first - *This takes $9.99 from
+your credit*, *Your balance after: $40.01.*, *Do not show again* - Cancel there
+moves nothing, and Proceed buys it: one ledger row of exactly $9.99, and the
+page says when it renews. The builder's Multiple is open. Upgrade names the
+server's own proration (worked out again by `dist`'s billing rules from the
+stored row) and charges exactly it. Premium Max priced at $5 for a moment, its
+card reads *Upgrade · $0* - the unused days of Premium+ cover it - and still
+asks: *Nothing is taken now*, $5 when its 30 days end, and the credit it does
+not use *is not refunded*; Cancel there moves nothing. Switch at renewal says
+nothing is taken now and what is on the day; ticking *Do not show again* there
+makes Keep go through unasked. Cancel subscription asks in a dialog of its
+own, then says when it ends - in the Current subscription section, scrolled
+into view and focused. With the paid period moved into the past the sweep renews it -
+a `subscription-renewal` row and *Premium+ renewed: $19.99* in the bell - and,
+the balance emptied and the period moved back again, ends it: Default, *Premium+
+ended: not enough credit*, and the builder's Multiple locked again. At the
+profile limit the New profile tile is locked but pressable, *Needs Premium*,
+and opens *Locked: More profiles* with Go to subscription; /admin/profiles/new
+is drawn locked. One card a row and no horizontal scrollbar at 390. An
+administrator's page has nothing to buy and says why, its Credits section
+says nothing is taken from the balance, and Settings -> General
+carries the three price boxes as stored, *Not offered* as the empty one's
+placeholder, with *Set here* and Reset to default.
 
 ## A second tab, in each dev mode
 
@@ -427,11 +549,14 @@ administrator's sheet can be seen to leave another's alone) with **All** and
 **Temp For AI**, the latter holding what an earlier push left - rows 2 to 6
 filled across A:L, a note of the person's own in M, rows 3 and 4 painted red
 across A:M - except for an account whose email contains `clash`, whose Temp For
-AI is a tab of the person's own. Four seams, the ones the unit tests use: the
+AI is a tab of the person's own. Five seams, the ones the unit tests use: the
 account sheet's client, the push's (`setLakePushSheetsClientForTests`: the
 inspection, the verify, the ONE `:batchUpdate` - applied to the cells, values
-and paint as its `fields` say - and the RAW writes), the analysis columns'
-(what a build from the tab reads, and any write-back) and the admin sheet's.
+and paint as its `fields` say - and the RAW writes), Find Jobs' export's
+(`setJobExportSheetsClientForTests`: All's inspection and verify, its reads -
+whole columns like `'All'!A:E` included - the grid grown, and the RAW writes,
+each an `export-*` event), the analysis columns' (what a build from the tab
+reads, and any write-back) and the admin sheet's.
 The cells, and every read and write in order, are written to a JSON file after
 each change - `E2E_SHEET_STATE`, else `e2e-lake-push-sheets.json` in `DB_DIR` -
 which the script reads to see the sheet as a person would. The script seeds the
@@ -450,12 +575,13 @@ E2E_STUB_DELAY_MS=300 JOB_LAKE_PUSH_MAX_ROWS=4 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DI
 DB_DIR=/tmp/e2e-db E2E_BACKEND_LOG=/tmp/e2e-backend.log node test/e2e/lake-push.js
 ```
 
-`lake-push.js` — 29 claims. The filter boxes are in the owner's order
+`lake-push.js` — 37 claims. The filter boxes are in the owner's order
 (*Updated from, Updated to, Requested by, Job field, Job type, Clearance,
-Industry, Company, Salary from, Salary to, Full text*), *Job type* offers Any,
-Remote, Hybrid, Onsite, *Clearance* Any, Required, Not required, *Industry* Any
-and the server's own list, and **Push to Google Sheet** sits between Clear and
-Search. Pushing the unfiltered lake asks first - *Push the newest 4 of the 5
+Industry, Company, Salary from, Salary to, Full text*), *Job type*'s list (a
+box of several values: `pick` opens it and presses an option) offers Remote,
+Hybrid, Onsite, *Clearance* Any, Required, Not required, *Industry*'s list the
+server's own, and **Push to Google Sheet** sits between Clear and Search (a
+list box's chip buttons aside). Pushing the unfiltered lake asks first - *Push the newest 4 of the 5
 jobs these filters match - a push takes at most 4 (JOB_LAKE_PUSH_MAX_ROWS) -
 into the Temp For AI tab of your own job sheet* - and says afterwards that the
 oldest was left out, with *Open Temp For AI* linking to the tab. Temp For AI
@@ -470,10 +596,81 @@ A:L emptied. An order built from those two rows reads their analysis cells
 and writes nothing back - a cell the server did not trust would be replaced -
 and, with the log, the server says *2 job(s) analysed in the sheet, 0 from the
 store, 0 to analyse*. The other administrator's Temp For AI is exactly as it
-was, every push wrote only into the pusher's sheet, an administrator whose
-Temp For AI is a tab of their own is refused in the Job Sheet page's words
-with their tab left alone, and the Lake tab adds no horizontal scrollbar at
-390px.
+was, every push wrote only into the pusher's sheet, and *Remote* and *Hybrid*
+picked together are two chips whose search finds the 3 jobs of either - which
+the push's confirm names. An administrator whose Temp For AI is a tab of their
+own is refused in the Job Sheet page's words with their tab left alone, and
+the Lake tab adds no horizontal scrollbar at 390px.
+
+## Find Jobs, with Google stubbed
+
+`find-jobs.js` drives Find Jobs (`/jobs`) as a user, an administrator and a
+reporter, against `stub-lake-push-sheets.js` (every account its own sheet; the
+export's reads and writes go through its export seam, and land in the same
+JSON file, which the script reads) and `stub-seat.js` (the order's resumes).
+The script seeds the lake itself - thirty jobs an hour apart from ten
+companies, each from an analysis stored for its own posting, half reported by
+a reporter: the newest in *Localization and internationalization* and the
+next in *Site reliability engineering (SRE)*, the other twenty-eight in
+Backend (10), Frontend / web UI and DevOps (9 each), and the newest three with
+the catalogues' widest words (*Telecommunications*, *Localization and
+internationalization*, *Logistics & Transportation*, *Manufacturing*), long
+titles and salaries - so the database must be FRESH. It
+prices the default model at $0.023 a resume (put back when it ends), gives
+the user $5 and one profile, and the administrator two profiles of their own
+(the order dialog's Several profiles). Start the backend with both
+preloads: with `stub-seat.js` alone (which loads `no-google.js`) Go to my
+sheet is off, the page says job sheets are not set up, and the export has
+nowhere to go. Only a backend started with no preload at all reaches a real
+credential (see the top).
+
+```bash
+cd backend && npm run build
+E2E_STUB_DELAY_MS=300 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-lake-push-sheets.js dist/index.js
+# the frontend, built against that backend, in another terminal; then
+DB_DIR=/tmp/e2e-db node test/e2e/find-jobs.js
+```
+
+`find-jobs.js` — 67 claims. The rail's Find Jobs is a same-tab link to
+`/jobs`, and **Go to my sheet** opens the user's own All tab in a new one; a
+user's form has no *Requested by* box and the table no such column, the
+table fits its box at 1440px with those wide rows on top (no sideways
+scroll, every row's Details in view), and the
+rows the API sends a user name no reporter and no reward. *Remote* and
+*Hybrid* picked together, the keywords *kubernetes, react* (two chips once
+Search is pressed), and *Acme Robotics* picked from the Company box's
+suggestions as *acme* is typed each find the server's own count. Twelve
+ArrowDowns through Job field scroll its list so the active option stays in
+sight; *devops* typed and Enter chooses DevOps, which stays the active option
+once the list is whole again; *heal* typed into Industry and never picked is
+gone after Search, which applies DevOps alone. All of page 1 and two of page
+2 are *27 jobs selected*, tinted (a picked cell's computed colour differs
+from an unpicked one's, so a lost or out-ranked tint rule fails it), and Search lets them go and goes back to
+page 1. Three picked and exported land in the stub's All, newest first, each
+Analysis cell naming its job's stored analysis, and stay picked; exported
+again they are *in All already* and nothing is written twice. **Order
+Immediately** draws Several profiles, All profiles and Specific group locked
+for the Default user - the lock opens *Locked: Building for several profiles*
+with **Go to subscription** - prices the order (*This order: 3 resumes ×
+$0.023 = $0.069*), asks first (*This takes $0.069 from your credit*, *Do not
+show again*), and ends in the receipt *You ordered successfully: Order number
+- ...* linking to the order, which `/api/orders` holds with three items, and
+which takes the focus; the selection is let go. An administrator's form and
+table have *Requested by*, the table still fits its box at 1440px, and at
+1280px it scrolls under every row's Details, held in view; picking the reporter finds their 15 jobs alone,
+and Details names them; their order dialog's *Several profiles* says *Please
+select the profiles to build for.* where the cost line stands, with Place
+order off, prices the order once their two profiles are chosen, and Cancel
+gives the focus back to Order Immediately. A reporter on `/jobs` is sent to
+Report Jobs. At 390px the four keyword chips wrap inside their box and the
+page has no horizontal scrollbar; a mouse press on a row's checkbox, more than
+half cut off at the box's left edge, ticks it, and one on each line of its
+Title link, scrolled half under the held Details, reaches the link, the box
+not moving either time (it once scrolled on a press's focus, and the click
+landed on the cell); then Shift+Tab from that row's Details to the link scrolls
+the link clear of it; in the dark theme a picked row is tinted
+too, and the last screenshot is that theme.
 
 ## Providers, with the seat stubbed
 
@@ -529,8 +726,24 @@ the backend's database (it writes the sessions, and the reporter's balance,
 straight into it):
 
 ```bash
+cd backend && npm run build
+DB_DIR=/path/to/db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-sheets.js dist/index.js
+# the frontend, built against that backend, in another terminal; then
 DB_DIR=/path/to/db node test/e2e/shell.js
 ```
+
+Without the sheets stub - `stub-seat.js` alone, which loads `no-google.js` -
+nothing shows the account's own sheet: Build Resumes' sheet panel and Find
+Jobs say sheets are not set up on this server (*Job sheets ...* to a user,
+*Google Sheets ...* to an administrator; Find Jobs' Go to my sheet is off), and a
+reporter's account menu simply has no *Your job sheet*. Only a backend started
+with no preload at all reaches a real credential (see the top).
+
+The rail reads Profiles, Groups, Find Jobs, Build Resumes, Orders, Credits |
+Job Filter, Bid Assistant, Calendar | Templates, Settings for every builder -
+Find Jobs a same-tab link to `/jobs`, which lights it alone (as `/jobs/filter`
+lights Job Filter alone), and every route walked includes `/jobs`.
 
 The reporter half (owner decision A3): their four pages - Report Jobs, Credits,
 Settings -> Profile and Job Sheet - each stay put, under a rail of Report Jobs,
@@ -544,7 +757,10 @@ walk, plus /admin, an order and an invoice - lands on Report Jobs.
 Every API answer the reporter's page gets is watched, and the walk fails on a
 single 403: a page of theirs that asked a builder route, or a bounced page
 that mounted before it was sent away, would show here. A user made a reporter
-while their page is open is taken to Report Jobs by their next request. On
+while their page is open is taken to Report Jobs by their next request; one
+made a reporter on Job Sheet who then opens Settings -> Profile, where nothing
+is refused, finds it drawn as a reporter's - no Resume files, and no failure
+to read where their resumes are saved. On
 Admin -> Accounts: Reporter in the role select and the invite form (which
 then asks for a rate per job rather than a subscription), a rate typed into a
 reporter's row stored as thousandths, and Record payout refusing more than the
@@ -552,6 +768,18 @@ balance in the server's words, saying what a payout leaves, and recording it.
 Neither a user nor an administrator is offered *Ask for refund* on any page
 they walk (owner decision R1), and the Refund Requests tab says to contact the
 administrator, with the link.
+
+The locks, for a user on the Default subscription: Groups is in the rail - a
+button, not a link - and pressing it opens *Locked: Groups* with **Go to
+subscription** (to `/settings/subscription`) and **Close**; typed, /admin/groups
+is drawn locked too. Build Resumes' Multiple, and sheet mode's All profiles and
+Specific group, are disabled with the lock beside them and no *Premium* in
+their labels; the lock, the locked card itself and the locked Select Group - a
+button where the select would be - each open *Locked: Building for several
+profiles*, and nothing gets chosen. An administrator sees every choice open and
+Groups as an ordinary link. Settings -> Subscription draws four cards in one
+row at 1440 with Default current, and one a row at 390 with no sideways
+scroll.
 
 The prompts, as an administrator sees them (owner decisions J0, J1, O1):
 Admin -> Prompts lists Analyze Job Description, Job Facts (Filter), Revise

@@ -79,8 +79,10 @@ export const OPERATIONAL_INT_BOUNDS = {
   CRYPTOMUS_INVOICE_LIFETIME_S: { fallback: 3_600, min: 300, max: 43_200, unit: 's' },
   JOB_LAKE_DUPLICATE_WINDOW_DAYS: { fallback: 60, min: 1, max: 3_650, unit: 'day(s)' },
   JOB_LAKE_PUSH_MAX_ROWS: { fallback: 1_000, min: 1, max: 5_000, unit: 'row(s)' },
+  JOB_LAKE_EXPORT_MAX_ROWS: { fallback: 200, min: 1, max: 1_000, unit: 'row(s)' },
   TAILOR_CACHE_DAYS: { fallback: 30, min: 1, max: 3_650, unit: 'day(s)' },
   TAILOR_REVISE_MAX_TERMS: { fallback: 30, min: 1, max: 200, unit: 'term(s)' },
+  SUBSCRIPTION_RENEWAL_SWEEP_MS: { fallback: 600_000, min: 1_000, max: 86_400_000, unit: 'ms' },
   // Frontend, server-only (read by the Next route handlers; listed for the record).
   CALENDAR_API_TIMEOUT_MS: { fallback: 12_000, min: 1_000, max: 120_000, unit: 'ms' },
   CALENDAR_DETAIL_CONCURRENCY: { fallback: 12, min: 1, max: 32, unit: 'request(s)' },
@@ -474,6 +476,19 @@ export function jobLakePushMaxRows(env: EnvSource = process.env): number {
   return readInt('JOB_LAKE_PUSH_MAX_ROWS', env);
 }
 
+/**
+ * The most lake jobs one Export into Sheet on Find Jobs writes into the
+ * caller's own All tab (services/jobLake/findJobs.ts), and so the most jobs
+ * the page lets anybody select at once - an Order Immediately of them
+ * included. 200 by default, at most 1000: each row carries its description
+ * and its Analysis cell, so a thousand rows are already a few writes and a
+ * long tab. More ids than this in one request are refused (400
+ * `too-many-jobs`), never cut. Read at every request.
+ */
+export function jobLakeExportMaxRows(env: EnvSource = process.env): number {
+  return readInt('JOB_LAKE_EXPORT_MAX_ROWS', env);
+}
+
 /* ======================================================= tailoring cache */
 
 /**
@@ -511,6 +526,20 @@ export function tailorRevisePass(env: EnvSource = process.env): boolean {
  */
 export function tailorReviseMaxTerms(env: EnvSource = process.env): number {
   return readInt('TAILOR_REVISE_MAX_TERMS', env);
+}
+
+/* ========================================================= subscriptions */
+
+/**
+ * How often the renewal sweep looks for paid subscriptions whose 30 days are
+ * up, in ms (services/subscriptions/renewal.ts), renewing each from its
+ * account's balance or ending it. It also looks once at startup. Ten minutes
+ * by default: a tier is renewed at most that late, and keeps its features
+ * until then. Down to a second, which is how a test watches a renewal happen;
+ * up to a day. Read once, when the timer starts.
+ */
+export function subscriptionRenewalSweepMs(env: EnvSource = process.env): number {
+  return readInt('SUBSCRIPTION_RENEWAL_SWEEP_MS', env);
 }
 
 /* ================================================================== table */
@@ -669,6 +698,12 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     jobLakeDuplicateWindowDays
   ),
   intEntry('JOB_LAKE_PUSH_MAX_ROWS', 'per-call', 'services/jobLake/push.ts (Push to Google Sheet)', jobLakePushMaxRows),
+  intEntry(
+    'JOB_LAKE_EXPORT_MAX_ROWS',
+    'per-call',
+    'services/jobLake/findJobs.ts (Find Jobs: Export into Sheet, and how many jobs the page lets you select)',
+    jobLakeExportMaxRows
+  ),
 
   // Tailoring cache
   intEntry('TAILOR_CACHE_DAYS', 'per-call', 'services/tailorCache.ts (the boot and daily prune)', tailorCacheDays),
@@ -683,6 +718,14 @@ export const OPERATIONAL_VARIABLES: readonly OperationalVariable[] = [
     current: (env) => (tailorRevisePass(env) ? 'on' : 'off'),
   },
   intEntry('TAILOR_REVISE_MAX_TERMS', 'per-call', 'services/resumeService.ts (tailorResume)', tailorReviseMaxTerms),
+
+  // Subscriptions
+  intEntry(
+    'SUBSCRIPTION_RENEWAL_SWEEP_MS',
+    'startup',
+    'services/subscriptions/renewal.ts (the renewal sweep)',
+    subscriptionRenewalSweepMs
+  ),
 
   // The defaults under what an administrator sets - Admin -> Settings,
   // Payments and the Job Data Lake's settings - each in effect while nothing

@@ -79,6 +79,9 @@ const ENV_NAMES = [
   'JOB_LAKE_REPORT_RATE_USD',
   'JOB_LAKE_DAILY_CAP_USD',
   'JOB_LAKE_DUPLICATE_WINDOW_DAYS',
+  'SUBSCRIPTION_PREMIUM_PRICE_USD',
+  'SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD',
+  'SUBSCRIPTION_PREMIUM_MAX_PRICE_USD',
   'AI_LOCKED_PROVIDERS',
   'AI_UNLOCKED_PROVIDERS',
 ];
@@ -100,7 +103,11 @@ async function withEnv(values, fn) {
   }
 }
 
-/** The routes the pages call, on a port of their own, with an administrator, a user and a reporter signed in. */
+/**
+ * The routes the pages call, on a port of their own, with an administrator, a
+ * user and a reporter signed in - and the repository and their ids, to change
+ * one of them mid-session.
+ */
 async function serve(name) {
   const dirs = useTempStorage(`frontend-settings-${name}`);
   useAdminEmails('boss@example.com');
@@ -128,7 +135,8 @@ async function serve(name) {
     jane: users.createSession(jane.id),
     reporter: users.createSession(reporter.id),
   };
-  return { ...dirs, config, base, tokens, close: () => server.close() };
+  const ids = { boss: boss.id, jane: jane.id, reporter: reporter.id };
+  return { ...dirs, config, users, ids, base, tokens, close: () => server.close() };
 }
 
 /**
@@ -198,6 +206,12 @@ test("the source lib's tables are the server's, and it imports nothing at runtim
   assert.deepEqual(plain(lib.CONTACT_SETTING_ENV_VARIABLES), plain(server.CONTACT_SETTING_ENV_VARIABLES));
   assert.deepEqual(plain(lib.LAKE_SETTING_ENV_VARIABLES), plain(server.LAKE_SETTING_ENV_VARIABLES));
   assert.deepEqual([...lib.SETTING_SOURCES], [...server.SETTING_SOURCES]);
+  // Each subscription price is saved under the server's own dollar name.
+  const { SUBSCRIPTION_PRICE_FIELDS } = require('../dist/config/accountSubscriptions');
+  assert.deepEqual(
+    plain(lib.SUBSCRIPTION_PRICE_REQUEST_FIELDS),
+    Object.fromEntries(Object.values(SUBSCRIPTION_PRICE_FIELDS).map((field) => [field.setting, field.request]))
+  );
 });
 
 test('a source reads "Set here", "From .env (NAME)" or "Default" - the words Providers uses - and only "Set here" resets', () => {
@@ -241,6 +255,11 @@ test('what changed is compared as data, and an unchanged form sends nothing', ()
   assert.deepEqual(lib.lakeResetBody('reportRateMilli'), { reportRateUsd: null });
   assert.deepEqual(lib.lakeResetBody('dailyCapMilli'), { dailyCapUsd: null });
   assert.deepEqual(lib.lakeResetBody('duplicateWindowDays'), { duplicateWindowDays: null });
+  // A price resets under the field it is saved by; every other app setting under its own.
+  assert.deepEqual(lib.appSettingResetBody('premiumPriceMilli'), { premiumPriceUsd: null });
+  assert.deepEqual(lib.appSettingResetBody('premiumPlusPriceMilli'), { premiumPlusPriceUsd: null });
+  assert.deepEqual(lib.appSettingResetBody('premiumMaxPriceMilli'), { premiumMaxPriceUsd: null });
+  assert.deepEqual(lib.appSettingResetBody('defaultTheme'), { defaultTheme: null });
 });
 
 /* ===================================================== General, Payments */
@@ -378,6 +397,112 @@ test("the output prefix: the server draws the preview, and its refusal names the
       server.close();
     }
   });
+});
+
+test("a subscription's price: saved in dollars as typed, read in thousandths with its source, and Reset under its dollar name", async () => {
+  await withEnv({ SUBSCRIPTION_PREMIUM_PRICE_USD: '9.99' }, async () => {
+    const server = await serve('prices');
+    const lib = sources();
+    try {
+      await asClient(server, 'boss', async ({ api }) => {
+        let settings = await api.adminApi.getSettings();
+        assert.equal(settings.premiumPriceMilli, 9_990);
+        assert.equal(settings.premiumPlusPriceMilli, null, 'not offered');
+        assert.equal(settings.settingDefaults.premiumPriceMilli, 9_990);
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'premiumPriceMilli'), 'From .env (SUBSCRIPTION_PREMIUM_PRICE_USD)');
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'premiumMaxPriceMilli'), 'Default');
+
+        // Only what changed is sent: the box typed, and the box emptied - the administrator's "not offered".
+        settings = await api.adminApi.updateSettings({ premiumPlusPriceUsd: '19.99', premiumPriceUsd: '' });
+        assert.equal(settings.premiumPlusPriceMilli, 19_990);
+        assert.equal(settings.premiumPriceMilli, null);
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'premiumPriceMilli'), 'Set here');
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'premiumMaxPriceMilli'), 'Default', 'a box not sent stays as it was');
+        assert.equal(lib.canReset(settings.settingSources.premiumPriceMilli), true);
+
+        settings = await api.adminApi.updateSettings(lib.appSettingResetBody('premiumPriceMilli'));
+        assert.equal(settings.premiumPriceMilli, 9_990, ".env's price again");
+        assert.equal(settings.settingSources.premiumPriceMilli, 'env');
+
+        // The served name is never a save's: refused, under the box it names.
+        const refused = await refusalOf(api.adminApi.updateSettings(lib.resetBody('premiumPlusPriceMilli')));
+        assert.equal(refused.status, 400);
+        assert.equal(refused.body.field, 'premiumPlusPriceUsd');
+        assert.equal(refused.body.code, 'bad-price-field');
+        const typo = await refusalOf(api.adminApi.updateSettings({ premiumMaxPriceUsd: '9,99' }));
+        assert.equal(typo.body.field, 'premiumMaxPriceUsd');
+        assert.match(typo.message, /^The Premium Max price must be an amount in dollars/);
+      });
+    } finally {
+      server.close();
+    }
+  });
+});
+
+test("Settings -> General's price boxes send only what changed, as typed, and refuse in the server's own words first", async () => {
+  await withEnv({ SUBSCRIPTION_PREMIUM_PRICE_USD: '9.99' }, async () => {
+    const server = await serve('price-boxes');
+    const draft = loadFrontend('app/admin/settings/subscriptionPriceDraft.ts');
+    const lib = sources();
+    try {
+      await asClient(server, 'boss', async ({ api }) => {
+        let settings = await api.adminApi.getSettings();
+        let drafts = draft.toPriceDrafts(settings);
+        assert.deepEqual(drafts, { premiumPriceMilli: '9.99', premiumPlusPriceMilli: '', premiumMaxPriceMilli: '' });
+        assert.deepEqual(draft.SUBSCRIPTION_PRICE_KEYS, Object.keys(lib.SUBSCRIPTION_PRICE_REQUEST_FIELDS));
+
+        // Untouched, retyped to the same amount, or a "not offered" box left so: nothing is sent.
+        assert.deepEqual(draft.priceChanges(drafts, settings), {});
+        assert.deepEqual(
+          draft.priceChanges({ ...drafts, premiumPriceMilli: '$9.990', premiumMaxPriceMilli: '0' }, settings),
+          {}
+        );
+
+        // One changed: only it, as typed, under its dollar name - and .env's Premium stays .env's.
+        const body = draft.priceChanges({ ...drafts, premiumPlusPriceMilli: ' 19.99 ' }, settings);
+        assert.deepEqual(body, { premiumPlusPriceUsd: '19.99' });
+        settings = await api.adminApi.updateSettings(body);
+        assert.equal(settings.premiumPlusPriceMilli, 19_990);
+        assert.equal(settings.settingSources.premiumPriceMilli, 'env');
+        assert.equal(settings.settingSources.premiumPlusPriceMilli, 'admin');
+        assert.equal(draft.toPriceDrafts(settings).premiumPlusPriceMilli, '19.99');
+
+        // Emptying .env's price is the administrator's "not offered", which beats it.
+        drafts = draft.toPriceDrafts(settings);
+        settings = await api.adminApi.updateSettings(draft.priceChanges({ ...drafts, premiumPriceMilli: '' }, settings));
+        assert.equal(settings.premiumPriceMilli, null);
+        assert.equal(settings.settingSources.premiumPriceMilli, 'admin');
+        assert.equal(draft.priceDraftOf(settings.premiumPriceMilli), '');
+
+        // The page's refusal is the server's, word for word, pinned under the same box.
+        for (const [key, typed] of [
+          ['premiumMaxPriceMilli', '9,99'],
+          ['premiumMaxPriceMilli', '10000.001'],
+          ['premiumPriceMilli', '1.2345'],
+          ['premiumPlusPriceMilli', '-5'],
+        ]) {
+          const local = draft.priceProblem(key, typed);
+          const refused = await refusalOf(
+            api.adminApi.updateSettings({ [lib.SUBSCRIPTION_PRICE_REQUEST_FIELDS[key]]: typed })
+          );
+          assert.equal(local, refused.message, `${key} ${typed}`);
+          assert.equal(draft.priceKeyOfField(refused.body.field), key);
+          assert.deepEqual(Object.keys(draft.priceProblems({ ...drafts, [key]: typed })), [key]);
+        }
+        assert.equal(draft.priceProblem('premiumPriceMilli', ''), null);
+        assert.equal(draft.priceProblem('premiumPriceMilli', '10000'), null);
+        assert.equal(draft.priceKeyOfField('outputPathPrefix'), null);
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  // The page saves through the draft - only `priceChanges` - and resets a price under its dollar name.
+  const page = fs.readFileSync(path.join(SRC, 'app/admin/settings/page.tsx'), 'utf8');
+  assert.match(page, /const changes = priceChanges\(priceDrafts, settings\);/);
+  assert.match(page, /adminApi\.updateSettings\(appSettingResetBody\(key\)\)/);
+  assert.match(page, /type="text"\s+inputMode="decimal"\s+value=\{priceDrafts\[key\]\}/);
 });
 
 test("Contact's Reset sends { channels: null }: .env's channels again, where a saved empty list is none", async () => {
@@ -623,4 +748,44 @@ test("Resume files: the client's preview, save and Reset are the account routes'
   // The page draws the section for a builder only.
   const page = fs.readFileSync(path.join(SRC, 'app/settings/page.tsx'), 'utf8');
   assert.match(page, /\{canBuildResumes\(account\.role\) && <ResumeFilesSection \/>\}/);
+});
+
+test('Resume files: an account made a reporter mid-session goes to the session, never to a Try again that cannot succeed', async () => {
+  /*
+   * The page draws the section by the SESSION's role. An administrator who
+   * makes a user a reporter keeps their session, and nothing on Settings ->
+   * Profile is refused - which is what re-reads the session elsewhere - so
+   * the section's own read is where the page learns of it.
+   */
+  await withEnv({}, async () => {
+    const server = await serve('demoted');
+    const roles = loadFrontend('lib/roles.ts');
+    try {
+      await asClient(server, 'jane', async ({ auth }) => {
+        let { account } = await auth.authApi.account();
+        assert.equal(roles.canBuildResumes(account.role), true);
+        assert.equal(typeof account.effectiveOutputPathSuffix, 'string', "a builder's answer has the folder path in effect");
+
+        server.users.updateUser(server.ids.jane, { role: 'reporter' });
+        ({ account } = await auth.authApi.account());
+        assert.equal(account.role, 'reporter', 'answered with the new role, not refused');
+        assert.equal('effectiveOutputPathSuffix' in account, false);
+        assert.equal(roles.canBuildResumes(account.role), false, 'the branch that hands the answer to the session');
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  const section = fs.readFileSync(path.join(SRC, 'components/settings/ResumeFilesSection.tsx'), 'utf8');
+  assert.match(section, /const \{[^}]*\badopt\b[^}]*\} = useAuth\(\);/, "the session's adopt");
+  assert.match(
+    section,
+    /if \(!canBuildResumes\(account\.role\)\) \{\s*adopt\(account\);\s*return;\s*\}\s*const next = readOutputPath\(account\);/,
+    "a non-builder's answer goes to the session before a folder path is read from it"
+  );
+  // A builder's answer without one still fails the read - in a sentence that
+  // asks for the administrator, so the notice ends in its Contact admin link.
+  const loadFailed = /const LOAD_FAILED =\s*'([^']+)'/.exec(section)?.[1];
+  assert.equal(loadFrontend('lib/contactChannels.ts').asksForAdministrator(loadFailed), true, String(loadFailed));
 });

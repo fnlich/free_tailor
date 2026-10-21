@@ -1,10 +1,10 @@
 import { jobLakePushMaxRows } from '../../config/operational';
-import { getJobAnalysisById } from '../../database/jobAnalysisRepository';
 import { listLakeForPush, type LakeEntry, type LakeFilters } from '../../database/jobLakeRepository';
 import {
   a1Range,
   batchUpdateSpreadsheet,
   batchUpdateValuesRaw,
+  boundedWriteChunks,
   inspectJobSheetTab,
   isJobSheetTab,
   JOB_SHEET_FIRST_DATA_ROW,
@@ -20,12 +20,14 @@ import type { UserAccount } from '../../types/account';
 import {
   describeConflict,
   ensureAccountSheet,
+  ownTabNotJobTabSentence,
   resolveAddressableSheet,
   sheetDateSerial,
   sheetDateText,
   TEMP_TAB,
 } from '../sheets/accountSheet';
-import { analysisColumnValues, descriptionCell, forgetTabWriteBacks } from '../sheets/analysisColumns';
+import { descriptionCell, forgetTabWriteBacks } from '../sheets/analysisColumns';
+import { lakeAnalysisCells } from './index';
 
 /**
  * Push to Google Sheet (Admin -> Job Lake, owner decision L1): the lake jobs
@@ -124,11 +126,7 @@ const pushing = new Set<string>();
 
 /** Why Temp For AI cannot take a push although its name is the app's: its row 1 is not the job header. */
 export function tempTabNotJobTabSentence(): string {
-  return (
-    `"${TEMP_TAB}" in your job sheet is not laid out as a job tab any more (its first row is not the job header), ` +
-    `so nothing was pushed into it. Rename or delete that tab in Google Sheets, then push again: a new ${TEMP_TAB} ` +
-    'tab is added.'
-  );
+  return ownTabNotJobTabSentence(TEMP_TAB, 'pushed into', 'push again');
 }
 
 function notJobTab(): PublicError {
@@ -193,7 +191,7 @@ async function push(admin: UserAccount, filters: LakeFilters): Promise<LakePushR
   forgetTabWriteBacks(spreadsheetId, TEMP_TAB);
 
   let row = JOB_SHEET_FIRST_DATA_ROW;
-  for (const chunk of pushChunks(values)) {
+  for (const chunk of boundedWriteChunks(values, { maxRows: PUSH_WRITE_MAX_ROWS, maxBytes: PUSH_WRITE_MAX_BYTES })) {
     const range = a1Range(TEMP_TAB, row, row + chunk.length - 1, 1, JOB_SHEET_HEADERS.length);
     await client.writeRaw(spreadsheetId, [{ range, values: chunk }]);
     row += chunk.length;
@@ -244,8 +242,7 @@ export function pushRowValues(entries: LakeEntry[]): SheetCellValue[][] {
     const day = sheetDateText(new Date(entry.updatedAt));
     const no = (perDay.get(day) ?? 0) + 1;
     perDay.set(day, no);
-    const stored = entry.analysisId ? getJobAnalysisById(entry.analysisId) : null;
-    const analysis: SheetCellValue[] = stored ? analysisColumnValues(stored) : ['', '', '', '', '', ''];
+    const analysis: SheetCellValue[] = lakeAnalysisCells(entry) ?? ['', '', '', '', '', ''];
     return [
       sheetDateSerial(day) ?? day,
       no,
@@ -256,25 +253,6 @@ export function pushRowValues(entries: LakeEntry[]): SheetCellValue[][] {
       ...analysis,
     ];
   });
-}
-
-/** The rows in writes of at most PUSH_WRITE_MAX_ROWS rows and about PUSH_WRITE_MAX_BYTES of JSON. */
-export function pushChunks(rows: SheetCellValue[][]): SheetCellValue[][][] {
-  const chunks: SheetCellValue[][][] = [];
-  let current: SheetCellValue[][] = [];
-  let bytes = 0;
-  for (const row of rows) {
-    const size = Buffer.byteLength(JSON.stringify(row), 'utf8');
-    if (current.length > 0 && (current.length >= PUSH_WRITE_MAX_ROWS || bytes + size > PUSH_WRITE_MAX_BYTES)) {
-      chunks.push(current);
-      current = [];
-      bytes = 0;
-    }
-    current.push(row);
-    bytes += size;
-  }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
 }
 
 /** Tests share one process: a push left marked would refuse the next test's. */

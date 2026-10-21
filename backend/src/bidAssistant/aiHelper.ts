@@ -68,6 +68,39 @@ function joinEntries(value: unknown, fields: string[]): string {
     .join('\n');
 }
 
+/** How many of a role's bullets an answer is given, as many as a tailored resume prints. */
+const MAX_BULLETS_PER_ROLE = 8;
+
+/**
+ * Each role as one line - title | company | start | end - and under it the
+ * role's own bullets. The bullets are what an answer about the candidate's
+ * work is built from: given only titles and dates, a question such as "tell
+ * us about a project you shipped" could be answered only by inventing one.
+ */
+function experienceText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return '';
+  }
+  return value
+    .map((item) => {
+      const record = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>;
+      const head = ['title', 'company', 'startDate', 'endDate']
+        .map((field) => record[field])
+        .filter(Boolean)
+        .join(' | ');
+      const bullets = (Array.isArray(record.achievements) ? record.achievements : [])
+        .filter((bullet): bullet is string => typeof bullet === 'string' && bullet.trim() !== '')
+        .slice(0, MAX_BULLETS_PER_ROLE)
+        .map((bullet) => `  - ${bullet.trim()}`);
+      return [head, ...bullets].filter(Boolean).join('\n');
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
 function getDefaultPromptTemplate(): string {
   return `
 Candidate:
@@ -87,6 +120,8 @@ Question: {{question}}
 Write a professional, natural-sounding answer from the candidate's perspective.
 Keep it under {{charLimit}} characters.
 Avoid corporate buzzwords and make it sound like a real person.
+Use only facts from the candidate data above; never invent an employer, a date, a number of years, a tool, a degree, or an eligibility or availability status.
+If the candidate data does not answer the question, say so plainly instead of guessing.
 `;
 }
 
@@ -95,7 +130,7 @@ function getProfilePromptData(profile: BidProfile): Record<string, string> {
     profileId: profile?.id || '',
     candidateName: profile?.name || 'Candidate',
     candidateSkills: getProfileSkills(profile),
-    candidateExperience: joinEntries(profile?.experience, ['title', 'company', 'startDate', 'endDate']),
+    candidateExperience: experienceText(profile?.experience),
     candidateEducation: joinEntries(profile?.education, ['degree', 'institution', 'startDate', 'endDate']),
     candidateSummary: profile?.summary || '',
   };
@@ -221,6 +256,8 @@ Every profile must have one answer for every question.
 Keep each answer under that question's charLimit.
 Do not include markdown, explanations, or extra fields.
 
+Facts about a candidate come from that candidate's entry under Profiles below and from nowhere else - not from the job, not from the template's examples, not from what candidates for such a role usually say. Never invent an employer, a title, a date, a number of years, a project, a technology, a certification, a degree, a salary, a location, or a work-authorisation, visa, relocation or availability status. A figure (years, a team size, a percentage) is written only when the candidate data states it. Where a question asks for something the data does not say, answer from what it does say, and where nothing in it fits, say plainly that the detail is not in the candidate's profile instead of guessing.
+
 Editable per-answer prompt template:
 ${JSON.stringify(answerPromptTemplate)}
 
@@ -295,7 +332,9 @@ function normalizeQuestions(questions: BidQuestionInput[]): NormalizedQuestion[]
   });
 }
 
-const SYSTEM_PROMPT = 'You are a job application assistant. Return valid JSON only.';
+const SYSTEM_PROMPT =
+  'You are a job application assistant. Every fact about a candidate comes from the candidate data you are given, ' +
+  'and nothing is invented. Return valid JSON only.';
 
 /**
  * One model call for every profile and every question.

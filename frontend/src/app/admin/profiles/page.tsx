@@ -1,65 +1,107 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { isProfileLimit, profilesApi, resumeApi, templatesApi, type Profile, type Template } from '@/lib/api';
 import {
-  isProfileLimit,
-  profilesApi,
-  readProfileImportFile,
-  templatesApi,
-  Profile,
-  Template,
-} from '@/lib/api';
-import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
-import { EmptyState, ErrorNotice, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
-import { LAYOUT_LABELS, drawnTemplate, normalizeTechnicalSkillsLayout } from '@/lib/profileDraft';
+  NewProfileTile,
+  ProfileCard,
+  profileEditorHref,
+  saveTextFile,
+  type DuplicateState,
+} from '@/components/profile/ProfileCards';
+import { editorFont } from '@/components/profile/editorFont';
+import editorCss from '@/components/profile/profileEditor.module.css';
+import css from '@/components/profile/profilePages.module.css';
+import { SUBSCRIPTION_PAGE, useLockedFeature } from '@/components/subscription/LockedFeature';
+import { ErrorNotice, Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { describeProfileUsage, isAtProfileLimit } from '@/lib/auth';
-import { pdfSizeRefusal } from '@/lib/upload';
+import { savableModelChoice } from '@/lib/profileModel';
+import { NEW_PROFILE_PATH, duplicateProfileBody, profileFileName, profileFileText } from '@/lib/profileGallery';
+import { describeLock, describeProfileLimitRefusal } from '@/lib/subscriptions';
+
+/** How often the cards' "Edited ... ago" moves on. */
+const CLOCK_MS = 60_000;
 
 /**
- * The account's profiles. Creating and editing one happen on their own routes
- * (/admin/profiles/new, /admin/profiles/[id]), where the form has a live
- * preview beside it; this page lists them and holds the ways in - new, a resume
- * PDF, a JSON file.
+ * The account's profiles, as FlowCV's "My Resumes": a dashed New profile tile,
+ * then a card per profile - its first page as the server draws it, its name,
+ * when it was edited and its template - with Edit, Duplicate, Download,
+ * Disable and Delete under ⋮. New profile goes to the template chooser
+ * (/admin/profiles/new), where an existing resume can be imported too; a card
+ * opens the profile's editor (/admin/profiles/<id>).
+ *
+ * app/admin/layout.tsx gives this route a bare <main>, so the page lays out
+ * the same warm desk as the chooser and the editor.
  */
 export default function ProfilesPage() {
   const router = useRouter();
-  // uploadMaxMb is the server's UPLOAD_MAX_MB, served on /auth/me - see lib/upload.ts.
-  const { account, loading: authLoading, refresh, uploadMaxMb, refreshUploadMaxMb } = useAuth();
+  const { account, loading: authLoading, refresh } = useAuth();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   /** One of the page's own sentences, or a caught failure for <ErrorNotice> to word. */
-  const [error, setError] = useState<unknown>('');
-  /** For each row's template name. Empty until it arrives, which only costs the names. */
+  const [error, setError] = useState<unknown>(null);
+  /** For each card's template name. Empty until it arrives, which only costs the names. */
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState('');
   const [notice, setNotice] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const jsonInputRef = useRef<HTMLInputElement>(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  useEffect(() => {
-    loadProfiles();
-    templatesApi.getAll().then(setTemplates, () => undefined);
-  }, []);
-
-  const loadProfiles = async () => {
+  const loadProfiles = useCallback(async () => {
     try {
-      const data = await profilesApi.getAll({ includeDisabled: true });
-      setProfiles(data);
+      setProfiles(await profilesApi.getAll({ includeDisabled: true }));
     } catch (err) {
       setError(err ?? 'Failed to load your profiles.');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this profile?')) return;
+  useEffect(() => {
+    void loadProfiles();
+    templatesApi.getAll().then(setTemplates, () => undefined);
+    const clock = window.setInterval(() => setNow(Date.now()), CLOCK_MS);
+    return () => window.clearInterval(clock);
+  }, [loadProfiles]);
+
+  /**
+   * The cap, measured against the list rather than the account's snapshot.
+   *
+   * `profilesUsed` comes from the last /auth/me and goes stale the moment
+   * somebody deletes a profile here. Reading it directly would leave the banner
+   * telling them to delete one and New profile still off after they did. The
+   * list is this page's own fetch and includes disabled profiles, which is
+   * exactly what the server counts.
+   */
+  const liveAccount = account ? { ...account, profilesUsed: profiles.length } : null;
+  const atLimit = liveAccount ? isAtProfileLimit(liveAccount) : false;
+
+  /**
+   * Off while the account is still arriving: the profile list and /auth/me
+   * are independent fetches, and in the window between them every way to add
+   * a profile would otherwise be on with no banner - the "let them do the
+   * work, then refuse" this page exists to stop.
+   */
+  const blockedReason = authLoading ? 'Checking your subscription...' : undefined;
+  /**
+   * At the limit, New profile and Duplicate are LOCKED rather than off: each
+   * opens the lock's dialog, which names the subscription with room for one
+   * more and leads to the Subscription page.
+   */
+  const locked = useLockedFeature();
+  const profileLock = !authLoading && atLimit && liveAccount ? describeLock('more-profiles', liveAccount) : null;
+  const duplicate: DuplicateState = blockedReason
+    ? { kind: 'waiting', reason: blockedReason }
+    : profileLock
+      ? { kind: 'locked', lock: profileLock, onLocked: locked.open }
+      : { kind: 'open' };
+
+  const handleDelete = async (profile: Profile) => {
+    if (!window.confirm(`Delete ${profile.name || 'this profile'}? This cannot be undone.`)) return;
+    setNotice('');
     try {
-      await profilesApi.delete(id);
+      await profilesApi.delete(profile.id);
       await loadProfiles();
       await refresh();
     } catch (err) {
@@ -68,6 +110,7 @@ export default function ProfilesPage() {
   };
 
   const handleToggleDisabled = async (profile: Profile) => {
+    setNotice('');
     try {
       await profilesApi.update(profile.id, { disabled: !profile.disabled });
       await loadProfiles();
@@ -76,328 +119,126 @@ export default function ProfilesPage() {
     }
   };
 
-  const openCreateForm = () => {
-    router.push('/admin/profiles/new');
-  };
-
-  /** The editor, on the profile's own route. */
-  const editorHref = (profile: Pick<Profile, 'id'>) => `/admin/profiles/${encodeURIComponent(profile.id)}`;
-
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (file.type !== 'application/pdf') {
-      setError('Please upload a PDF file');
-      return;
-    }
-    const tooLarge = await pdfSizeRefusal(file, uploadMaxMb, refreshUploadMaxMb);
-    if (tooLarge) {
-      setError(tooLarge);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
-    setIsUploading(true);
-    setUploadProgress('Uploading PDF...');
-    setError('');
-    setNotice('');
-
-    try {
-      setUploadProgress('Extracting profile information with AI...');
-      const profile = await profilesApi.uploadResume(file);
-      await refresh();
-      setUploadProgress('');
-      // Straight into the editor: what the model read out of a PDF is worth
-      // looking over before it is used, and the preview shows it as a resume.
-      router.push(editorHref(profile));
-    } catch (err) {
-      if (isProfileLimit(err)) await refresh();
-      setError(err ?? 'Failed to read a profile from that PDF.');
-    } finally {
-      setIsUploading(false);
-      setUploadProgress('');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  };
-
-  const triggerFileUpload = () => {
-    fileInputRef.current?.click();
-  };
-
   /**
-   * Imports profiles from a JSON file.
-   *
-   * No AI call and nothing to extract - the file already IS a profile, so this
-   * is the path for moving one between installs, restoring a backup, or
-   * writing one by hand. The server decides whether the file is really a
-   * profile and says which entry is wrong if it is not.
+   * A copy of everything the profile holds, as a new profile, without its
+   * template: each profile has its own, so the copy is drawn with the default
+   * until one is chosen. A model choice no longer offered goes back to the app
+   * default (savableModelChoice), because the server refuses a new profile one.
    */
-  const handleJsonImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setIsUploading(true);
-    setUploadProgress(`Reading ${file.name}...`);
-    setError('');
+  const handleDuplicate = async (profile: Profile) => {
     setNotice('');
-
+    setError(null);
     try {
-      // Not named `document`: that shadows the global one inside this handler,
-      // which is a trap for whatever gets added here next.
-      const parsed = await readProfileImportFile(file);
-      const result = await profilesApi.importJson(parsed);
+      const models = await resumeApi.getModels().then(
+        (settings) => ({ loaded: true, ids: settings.models.map((model) => model.id) }),
+        () => ({ loaded: false, ids: [] as string[] })
+      );
+      const ai = savableModelChoice(profile.profileSettings?.ai ?? {}, {
+        modelsLoaded: models.loaded,
+        offeredIds: models.ids,
+      });
+      await profilesApi.create(duplicateProfileBody(profile, ai));
       await loadProfiles();
       await refresh();
-
-      if (result.imported === 1 && result.profiles[0]) {
-        // Straight into the editor, like the PDF path: one imported profile is
-        // something you are about to look over anyway.
-        router.push(editorHref(result.profiles[0]));
-        return;
-      }
-
-      const reused = result.keptIds > 0 ? ` ${result.keptIds} kept the id from the file.` : '';
       setNotice(
-        `Imported ${result.imported} profile${result.imported === 1 ? '' : 's'} from ${file.name}.${reused}`
+        `Duplicated ${profile.name || 'the profile'}. The copy has no template of its own yet: it is drawn with the default until you choose one in its editor.`
       );
     } catch (err) {
-      // A file with more profiles than the remaining room is only knowable
-      // server-side - the count is unreadable until the file is picked - so the
-      // cap refusal arrives here and re-syncs the gate.
-      if (isProfileLimit(err)) await refresh();
-      setError(err ?? 'Failed to import the profiles.');
-    } finally {
-      setIsUploading(false);
-      setUploadProgress('');
-      if (jsonInputRef.current) {
-        jsonInputRef.current.value = '';
+      await refresh();
+      // At the limit after all - another tab added one, or the subscription
+      // lapsed under this page: the lock says what to do about it, worded from
+      // the refusal and the list read again, never from the count and tier
+      // this page had, which said the account had room.
+      if (isProfileLimit(err)) {
+        const fresh = await profilesApi.getAll({ includeDisabled: true }).catch(() => null);
+        if (fresh) setProfiles(fresh);
+        locked.open(
+          describeProfileLimitRefusal(
+            { limit: err.number('limit'), used: (fresh ?? profiles).length },
+            account
+          )
+        );
+        return;
       }
+      setError(err ?? 'Failed to duplicate the profile.');
     }
   };
 
-  const triggerJsonImport = () => {
-    jsonInputRef.current?.click();
+  const handleDownload = (profile: Profile) => {
+    saveTextFile(profileFileName(profile), profileFileText(profile));
   };
 
-  /**
-   * The cap, measured against the list rather than the account's snapshot.
-   *
-   * `profilesUsed` comes from the last /auth/me and goes stale the moment
-   * somebody deletes a profile here. Reading it directly would leave the banner
-   * telling them to delete one and the buttons still disabled after they did.
-   * The list is this page's own fetch and includes disabled profiles, which is
-   * exactly what the server counts.
-   */
-  const liveAccount = account ? { ...account, profilesUsed: profiles.length } : null;
-  const atLimit = liveAccount ? isAtProfileLimit(liveAccount) : false;
-
-  /**
-   * Disabled while the account is still arriving, too.
-   *
-   * The profile list and /auth/me are independent fetches. Without this, the
-   * window between them renders every Add button enabled with no banner - which
-   * is precisely the "let them do the work, then refuse" this page exists to
-   * stop, just narrowed to the first few hundred milliseconds.
-   */
-  const addBlocked = atLimit || authLoading;
-  const blockedReason = authLoading
-    ? 'Checking your subscription...'
-    : liveAccount
-      ? `The ${liveAccount.subscriptionLabel} subscription allows ${liveAccount.profileLimit} profile${liveAccount.profileLimit === 1 ? '' : 's'}. Delete one, or ask an administrator for a higher subscription.`
-      : '';
-
   if (isLoading) {
-    return <Spinner label="Loading profiles..." />;
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <Spinner label="Loading profiles..." />
+      </div>
+    );
   }
 
-  /*
-   * No <main> or <Page> here: app/admin/layout.tsx already wraps every
-   * /admin/* route in one, with the gutters and the width.
-   */
   return (
-    <div>
-      <PageHeader
-        title="Profiles"
-        description={
-          liveAccount && (
+    <div className={`${editorCss.editor} ${editorFont.variable}`}>
+      <div className={css.page}>
+        <h1 className={css.title}>My Profiles</h1>
+        <p className={css.subtitle}>
+          {liveAccount ? (
             <>
               {describeProfileUsage(liveAccount)} profiles used
-              {liveAccount.role === 'admin' ? ' (administrators have no limit)' : ` on the ${liveAccount.subscriptionLabel} subscription`}
+              {liveAccount.role === 'admin'
+                ? ' (administrators have no limit)'
+                : ` on the ${liveAccount.subscriptionLabel} subscription`}
+              . Each one is the content of a resume, tailored to every job you build it for.
             </>
-          )
-        }
-        actions={
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-            <button
-              onClick={triggerFileUpload}
-              disabled={isUploading || addBlocked}
-              title={addBlocked ? blockedReason : `Build a profile from a resume PDF, max ${uploadMaxMb}MB`}
-              className="tl-button-quiet"
-            >
-              {isUploading ? (
-                <>
-                  <span className="tl-spinner" aria-hidden />
-                  Extracting...
-                </>
-              ) : (
-                'Upload Resume PDF'
-              )}
-            </button>
-            <input
-              ref={jsonInputRef}
-              type="file"
-              accept=".json,application/json"
-              onChange={handleJsonImport}
-              className="hidden"
-            />
-            <button
-              onClick={triggerJsonImport}
-              disabled={isUploading || addBlocked}
-              title={addBlocked ? blockedReason : 'Create profiles from a profile JSON file'}
-              className="tl-button-quiet"
-            >
-              Import JSON
-            </button>
-            <button
-              onClick={openCreateForm}
-              disabled={addBlocked}
-              title={addBlocked ? blockedReason : undefined}
-              className="tl-button"
-              data-shape="pill"
-            >
-              New Profile
-            </button>
-          </>
-        }
-      />
+          ) : (
+            'Each profile is the content of a resume, tailored to every job you build it for.'
+          )}
+        </p>
 
-      <div className="mb-6 space-y-3 empty:hidden">
-        {uploadProgress && (
-          <Notice tone="info" role="status" className="flex items-center gap-3">
-            <span className="tl-spinner" aria-hidden />
-            {uploadProgress}
-          </Notice>
-        )}
-
-        {atLimit && liveAccount && (
-          <Notice tone="warn">
-            <p className="font-semibold">
-              You are using all {liveAccount.profileLimit} profile
-              {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.subscriptionLabel}{' '}
-              subscription.
-            </p>
-            <p className="mt-1">
-              Delete one below to make room, or ask an administrator of this installation to move your
-              account to a higher subscription. <ContactAdminLink />{' '}
-              <Link href="/settings/subscription" className="font-medium underline underline-offset-2">
-                See your subscription
-              </Link>
-              .
-            </p>
-          </Notice>
-        )}
-
-        {notice && <Notice tone="success">{notice}</Notice>}
-
-        <ErrorNotice error={error} />
-      </div>
-
-      {profiles.length === 0 ? (
-        <EmptyState
-          title="No profiles"
-          action={
-            <button onClick={openCreateForm} className="tl-button">
-              New Profile
-            </button>
-          }
-        >
-          Get started by creating a new profile.
-        </EmptyState>
-      ) : (
-        <ul className="tl-rows">
-          {profiles.map((profile) => (
-            <li
-              key={profile.id}
-              className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3"
-            >
-              {/* At least 12rem, so on a phone the buttons drop under the
-                  name instead of squeezing the title down to "Full-st...". */}
-              <div className="min-w-[12rem] flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-base font-semibold text-ink">
-                    <Link href={editorHref(profile)} className="hover:underline underline-offset-2">
-                      {profile.name || 'Untitled profile'}
-                    </Link>
-                  </h3>
-                  {profile.disabled && <Pill tone="grey">Disabled</Pill>}
-                </div>
-                {profile.title && <p className="mt-0.5 truncate text-sm text-muted">{profile.title}</p>}
-                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-subtle">
-                  {/* What the next resume looks like, without opening the editor:
-                      the template it is DRAWN with, which is not the stored one
-                      when that cannot print this profile's layout. */}
-                  {templates.length > 0 && <DrawnTemplate templates={templates} profile={profile} />}
-                  <Pill tone="sky">
-                    {LAYOUT_LABELS[normalizeTechnicalSkillsLayout(profile.profileSettings?.technicalSkillsLayout)]}
-                  </Pill>
-                </p>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Link href={editorHref(profile)} className="tl-button-quiet" data-size="sm">
-                  Edit
+        <div className={css.notices}>
+          {atLimit && liveAccount && (
+            <Notice tone="warn">
+              <p className="font-semibold">
+                You are using all {liveAccount.profileLimit} profile
+                {liveAccount.profileLimit === 1 ? '' : 's'} on the {liveAccount.subscriptionLabel} subscription.
+              </p>
+              <p className="mt-1">
+                Delete one below to make room, or move up to a higher subscription.{' '}
+                <Link href={SUBSCRIPTION_PAGE} className="font-medium underline underline-offset-2">
+                  Go to subscription
                 </Link>
-                <button
-                  onClick={() => handleToggleDisabled(profile)}
-                  className="tl-button-quiet"
-                  data-size="sm"
-                >
-                  {profile.disabled ? 'Enable' : 'Disable'}
-                </button>
-                <button
-                  onClick={() => handleDelete(profile.id)}
-                  className="tl-button-quiet"
-                  data-size="sm"
-                  data-tone="danger"
-                >
-                  Delete
-                </button>
-              </div>
+              </p>
+            </Notice>
+          )}
+          {notice && <Notice tone="success">{notice}</Notice>}
+          <ErrorNotice error={error} onDismiss={() => setError(null)} />
+        </div>
+
+        <ul className={css.profileGrid}>
+          <li>
+            <NewProfileTile
+              onClick={() => router.push(NEW_PROFILE_PATH)}
+              blockedReason={blockedReason}
+              locked={profileLock ? { lock: profileLock, onLocked: locked.open } : null}
+            />
+          </li>
+          {profiles.map((profile) => (
+            <li key={`${profile.id}:${profile.updatedAt}`}>
+              <ProfileCard
+                profile={profile}
+                templates={templates}
+                now={now}
+                onEdit={() => router.push(profileEditorHref(profile))}
+                onDuplicate={() => void handleDuplicate(profile)}
+                duplicate={duplicate}
+                onDownload={() => handleDownload(profile)}
+                onToggleDisabled={() => void handleToggleDisabled(profile)}
+                onDelete={() => void handleDelete(profile)}
+              />
             </li>
           ))}
         </ul>
-      )}
+      </div>
+      {locked.dialog}
     </div>
-  );
-}
-
-/**
- * The template a profile's resumes are drawn with, and - when that is not the
- * one it names - which one it names and why it is not used, in the words the
- * editor's picker uses.
- */
-function DrawnTemplate({ templates, profile }: { templates: readonly Template[]; profile: Profile }) {
-  const { stored, drawn, layout } = drawnTemplate(templates, profile);
-  if (!stored) {
-    return <span>{drawn ? `Template no longer offered - drawn with ${drawn.name}` : 'Template no longer offered'}</span>;
-  }
-  if (!drawn || drawn.id === stored.id) return <span>{stored.name}</span>;
-  return (
-    <>
-      <span>Drawn with {drawn.name}</span>
-      <Pill tone="amber">
-        {stored.name}: not for {LAYOUT_LABELS[layout]}
-      </Pill>
-    </>
   );
 }

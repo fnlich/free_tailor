@@ -1,0 +1,18 @@
+{
+  "id": "9145ec7c-211d-4cce-a6ef-4ac44793c66a",
+  "name": "Classic Strict",
+  "description": "Traditional Strict resume with bordered header and underlined section rules",
+  "source": "uploaded",
+  "htmlContent": "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n<style>\n  body { font-family: 'Calibri', Arial, sans-serif; color: #222; max-width: 800px; margin: 0 auto; padding: 30px; line-height: 1.5; font-size: 14px; }\n  h1 { font-size: 26px; margin: 0; }\n  .title { font-size: 16px; color: #444; margin-bottom: 8px; }\n  .contact { font-size: 13px; color: #555; margin-bottom: 20px; }\n  .contact span { margin-right: 12px; }\n  h2 { font-size: 16px; text-transform: uppercase; border-bottom: 2px solid #333; padding-bottom: 4px; margin-top: 22px; margin-bottom: 10px; letter-spacing: 1px; }\n  .job { margin-bottom: 16px; }\n  .job-header { display: flex; justify-content: space-between; font-weight: bold; }\n  .job-sub { font-style: italic; color: #555; margin-bottom: 6px; }\n  ul { margin: 6px 0; padding-left: 20px; }\n  .skills-list { list-style: none; padding: 0; }\n  .skills-list li { display: inline-block; background: #f0f0f0; padding: 4px 10px; margin: 3px; border-radius: 3px; font-size: 13px; }\n  .strength { margin-bottom: 10px; }\n  .strength-title { font-weight: bold; }\n  .edu-item { margin-bottom: 10px; }\n  .edu-header { display: flex; justify-content: space-between; font-weight: bold; }\n</style>\n</head>\n<body>\n\n  <header>\n    <h1>{{name}}</h1>\n    <div class=\"title\">{{title}}</div>\n    <div class=\"contact\">\n      <span>{{contact.phone}}</span>\n      <span>{{contact.email}}</span>\n      <span>{{contact.linkedin}}</span>\n      <span>{{contact.location}}</span>\n    </div>\n  </header>\n\n  <section>\n    <h2>Summary</h2>\n    <p>{{summary}}</p>\n  </section>\n\n  <section>\n    <h2>Hard Skills</h2>\n    <ul class=\"skills-list\">\n      {{#each skills}}\n      <li>{{this}}</li>\n      {{/each}}\n    </ul>\n  </section>\n\n  <section>\n    <h2>Soft Skills</h2>\n    <ul class=\"skills-list\">\n      {{#each softSkills}}\n      <li>{{this}}</li>\n      {{/each}}\n    </ul>\n  </section>\n\n  <section>\n    <h2>Strengths</h2>\n    {{#each strengths}}\n    <div class=\"strength\">\n      <div class=\"strength-title\">{{title}}</div>\n      <div>{{description}}</div>\n    </div>\n    {{/each}}\n  </section>\n\n  <section>\n    <h2>Experience</h2>\n    {{#each experience}}\n    <div class=\"job\">\n      <div class=\"job-header\">\n        <span>{{title}}</span>\n        <span>{{startDate}} - {{endDate}}</span>\n      </div>\n      <div class=\"job-sub\">{{company}} | {{location}}</div>\n      <p>{{description}}</p>\n      <ul>\n        {{#each achievements}}\n        <li>{{this}}</li>\n        {{/each}}\n      </ul>\n    </div>\n    {{/each}}\n  </section>\n\n  <section>\n    <h2>Education</h2>\n    {{#each education}}\n    <div class=\"edu-item\">\n      <div class=\"edu-header\">\n        <span>{{degree}}</span>\n        <span>{{startDate}} - {{endDate}}</span>\n      </div>\n      <div class=\"job-sub\">{{institution}} {{#if location}}| {{location}}{{/if}}</div>\n    </div>\n    {{/each}}\n  </section>\n\n</body>\n</html>",
+  "cssContent": "",
+  "sections": [
+    "summary",
+    "hardSkills",
+    "softSkills",
+    "strengths",
+    "experience",
+    "education"
+  ],
+  "createdAt": "2026-09-08T15:20:41.238Z",
+  "updatedAt": "2026-09-08T15:23:06.580Z"
+}

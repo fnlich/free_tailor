@@ -1,9 +1,7 @@
-import type { Profile, TechnicalSkillsLayout } from '../types/profile';
+import type { Profile } from '../types/profile';
 import type { Template } from '../types/template';
 import { PublicError } from '../middleware/publicError';
 import { getAllTemplates, getTemplateById } from '../extractors/templateExtractor';
-import { inferTemplateSkillsLayouts } from './templateImport';
-import { getProfileTechnicalSkillsLayout } from './profileService';
 
 /**
  * Which template a resume is drawn with - ONE answer for the live profile
@@ -15,20 +13,8 @@ import { getProfileTechnicalSkillsLayout } from './profileService';
  * print another.
  */
 
-/** The template every install ships and every fallback ends at. It renders both layouts. */
+/** The template every install ships and every fallback ends at. */
 export const FALLBACK_TEMPLATE_ID = 'default';
-
-/** True when `template` lists `layout`; a template carrying no list is read off its markup. */
-export function templateSupportsLayout(
-  template: Pick<Template, 'skillsLayouts' | 'htmlContent'>,
-  layout: TechnicalSkillsLayout
-): boolean {
-  const layouts =
-    Array.isArray(template.skillsLayouts) && template.skillsLayouts.length > 0
-      ? template.skillsLayouts
-      : inferTemplateSkillsLayouts(template.htmlContent);
-  return layouts.includes(layout);
-}
 
 export interface TemplateChoiceOptions {
   /**
@@ -39,34 +25,21 @@ export interface TemplateChoiceOptions {
   allowDisabledRequested?: boolean;
 }
 
-const warned = new Set<string>();
-
-function warnOnce(key: string, message: string): void {
-  if (warned.has(key)) return;
-  warned.add(key);
-  console.warn(`[templates] ${message}`);
-}
-
 /**
  * The template for this profile: the one requested, else the profile's own
- * `preferredTemplate`, else `default` - the first of those that is enabled AND
- * lists the profile's skills layout.
+ * `preferredTemplate`, else `default` - the first of those that exists and is
+ * enabled. Failing all three, the first enabled template there is (newest
+ * first, as the list is served), so a resume is never refused while anything
+ * can draw it; `null` only when no template is enabled at all.
  *
- * It never fails a resume over the layout. An administrator can reclassify a
- * template after a profile chose it, and a profile can change layout while a
- * queued task still names its old template; refusing a paid generation for
- * either would be the app's mistake billed to the person. So when none of the
- * three fits, it takes the first enabled template that does list the layout,
- * and failing even that, the first enabled one of the three as it is - logged
- * once, so an operator can see a choice that no longer fits. `null` only when
- * no template is enabled at all, which is what it has always meant.
+ * Every template prints both Technical Skills layouts, so the layout plays no
+ * part in the choice.
  */
 export async function resolveTemplateForProfile(
-  profile: Pick<Profile, 'id' | 'preferredTemplate' | 'profileSettings'>,
+  profile: Pick<Profile, 'preferredTemplate'>,
   requestedTemplateId?: string,
   options: TemplateChoiceOptions = {}
 ): Promise<Template | null> {
-  const layout = getProfileTechnicalSkillsLayout(profile);
   const requested = typeof requestedTemplateId === 'string' ? requestedTemplateId.trim() : '';
   const candidateIds = [
     requested,
@@ -74,39 +47,13 @@ export async function resolveTemplateForProfile(
     FALLBACK_TEMPLATE_ID,
   ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
 
-  const usable: Template[] = [];
   for (const candidateId of candidateIds) {
     const template = await getTemplateById(candidateId);
     if (!template) continue;
-    const allowed = !template.disabled || (options.allowDisabledRequested === true && candidateId === requested);
-    if (allowed) usable.push(template);
+    if (!template.disabled || (options.allowDisabledRequested === true && candidateId === requested)) return template;
   }
 
-  const fitting = usable.find((template) => templateSupportsLayout(template, layout));
-  if (fitting) return fitting;
-
-  const firstChoice = usable[0];
-  const anyFitting = (await getAllTemplates()).find(
-    (template) => !template.disabled && templateSupportsLayout(template, layout)
-  );
-  if (anyFitting) {
-    if (firstChoice) {
-      warnOnce(
-        `layout:${profile.id}:${firstChoice.id}:${layout}`,
-        `Profile ${profile.id} uses the ${layout} skills layout, which template "${firstChoice.id}" does not ` +
-          `offer; drawing it with "${anyFitting.id}" instead.`
-      );
-    }
-    return anyFitting;
-  }
-
-  if (firstChoice) {
-    warnOnce(
-      `nolayout:${firstChoice.id}:${layout}`,
-      `No enabled template offers the ${layout} skills layout; drawing with "${firstChoice.id}" anyway.`
-    );
-  }
-  return firstChoice ?? null;
+  return (await getAllTemplates()).find((template) => !template.disabled) ?? null;
 }
 
 /**

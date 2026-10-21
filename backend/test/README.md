@@ -24,6 +24,8 @@ Storage tests point `DB_DIR` (SQLite database) and `TAILOR_STATIC_DIR` (default 
 TAILOR_KEEP_TEST_TMP=1 npm run test --prefix backend
 ```
 
+**No test uses a real Google credential.** The backend looks for one beside its own compiled code too, so on a checkout holding a real one (`backend/google-oauth-credentials.json` after `npm run sheets:login`, or `backend/service-account-key.json`) every test that signed an account in used to allocate a REAL spreadsheet in that Google account - one owner's Drive collected 440 named "Free Tailor - admin@example.com" and the like. `scripts/runTests.js` therefore sets `TAILOR_GOOGLE_CREDENTIAL_SEARCH=off` (only a file a variable names is read) and `GOOGLE_CREDENTIALS_PATH` / `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` to empty for the whole run, whatever the environment or `.env` says, and `test/helpers.js` sets the same three as it loads. A test of the search itself writes its own fake credential and turns the search on for its own scope with `withCredentialSearch`. The e2e backends get the same from `test/e2e/no-google.js`, which every e2e preload requires first. `testRunner.test.js` holds all of it, holds every `dist/index.js` command in the e2e README and in each e2e script's own comments to loading a preload, and fails on any line there that starts a backend another way - the root `npm run dev` and its kin, the backend's `npm start`, ts-node-dev - none of which loads one (shell.js said "`npm run dev`" until this release). Run test files through `scripts/runTests.js` only.
+
 To run one file the same way (after `npm run build --prefix backend`, since the tests load `dist/`):
 
 ```sh
@@ -75,7 +77,15 @@ Coverage currently focuses on:
   a failing entry dropped with one warning naming its position and never its
   text, `[]` saved beating it and `{ channels: null }` resetting; the lake's
   rate and cap under the administrator's; the output prefix's `.env` default
-  read in its canonical spelling; and migration 9 - a field still at
+  read in its canonical spelling; the subscription prices - `''` or `$0`
+  saved as the administrator's *not offered*, which beats `.env`, Reset
+  bringing `.env`'s back, a price above $10,000, a fraction of a thousandth,
+  junk and a `...Milli` field refused under the box they name (over PUT
+  /api/admin/settings too), `.env`'s clamped above $10,000 or not offered when
+  it is `0` or junk, each warned once - junk, and a price hand-edited into the
+  row with nothing under it, listed as unreadable for the renewal sweep, never
+  unset or `0` - and a price hand-edited into the row ignored with one
+  warning; and migration 9 - a field still at
   its old default taken out, a changed one kept, idempotent, a missing or
   unparsable row left alone, and an upgraded install's row rewritten as it
   opens
@@ -100,7 +110,9 @@ Coverage currently focuses on:
   quote, a mixed-price
   batch charged the sum and refunded per task, the 402, free models, the
   exempt administrator, and finalised content priced at the model that wrote
-  it (`generationPricing.test.js`)
+  it - a token that no longer holds pricing the named model when quoted
+  without the content, which is why the builder quotes with it
+  (`generationPricing.test.js`)
 - what an ordinary account may know of models: the slim `GET
   /api/resume/models`, a stored choice falling back while a requested one is
   refused with one generic sentence, the provider request forms kept for
@@ -186,8 +198,14 @@ Coverage currently focuses on:
   another account's report of it a duplicate recorded as theirs; an
   unclassified report recorded, one with no company not; a delete forgetting
   the reports that reached the row, so each can report it again; revoke and
-  delete; the admin query; and four threads adding the same job at once
-  (`jobLakeStore.test.js`); the admin sheet's outbox - created once (a failed
+  delete; the search - several values of a filter, any matching, a keyword's
+  words all needed and keywords ORed, a word of one or two characters matched
+  whole, never more than 25 words asked - and every plan it runs (`lakeReadSql`:
+  one value a seek, several companies or up to 25 fields merged arms, more
+  fields, the facts and keywords alone the walk of `updated_at`, keywords
+  matched once in a materialized CTE, never a plain scan sorted); the read by
+  ids and the company suggestions with theirs; and four threads adding the
+  same job at once (`jobLakeStore.test.js`); the admin sheet's outbox - created once (a failed
   header write finishes the same spreadsheet), shared with enabled
   administrators at every sync, an idle one included, a failed append kept
   and sent exactly once on retry with Google's reason on the page, a
@@ -213,7 +231,9 @@ Coverage currently focuses on:
   replaced, values and red paint, the header and the person's columns past L
   kept, newest first, Date in SHEET_TIMEZONE and NO(DATE) per day, the six
   analysis cells as a build writes them (blank with no analysis), the list's
-  own filters and refusals, the cap, writes of at most 200 rows and about
+  own filters and refusals - lists as JSON arrays matching Search's repeated
+  keys, a single filter refusing a list, the counts' caps - the cap, writes
+  of at most 200 rows and about
   1.5 MB with the grid grown first and a long description cut with the
   marker (never through a surrogate pair), a build from the pushed rows
   asking no model - a link-less job whose description was cut among them,
@@ -222,10 +242,16 @@ Coverage currently focuses on:
   person's own refused before any write, admins only, and the read's plan
   (`jobLakePush.test.js`). The pages' half (`frontendJobLake.test.js`): the
   rows a run is asked for, the settings boxes and what a save sends, and the
-  lake's filters, each refused by the page exactly when and in the words the
-  server refuses them; the filter boxes in the owner's order (pinned, and
-  drawn from it by the Lake tab), the job type and clearance choices against
-  the server's, and the query string in that order; Push to Google Sheet's
+  lake's filters - lists and their counts too, the keywords' words in all
+  split as the server splits them, against the admin route and, as a user,
+  Find Jobs' - each refused by the page exactly when and in the words the
+  server refuses them (the caps' sentences the form's full boxes say too, in
+  one copy), and Requested by a user's 403; Search and Clear emptying what was
+  typed into a list only to narrow it; the filter
+  boxes in the owner's order (pinned, drawn from it by the one
+  LakeFilterForm both pages render, Requested by only an administrator's),
+  the job type and clearance choices against the server's, what Search takes
+  of typed text, and the query string in that order as repeated keys; Push to Google Sheet's
   body - the search's own filters - pushing exactly the jobs Search lists, in
   its order, and refused in its words, its confirm and its result (the cap
   sentence included) read from real pushes; every row and merge status given its
@@ -236,7 +262,29 @@ Coverage currently focuses on:
   words; when Add to job lake may be
   pressed; a sheet's `javascript:` link never an href; and the owner's line
   drawn from a real run's summary, with a tab of the reporter's own refused
-  in the run's words
+  in the run's words; and Find Jobs: an export's sentence drawn from real
+  exports, the export and order blockers, and an order's jobs accepted by the
+  server's own `normalizeJobs`
+- Find Jobs' routes over HTTP (`findJobs.test.js`): a user's row and an
+  administrator's exact key sets - never a reward, a seen count, a hash or
+  who reported it, for a user - and a job's details; the list filters as
+  repeated keys or `key[]=`, never an object, each matching any, the caps -
+  the keywords' 25 words in all among them - and a single filter refusing a
+  list; an export's ids and a list's values read in one pass and refused at
+  the first that cannot be taken, a million of them never compared pair by
+  pair; Requested by a 403 for anybody but an
+  administrator; the company suggestions; the export's cap read at every
+  request; a reporter refused every route; and an export on an install with
+  no Google Sheets, the jobs looked up before the sheet's sentence
+- Find Jobs' page (`frontendFindJobs.test.js`): the MultiSelect's decisions
+  (filtering, choosing past a cap, typed text split, the active option -
+  still the one chosen once a filtered list is whole, and scrolled into the
+  list's own view - what is announced) and its combobox markup; who an order
+  builds for, Several profiles among them, against the server's
+  `assertProfileScopeAllowed`; and the pieces Build Resumes and Find Jobs
+  share, the order dialog offering Several (Build Resumes not), saying why it
+  cannot be placed where the cost line stands, and sending an Order only
+  after the spend confirm, which starts nothing for a dialog closed meanwhile
 - providers of one type and their queues (`providerQueues.test.js`): two
   Claude providers with limits 1 and 2 running six tasks at most three at once,
   each at its own limit, placed two and four; a held provider's waiting work,
@@ -327,6 +375,57 @@ Coverage currently focuses on:
   purchase crediting exactly what it charges, with no fee, and the payment
   limits in dollars (`paymentFees.test.js`); and the frontend's copies of all
   of it run against the server's (`frontendMoney.test.js`)
+- subscriptions bought from the credit balance: the rules as tables - the
+  days left and what they are worth, what moving up costs ($19.99 less 29
+  unused days of $9.99 is $10.333), the period a renewal buys, every card's
+  offer in every state, and why a due one renews, ends (a disabled account's
+  included) or holds while its price cannot be read
+  (`subscriptionBilling.test.js`); over HTTP on a fake clock, the view, a
+  purchase charged exactly once in one ledger row with its key and note and
+  the base captured, a move up prorated, a short balance or a changed price
+  refused with nothing moved, two purchases at once charged once, every
+  refusal, the switch at renewal, cancel and keep with their repeats, an
+  administrator's tier or role change on Admin -> Accounts ending a paid one
+  with its note and notice and no refund, read in the change's own
+  transaction with no other writer let in, disabling a paying account ending
+  nothing but saying when it ends, and `GET /api/auth/subscriptions` gone
+  (`subscriptionRoutes.test.js`); and the renewal sweep - charged once
+  however often it runs and across a restart, a late renewal from the old
+  end and a missed period from now, the switch, every way a paid tier ends
+  with its notice, a disabled account never charged and the charge itself
+  refusing one, a pass that cannot read the prices touching nobody, a price
+  set and unreadable holding what renews as it while the rest go on, held
+  rows never hiding the ones due after them, a renewal decided on a period
+  that moved on doing nothing, the due query's pages through its partial
+  index, the six columns reaching an older database, and the timer: a pass
+  at once, unref'd, never two at once, the first only once the credit books
+  are straight (`subscriptionRenewal.test.js`); and the Subscription page's
+  half, through the frontend's own client against the real routes - the
+  amount it sends back accepted to the thousandth and in whole cents, every
+  card's action and the "Current subscription" summary drawn from real
+  answers as Default, paid, switching, cancelled, kept, set by an
+  administrator and an administrator's own, a changed price and a short
+  balance read as the page reads them, a short renewal warned of, an *Upgrade
+  · $0* the unused days cover still asked about (nothing now, the price at its
+  first renewal), the cards four, two or one across and never three, and Admin
+  -> Accounts' *Paid · renews* line and confirm (`frontendSubscription.test.js`)
+- the lock drawn where a subscription falls short: its words from
+  `describeLock` per feature and tier, a refusal's lock worded from the
+  refusal and never from a session behind it, the frontend's copies of the
+  tier names and profile limits, and the shared run choices - who a run builds for
+  (one profile, several chosen, all, or a group), the starting target below
+  and above Premium, the files - held to the server's
+  lock (`frontendHelpers.test.js`); the rail offering Groups to every builder,
+  locked below Premium and never hidden (`isNavLocked`,
+  `frontendRoles.test.js`); and the alert before anything spends credit
+  (`frontendSpendConfirm.test.js`): *Do not show again* per kind of action
+  under keys of its own (the old Generate Immediately key not read), unreadable
+  storage asking, Generate Immediately asked always and an order or a
+  subscription only when it takes credit, the amount, the balance after and a
+  short balance blocking Proceed, and every Build Resumes run and Order and
+  every subscription change going through it - a finalise quoted with its
+  content as well as its tokens, the run buttons waiting while it prices, and
+  the page read the same on a CRLF checkout
 - the admin pages' half of the settings with a `.env` default, the Models
   dialog and where resumes are filed (`frontendSettings.test.js`): the frontend's
   copies of the server's variable tables, dialog fields and token lists held
@@ -335,7 +434,11 @@ Coverage currently focuses on:
   here; through the real client and routes, an untouched General or Payments
   form sending nothing, one changed box sent alone and turning *Set here*,
   Reset (`null`) putting `.env`'s back, the contact list's Reset against a
-  saved empty list, the lake's boxes holding only what is set here; the
+  saved empty list, the lake's boxes holding only what is set here, the
+  subscription prices saved in dollars as typed, read in thousandths with
+  their source and Reset under their dollar name (`appSettingResetBody`), and
+  General's price boxes sending only the box changed and refusing in the
+  server's words before anything is sent (`subscriptionPriceDraft.ts`); the
   dialog refusing what the server refuses in its words and pinning a refusal
   only the server can make (a name taken meanwhile, a pair another record
   holds) under the box it names, an edit sending only what changed; Set
@@ -366,7 +469,8 @@ Coverage currently focuses on:
   route says, Record payout in the queue refusing what the real route refuses
   and a recorded payout reading *Paid out* - plus every sentence that asks for
   an administrator followed by a Contact admin link (`frontendRefunds.test.js`)
-- Generate Immediately and Order: the two kinds, the tab lease through the
+- Generate Immediately and Order: the two kinds (`mode` alone decides; an old
+  script's `asOrder: true` is not read), the tab lease through the
   stream, the release, the owner-checked per-file download and the deletion
   after the run (`immediateRuns.test.js`); the grace on a mock clock
   (`tabLease.test.js`); immediate work before orders on one lane
@@ -377,9 +481,11 @@ Coverage currently focuses on:
   its reservation (`restoreReconcile.test.js`); an untitled row built for its
   analysis's title (`queuedRole.test.js`); and the page's own decisions - a
   tab's id, the downloads, the release request, how a run ended, the sheet
-  rows (`immediateRunHelpers.test.js`)
+  rows (`immediateRunHelpers.test.js`; the question asked before a run is
+  `frontendSpendConfirm.test.js`'s)
 - saved templates as files (`templateFiles.test.js`): import, extraction and
-  the manual builder each writing `<id>.json` with its source, an edit
+  the manual builder each writing `<id>.json` with its source (the import
+  answering the list and its counts, nothing spread beside them), an edit
   rewriting it and a delete removing it while a built-in stays as shipped, ids
   checked before any path is built, a lookup taking an id exactly as its file
   carries it (no folding of case or underscores), a directory that cannot be
@@ -428,19 +534,35 @@ Coverage currently focuses on:
   template whose `{{#if description}}` block crosses the element's edges
   still rendering, the guard taking such a block whole or leaving it - at
   most eight bullets, the title printed as composed with its separators - in every
-  built-in, each layout it offers and both switch states, in the DOCX, and in
+  built-in, both layouts and both switch states, in the DOCX, and in
   the gallery's tailored sample; and a cover letter keeping its paragraphs
   when the model separated them with single newlines. The shared reader of
   the block itself - sanitising, the soft group's mark, drawn heading and
   closed heading list, the Plain flattening - is `skillGroups.test.js`
 - the templates and the two skills layouts (`templateLayouts.test.js`): every
-  built-in rendered in each layout it declares (one item per skill Plain,
-  headings Grouped, nothing padded) and with each switch on and off, its capability flags
-  against its markup, the section-stripping regressions, layouts inferred for
-  a template that states none and kept for one that does (stored, imported,
-  manual), an administrator's reclassification and its refusal by name, the
-  gallery preview's options and no-script policy, and the template resolver's
-  fallbacks
+  built-in rendered in both layouts (one item per skill Plain, headings
+  Grouped, nothing padded, Burgundy Rule's and Navy Rule's one Plain group
+  marked to span their grid's row and their own rule for it in their
+  stylesheets) and with each switch on and off, its capability flags against
+  its markup, the section-stripping regressions, no layout list on any
+  built-in and none read from a stored file, an import or an override row
+  (and dropped by the next write of a saved file), the admin edit taking a
+  name, a description or disabled and refusing a body with none of them,
+  the gallery preview's options and no-script policy, and the template
+  resolver's order - requested, the profile's own, `default`, any enabled
+  template, null - whatever the layout. Its fixtures read the built-ins only
+  (the files without a `source`)
+- the two skills layouts as rendered (`skillsLayoutRender.test.js`): Plain as
+  skill names and Grouped under headings, nothing padded; a joined skills line
+  (`<p>...{{join hardSkills ", "}}</p>`) drawn Grouped one line per heading in
+  its own element, class and separator, its static label giving way, a
+  headless group with no empty label, a join in an attribute or beside text
+  left as written, and the owner's saved ATS templates when the checkout has
+  them (else skipped); the Plain net marking a category loop's element, a
+  guarded one too, with one stylesheet in the head - after a leading doctype
+  when there is no head - and nothing for a per-item template, a void
+  element or a loop with markup before it; and a span loop's lines turned
+  into heading blocks with their separator
 - a switched-off section leaving no heading (`sectionHeadings.test.js`): every
   built-in and uploaded-style markups with neither the class nor
   `data-section` - a heading before the loop, in a plain div, outside a guard
@@ -467,8 +589,9 @@ Coverage currently focuses on:
   caller's own
   profile and somebody else's a 404, half-typed drafts rendering, nothing typed
   able to run, the layout and switches reaching the page, the template order
-  and layout fallback, a disabled template a 404 for a user only, and a 503
-  with a ref when no template is enabled
+  (a Plain draft drawn on Burgundy Rule, its grid marked for the one group), a
+  disabled template a 404 for a user only, and a 503 with a ref when no
+  template is enabled
 - tailoring by the switches (`resumeSectionPrompts.test.js`): no switch a
   prompt value - the strengths in `profileJson` only while on, her own soft
   skills never - the shipped prompt naming the drawn soft-skill heading, the
@@ -509,6 +632,18 @@ Coverage currently focuses on:
   fallback's revision, the resume's model whatever the prompt overrides, and
   content a page sends back never revised; the revision inside the queue's
   provider pin is `providerQueues.test.js`
+- Partial and Fully tailor (`tailorModes.test.js`): what each mode sends
+  (Fully: each role's title, company and dates, no summary, the rest alike),
+  the mode from the profile, else `DEFAULT_TAILOR_MODE` (junk warned once),
+  else partial; Fully running Tailor Resume (Fully) whatever the Building
+  prompt and Partial the profile's own; a bare profile printing the model's
+  bullets and skills with its own facts back; the revise pass after a Fully
+  draft asked for every checklist term and no figure; the two modes never
+  sharing a cached tailoring; the fallback cover letter told what the
+  tailored resume says (two stints at one company and title kept apart by
+  their dates) and, untailored, the profile's own text in either mode; the
+  span of experience worked out from the role dates when the profile states
+  none; and the posting's banned opener verbs kept out of `jobAnalysisJson`
 - prompt variables (`promptVariables.test.js`): every feature declaring
   exactly the variables its code supplies, a typo refused on save and named
   on validate (also through the routes), the shipped prompts validating
@@ -579,9 +714,11 @@ Coverage currently focuses on:
   not the one its row decides, and over HTTP with a session per role it
   refuses a reporter every route that is not theirs (403 `role-not-allowed`)
   and lets them reach their own account, credits, bell, sheet and refund
-  history. Roles, a reporter's rate per job (served on the list too), which
-  setting names a configured administrator, and recorded payouts are in
-  `accountRoutes.test.js` and `accounts.test.js`
+  history. Roles and subscriptions (one this build lacks refused by name, on
+  a create - which then creates nothing - as on an edit), a reporter's rate
+  per job (served on the list too), which setting names a configured
+  administrator, and recorded payouts are in `accountRoutes.test.js` and
+  `accounts.test.js`
 - the reporter's side of the frontend (`frontendRoles.test.js`): its copy of
   the role catalog is the backend's; a reporter's Credits mounts no buyer's
   panel and reads only their own requests (for payouts) and the payout routes;
@@ -627,12 +764,19 @@ Coverage currently focuses on:
   and range, and tagged with when it is read - and its README row showing the
   same default, range and tag; plus the CLI budgets shipped commented out
   (`envExample.test.js`)
-- the job sheet writer the removed job search exported with, kept for Find
-  Jobs (`jobSheetRoutes.test.js`): `appendJobRows` on the caller's own sheet
-  only, A to F - or A to L for a row carrying its analysis cells - after the
-  last row used, NO(DATE) carrying on the day's count, a company (or whatever
-  `duplicateKeys` names) already in the tab skipped, a row typed meanwhile
-  stepped over, and a tab that is not a job tab refused before anything is read
+- the job sheet writer Find Jobs' Export into Sheet appends with
+  (`jobSheetRoutes.test.js`): `appendJobRows` on the caller's own sheet only,
+  A to F - or A to L for a row carrying its analysis cells - after the last
+  row used, NO(DATE) carrying on the day's count, a posting already in the
+  tab skipped (the same link, tracking parameters aside, else the same
+  company and title), a row typed meanwhile stepped over, and a tab that is
+  not a job tab refused before anything is read; and POST
+  /api/jobs/lake/export: the picked lake jobs into All, A:L with each job's
+  analysis, newest first, the same again in All already, a gone job missing,
+  the cap, a body's sheet never read, an All held by a tab of the
+  person's own refused before anything is read, and the app's own All with
+  its row 1 edited refused in words that say how to get it back - renamed,
+  a new All takes the next export
 
 ## Testing the CLI providers
 

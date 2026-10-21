@@ -15,11 +15,8 @@ import { PublicError } from './publicError';
 /**
  * Who is making this request.
  *
- * Until v2 this file was a stub: `authMiddleware` called `next()` and
- * `validatePassword` returned true for every input. That was honest for a
- * single-user app on one machine, and is not honest now that accounts own
- * data - so it is a real check, and the pass-through is gone rather than
- * kept behind a flag somebody could leave on.
+ * Accounts own data, so every guard here is a real check of the session:
+ * there is no pass-through, and no flag somebody could leave on to make one.
  */
 
 declare global {
@@ -227,12 +224,15 @@ export function hasSubscription(account: Pick<UserAccount, 'role' | 'subscriptio
 /**
  * A request this account's subscription does not cover: 403
  * `subscription-too-low`, naming the subscription it needs, in words the
- * account holder can act on (they can ask for a higher one).
+ * account holder can act on - they move up on their own Subscription page,
+ * paying from their credit balance (services/subscriptions).
  */
 export class SubscriptionTooLowError extends PublicError {
   constructor(minimum: AccountSubscriptionId, message?: string) {
     super(
-      message ?? `That part of this installation needs a ${SUBSCRIPTIONS[minimum].label} subscription or higher.`,
+      message ??
+        `That part of the app needs a ${SUBSCRIPTIONS[minimum].label} subscription or higher. ` +
+          'You can move up on the Subscription page.',
       { status: 403, code: 'subscription-too-low', extra: { requiredSubscription: minimum } }
     );
     this.name = 'SubscriptionTooLowError';
@@ -293,21 +293,9 @@ export function assertProfileScopeAllowed(
   throw new SubscriptionTooLowError(
     MULTI_PROFILE_SUBSCRIPTION,
     `Building for more than one profile needs a ${SUBSCRIPTIONS[MULTI_PROFILE_SUBSCRIPTION].label} ` +
-      'subscription or higher. Choose a single profile.'
+      'subscription or higher. Choose a single profile, or move up on the Subscription page.'
   );
 }
-
-/**
- * The old name, kept pointing at the real check.
- *
- * Every existing route imports `authMiddleware`, and it used to mean "let
- * anything through". Re-exporting `requireUser` under that name means those
- * routes become protected by this change rather than staying open until each
- * one is visited - which is the direction a mistake here should fail in. The
- * same reasoning, one role later, is why it is the builder check and not
- * `requireAccount`.
- */
-export const authMiddleware = requireUser;
 
 export function isAdmin(req: Request): boolean {
   return req.user?.role === 'admin';

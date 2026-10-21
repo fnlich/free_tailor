@@ -58,8 +58,10 @@ const BY_FEATURE: Readonly<Record<PromptFeatureKey, PromptCategoryId>> = Object.
   'extract-template-from-pdf': 'extracting',
   'extract-profile-from-resume': 'extracting',
   'tailor-resume': 'building',
+  'tailor-resume-full': 'building',
   'revise-resume-coverage': 'building',
   'generate-cover-letter': 'building',
+  'write-entry-bullets': 'building',
 });
 
 export function categoryForFeature(featureKey?: PromptFeatureKey): PromptCategoryId {

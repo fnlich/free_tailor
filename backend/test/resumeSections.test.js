@@ -58,8 +58,6 @@ function tailored(extra = {}) {
     skills: ['Python'],
     hardSkills: ['Python'],
     softSkills: ['Negotiation'],
-    unconfirmedSoftSkills: [],
-    unconfirmedHardSkills: [],
     strengths: [{ title: 'Tailored strength', description: 'For this job.' }],
     ...extra,
   };

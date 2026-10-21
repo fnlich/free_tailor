@@ -40,6 +40,13 @@ export type CreditReason =
   /** That reward taken back by an administrator, never below a $0 balance. */
   | 'job-report-reward-revoked'
   /**
+   * A subscription bought, or moved up, from the balance: the tier's price
+   * less the unused days of the one it replaced. The row's `note` says which.
+   */
+  | 'subscription-purchase'
+  /** A paid subscription's next 30 days, taken when it renewed. */
+  | 'subscription-renewal'
+  /**
    * Credits became dollars and every balance was reset to $0: one row per
    * account that held any, in its balance or in a run still going (that one
    * moves 0 credits). Always carries `legacyCredits`.
@@ -129,6 +136,8 @@ const REASON_PHRASES: Record<CreditReason, string> = {
   'reporter-payout': 'Paid out by an administrator',
   'job-report-reward': 'Earned - a job you reported was added to the job lake',
   'job-report-reward-revoked': 'Taken back - an administrator revoked a job reward',
+  'subscription-purchase': 'Subscription bought or upgraded',
+  'subscription-renewal': 'Subscription renewed',
   reset: 'Reset to $0 when credits became dollars',
 };
 

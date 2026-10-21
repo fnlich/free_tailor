@@ -30,6 +30,8 @@ function promptText(id) {
 }
 
 const TAILORED = promptText('tailor-resume');
+/** Fully tailor's prompt writes the letter as one field of its JSON too, beside the resume it wrote. */
+const FULLY = promptText('tailor-resume-full');
 const FALLBACK = promptText('generate-cover-letter');
 
 /** The voice every cover letter this app produces has to have. */
@@ -57,6 +59,7 @@ test('both cover letter prompts carry the same voice rules', () => {
   const missing = [];
   for (const [label, pattern] of SHARED_RULES) {
     if (!pattern.test(TAILORED)) missing.push(`tailor-resume is missing: ${label}`);
+    if (!pattern.test(FULLY)) missing.push(`tailor-resume-full is missing: ${label}`);
     if (!pattern.test(FALLBACK)) missing.push(`generate-cover-letter is missing: ${label}`);
   }
   assert.deepEqual(
@@ -73,8 +76,10 @@ test('each prompt still asks for the output its caller parses', () => {
   assert.match(FALLBACK, /Return only the cover letter body text/);
   assert.doesNotMatch(FALLBACK, /"coverLetter": string/);
 
-  assert.match(TAILORED, /"coverLetter": string/);
-  assert.match(TAILORED, /Return only a valid JSON object/);
+  for (const tailoring of [TAILORED, FULLY]) {
+    assert.match(tailoring, /"coverLetter": string/);
+    assert.match(tailoring, /Return only a valid JSON object/);
+  }
 });
 
 test('the fallback asks only for inputs it is actually given', () => {
@@ -86,7 +91,17 @@ test('the fallback asks only for inputs it is actually given', () => {
   assert.doesNotMatch(FALLBACK, /KEY_RESPONSIBILITIES|jobAnalysisJson|skillsJSON/);
 });
 
-test('neither prompt invents facts', () => {
+test('no prompt invents facts it is not asked to write', () => {
   assert.match(FALLBACK, /Never invent an achievement, employer or metric/);
-  assert.match(TAILORED, /Never invent a company, title, date, location or metric/);
+  // Partial: the frame never, and nothing in a role the profile describes;
+  // only a role it leaves empty is written from the posting (the owner kept
+  // that rule, 2026-10-20), and the summary holds what the profile shows and
+  // what those bullets describe.
+  assert.match(TAILORED, /Never invent a company, title, date or location/);
+  assert.match(TAILORED, /In every described role, never a metric, project, outcome, technology, tool or certification the profile does not show/);
+  assert.match(TAILORED, /The summary holds what the profile shows and what the bullets you wrote for an empty role describe/);
+  // Fully: the frame never; the work is what it is asked to write.
+  assert.match(FULLY, /Never change or invent a company, title or date, and never add or drop a role/);
+  // Every letter tells only what its resume tells.
+  for (const tailoring of [TAILORED, FULLY]) assert.match(tailoring, /The letter tells only what the resume/);
 });

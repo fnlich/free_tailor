@@ -23,7 +23,23 @@ import {
   type ProviderModelOptions,
 } from './providerModels';
 import { parsePricePerResume, readPricePerResumeMilli } from './pricePerResume';
-import { centsToMilli, describeDollarProblem, isWholeCents, milliToCents, parseDollars } from '../utils/money';
+import {
+  MAX_SUBSCRIPTION_PRICE_MILLI,
+  PAID_SUBSCRIPTION_IDS,
+  SUBSCRIPTION_PRICE_FIELDS,
+  SUBSCRIPTIONS,
+  type PaidSubscriptionId,
+  type SubscriptionPrices,
+  type SubscriptionPriceSetting,
+} from './accountSubscriptions';
+import {
+  centsToMilli,
+  describeDollarProblem,
+  formatMoney,
+  isWholeCents,
+  milliToCents,
+  parseDollars,
+} from '../utils/money';
 import { AiUnavailableError, ModelUnavailableError } from './modelErrors';
 import {
   AIProviderInputError,
@@ -64,8 +80,10 @@ import {
   envOutputBaseDir,
   envOutputPathPrefix,
   envOutputPathSuffix,
+  envDefaultTailorMode,
   envPaymentLimits,
   envRequireThreeDSecure,
+  envSubscriptionPriceMilli,
   MAX_AMOUNT_CENTS,
   settingEnvFingerprint,
   type DefaultedSettingKey,
@@ -75,6 +93,7 @@ import {
   type SettingSource,
   type ThemeMode,
 } from './settingDefaults';
+import type { TailorMode } from '../types/profile';
 
 export type { DefaultMode, DefaultResumeSelection, PaymentTargetLimits, SettingSource, ThemeMode };
 export { DEFAULT_PAYMENT_LIMITS };
@@ -169,6 +188,18 @@ type AppSettings = {
    * this is a setting and not a constant.
    */
   requireThreeDSecure: boolean;
+  /**
+   * What each paid subscription costs for 30 days, taken from the account's
+   * credit balance when it is bought and at every renewal
+   * (services/subscriptions), in thousandths of a dollar: $0.001 to $10,000.
+   * `null` is NOT OFFERED - nobody can buy that tier, and its card asks for
+   * the administrator. STORED as 0 when an administrator chose "not offered"
+   * (a save of '' or $0), which beats a price `.env` gives; absent, `.env`'s
+   * SUBSCRIPTION_<TIER>_PRICE_USD, else not offered.
+   */
+  premiumPriceMilli: number | null;
+  premiumPlusPriceMilli: number | null;
+  premiumMaxPriceMilli: number | null;
   aiModels: AIModelRecord[];
   /**
    * The model PROVIDERS (config/aiProviders.ts): every place a type can run,
@@ -240,6 +271,12 @@ export type UserModelOption = { id: string; name: string };
 export type UserAppSettings = BuilderDefaults & {
   models: UserModelOption[];
   outputPathUsesJobTitle: boolean;
+  /**
+   * How a profile that has chosen no tailoring mode is tailored - `.env`'s
+   * DEFAULT_TAILOR_MODE, else `partial` - so the profile editor can say what
+   * "the default" is beside its Tailoring choice.
+   */
+  defaultTailorMode: TailorMode;
 };
 
 /**
@@ -295,6 +332,10 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
   /** Per method, in thousandths of a dollar. */
   paymentLimits: PaymentLimitsView[];
   requireThreeDSecure: boolean;
+  /** Each paid subscription's price for 30 days, in thousandths; null is not offered. Saved as `premiumPriceUsd`... */
+  premiumPriceMilli: number | null;
+  premiumPlusPriceMilli: number | null;
+  premiumMaxPriceMilli: number | null;
   /**
    * Where each setting that has a `.env` default got the value in effect:
    * 'admin' (stored here - Reset to default is offered), 'env' (the variable
@@ -355,6 +396,25 @@ type SettingsState = {
   defaults: AppSettingDefaults;
   /** Per method in `settings.paymentLimits`: whose its row is. */
   limitSources: Record<string, PaymentLimitSource>;
+  /** The paid tiers whose price is "not offered" only because a value somebody set could not be read. */
+  unreadablePrices: UnreadableSubscriptionPrice[];
+};
+
+/**
+ * A paid tier whose price reads as not offered only because a value somebody
+ * SET could not be read: a price hand-edited into the stored row in a shape
+ * this app never writes ('admin'), or a SUBSCRIPTION_<TIER>_PRICE_USD that is
+ * not an amount in dollars ('env') - with nothing under it that is a price.
+ * The page and a purchase take it as not offered; the renewal sweep must not,
+ * or one typo would end every subscription of that tier as it falls due
+ * (`getSubscriptionPriceReading`).
+ */
+export type UnreadableSubscriptionPrice = { tier: PaidSubscriptionId; source: 'admin' | 'env' };
+
+/** The prices in effect, and which of them could not be read. */
+export type SubscriptionPriceReading = {
+  prices: SubscriptionPrices;
+  unreadable: UnreadableSubscriptionPrice[];
 };
 
 /**
@@ -374,6 +434,15 @@ export type AppSettingsUpdate = Resettable<Partial<Omit<BaseAppSettings, 'aiMode
   /** Per method, in dollars. See `PaymentLimitsInput`. `null` or `[]` resets. */
   paymentLimits?: PaymentLimitsInput[] | null;
   requireThreeDSecure?: boolean | null;
+  /**
+   * A paid subscription's price for 30 days, in DOLLARS ("9.99", or the JSON
+   * number 9.99) - never in thousandths: a `premiumPriceMilli` in a save is
+   * refused. '' or $0 is the administrator's "not offered", which beats
+   * `.env`; `null` is Reset to default.
+   */
+  premiumPriceUsd?: string | number | null;
+  premiumPlusPriceUsd?: string | number | null;
+  premiumMaxPriceUsd?: string | number | null;
 };
 
 /** `null` beside each defaulted field's own type: what a Reset to default sends. */
@@ -569,6 +638,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   outputPathPrefix: CODE_SETTING_DEFAULTS.outputPathPrefix,
   paymentLimits: DEFAULT_PAYMENT_LIMITS,
   requireThreeDSecure: CODE_SETTING_DEFAULTS.requireThreeDSecure,
+  premiumPriceMilli: CODE_SETTING_DEFAULTS.premiumPriceMilli,
+  premiumPlusPriceMilli: CODE_SETTING_DEFAULTS.premiumPlusPriceMilli,
+  premiumMaxPriceMilli: CODE_SETTING_DEFAULTS.premiumMaxPriceMilli,
   aiModels: DEFAULT_MODEL_RECORDS,
   aiProviders: normalizeStoredProviders([]),
 };
@@ -895,6 +967,29 @@ function normalizeStoredCents(
   return parsed;
 }
 
+/** The three subscription price fields, in catalogue order (accountSubscriptions.ts `SUBSCRIPTION_PRICE_FIELDS`). */
+const SUBSCRIPTION_PRICE_SETTINGS: readonly SubscriptionPriceSetting[] = PAID_SUBSCRIPTION_IDS.map(
+  (tier) => SUBSCRIPTION_PRICE_FIELDS[tier].setting
+);
+
+/**
+ * A subscription price as this app STORES one: a whole number of thousandths
+ * from 0 - the administrator's "not offered" - to $10,000.
+ */
+function isStoredPriceMilli(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SUBSCRIPTION_PRICE_MILLI;
+}
+
+/**
+ * A stored price as it is in effect: 0 is not offered (null), anything else
+ * the price. A value this app never writes - hand-edited into the row - was
+ * taken out by `withoutUnsetOverrides` with a warning, and reads as the
+ * fallback: `.env`'s price, else not offered.
+ */
+function readStoredPriceMilli(value: unknown, fallback: number | null): number | null {
+  if (!isStoredPriceMilli(value)) return fallback;
+  return value === 0 ? null : value;
+}
 
 function normalizeSettings(
   input: unknown,
@@ -1006,6 +1101,9 @@ function normalizeSettings(
     requireThreeDSecure: normalizeBooleanSetting(
       source, 'requireThreeDSecure', fallback.requireThreeDSecure, strict
     ),
+    premiumPriceMilli: readStoredPriceMilli(source.premiumPriceMilli, fallback.premiumPriceMilli),
+    premiumPlusPriceMilli: readStoredPriceMilli(source.premiumPlusPriceMilli, fallback.premiumPlusPriceMilli),
+    premiumMaxPriceMilli: readStoredPriceMilli(source.premiumMaxPriceMilli, fallback.premiumMaxPriceMilli),
     aiModels,
     // Read leniently even from a strict caller: a provider this build cannot
     // use is dropped with a warning (normalizeStoredProviders), and the
@@ -1095,6 +1193,7 @@ function toUserSettings(settings: AppSettings, outputPathSuffix: string): UserAp
     models: getRunnableModels(settings).map((model) => ({ id: model.id, name: model.name })),
     ...toBuilderDefaults(settings),
     outputPathUsesJobTitle: outputSuffixUsesRole(outputPathSuffix),
+    defaultTailorMode: envDefaultTailorMode().value,
   };
 }
 
@@ -1136,6 +1235,9 @@ function toAdminSettings(state: SettingsState): AdminAppSettings {
     outputPathPrefix: settings.outputPathPrefix,
     paymentLimits: settings.paymentLimits.map(toPaymentLimitsView),
     requireThreeDSecure: settings.requireThreeDSecure,
+    premiumPriceMilli: settings.premiumPriceMilli,
+    premiumPlusPriceMilli: settings.premiumPlusPriceMilli,
+    premiumMaxPriceMilli: settings.premiumMaxPriceMilli,
     freeEnabledModelIds: settings.aiModels
       .filter((model) => model.enabled && model.pricePerResumeMilli === 0)
       .map((model) => model.id),
@@ -1235,7 +1337,10 @@ export function invalidateSettingsCache(): void {
 /**
  * The stored row's keys with "not set" taken out: absent, `null`, an empty
  * default model id (what clearing it always meant) and an empty payment list
- * (what removing every row and saving always meant: the defaults).
+ * (what removing every row and saving always meant: the defaults). A
+ * subscription price this app never writes - hand-edited into the row - is
+ * taken out too, with one warning: read as set, it would show as "Set here"
+ * holding `.env`'s price, and the next save would freeze that.
  */
 function withoutUnsetOverrides(source: Record<string, unknown>): Record<string, unknown> {
   const row = { ...source };
@@ -1247,6 +1352,15 @@ function withoutUnsetOverrides(source: Record<string, unknown>): Record<string, 
       (key === 'defaultModelId' && typeof value === 'string' && value.trim() === '') ||
       (key === 'paymentLimits' && Array.isArray(value) && value.length === 0);
     if (unset) delete row[key];
+  }
+  for (const key of SUBSCRIPTION_PRICE_SETTINGS) {
+    if (!hasOwnProperty(row, key) || isStoredPriceMilli(row[key])) continue;
+    warnOncePerPreference(
+      `stored-price:${key}`,
+      `[settings] The stored ${key} is ${JSON.stringify(row[key])}, which is not a price in thousandths of a ` +
+        'dollar from 0 to 10000000; it is ignored until Admin -> Settings -> General saves one.'
+    );
+    delete row[key];
   }
   return row;
 }
@@ -1293,9 +1407,8 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
   if (strict && (typeof input !== 'object' || input === null)) {
     throw new Error('Settings file must contain a JSON object');
   }
-  const source = withoutUnsetOverrides(
-    typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
-  );
+  const stored = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
+  const source = withoutUnsetOverrides(stored);
 
   // The .env layer, over the code defaults.
   const readings = {
@@ -1308,6 +1421,9 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     outputPathPrefix: envOutputPathPrefix(env),
     paymentLimits: envPaymentLimits(env),
     requireThreeDSecure: envRequireThreeDSecure(env),
+    premiumPriceMilli: envSubscriptionPriceMilli('premium', env),
+    premiumPlusPriceMilli: envSubscriptionPriceMilli('premium-plus', env),
+    premiumMaxPriceMilli: envSubscriptionPriceMilli('premium-max', env),
   };
   const base = cloneDefaultSettings();
   base.defaultMode = readings.defaultMode.value;
@@ -1319,6 +1435,9 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
   base.outputPathPrefix = readings.outputPathPrefix.value;
   base.paymentLimits = readings.paymentLimits.value;
   base.requireThreeDSecure = readings.requireThreeDSecure.value;
+  base.premiumPriceMilli = readings.premiumPriceMilli.value;
+  base.premiumPlusPriceMilli = readings.premiumPlusPriceMilli.value;
+  base.premiumMaxPriceMilli = readings.premiumMaxPriceMilli.value;
 
   // The stored row over it. Its default model resolves against the code's for
   // now; the .env model choices need the row's models, read just here.
@@ -1377,7 +1496,11 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
       // Not a string is no choice at all, as it always read; only an id is kept.
       if (storedDefaultModelId !== undefined) overrides.defaultModelId = storedDefaultModelId;
     } else if (key === 'paymentLimits') overrides.paymentLimits = clonePaymentLimits(storedLimits);
-    else (overrides as Record<string, unknown>)[key] = settings[key];
+    // A price in its STORED form: "not offered" is the 0 an administrator
+    // saved, where null would read back as no choice at all - .env's again.
+    else if ((SUBSCRIPTION_PRICE_SETTINGS as readonly string[]).includes(key)) {
+      (overrides as Record<string, unknown>)[key] = settings[key as SubscriptionPriceSetting] ?? 0;
+    } else (overrides as Record<string, unknown>)[key] = settings[key];
   }
 
   const simpleSource = (key: keyof typeof readings): SettingSource =>
@@ -1403,6 +1526,9 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     outputPathPrefix: simpleSource('outputPathPrefix'),
     paymentLimits: simpleSource('paymentLimits'),
     requireThreeDSecure: simpleSource('requireThreeDSecure'),
+    premiumPriceMilli: simpleSource('premiumPriceMilli'),
+    premiumPlusPriceMilli: simpleSource('premiumPlusPriceMilli'),
+    premiumMaxPriceMilli: simpleSource('premiumMaxPriceMilli'),
   };
 
   const defaults: AppSettingDefaults = {
@@ -1417,9 +1543,26 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     outputPathPrefix: base.outputPathPrefix,
     paymentLimits: clonePaymentLimits(base.paymentLimits),
     requireThreeDSecure: base.requireThreeDSecure,
+    premiumPriceMilli: base.premiumPriceMilli,
+    premiumPlusPriceMilli: base.premiumPlusPriceMilli,
+    premiumMaxPriceMilli: base.premiumMaxPriceMilli,
   };
 
-  return { settings, overrides, sources, defaults, limitSources };
+  // A price not offered only because what was set could not be read: a stored
+  // value `withoutUnsetOverrides` dropped (present, not null, not a stored
+  // price), else a .env line the reader refused - and no price under it. One
+  // that a readable layer below prices (a junk row over .env's price) is in
+  // effect at that price, as the page shows it.
+  const unreadablePrices: UnreadableSubscriptionPrice[] = [];
+  for (const tier of PAID_SUBSCRIPTION_IDS) {
+    const key = SUBSCRIPTION_PRICE_FIELDS[tier].setting;
+    if (settings[key] !== null || hasOwnProperty(source, key)) continue;
+    const storedJunk = stored[key] !== undefined && stored[key] !== null;
+    if (storedJunk) unreadablePrices.push({ tier, source: 'admin' });
+    else if (readings[key].unreadable) unreadablePrices.push({ tier, source: 'env' });
+  }
+
+  return { settings, overrides, sources, defaults, limitSources, unreadablePrices };
 }
 
 /**
@@ -1518,6 +1661,36 @@ export async function getAdminAppSettings(): Promise<AdminAppSettings> {
   return toAdminSettings(await readState());
 }
 
+function pricesOf(settings: AppSettings): SubscriptionPrices {
+  const prices = {} as SubscriptionPrices;
+  for (const tier of PAID_SUBSCRIPTION_IDS) prices[tier] = settings[SUBSCRIPTION_PRICE_FIELDS[tier].setting];
+  return prices;
+}
+
+/**
+ * What each paid subscription costs for 30 days now, in thousandths - null is
+ * not offered: the administrator's price, else `.env`'s, else not offered.
+ * Throws when the settings cannot be read, and the renewal sweep relies on
+ * it: a failed read must stop the pass, never read as "not offered" and end
+ * everybody's subscription.
+ */
+export async function getSubscriptionPrices(): Promise<SubscriptionPrices> {
+  return pricesOf(await readSettings());
+}
+
+/**
+ * The prices, and the paid tiers among them that are "not offered" only
+ * because a value somebody set could not be read (`UnreadableSubscriptionPrice`)
+ * - the renewal sweep's read. A tier somebody stopped offering ends at
+ * renewal; one whose price is merely unreadable must not, so the sweep holds
+ * the subscriptions renewing as it until it can be read. Throws, like
+ * `getSubscriptionPrices`, when the settings cannot be read at all.
+ */
+export async function getSubscriptionPriceReading(): Promise<SubscriptionPriceReading> {
+  const state = await readState();
+  return { prices: pricesOf(state.settings), unreadable: state.unreadablePrices.map((price) => ({ ...price })) };
+}
+
 /**
  * Set Default with a model that cannot run is refused, by name.
  *
@@ -1603,20 +1776,82 @@ export async function resolveAnalysisModel(): Promise<AIModelRecord> {
   return resolveRequestedAIModel();
 }
 
+/**
+ * A subscription price refused, naming the box it came from (`field`, the
+ * `...Usd` name it was sent under): PUT /api/admin/settings passes `field`
+ * and `code` on, so the page puts the sentence under that price.
+ */
+export class SubscriptionPriceError extends Error {
+  constructor(
+    message: string,
+    readonly field: string,
+    readonly code: 'bad-price' | 'bad-price-field'
+  ) {
+    super(message);
+    this.name = 'SubscriptionPriceError';
+  }
+}
+
+/**
+ * A price sent in thousandths is refused rather than read: every amount a
+ * request carries is dollars, in a field ending `Usd`, and a `...Milli` field
+ * read as dollars would price a tier a thousand times what was meant.
+ */
+function refusePriceInThousandths(body: Record<string, unknown>): void {
+  for (const tier of PAID_SUBSCRIPTION_IDS) {
+    const { setting, request } = SUBSCRIPTION_PRICE_FIELDS[tier];
+    if (hasOwnProperty(body, setting)) {
+      throw new SubscriptionPriceError(
+        `Send the ${SUBSCRIPTIONS[tier].label} price in dollars, as ${request}.`,
+        request,
+        'bad-price-field'
+      );
+    }
+  }
+}
+
+/**
+ * One price box, as it is STORED: `null` is Reset to default (nothing stored,
+ * `.env` decides again), '' or $0 is 0 - the administrator's "not offered",
+ * which beats a price `.env` gives - and anything else exactly the dollars
+ * typed, up to $10,000, refused by name rather than rounded or clamped.
+ */
+function readSubscriptionPriceInput(tier: PaidSubscriptionId, value: unknown): number | null {
+  if (value === null) return null;
+  const { request } = SUBSCRIPTION_PRICE_FIELDS[tier];
+  const label = `The ${SUBSCRIPTIONS[tier].label} price`;
+  if (typeof value === 'string' && value.trim() === '') return 0;
+  const parsed = parseDollars(value);
+  if (!parsed.ok) throw new SubscriptionPriceError(describeDollarProblem(parsed.problem, label), request, 'bad-price');
+  if (parsed.milli > MAX_SUBSCRIPTION_PRICE_MILLI) {
+    throw new SubscriptionPriceError(
+      `${label} must be at most ${formatMoney(MAX_SUBSCRIPTION_PRICE_MILLI)}.`,
+      request,
+      'bad-price'
+    );
+  }
+  return parsed.milli;
+}
+
 export async function updateAppSettings(input: AppSettingsUpdate): Promise<AdminAppSettings> {
   const current = await readState();
   const body = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  refusePriceInThousandths(body);
 
   // A model list in a settings save is dropped, not merged: a list here would
   // skip the model-name check and clamp a mistyped price where the model
   // routes refuse it by name. Nothing the admin pages send carries one. And
   // the providers, which have routes of their own for the same reason: every
-  // folder and binary they name is checked there, by name.
+  // folder and binary they name is checked there, by name. The subscription
+  // prices arrive in dollars under names of their own, read below.
   const {
     aiModels: _models,
     aiProviders: _providers,
     paymentLimits: limitsInput,
     providersEnabled: enabledInput,
+    premiumPriceUsd: _premiumPrice,
+    premiumPlusPriceUsd: _premiumPlusPrice,
+    premiumMaxPriceUsd: _premiumMaxPrice,
     ...changes
   } = body;
 
@@ -1676,6 +1911,15 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
       if (stored.length === 0) delete row.paymentLimits;
       else row.paymentLimits = stored;
     }
+  }
+
+  // Each subscription price the save names, in dollars, stored in thousandths.
+  for (const tier of PAID_SUBSCRIPTION_IDS) {
+    const { setting, request } = SUBSCRIPTION_PRICE_FIELDS[tier];
+    if (body[request] === undefined) continue;
+    const price = readSubscriptionPriceInput(tier, body[request]);
+    if (price === null) delete row[setting];
+    else row[setting] = price;
   }
 
   // Read as strictly as the stored row is: a field that is present and of the

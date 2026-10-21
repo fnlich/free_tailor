@@ -3,6 +3,30 @@ const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 
+// No test uses a real Google credential: the search for one is off, and
+// neither path variable names a file - what scripts/runTests.js sets for the
+// whole run, here again for a file run with `node --test` on its own. A test
+// of the search itself turns it back on for its own scope (`withCredentialSearch`).
+process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH = 'off';
+process.env.GOOGLE_CREDENTIALS_PATH = '';
+process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH = '';
+
+/**
+ * Runs `action` with the default credential search on - only for a test that
+ * puts its own fake credential in the directory it runs from (and fakes
+ * `fetch`), since the search also finds a real one beside the compiled code.
+ */
+async function withCredentialSearch(action) {
+  const saved = process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH;
+  process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH = 'on';
+  try {
+    return await action();
+  } finally {
+    if (saved === undefined) delete process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH;
+    else process.env.TAILOR_GOOGLE_CREDENTIAL_SEARCH = saved;
+  }
+}
+
 function makeTempDataDir(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `tailor-${name}-`));
 }
@@ -278,6 +302,7 @@ module.exports = {
   readJson,
   readSettingRaw,
   useTempStorage,
+  withCredentialSearch,
   writeSettingRaw,
   writeStaticJson,
 };

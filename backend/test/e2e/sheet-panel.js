@@ -16,7 +16,8 @@
  *   - Load rows shows the jobs found - company, title, a link only when it is
  *     a web address - and counts the rows skipped, before anything is built
  *   - another tab is another set of rows, loaded again
- *   - Order answers with an order number, and Cancel on the receipt stops it
+ *   - Order answers with an order number - a free one asks nothing first -
+ *     and Cancel on the receipt stops it
  *   - Generate Immediately builds the loaded rows here and hands every file
  *     to the browser once
  *   - the Analysis column says which rows already hold their analysis (the
@@ -312,6 +313,9 @@ async function main() {
     check('Order is pressed', await pressButton(page, 'Order'));
     const receipt = await until(page, () => /You ordered successfully: Order number - FT-\d{8}-\d{4}/.test(document.body.innerText), 15_000);
     check('Order answers with an order number at once', receipt);
+    // The stub seat's model is free, so the order spends nothing: it is not
+    // asked about (an Order asks first only when it takes credit).
+    check('a free order is placed without a spend confirm', await page.evaluate(() => !document.querySelector('[role="dialog"]')));
     const orderNumber = await page.evaluate(() => document.body.innerText.match(/FT-\d{8}-\d{4}/)?.[0] ?? null);
     await page.screenshot({ path: `${SHOTS}/sheet-2-ordered.png` });
     check('the receipt offers Cancel', await pressButton(page, 'Cancel order'));

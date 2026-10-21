@@ -623,6 +623,23 @@ export function notJobTabError(tabName: string, cannot: string): PublicError {
   return new PublicError(notJobTabSentence(tabName, cannot), { status: 409, code: 'not-job-tab' });
 }
 
+/**
+ * Why one of the app's OWN tabs - All or Temp For AI, the tab its name says,
+ * where a push or an export writes without asking which - is no job tab any
+ * more: its row 1 was edited, or emptied above the rows. "Choose another tab"
+ * would be no help where there is no choice, so this says how to get the tab
+ * back: rename or delete it, and the next verifying ensure adds a new one.
+ * `done` completes "so nothing was ..." (`pushed into`, `exported into`),
+ * `again` what to do then (`push again`). A 409, code `not-job-tab`.
+ */
+export function ownTabNotJobTabSentence(tabName: string, done: string, again: string): string {
+  return (
+    `"${tabName}" in your job sheet is not laid out as a job tab any more (its first row is not the job header), ` +
+    `so nothing was ${done} it. Rename or delete that tab in Google Sheets, then ${again}: a new ${tabName} ` +
+    'tab is added.'
+  );
+}
+
 /** Flips link sharing, and reports what Drive says afterwards rather than what was asked for. */
 export async function setAccountSheetVisibility(
   account: UserAccount,

@@ -1,12 +1,15 @@
 import {
   mergeIntoLake as mergeWithPolicy,
+  type LakeEntry,
   type LakeJob,
   type LakePolicy,
   type MergeOutcome,
   type SheetRowRef,
 } from '../../database/jobLakeRepository';
-import type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
+import { getJobAnalysisById, type StoredJobAnalysis } from '../../database/jobAnalysisRepository';
+import type { SheetCellValue } from '../../integrations/googleSheets';
 import { analysisFactsOf } from '../jobAnalysis/facts';
+import { analysisColumnValues } from '../sheets/analysisColumns';
 import { readLakeSettings } from './settings';
 
 export type { LakeJob, MergeOutcome, MergeStatus } from '../../database/jobLakeRepository';
@@ -82,4 +85,17 @@ export function lakeJobFromAnalysis(
     ...analysisFactsOf(stored.analysis),
     ...(row.reportedFrom ? { reportedFrom: row.reportedFrom } : {}),
   };
+}
+
+/**
+ * A lake row's six analysis cells, G to L, exactly as a build's write-back
+ * puts them in a job sheet (`analysisColumnValues` of its stored analysis) -
+ * or null when the row names no analysis the store still has. What Push to
+ * Google Sheet and Find Jobs' Export into Sheet write beside each job, so a
+ * build from the tab reads the analysis from its Analysis cell and asks no
+ * model again.
+ */
+export function lakeAnalysisCells(entry: Pick<LakeEntry, 'analysisId'>): SheetCellValue[] | null {
+  const stored = entry.analysisId ? getJobAnalysisById(entry.analysisId) : null;
+  return stored ? analysisColumnValues(stored) : null;
 }

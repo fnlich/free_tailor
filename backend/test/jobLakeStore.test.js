@@ -9,8 +9,11 @@ const { useTempStorage } = require('./helpers');
  * The Job Data Lake's store (database/jobLakeRepository.ts): the tables and
  * their exact indexes, the duplicate window (J2b) on a fake clock, the reward
  * paid in the same transaction (J7) - at whose rate, once, under the daily
- * cap - its revoke, delete, the admin page's query, and two writers adding
- * the same job at the same moment from two threads.
+ * cap - its revoke, delete, the lake's search (every filter but the dates,
+ * the salary and the clearance taking several values, a job matching any of
+ * them; a keyword's short words matched whole, and at most 25 words asked in
+ * all) and the plans it runs on, the company suggestions, and two writers
+ * adding the same job at the same moment from two threads.
  */
 
 const sqlite = require('../dist/database/sqlite');
@@ -149,6 +152,72 @@ test('the lake has exactly the planned indexes, and the duplicate check and defa
     /USING (COVERING )?INDEX idx_job_lake_company_updated \(company_key=\?\)/
   );
   assert.match(plan(`${listColumns} WHERE requested_by = ?`, 'user-1'), /idx_job_lake_requested_by/);
+
+  // The statements every search runs (lakeReadSql: Admin -> Job Lake, its
+  // push, Find Jobs), pinned by property - the merge arms, the index each
+  // reads, no sort after a walk - never by the planner's free choices.
+  const pinned = [];
+  const planOf = (filters, page = { limit: 50, offset: 0 }) => {
+    const read = lake.lakeReadSql(filters, page);
+    const rows = plan(read.rows.sql, ...read.rows.params);
+    pinned.push(rows, plan(read.count.sql, ...read.count.params));
+    return rows;
+  };
+  // No filter: exactly the pinned default views.
+  assert.deepEqual(lake.lakeReadSql({}, { limit: 50, offset: 0 }).rows, { sql: lake.LIST_DEFAULT_SQL, params: [50, 0] });
+  assert.deepEqual(lake.lakeReadSql({}, { limit: 51, withDescription: true }).rows, { sql: lake.PUSH_DEFAULT_SQL, params: [51] });
+  assert.deepEqual(lake.lakeReadSql({ keywords: ['***'], companies: [' '], jobFieldIds: [] }, { limit: 5 }).rows.sql, lake.LIST_DEFAULT_SQL);
+  // One field or one company: the seek on its own index, in its order - as one value always was.
+  for (const [filters, seek] of [
+    [{ jobFieldIds: ['backend'] }, /SEARCH job_lake USING INDEX idx_job_lake_field_updated \(job_field_id=\?\)/],
+    [{ companies: ['Company 1'] }, /SEARCH job_lake USING INDEX idx_job_lake_company_updated \(company_key=\?\)/],
+  ]) {
+    const one = planOf(filters);
+    assert.match(one, seek, JSON.stringify(filters));
+    assert.doesNotMatch(one, /TEMP B-TREE|UNION/, JSON.stringify(filters));
+  }
+  // Several companies: an ordered seek per company, merged - never a sort.
+  const companies = planOf({ companies: ['Company 1', 'Company 2', 'Company 3'] });
+  assert.match(companies, /MERGE \(UNION ALL\)/);
+  assert.equal(companies.match(/SEARCH job_lake USING INDEX idx_job_lake_company_updated \(company_key=\?\)/g).length, 3, companies);
+  assert.doesNotMatch(companies, /TEMP B-TREE/);
+  // Fields with dates, requesters and keywords: the fields drive, the dates
+  // in their seek; requesters and keywords ride along, the match made once.
+  const mixed = planOf({
+    jobFieldIds: ['backend', 'devops'],
+    updatedFrom: new Date(T0 + 5000).toISOString(),
+    requestedBy: ['user-1', 'user-2'],
+    keywords: ['typescript', 'scale acme'],
+  });
+  assert.match(mixed, /MERGE \(UNION ALL\)/);
+  assert.equal(mixed.match(/idx_job_lake_field_updated \(job_field_id=\? AND updated_at>\?\)/g).length, 2, mixed);
+  assert.equal(mixed.match(/MATERIALIZE lake_hits/g).length, 1, mixed);
+  assert.doesNotMatch(mixed, /TEMP B-TREE|idx_job_lake_requested_by/);
+  // More fields than LAKE_MERGE_MAX_ARMS, the three facts, keywords alone:
+  // the walk of idx_job_lake_updated in its order, each tested on the way.
+  const manyFields = Array.from({ length: lake.LAKE_MERGE_MAX_ARMS + 1 }, (_, n) => (n < 5 ? fields[n] : `field-${n}`));
+  for (const filters of [
+    { jobFieldIds: manyFields },
+    { jobTypes: ['remote', ''], clearance: true, industries: ['finance', 'military'] },
+    { keywords: ['typescript'] },
+    { keywords: ['typescript', 'acme'] },
+  ]) {
+    const walk = planOf(filters);
+    assert.match(walk, /SCAN job_lake USING INDEX idx_job_lake_updated/, JSON.stringify(filters));
+    assert.doesNotMatch(walk, /TEMP B-TREE|INTEGER PRIMARY KEY/, JSON.stringify(filters));
+  }
+  // Requested by alone narrows by its own index and sorts those people's rows only - as one person always did.
+  assert.match(planOf({ requestedBy: ['user-1', 'user-2'] }), /SEARCH job_lake USING INDEX idx_job_lake_requested_by \(requested_by=\?\)/);
+  // Export's read by id: a rowid seek each, its sort over those rows alone.
+  assert.match(plan(lake.lakeEntriesByIdsSql(3), 1, 2, 3), /SEARCH job_lake USING INTEGER PRIMARY KEY \(rowid=\?\)/);
+  // The company suggestions: one range of the company index, grouped in its order.
+  const prefix = plan(lake.LAKE_COMPANY_PREFIX_SQL, 'company1', 'company2', 10);
+  assert.match(prefix, /SEARCH job_lake USING (COVERING )?INDEX idx_job_lake_company_updated \(company_key>\? AND company_key<\?\)/);
+  assert.doesNotMatch(prefix, /TEMP B-TREE/);
+  // Whatever else a plan does, it never sorts after reading the lake with no index at all.
+  for (const detail of [...pinned, defaultView]) {
+    assert.ok(!(/SCAN job_lake($| \|)/.test(detail) && /TEMP B-TREE/.test(detail)), detail);
+  }
   // The merge tab's list of analysed, unmerged jobs.
   assert.match(plan(analyses.LIST_MERGEABLE_SQL, 50, 0), /USING INDEX idx_job_analyses_merge \(merged_at=\?\)/);
 });
@@ -265,20 +334,23 @@ test("a row stores its analysis's job type, clearance and industry; a replacemen
   assert.deepEqual([junkEntry.jobType, junkEntry.clearance, junkEntry.industry], ['', false, 'not_specified']);
 });
 
-test('the admin query filters on the three facts', () => {
+test('the search filters on the three facts', () => {
   fresh('facts-query');
   const merge = (extra, at) => lake.mergeIntoLake(job(extra), 'u1', { now: at, windowDays: 60, reward: null });
   merge({ company: 'Remote Bank', jobType: 'remote', clearance: false, industry: 'finance' }, T0);
   merge({ company: 'Hybrid Base', jobType: 'hybrid', clearance: true, industry: 'military' }, T0 + DAY);
   merge({ company: 'Quiet Co', jobType: '', clearance: false, industry: 'not_specified' }, T0 + 2 * DAY);
   const companies = (query) => lake.queryLake({ limit: 50, offset: 0, ...query }).rows.map((row) => row.company);
-  assert.deepEqual(companies({ jobType: 'remote' }), ['Remote Bank']);
-  assert.deepEqual(companies({ jobType: '' }), ['Quiet Co'], 'not specified is a value of its own');
+  assert.deepEqual(companies({ jobTypes: ['remote'] }), ['Remote Bank']);
+  assert.deepEqual(companies({ jobTypes: [''] }), ['Quiet Co'], 'not specified is a value of its own');
+  assert.deepEqual(companies({ jobTypes: ['remote', 'hybrid'] }), ['Hybrid Base', 'Remote Bank'], 'either');
   assert.deepEqual(companies({ clearance: true }), ['Hybrid Base']);
   assert.deepEqual(companies({ clearance: false }), ['Quiet Co', 'Remote Bank']);
-  assert.deepEqual(companies({ industry: 'military' }), ['Hybrid Base']);
-  assert.deepEqual(companies({ industry: 'not_specified' }), ['Quiet Co']);
-  assert.deepEqual(companies({ clearance: false, industry: 'finance', jobType: 'remote' }), ['Remote Bank']);
+  assert.deepEqual(companies({ industries: ['military'] }), ['Hybrid Base']);
+  assert.deepEqual(companies({ industries: ['not_specified'] }), ['Quiet Co']);
+  assert.deepEqual(companies({ industries: ['finance', 'not_specified'] }), ['Quiet Co', 'Remote Bank']);
+  assert.deepEqual(companies({ clearance: false, industries: ['finance'], jobTypes: ['remote'] }), ['Remote Bank']);
+  assert.deepEqual(companies({ clearance: false, industries: ['finance', 'military'], jobTypes: ['hybrid', ''] }), []);
   assert.equal(lake.queryLake({ limit: 50, offset: 0, clearance: false }).total, 2);
 });
 
@@ -651,7 +723,7 @@ test('a job with no field from the list, or no company, is never merged and neve
 
 /* -------------------------------------------------------------- query -- */
 
-test("the admin query: full text, the company as the hash compares it, field, salary, requester and dates", () => {
+test("the search: full text, the company as the hash compares it, field, salary, requester and dates", () => {
   fresh('query');
   const merge = (extra, by, at) => lake.mergeIntoLake(job(extra), by, { now: at, windowDays: 60, reward: null });
   merge({ company: 'OpenAI, Inc.', title: 'Inference Engineer', jobDescription: 'Kubernetes and GPUs.', salary: { min: 200000, max: 300000, currency: 'USD', period: 'annual', raw: null } }, 'u1', T0);
@@ -660,17 +732,17 @@ test("the admin query: full text, the company as the hash compares it, field, sa
 
   const ids = (query) => lake.queryLake({ limit: 50, offset: 0, ...query }).rows.map((row) => row.company);
   assert.deepEqual(ids({}), ['Initech', 'Globex', 'OpenAI, Inc.'], 'newest first');
-  assert.deepEqual(ids({ text: 'kubern' }), ['Initech', 'OpenAI, Inc.'], 'every word a prefix');
-  assert.deepEqual(ids({ text: 'react typescript' }), ['Globex']);
-  assert.deepEqual(ids({ text: '"; DROP TABLE job_lake; --' }), [], 'free text cannot be a syntax error');
-  assert.deepEqual(ids({ text: 'design-systems' }), ['Globex'], 'split as the index was');
-  assert.deepEqual(ids({ text: '***' }), ['Initech', 'Globex', 'OpenAI, Inc.'], 'no word is no filter');
-  assert.deepEqual(ids({ company: 'open ai llc' }), ['OpenAI, Inc.']);
-  assert.deepEqual(ids({ company: '!!!' }), [], 'a company that normalises to nothing matches nothing');
-  assert.deepEqual(ids({ jobFieldId: 'frontend' }), ['Globex']);
+  assert.deepEqual(ids({ keywords: ['kubern'] }), ['Initech', 'OpenAI, Inc.'], 'every word a prefix');
+  assert.deepEqual(ids({ keywords: ['react typescript'] }), ['Globex']);
+  assert.deepEqual(ids({ keywords: ['"; DROP TABLE job_lake; --'] }), [], 'free text cannot be a syntax error');
+  assert.deepEqual(ids({ keywords: ['design-systems'] }), ['Globex'], 'split as the index was');
+  assert.deepEqual(ids({ keywords: ['***'] }), ['Initech', 'Globex', 'OpenAI, Inc.'], 'no word is no filter');
+  assert.deepEqual(ids({ companies: ['open ai llc'] }), ['OpenAI, Inc.']);
+  assert.deepEqual(ids({ companies: ['!!!'] }), [], 'a company that normalises to nothing matches nothing');
+  assert.deepEqual(ids({ jobFieldIds: ['frontend'] }), ['Globex']);
   assert.deepEqual(ids({ salaryMin: 150000 }), ['OpenAI, Inc.']);
   assert.deepEqual(ids({ salaryMax: 150000 }), ['Globex']);
-  assert.deepEqual(ids({ requestedBy: 'u1' }), ['Initech', 'OpenAI, Inc.']);
+  assert.deepEqual(ids({ requestedBy: ['u1'] }), ['Initech', 'OpenAI, Inc.']);
   assert.deepEqual(ids({ updatedFrom: new Date(T0 + DAY).toISOString() }), ['Initech', 'Globex']);
   assert.deepEqual(ids({ updatedTo: new Date(T0 + DAY).toISOString() }), ['Globex', 'OpenAI, Inc.']);
   const page = lake.queryLake({ limit: 1, offset: 1 });
@@ -685,10 +757,138 @@ test("the admin query: full text, the company as the hash compares it, field, sa
     windowDays: 60,
     reward: null,
   });
-  assert.deepEqual(ids({ text: 'react' }), []);
-  assert.deepEqual(ids({ text: 'nuxt' }), ['Globex']);
-  lake.deleteLakeEntry(lake.queryLake({ limit: 1, offset: 0, text: 'nuxt' }).rows[0].id, { revokeReward: false, actorId: 'admin' });
-  assert.deepEqual(ids({ text: 'nuxt' }), []);
+  assert.deepEqual(ids({ keywords: ['react'] }), []);
+  assert.deepEqual(ids({ keywords: ['nuxt'] }), ['Globex']);
+  lake.deleteLakeEntry(lake.queryLake({ limit: 1, offset: 0, keywords: ['nuxt'] }).rows[0].id, { revokeReward: false, actorId: 'admin' });
+  assert.deepEqual(ids({ keywords: ['nuxt'] }), []);
+});
+
+test('several values of a filter find a job matching ANY of them; a keyword of several words needs every one', () => {
+  fresh('query-many');
+  const merge = (extra, by, at) => lake.mergeIntoLake(job(extra), by, { now: at, windowDays: 60, reward: null });
+  merge({ company: 'OpenAI, Inc.', title: 'Inference Engineer', jobDescription: 'Kubernetes and GPUs.', jobType: 'remote', industry: 'technology' }, 'u1', T0);
+  merge({ company: 'Globex', jobFieldId: 'frontend', title: 'React Developer', jobDescription: 'React, TypeScript, design systems.', jobType: 'hybrid', industry: 'finance' }, 'u2', T0 + DAY);
+  merge({ company: 'Initech', jobFieldId: 'devops', title: 'Site Reliability', jobDescription: 'Pager duty, kubernetes clusters.', jobType: 'on_site', industry: 'finance' }, 'u1', T0 + 2 * DAY);
+  merge({ company: 'Learning Co', jobFieldId: 'ml-engineering', title: 'Teacher', jobDescription: 'A learning platform for teams.', jobType: '', industry: 'education' }, 'u3', T0 + 3 * DAY);
+
+  const ids = (query) => lake.queryLake({ limit: 50, offset: 0, ...query }).rows.map((row) => row.company);
+  const total = (query) => lake.queryLake({ limit: 1, offset: 0, ...query }).total;
+  assert.deepEqual(ids({ companies: ['Globex', 'Initech Inc.'] }), ['Initech', 'Globex'], 'either company, newest first');
+  assert.deepEqual(ids({ companies: ['Globex', '!!!'] }), ['Globex'], 'a company that normalises to nothing drops out of the list');
+  assert.deepEqual(ids({ companies: ['!!!', '...'] }), [], 'and when none is left, nothing matches');
+  assert.deepEqual(ids({ jobFieldIds: ['frontend', 'devops'] }), ['Initech', 'Globex']);
+  assert.deepEqual(ids({ requestedBy: ['u1', 'u3'] }), ['Learning Co', 'Initech', 'OpenAI, Inc.']);
+  assert.deepEqual(ids({ jobTypes: ['remote', ''] }), ['Learning Co', 'OpenAI, Inc.']);
+  assert.deepEqual(ids({ industries: ['finance', 'education'] }), ['Learning Co', 'Initech', 'Globex']);
+  // Keywords: any of them; the words of one keyword, all.
+  assert.deepEqual(ids({ keywords: ['react', 'gpus'] }), ['Globex', 'OpenAI, Inc.']);
+  assert.deepEqual(ids({ keywords: ['kubernetes clusters'] }), ['Initech'], 'both words of the one keyword');
+  assert.deepEqual(ids({ keywords: ['kubernetes clusters', 'react'] }), ['Initech', 'Globex']);
+  assert.deepEqual(ids({ keywords: ['learn'] }), ['Learning Co']);
+  assert.deepEqual(ids({ keywords: ['machine learn'] }), [], '"machine" is in no posting that has "learning"');
+  assert.deepEqual(ids({ keywords: ['react', 'REACT', ' react '] }), ['Globex'], 'a keyword twice is asked once');
+  assert.deepEqual(ids({ keywords: ['NOT', 'react'] }), ['Globex'], 'a quoted NOT is a word, never an operator');
+  // Filters together: each must pass, a value of each.
+  assert.deepEqual(ids({ companies: ['Globex', 'Initech'], jobFieldIds: ['devops'] }), ['Initech']);
+  assert.deepEqual(ids({ jobFieldIds: ['frontend', 'devops'], industries: ['finance'], keywords: ['kubernetes', 'design'] }), ['Initech', 'Globex']);
+  assert.deepEqual(ids({ companies: ['OpenAI', 'Globex'], requestedBy: ['u2'], keywords: ['typescript'] }), ['Globex']);
+  // The count agrees with the rows, a page or not.
+  for (const query of [{ companies: ['Globex', 'Initech'] }, { jobFieldIds: ['frontend', 'devops'] }, { keywords: ['react', 'gpus'] }, { requestedBy: ['u1', 'u3'] }]) {
+    assert.equal(total(query), ids(query).length, JSON.stringify(query));
+  }
+  const page = lake.queryLake({ limit: 1, offset: 1, companies: ['Globex', 'Initech', 'OpenAI'] });
+  assert.deepEqual([page.rows.map((row) => row.company), page.total], [['Globex'], 3], 'a page of a merged read');
+
+  // The query FTS5 is sent: a keyword of words of three or more characters as before (a shorter word is
+  // matched whole, below); several ORed, each keyword's words together.
+  assert.equal(lake.ftsQuery(['react typescript']), '"react"* "typescript"*');
+  assert.equal(lake.ftsQuery(['machine learn', 'rust']), '("machine"* "learn"*) OR ("rust"*)');
+  assert.equal(lake.ftsQuery(['***', '']), null);
+  assert.equal(lake.ftsQuery(['Rust', 'rust']), '"Rust"*');
+});
+
+test('a word of one or two characters is matched whole, and a search asks for at most 25 words in all', () => {
+  fresh('query-short');
+  const merge = (extra, at) => lake.mergeIntoLake(job(extra), 'u1', { now: at, windowDays: 60, reward: null });
+  merge({ company: 'Gopher Co', title: 'Go Engineer', jobDescription: 'Services in Go and C, with AI tooling.' }, T0);
+  merge({ company: 'Searchy', jobFieldId: 'frontend', title: 'Google Ads Developer', jobDescription: 'Good aims, airy goals.' }, T0 + DAY);
+  const ids = (keywords) => lake.queryLake({ limit: 50, offset: 0, keywords }).rows.map((row) => row.company);
+
+  // `"go"`, not `"go"*`: Go finds Go, never Google, good or goals - and C, AI likewise.
+  assert.equal(lake.ftsQuery(['Go']), '"Go"');
+  assert.equal(lake.ftsQuery(['node.js', 'C++ AI']), '("node"* "js") OR ("C" "AI")');
+  assert.deepEqual(ids(['go']), ['Gopher Co']);
+  assert.deepEqual(ids(['c', 'ai']), ['Gopher Co']);
+  assert.deepEqual(ids(['goo']), ['Searchy'], 'three characters are a prefix, as before');
+  assert.deepEqual(ids(['go', 'goo']), ['Searchy', 'Gopher Co']);
+
+  // The words a search may hold, as the index splits them; past the cap the rest are never asked.
+  assert.equal(lake.LAKE_KEYWORD_MAX_WORDS, 25);
+  // Full-width R U S T, as a phone keyboard can type them.
+  assert.deepEqual(lake.keywordWords(' node.js, C++ / ＲＵＳＴ '), ['node', 'js', 'C', 'RUST'], 'NFKC, then letters and digits');
+  const many = Array.from({ length: 30 }, (_, n) => `word${n}`);
+  const asked = (query) => (query.match(/"[^"]*"/g) ?? []).length;
+  assert.equal(asked(lake.ftsQuery([many.join(' ')])), 25);
+  assert.equal(asked(lake.ftsQuery([many.slice(0, 20).join(' '), many.slice(20).join(' ')])), 25);
+  assert.equal(asked(lake.ftsQuery(many)), 25);
+  // A letter the tokenizer reads as a mark splits a word here too: `a<U+19B0>c` is two short words, never a prefix.
+  assert.deepEqual(lake.keywordWords('aᦰc'), ['a', 'c']);
+  assert.equal(lake.ftsQuery(['aᦰc']), '"a" "c"');
+  assert.equal(lake.LAKE_KEYWORD_MAX_LENGTH, 100);
+});
+
+test('keywordWords splits exactly where the full-text index tokenizer splits, for every letter and digit', () => {
+  // Each NFKC-stable letter or digit c, as `a<c>a`, through the index's own tokenizer: one token means
+  // the tokenizer keeps c inside a word, two that it splits there. keywordWords must agree on every one,
+  // or a word it counts as one is several terms to FTS5 (and a one-letter prefix in disguise).
+  const Database = require('better-sqlite3');
+  const db = new Database(':memory:');
+  try {
+    db.exec("CREATE VIRTUAL TABLE probe USING fts5(body, tokenize = 'unicode61 remove_diacritics 2')");
+    db.exec("CREATE VIRTUAL TABLE probe_terms USING fts5vocab(probe, 'instance')");
+    const insert = db.prepare('INSERT INTO probe (rowid, body) VALUES (?, ?)');
+    const swept = [];
+    db.transaction(() => {
+      for (let point = 0x80; point <= 0x10ffff; point += 1) {
+        if (point >= 0xd800 && point <= 0xdfff) continue;
+        const c = String.fromCodePoint(point);
+        if (!/[\p{L}\p{N}]/u.test(c) || c.normalize('NFKC') !== c) continue;
+        insert.run(point, `a${c}a`);
+        swept.push(point);
+      }
+    })();
+    const tokens = new Map(db.prepare('SELECT doc, COUNT(*) AS n FROM probe_terms GROUP BY doc').all().map((row) => [row.doc, row.n]));
+    const disagree = swept.filter((point) => lake.keywordWords(`a${String.fromCodePoint(point)}a`).length !== (tokens.get(point) ?? 0));
+    assert.ok(swept.length > 100000, `swept ${swept.length} code points`);
+    assert.deepEqual(disagree.map((point) => `U+${point.toString(16).toUpperCase()}`), []);
+  } finally {
+    db.close();
+  }
+});
+
+test('the company suggestions: a prefix of the normalised name, each company once, its newest spelling and its count', () => {
+  fresh('companies');
+  const merge = (extra, at) => lake.mergeIntoLake(job(extra), 'u1', { now: at, windowDays: 60, reward: null });
+  merge({ company: 'OpenAI, Inc.', jobFieldId: 'backend' }, T0);
+  merge({ company: 'Open AI LLC', jobFieldId: 'frontend' }, T0 + DAY);
+  merge({ company: 'Openwork', jobFieldId: 'backend' }, T0 + 2 * DAY);
+  merge({ company: 'Globex', jobFieldId: 'backend' }, T0 + 3 * DAY);
+  assert.deepEqual(lake.suggestLakeCompanies('Open', 10), [
+    { name: 'Open AI LLC', jobs: 2 },
+    { name: 'Openwork', jobs: 1 },
+  ]);
+  assert.deepEqual(lake.suggestLakeCompanies('open a', 10), [{ name: 'Open AI LLC', jobs: 2 }], 'compared as the hash compares');
+  assert.deepEqual(lake.suggestLakeCompanies('o', 1), [{ name: 'Open AI LLC', jobs: 2 }], 'at most the limit');
+  assert.deepEqual(lake.suggestLakeCompanies('glob', 10), [{ name: 'Globex', jobs: 1 }]);
+  for (const nothing of ['', '!!!', 'zzz']) assert.deepEqual(lake.suggestLakeCompanies(nothing, 10), [], JSON.stringify(nothing));
+
+  // The bound past a prefix: its last code point one higher, never into the surrogates.
+  assert.equal(lake.prefixUpperBound('abc'), 'abd');
+  assert.equal(lake.prefixUpperBound('caf\u00e9'), 'caf\u00ea');
+  assert.equal(lake.prefixUpperBound('a\u{1F600}'), 'a\u{1F601}');
+  assert.equal(lake.prefixUpperBound('a\uD7FF'), 'a\uE000');
+  assert.equal(lake.prefixUpperBound('a\u{10FFFF}'), null);
+  assert.equal(lake.prefixUpperBound(''), null);
 });
 
 /* -------------------------------------------------------- concurrency -- */

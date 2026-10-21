@@ -4,9 +4,11 @@ import pdf from 'pdf-parse';
 import { CreateProfileDTO, Profile } from '../types/profile';
 import { isAdmin, requireUser } from '../middleware/auth';
 import { PublicError, sendPublicError } from '../middleware/publicError';
+import { requestSignal } from '../middleware/requestSignal';
 import { checkProfileModelChoice } from '../config/aiModelConfig';
 import { pdfUpload } from '../middleware/pdfUpload';
 import { extractProfileFromResume } from '../services/resumeService';
+import { writeEntryBullets } from '../services/entryBullets';
 import {
   buildNewProfile,
   buildPreviewProfile,
@@ -153,7 +155,9 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
  * The sample is the one thing here that is not what will print: an empty
  * draft would otherwise preview as bare headings, which says nothing about how
  * a template looks. It is laid on HERE and nowhere else - after the draft is
- * read, never on the way to a save, a generation or a prompt.
+ * read, never on the way to a save, a generation or a prompt - and not at all
+ * when the body says `sample: false` (the Profiles page's thumbnails, which
+ * show a stored profile as it stands; `sampled` is then []).
  *
  * Costs nothing and keeps nothing: no row is written, the subscription's profile
  * limit is not consulted (nothing is being added), no model is asked and no credit
@@ -164,8 +168,8 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
  * The template is the requested one, else the draft's own, else `default`. A
  * template named in the request that does not exist, or is disabled for
  * anybody but an administrator, is a 404 rather than a quiet substitute - the
- * editor asked for that one by name. One that exists but does not offer the
- * draft's layout falls back as generation does, and `templateId` says so.
+ * editor asked for that one by name. A draft whose own template is gone is
+ * drawn with `default`, as generation draws it, and `templateId` says which.
  */
 router.post('/preview', async (req: Request, res: Response) => {
   try {
@@ -173,6 +177,7 @@ router.post('/preview', async (req: Request, res: Response) => {
       profile?: unknown;
       profileId?: unknown;
       templateId?: unknown;
+      sample?: unknown;
     };
 
     const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
@@ -201,8 +206,13 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     // Through the template first, so a section the template has no room for
-    // is not filled - or reported as filled - from the sample.
-    const { profile: shown, sampled } = withSampleDefaults(profileForTemplate(draft, template));
+    // is not filled - or reported as filled - from the sample. `sample: false`
+    // draws the profile exactly as it stands - the Profiles page's thumbnails,
+    // where another person's text in an empty section would pass for the
+    // profile's own with no notice beside it to say so.
+    const fitted = profileForTemplate(draft, template);
+    const { profile: shown, sampled } =
+      body.sample === false ? { profile: fitted, sampled: [] } : withSampleDefaults(fitted);
     const preview = generateProfilePreviewHTML(shown, template);
     res.json({ html: preview.html, templateId: template.id, page: preview.page, sampled });
   } catch (error) {
@@ -285,6 +295,39 @@ router.post('/upload', pdfUpload('resume'), async (req: Request, res: Response) 
     // An AI failure is one of its four public sentences here, never the seat's
     // stderr; the profile limit stays a 402.
     sendPublicError(req, res, error, 'Failed to read a profile from that PDF');
+  }
+});
+
+/**
+ * Write or improve one entry's bullets (services/entryBullets.ts): the profile
+ * editor's Write with AI / Improve with AI. Free, one call per account at a
+ * time, on the app default model; nothing is stored - the editor puts the
+ * bullets into its draft. The body is the entry as the editor holds it, so no
+ * profile is read here: `{ kind: 'experience' | 'project' | 'volunteering',
+ * entry, profile?: { name, title, totalYearsExperience, summary, skills },
+ * task: 'write' | 'improve', instructions? }`. Refusals about the entry are
+ * 400 by code (`bad-kind`, `bad-task`, `entry-incomplete`,
+ * `nothing-to-improve`), a second call while one runs 409 `already-running`,
+ * no runnable model the AI-unavailable sentence, a seat failure one of the
+ * four public AI sentences, anything else the generic sentence with a ref.
+ * Aborted with the request, like a resume's calls. No POST /:id exists, so
+ * the path cannot be read as an id.
+ */
+router.post('/entries/bullets', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const bullets = await writeEntryBullets({
+      accountId: req.user!.id,
+      kind: body.kind,
+      entry: body.entry,
+      profile: body.profile,
+      task: body.task,
+      instructions: body.instructions,
+      signal: requestSignal(req, res),
+    });
+    res.json({ bullets });
+  } catch (error) {
+    sendPublicError(req, res, error, 'Failed to write the bullets');
   }
 });
 

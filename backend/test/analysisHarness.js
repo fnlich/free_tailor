@@ -242,10 +242,9 @@ function stubOutputs(rootDir) {
     swaps.push([module, name, module[name]]);
     module[name] = fake;
   };
-  swap(require('../dist/utils/generatedPath'), 'getGeneratedOutputPath', async (_profile, _company, role) => ({
+  swap(require('../dist/utils/generatedPath'), 'getGeneratedOutputPath', async () => ({
     storagePathBase: 'x',
     absoluteDir: rootDir,
-    roleSlug: role,
   }));
   swap(require('../dist/generators/coverLetterGenerator'), 'saveCoverLetter', async () => 'x/cover.pdf');
   swap(require('../dist/generators/coverLetterGenerator'), 'saveCoverLetterDOCX', async () => 'x/cover.docx');

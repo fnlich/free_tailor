@@ -47,9 +47,20 @@ const { useAdminEmails, useTempStorage } = require('./helpers');
 
 const SHIPPED = path.join(__dirname, '..', 'static');
 
+/**
+ * Fresh storage with the BUILT-IN templates (files without a `source`) and the
+ * skill library. A checkout may hold templates an administrator saved beside
+ * them, which these counts and renders are not about.
+ */
 function seeded(name) {
   const storage = useTempStorage(`section-headings-${name}`);
-  fs.cpSync(path.join(SHIPPED, 'templates'), path.join(storage.staticDir, 'templates'), { recursive: true });
+  const from = path.join(SHIPPED, 'templates');
+  const to = path.join(storage.staticDir, 'templates');
+  fs.mkdirSync(to, { recursive: true });
+  for (const file of fs.readdirSync(from).filter((entry) => entry.endsWith('.json'))) {
+    const text = fs.readFileSync(path.join(from, file), 'utf8');
+    if (!JSON.parse(text).source) fs.writeFileSync(path.join(to, file), text);
+  }
   fs.cpSync(path.join(SHIPPED, 'skills'), path.join(storage.staticDir, 'skills'), { recursive: true });
   return storage;
 }

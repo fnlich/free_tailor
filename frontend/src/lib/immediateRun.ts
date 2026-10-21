@@ -1,8 +1,8 @@
 /**
  * The decisions behind a Generate Immediately run that need no browser: which
  * id this tab goes by, which finished resumes still have to be downloaded, the
- * request that stops a run when the page goes away, how the run ended, and
- * whether the confirm still shows.
+ * request that stops a run when the page goes away, and how the run ended.
+ * (What is asked before a run starts is lib/spendConfirm.ts.)
  *
  * Kept apart from the page, and importing nothing at runtime, so the backend
  * suite can test it (backend/test/immediateRunHelpers.test.js) the way
@@ -26,8 +26,6 @@ export const TAB_ID_KEY = 'freeTailor.tabId';
 export const TAB_CLAIM_KEY = 'freeTailor.tabId.claimed';
 /** sessionStorage: the run this tab started and the resumes it has downloaded. */
 export const IMMEDIATE_RUN_KEY = 'freeTailor.immediateRun';
-/** localStorage: "Don't show again" on the Generate Immediately confirm, for this browser. */
-export const SKIP_IMMEDIATE_CONFIRM_KEY = 'freeTailor.immediateConfirm.skip';
 
 /** What the server accepts as a tab id (routes/generation.ts `readTabId`). */
 const TAB_ID = /^[A-Za-z0-9_-]{1,100}$/;
@@ -345,15 +343,4 @@ export function describeRunEnd(snapshot: RunEndCounts | null, savedFiles: number
     );
   }
   return `Built ${snapshot.completed} of ${count(snapshot.total, 'resume')}.${files}`;
-}
-
-/** Whether the Generate Immediately confirm still shows in this browser. */
-export function confirmsImmediate(storage: StorageLike | null): boolean {
-  if (!storage) return true;
-  return safe(() => storage.getItem(SKIP_IMMEDIATE_CONFIRM_KEY), null) !== '1';
-}
-
-/** "Don't show again", for this browser. */
-export function skipImmediateConfirm(storage: StorageLike | null): void {
-  if (storage) safe(() => storage.setItem(SKIP_IMMEDIATE_CONFIRM_KEY, '1'), undefined);
 }

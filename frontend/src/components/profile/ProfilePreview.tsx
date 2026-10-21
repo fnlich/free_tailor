@@ -4,6 +4,7 @@ import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } 
 import { createPortal } from 'react-dom';
 import { profilesApi, type CreateProfileDTO, type ProfilePreviewResult } from '@/lib/api';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import { IconExpand, IconTemplates } from '@/components/icons';
 import { ErrorNotice } from '@/components/ui/kit';
 import { NO_GUTTERS, stablePaneWidth, type Gutters } from '@/lib/previewPane';
 import css from './profileEditor.module.css';
@@ -272,14 +273,20 @@ export default function ProfilePreview({
 
   return (
     <>
+      {/*
+        One quiet line over the page, as FlowCV keeps its page unframed: the
+        template that drew it, whether it is up to date, and Full size. The
+        status is the pane's FIRST live region and the template line a
+        `p.truncate` - test/e2e/section-switches.js and preview-vibration.js
+        read both.
+      */}
       <div className={css.previewHead}>
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold text-ink">Preview</h2>
-          <p className="truncate text-xs text-muted">
-            {shown ? templateName(shown.templateId) : 'Drawing the first page...'}
-          </p>
+        <div className={css.previewWhich}>
+          <h2 className="sr-only">Preview</h2>
+          <IconTemplates className="h-[18px] w-[18px]" />
+          <p className="truncate">{shown ? templateName(shown.templateId) : 'Drawing the first page...'}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className={css.previewTools}>
           <span className={css.previewStatus} role="status">
             <span className={css.statusDot} data-state={status} aria-hidden />
             {status === 'current'
@@ -290,11 +297,11 @@ export default function ProfilePreview({
           </span>
           <button
             type="button"
-            className="tl-button-quiet"
-            data-size="sm"
+            className={css.previewButton}
             disabled={!shown}
             onClick={() => setViewerOpen(true)}
           >
+            <IconExpand className="h-[15px] w-[15px]" strokeWidth={2} />
             Full size
           </button>
         </div>

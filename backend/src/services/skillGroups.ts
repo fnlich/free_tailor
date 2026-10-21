@@ -34,10 +34,12 @@ export const SOFT_SKILL_GROUP_HEADINGS = [
 ] as const;
 
 /**
- * A safety bound, not a style rule: the prompt asks for 4-7 groups of 4-10
- * and about 30 skills in all, so these are never reached by an answer that
- * follows it. They stop a runaway answer, or content a client sends back,
- * from becoming a block that fills the page.
+ * A safety bound, not a style rule: the prompt asks for 2-6 technical groups
+ * and the soft-skill group, holding the candidate's own stack (ordinarily
+ * 10-25 skills, under 30 for a long one), so these are never reached by an
+ * answer that follows it. They stop a
+ * runaway answer, or content a client sends back, from becoming a block that
+ * fills the page.
  */
 export const MAX_SKILL_GROUPS = 12;
 export const MAX_SKILLS_PER_GROUP = 40;

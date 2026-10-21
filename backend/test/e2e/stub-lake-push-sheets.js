@@ -1,11 +1,13 @@
 /*
- * A stand-in for Google Sheets, for lake-push.js: every account's job sheet,
- * held in memory - each its own spreadsheet with its two tabs, All and Temp
- * For AI - so a push into one administrator's Temp For AI can be seen to
- * leave every other account's sheet alone.
+ * A stand-in for Google Sheets, for lake-push.js and find-jobs.js: every
+ * account's job sheet, held in memory - each its own spreadsheet with its two
+ * tabs, All and Temp For AI - so a push into one administrator's Temp For AI,
+ * or an export into one account's All, can be seen to leave every other
+ * account's sheet alone.
  *
- * Loaded with `node --require` before the app, after stub-seat.js. Four
- * seams, the ones the unit tests use (test/jobLakePush.test.js):
+ * Loaded with `node --require` before the app, after stub-seat.js. Five
+ * seams, the ones the unit tests use (test/jobLakePush.test.js,
+ * test/frontendJobLake.test.js):
  *
  *   - the account sheet's client (`setSheetsClientForTests`): allocation, the
  *     tab listing and its one batched read of every tab's row 1;
@@ -16,6 +18,10 @@
  *   - the analysis columns' client (`setAnalysisSheetsClientForTests`): what
  *     a build from the tab reads (C:E and G:L of its rows) and the write-back
  *     of a row whose Analysis cell is not its posting's;
+ *   - Find Jobs' export's client (`setJobExportSheetsClientForTests`): the
+ *     inspection and verify of All, its reads - whole columns (A:E, A:F) and
+ *     the rows about to be written - the :batchUpdate that grows the grid and
+ *     lays the rows out, and the RAW writes of A:L, as `export-*` events;
  *   - the admin lake sheet's client, so nothing reaches Google if a sync runs.
  *
  * All read and write the SAME cells. What a push and a later build do to the
@@ -32,6 +38,9 @@
  * before it reads the tab.
  */
 
+// First, before anything loads the backend: no real Google credential, whatever this checkout holds.
+require('./no-google');
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -40,6 +49,7 @@ const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 const accountSheet = require(path.join(DIST, 'services', 'sheets', 'accountSheet'));
 const analysisColumns = require(path.join(DIST, 'services', 'sheets', 'analysisColumns'));
 const push = require(path.join(DIST, 'services', 'jobLake', 'push'));
+const jobExport = require(path.join(DIST, 'services', 'sheets', 'jobExport'));
 const adminSheet = require(path.join(DIST, 'services', 'jobLake', 'adminSheet'));
 const { JOB_SHEET_HEADERS } = require(path.join(DIST, 'integrations', 'googleSheets'));
 
@@ -101,10 +111,18 @@ const tabOf = (id, title) => {
 const isJobTab = (tab) => JOB_SHEET_HEADERS.slice(0, 6).every((header, index) => tab.header[index] === header);
 const tabsOf = (id) => Object.entries(books[id]?.tabs ?? {}).map(([title, tab]) => ({ title, gid: tab.gid }));
 
-/** `'Tab'!C2:F11`, or `'Tab'!1:1` (a tab's whole row 1), as its parts. Single-letter columns are all this sheet has. */
+/**
+ * `'Tab'!C2:F11`, `'Tab'!1:1` (a tab's whole row 1) or `'Tab'!A:E` (whole
+ * columns, as far as the tab has rows), as its parts. Single-letter columns
+ * are all this sheet has.
+ */
 function parseRange(range) {
   const rowOne = /^'((?:[^']|'')*)'!1:1$/.exec(range);
   if (rowOne) return { tab: rowOne[1].replace(/''/g, "'"), rowOne: true };
+  const columns = /^'((?:[^']|'')*)'!([A-Z]):([A-Z])$/.exec(range);
+  if (columns) {
+    return { tab: columns[1].replace(/''/g, "'"), fromCol: number(columns[2]), fromRow: 1, toCol: number(columns[3]), wholeColumns: true };
+  }
   const match = /^'((?:[^']|'')*)'!([A-Z])(\d+):([A-Z])(\d+)$/.exec(range);
   if (!match) throw new Error(`[e2e stub] cannot read the range ${range}`);
   return {
@@ -122,11 +140,13 @@ const shown = (value) =>
 
 function read(id, ranges) {
   return ranges.map((range) => {
-    const { tab: title, rowOne, fromCol, fromRow, toCol, toRow } = parseRange(range);
+    const { tab: title, rowOne, wholeColumns, fromCol, fromRow, toCol, toRow } = parseRange(range);
     const tab = tabOf(id, title);
     if (rowOne) return [[...tab.header]];
+    // Whole columns run to the last row holding anything, as Google answers them.
+    const lastRow = wholeColumns ? Math.max(1, ...Object.keys(tab.rows).map(Number)) : toRow;
     const grid = [];
-    for (let row = fromRow; row <= toRow; row += 1) {
+    for (let row = fromRow; row <= lastRow; row += 1) {
       const values = [];
       for (let col = fromCol; col <= toCol; col += 1) {
         values.push(row === 1 ? String(tab.header[col - 1] ?? '') : shown(tab.rows[row]?.[letter(col)]));
@@ -241,6 +261,35 @@ push.setLakePushSheetsClientForTests({
   },
 });
 
+jobExport.setJobExportSheetsClientForTests({
+  async inspectTab(id, title) {
+    events.push({ kind: 'export-inspect', id, tab: title });
+    save();
+    return inspection(id, title);
+  },
+  async verifyTab(id, title) {
+    return verified(id, title);
+  },
+  async readRanges(id, ranges) {
+    events.push({ kind: 'export-read', id, ranges });
+    save();
+    return read(id, ranges);
+  },
+  async batchUpdate(id, requests) {
+    for (const request of requests) {
+      if (request.appendDimension) {
+        const tab = Object.values(books[id].tabs).find((entry) => entry.gid === request.appendDimension.sheetId);
+        tab.rowCount += request.appendDimension.length;
+      }
+    }
+    events.push({ kind: 'export-batch-update', id, requests: requests.map((request) => Object.keys(request)[0]) });
+    save();
+  },
+  async writeRaw(id, data) {
+    write(id, data, 'export-write');
+  },
+});
+
 analysisColumns.setAnalysisSheetsClientForTests({
   async verifyTab(id, title) {
     return verified(id, title);
@@ -268,4 +317,4 @@ adminSheet.setAdminLakeSheetClientForTests({
 });
 
 save();
-console.log(`[e2e stub] Google Sheets stubbed for Push to Google Sheet: every account its own sheet (All, Temp For AI), the cells in ${STATE}`);
+console.log(`[e2e stub] Google Sheets stubbed for Push to Google Sheet and Export into Sheet: every account its own sheet (All, Temp For AI), the cells in ${STATE}`);

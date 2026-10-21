@@ -6,11 +6,9 @@ const { loadFresh, useTempStorage } = require('./helpers');
 /**
  * The middleware that decides who is making a request.
  *
- * This file used to pin the opposite: that `authMiddleware` called next() for
- * everybody and `validatePassword` returned true for every input, including an
- * empty string. That was accurate for a single-user app and is the exact
- * behaviour v2 had to remove, so the assertions are inverted rather than
- * deleted - a regression back to "let everything through" must fail here.
+ * Every guard is a real check: a request without a session, or without the
+ * role a route needs, is refused, never waved through. A regression back to
+ * "let everything through" must fail here.
  */
 
 function makeRes() {
@@ -110,16 +108,6 @@ test('a reporter is signed in but may not build: requireUser refuses them, requi
   assert.equal(stranger.passed, false);
   assert.equal(stranger.res.statusCode, 401);
   assert.equal(stranger.res.body.code, 'not-signed-in');
-});
-
-test('the old authMiddleware name now means the real check', () => {
-  useTempStorage('auth-alias');
-  const { authMiddleware, requireUser } = loadFresh('../dist/middleware/auth');
-
-  // Every pre-v2 route imports this name. Pointing it at requireUser is what
-  // made those routes protected by the change rather than one at a time.
-  assert.equal(authMiddleware, requireUser);
-  assert.equal(run(authMiddleware, { headers: {} }).passed, false);
 });
 
 test('the session token is read from a Bearer header or the cookie', () => {

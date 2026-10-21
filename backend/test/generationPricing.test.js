@@ -281,7 +281,7 @@ test("an order's resumes keep what each was charged, for a refund asked for afte
     const submitted = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(2),
       profileIds: ['p-opus', 'p-plain'],
-      asOrder: true,
+      mode: 'order',
     });
     assert.equal(submitted.status, 202);
     const orders = require('../dist/database/orderRepository');
@@ -538,7 +538,7 @@ test("finalising a preview is charged the model that wrote it, not the one the r
     assert.equal(await priced({ model: 'claude-cli-opus' }), 23);
     assert.deepEqual(server.ledger(server.alice, 'generation-reserve'), [], 'a quote charges nothing');
 
-    // The queue the same way, and the quote with it: the tokens alone are
+    // The queue the same way, and the quote with it: a VALID token alone is
     // enough to price what finalising will charge.
     const batchBody = {
       jobs: jobsFor(1),
@@ -548,6 +548,18 @@ test("finalising a preview is charged the model that wrote it, not the one the r
     };
     const quote = await server.post('alice', '/generation/quote', batchBody);
     assert.equal(quote.body.costMilli, 23);
+    // One that no longer holds - expired a day on, or forged - is not: quoted
+    // without the content it prices the model the request names, while the
+    // submission, which carries the content, is charged the profile's own.
+    // So the builder quotes a finalise with the content as well (app/page.tsx
+    // `quoteBody`).
+    const lapsed = { ...batchBody, previewTokenByProfileId: { 'p-plain': `${opusToken.split('.')[0]}.forged` } };
+    assert.equal((await server.post('alice', '/generation/quote', lapsed)).body.costMilli, 0);
+    assert.equal(
+      (await server.post('alice', '/generation/quote', { ...lapsed, tailoredContentByProfileId: { 'p-plain': written } })).body
+        .costMilli,
+      10
+    );
     const submitted = await server.post('alice', '/generation/batches', {
       ...batchBody,
       tailoredContentByProfileId: { 'p-plain': written },

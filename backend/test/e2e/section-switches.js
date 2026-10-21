@@ -26,13 +26,25 @@
  * everything static beside the sections always there. A state the frame
  * never reaches fails with the text it last showed.
  *
- * Not part of `npm test`: it needs both servers up, as shell.js does, and
- * DB_DIR naming the backend's database, because the session is seeded
- * straight into it. The templates are saved through the admin API, so they
- * land in the backend's own templates directory, and removed again at the
- * end with the profile.
+ * The editor is a column of collapsible section cards (components/profile/
+ * SectionCard.tsx): a card's body stays mounted while it is closed, so the
+ * switches can be clicked at DOM level either way, but the Soft skills and
+ * Strengths cards - closed until opened, as every section card starts - are
+ * expanded first (`expandSection`) so a screenshot shows what was clicked.
+ * The template select and the layout radios are on the Customize tab (the
+ * Template and Layout cards), which stays mounted while Content is showing,
+ * so they are set at DOM level too.
  *
- * Usage:
+ * Not part of `npm test`: it needs both servers up - the backend with a
+ * preload that keeps it off Google (README.md, at the top: one started
+ * without any gives the account this signs in a REAL spreadsheet when
+ * backend/ holds a credential) - and DB_DIR naming the backend's database,
+ * because the session is seeded straight into it. The templates are saved
+ * through the admin API, so they land in the backend's own templates
+ * directory, and removed again at the end with the profile.
+ *
+ * Usage, from backend/:
+ *   DB_DIR=/path/to/db PORT=3001 node --require ./test/e2e/no-google.js dist/index.js   # the backend
  *   DB_DIR=/path/to/db node test/e2e/section-switches.js
  *
  * Settings, all optional:
@@ -113,10 +125,12 @@ async function uploadTemplate(token, template) {
     body: form,
   });
   const body = await response.json().catch(() => ({}));
-  if (response.status !== 201 || !body.id) {
+  // The answer is `{ templates, imported, keptIds }`: the one template saved is the first.
+  const id = body.templates?.[0]?.id;
+  if (response.status !== 201 || !id) {
     throw new Error(`Uploading "${template.name}" answered ${response.status}: ${JSON.stringify(body).slice(0, 300)}`);
   }
-  return body.id;
+  return id;
 }
 
 async function signIn(page, token) {
@@ -185,6 +199,23 @@ async function waitForState(page, template, expected, label, timeoutMs = 20_000)
     `${template.name}, ${label}: ${problems.join('; ')} (status "${last?.status}", showing "${last?.shown}")\n` +
       `  the frame read: ${JSON.stringify((last?.text ?? '').replace(/\s+/g, ' ').slice(0, 500))}`
   );
+}
+
+/**
+ * Expands the section card whose toggle's text starts with `label`, when it
+ * is closed - a DOM click on its `button[aria-expanded="false"]`, the card's
+ * heading button (SectionCard.tsx). Nothing when the card is open already.
+ */
+async function expandSection(page, label) {
+  const expanded = await page.evaluate((wanted) => {
+    const toggle = Array.from(document.querySelectorAll('button[aria-expanded="false"]')).find((button) =>
+      (button.textContent || '').trim().startsWith(wanted)
+    );
+    if (!toggle) return false;
+    toggle.click();
+    return true;
+  }, label);
+  if (expanded) await wait(100);
 }
 
 /** Sets a section switch through the DOM, as a click on its box does. */
@@ -259,6 +290,8 @@ async function main() {
     await signIn(page, token);
     await page.goto(`${APP}/admin/profiles/${profileId}`, { waitUntil: 'networkidle2' });
     await page.waitForSelector('#profile-template option[value]:not([value=""])', { timeout: 15_000 });
+    await expandSection(page, 'Soft skills');
+    await expandSection(page, 'Strengths');
 
     const STEPS = [
       ['both switched on', { strengths: true, softSkills: true }],

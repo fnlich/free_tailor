@@ -12,8 +12,9 @@ const { analysisAnswer, countingSeats, freshInstall, posting } = require('./anal
 const { storeJobAnalysis, useAdminEmails } = require('./helpers');
 
 /**
- * The browser's half of the Job Data Lake: Report Jobs (/report) and Admin ->
- * Job Lake (/admin/job-lake).
+ * The browser's half of the Job Data Lake: Report Jobs (/report), Admin ->
+ * Job Lake (/admin/job-lake), the lake's filter form both of them and Find
+ * Jobs (/jobs) draw, and Find Jobs' export and order.
  *
  * The frontend has no test runner, so lib/jobLakeDisplay.ts is transpiled with
  * the backend's own TypeScript and run from here (the frontendMoney pattern -
@@ -22,10 +23,12 @@ const { storeJobAnalysis, useAdminEmails } = require('./helpers');
  *
  *  - MIRRORS of a server rule, run against the server's compiled code over
  *    the same inputs: the rows a run may be asked for, the settings a save
- *    may send, the filters the lake route accepts, the tab a run refuses, the
- *    statuses a row and a merge can come to - and the owner's summary line,
- *    drawn from a real run's summary. A box that accepts what the server
- *    refuses is a form that cannot be sent and does not say why.
+ *    may send, the filters the lake routes accept (several values of a list
+ *    filter, and how many), the tab a run refuses, the statuses a row and a
+ *    merge can come to, the jobs an order may name - and the owner's summary
+ *    line and an export's sentence, drawn from real answers. A box that
+ *    accepts what the server refuses is a form that cannot be sent and does
+ *    not say why.
  *  - DECISIONS with no React in them: when "Add to job lake" may be pressed,
  *    which rows are red, what a preview row says, which settings a save
  *    sends, and that a link typed into a sheet only reaches an anchor as a
@@ -550,7 +553,12 @@ async function serve(name) {
 
   const owner = users.createUser({ email: 'owner@example.com' });
   const reporter = users.createUser({ email: 'rita@example.com', name: 'Rita', role: 'reporter' });
-  const tokens = { owner: users.createSession(owner.id), reporter: users.createSession(reporter.id) };
+  const builder = users.createUser({ email: 'bea@example.com', name: 'Bea' });
+  const tokens = {
+    owner: users.createSession(owner.id),
+    reporter: users.createSession(reporter.id),
+    user: users.createSession(builder.id),
+  };
   assert.ok(settings.updateLakeSettings({ reportRateUsd: '0.05' }, owner.id).ok);
 
   const express = require('express');
@@ -560,6 +568,7 @@ async function serve(name) {
   app.use(attachUser);
   app.use('/api/report', require('../dist/routes/report').default);
   app.use('/api/admin/job-lake', require('../dist/routes/jobLake').default);
+  app.use('/api/jobs', require('../dist/routes/jobs').default);
   const server = app.listen(0);
   const port = server.address().port;
   const call = async (who, method, url, body) => {
@@ -580,6 +589,7 @@ async function serve(name) {
     reportRun,
     reporter,
     owner,
+    builder,
     close() {
       server.close();
       columns.setAnalysisSheetsClientForTests();
@@ -597,11 +607,29 @@ test("the lake's filters are refused by the page exactly when, and in the words,
   t.after(() => h.close());
   const lake = display();
 
+  const many = (prefix, count) => Array.from({ length: count }, (_, n) => `${prefix} ${n}`);
+  const words = (count, separator = ' ') => Array.from({ length: count }, (_, n) => `w${n}`).join(separator);
   const cases = [
     {},
-    { q: 'platform engineer' },
-    { company: 'OpenAI, Inc.' },
-    { field: 'backend' },
+    { q: ['platform engineer'] },
+    { q: ['platform engineer', 'rust'] },
+    { q: many('word', 10) },
+    { q: many('word', 11) },
+    { q: [...many('word', 10), ' word 0 ', ''] },
+    // The keywords' words in all, split as the index splits them.
+    { q: [words(25)] },
+    { q: [words(26)] },
+    { q: [words(26, '.')] },
+    { q: [words(12), `${words(13)}x`] },
+    { q: [words(13), `${words(13)}x`] },
+    { q: ['C++, C#, .NET 8'] },
+    { q: [words(26)], company: many('Company', 26) },
+    { company: ['OpenAI, Inc.'] },
+    { company: ['OpenAI, Inc.', 'Globex'] },
+    { company: many('Company', 25) },
+    { company: many('Company', 26) },
+    { field: ['backend'] },
+    { field: ['backend', 'devops'] },
     { salaryMin: '100000' },
     { salaryMin: '100000.50', salaryMax: '200000' },
     { salaryMin: 'lots' },
@@ -613,23 +641,33 @@ test("the lake's filters are refused by the page exactly when, and in the words,
     { updatedFrom: 'yesterday' },
     { updatedTo: '2026-13-45' },
     { updatedTo: '2026-10-05T12:00:00Z' },
-    { requestedBy: 'nobody' },
-    // The three facts: an id from the server's own lists, or true/false.
-    { jobType: 'remote' },
-    { jobType: 'on_site' },
-    { jobType: 'not_specified' },
-    { jobType: 'onsite' },
-    { jobType: 'Remote' },
+    { requestedBy: ['nobody'] },
+    { requestedBy: many('acct', 25) },
+    { requestedBy: many('acct', 26) },
+    // The three facts: ids from the server's own lists, or true/false.
+    { jobType: ['remote'] },
+    { jobType: ['on_site'] },
+    { jobType: ['not_specified'] },
+    { jobType: ['onsite'] },
+    { jobType: ['Remote'] },
+    { jobType: ['remote', 'hybrid'] },
+    { jobType: ['remote', 'onsite'] },
     { clearance: 'true' },
     { clearance: ' false ' },
     { clearance: 'TRUE' },
     { clearance: 'yes' },
-    { industry: 'healthcare' },
-    { industry: 'retail_ecommerce' },
-    { industry: 'not_specified' },
-    { industry: 'Healthcare' },
-    { industry: 'unclassified' },
-    { jobType: 'hybrid', clearance: 'false', industry: 'other' },
+    { industry: ['healthcare'] },
+    { industry: ['retail_ecommerce'] },
+    { industry: ['not_specified'] },
+    { industry: ['Healthcare'] },
+    { industry: ['unclassified'] },
+    { industry: ['healthcare', 'finance'] },
+    { industry: ['healthcare', 'Healthcare'] },
+    { jobType: ['hybrid'], clearance: 'false', industry: ['other'] },
+    // Several problems: the first the server reads is the one said.
+    { q: many('word', 11), company: many('Company', 26) },
+    { company: many('Company', 26), salaryMin: 'lots' },
+    { salaryMin: 'lots', jobType: ['sometimes'] },
   ];
   // What the job type and industry boxes may choose from: the route's own lists.
   const { options } = (await h.call('owner', 'GET', '/admin/job-lake')).body;
@@ -639,41 +677,88 @@ test("the lake's filters are refused by the page exactly when, and in the words,
   for (const filters of cases) {
     const form = { ...lake.EMPTY_LAKE_FILTERS, ...filters };
     const problem = lake.lakeFilterProblem(form, options);
-    const answer = await h.call('owner', 'GET', `/admin/job-lake?${lake.lakeQueryString(form, 0, 25)}`);
-    if (problem) {
-      assert.equal(answer.status, 400, JSON.stringify(filters));
-      assert.equal(answer.body.error, problem, JSON.stringify(filters));
-    } else {
-      assert.equal(answer.status, 200, `${JSON.stringify(filters)}: ${JSON.stringify(answer.body)}`);
-      assert.equal(answer.body.limit, 25);
+    const answers = [['owner', `/admin/job-lake?${lake.lakeQueryString(form, 0, 25)}`]];
+    // Find Jobs' route reads them the same way - all but Requested by, which is an administrator's.
+    if (!filters.requestedBy) answers.push(['user', `/jobs/lake?${lake.lakeQueryString(form, 0, 25)}`]);
+    for (const [who, url] of answers) {
+      const answer = await h.call(who, 'GET', url);
+      if (problem) {
+        assert.equal(answer.status, 400, `${who} ${JSON.stringify(filters)}`);
+        assert.equal(answer.body.error, problem, `${who} ${JSON.stringify(filters)}`);
+      } else {
+        assert.equal(answer.status, 200, `${who} ${JSON.stringify(filters)}: ${JSON.stringify(answer.body)}`);
+        assert.equal(answer.body.limit, 25);
+      }
     }
   }
+  // The caps are the server's own, and so is what is said past each - the form's full boxes say it too.
+  const serverFilters = require('../dist/services/jobLake/filters');
+  assert.deepEqual({ ...lake.LAKE_FILTER_MAX_VALUES }, { ...serverFilters.LAKE_FILTER_MAX_VALUES });
+  assert.equal(lake.LAKE_KEYWORD_MAX_WORDS, serverFilters.LAKE_KEYWORD_MAX_WORDS);
+  assert.equal(lake.LAKE_KEYWORD_MAX_LENGTH, serverFilters.LAKE_KEYWORD_MAX_LENGTH);
+  assert.deepEqual(
+    { ...lake.LAKE_FILTER_CAP_SENTENCES },
+    {
+      q: serverFilters.LAKE_FILTER_SENTENCES.tooManyKeywords,
+      words: serverFilters.LAKE_FILTER_SENTENCES.tooManyWords,
+      keywordLength: serverFilters.LAKE_FILTER_SENTENCES.keywordTooLong,
+      company: serverFilters.LAKE_FILTER_SENTENCES.tooManyCompanies,
+      requestedBy: serverFilters.LAKE_FILTER_SENTENCES.tooManyRequesters,
+    }
+  );
+  // A keyword's words are the server's, split for split.
+  const { keywordWords } = require('../dist/database/jobLakeRepository');
+  for (const keyword of ['machine learning', ' node.js, C++ / C# ', 'café-au-lait', 'ＲＵＳＴ 2026', '***', '', 'aᦰbᧈcᳳd']) {
+    assert.deepEqual(lake.keywordWords(keyword), keywordWords(keyword), JSON.stringify(keyword));
+  }
+  // Every letter and digit, as jobLakeStore.test.js sweeps the server's copy against the real tokenizer.
+  for (let point = 0x80; point <= 0x10ffff; point += 1) {
+    if (point >= 0xd800 && point <= 0xdfff) continue;
+    const keyword = `a${String.fromCodePoint(point)}a`;
+    if (lake.keywordWords(keyword).length !== keywordWords(keyword).length) assert.fail(`U+${point.toString(16)} splits differently`);
+  }
+  // The page refuses a long keyword in the reader's words, before asking.
+  assert.equal(
+    lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, q: ['a'.repeat(101)] }),
+    serverFilters.LAKE_FILTER_SENTENCES.keywordTooLong
+  );
+  assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, q: ['a'.repeat(100)] }), '');
+  // Find Jobs' route refuses Requested by to anybody but an administrator, whatever its value.
+  const refused = await h.call('user', 'GET', `/jobs/lake?${lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, requestedBy: ['x'] })}`);
+  assert.deepEqual([refused.status, refused.body.code], [403, 'not-an-admin']);
+  assert.equal(lake.lakeFilterOrderFor(false).includes('requestedBy'), false, "a builder's form has no Requested by box");
+  assert.deepEqual(lake.lakeFilterOrderFor(true), lake.LAKE_FILTER_ORDER);
 
-  // The query string: what was typed, trimmed, in the form's order, then the page.
-  assert.equal(lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, company: '  Acme ', field: 'backend' }, 50, 25), 'field=backend&company=Acme&limit=25&offset=50');
+  // The query string: the filters in the form's order, a list's values each under its own key, trimmed and once, then the page.
+  assert.equal(
+    lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, company: ['  Acme ', 'Acme', ''], field: ['backend'] }, 50, 25),
+    'field=backend&company=Acme&limit=25&offset=50'
+  );
   assert.equal(
     lake.lakeQueryString({
-      q: 'rust',
-      company: 'Acme',
-      field: 'backend',
+      q: ['rust', 'machine learning'],
+      company: ['Acme', 'OpenAI, Inc.'],
+      field: ['backend', 'devops'],
       salaryMin: '100000',
       salaryMax: '200000',
-      requestedBy: 'acct-1',
+      requestedBy: ['acct-1'],
       updatedFrom: '2026-10-01',
       updatedTo: '2026-10-05',
-      jobType: 'remote',
+      jobType: ['remote', 'hybrid'],
       clearance: 'false',
-      industry: 'finance',
+      industry: ['finance'],
     }),
-    'updatedFrom=2026-10-01&updatedTo=2026-10-05&requestedBy=acct-1&field=backend&jobType=remote&clearance=false&' +
-      'industry=finance&company=Acme&salaryMin=100000&salaryMax=200000&q=rust'
+    'updatedFrom=2026-10-01&updatedTo=2026-10-05&requestedBy=acct-1&field=backend&field=devops&jobType=remote&' +
+      'jobType=hybrid&clearance=false&industry=finance&company=Acme&company=OpenAI%2C+Inc.&salaryMin=100000&' +
+      'salaryMax=200000&q=rust&q=machine+learning'
   );
   assert.equal(lake.lakeQueryString(lake.EMPTY_LAKE_FILTERS), '');
   assert.equal(lake.hasLakeFilters(lake.EMPTY_LAKE_FILTERS), false);
-  assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, q: ' x ' }), true);
+  assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, q: [' x '] }), true);
+  assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, q: ['  '] }), false);
   assert.equal(lake.hasLakeFilters({ ...lake.EMPTY_LAKE_FILTERS, clearance: 'false' }), true);
   // Without the lists the page leaves a job type or an industry to the server's answer.
-  assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, jobType: 'onsite', industry: 'Healthcare' }), '');
+  assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, jobType: ['onsite'], industry: ['Healthcare'] }), '');
   assert.equal(lake.lakeFilterProblem({ ...lake.EMPTY_LAKE_FILTERS, clearance: 'yes' }), 'Clearance must be true or false.');
 });
 
@@ -686,13 +771,29 @@ test("the filter form's boxes come in the owner's order, and its job type and cl
   );
   assert.deepEqual([...lake.LAKE_FILTER_ORDER].sort(), Object.keys(lake.EMPTY_LAKE_FILTERS).sort(), 'every filter has its box, once');
 
-  // The page draws its boxes FROM that order and those labels - none typed in a second place - with an input for each.
-  const source = fs.readFileSync(path.join(SRC, 'app', 'admin', 'job-lake', 'LakeTab.tsx'), 'utf8');
-  assert.match(source, /\{LAKE_FILTER_ORDER\.map\(\(key\) => \(/);
+  // ONE form draws the boxes, FROM that order and those labels - none typed in a second place - with an input
+  // for each; Admin -> Job Lake and Find Jobs both draw it, so their boxes cannot drift apart.
+  const source = fs.readFileSync(path.join(SRC, 'components', 'jobLake', 'LakeFilterForm.tsx'), 'utf8');
+  assert.match(source, /const order = lakeFilterOrderFor\(requesters !== null\);/);
+  assert.match(source, /\{order\.map\(\(key\) => \(/);
   assert.match(source, /\{LAKE_FILTER_LABELS\[key\]\}/);
   const ids = /const FILTER_INPUT_IDS: [^=]+= \{([\s\S]*?)\};/.exec(source);
-  assert.ok(ids, 'LakeTab.tsx names an input id per filter');
+  assert.ok(ids, 'LakeFilterForm.tsx names an input id per filter');
   assert.deepEqual([...ids[1].matchAll(/^\s*(\w+):/gm)].map((found) => found[1]), [...lake.LAKE_FILTER_ORDER]);
+  for (const page of [['app', 'admin', 'job-lake', 'LakeTab.tsx'], ['app', 'jobs', 'page.tsx']]) {
+    const drawn = fs.readFileSync(path.join(SRC, ...page), 'utf8');
+    assert.match(drawn, /<LakeFilterForm\b/, page.join('/'));
+    assert.doesNotMatch(drawn, /FILTER_INPUT_IDS|LAKE_FILTER_ORDER\.map/, `${page.join('/')} draws no box of its own`);
+  }
+  // Requested by is drawn only where the page hands the form its people - an administrator's.
+  assert.match(fs.readFileSync(path.join(SRC, 'app', 'jobs', 'page.tsx'), 'utf8'), /requesters=\{admin \? accounts : null\}/);
+  // A full box says the server's sentence, from the one copy the drift test holds - never a second one typed here.
+  assert.equal((source.match(/fullText[=:] ?\{?LAKE_FILTER_CAP_SENTENCES\.(q|company|requestedBy)\b/g) ?? []).length, 3);
+  assert.doesNotMatch(source, /at most \$\{LAKE_FILTER_MAX_VALUES/);
+  // Search and Clear empty what was typed into a list only to narrow it: no box goes on showing words that filter nothing.
+  assert.match(source, /setFilterText\(NO_LIST_TEXT\);\s*onSearch\(filters\);/);
+  assert.match(source, /const clear = \(\) => \{\s*setFilterText\(NO_LIST_TEXT\);/);
+  assert.match(source, /onClick=\{clear\}/);
 
   // Job type: the server's own ids and words, less the "not specified" the owner's box does not offer.
   const { listJobTypesForClient } = require('../dist/services/jobAnalysis/facts');
@@ -709,17 +810,32 @@ test("the filter form's boxes come in the owner's order, and its job type and cl
   ]);
   assert.deepEqual(lake.LAKE_CLEARANCE_CHOICES.map((choice) => choice.label), ['Required', 'Not required']);
 
-  // A push body is the query string's parameters, no more: never a sheet, a tab or a page.
-  const form = { ...lake.EMPTY_LAKE_FILTERS, company: ' Acme ', clearance: 'true', q: '  ', industry: 'finance' };
-  assert.deepEqual(lake.lakeFilterBody(form), { clearance: 'true', industry: 'finance', company: 'Acme' });
-  assert.deepEqual(Object.fromEntries(new URLSearchParams(lake.lakeQueryString(form, 50, 25))), {
-    ...lake.lakeFilterBody(form),
-    limit: '25',
-    offset: '50',
-  });
+  // A push body is the query string's parameters, no more: never a sheet, a tab or a page - a list as a JSON array.
+  const form = { ...lake.EMPTY_LAKE_FILTERS, company: [' Acme ', 'Globex'], clearance: 'true', q: ['  '], industry: ['finance'] };
+  assert.deepEqual(lake.lakeFilterBody(form), { clearance: 'true', industry: ['finance'], company: ['Acme', 'Globex'] });
+  assert.deepEqual(
+    [...new URLSearchParams(lake.lakeQueryString(form, 50, 25))],
+    [
+      ...Object.entries(lake.lakeFilterBody(form)).flatMap(([key, value]) => (Array.isArray(value) ? value : [value]).map((one) => [key, one])),
+      ['limit', '25'],
+      ['offset', '50'],
+    ]
+  );
   assert.deepEqual(Object.keys(lake.lakeFilterBody(form)), ['clearance', 'industry', 'company'], 'in the form order');
-  assert.equal(lake.sameLakeFilters(form, { ...form, company: 'Acme', q: '' }), true);
-  assert.equal(lake.sameLakeFilters(form, { ...form, company: 'Acme Corp' }), false);
+  assert.equal(lake.sameLakeFilters(form, { ...form, company: ['Globex', 'Acme'], q: [] }), true, 'the same values, in any order');
+  assert.equal(lake.sameLakeFilters(form, { ...form, company: ['Acme Corp', 'Globex'] }), false);
+
+  // What Search takes: the chips, and what is typed and not chosen yet - one company as typed, keywords split on commas.
+  const typed = {
+    filters: { ...lake.EMPTY_LAKE_FILTERS, company: ['Globex'], q: ['rust'] },
+    typed: { company: '  OpenAI,   Inc. ', q: 'machine learning, kubernetes;  RUST\ngo' },
+  };
+  assert.deepEqual(lake.draftFilters(typed).company, ['Globex', 'OpenAI, Inc.']);
+  assert.deepEqual(lake.draftFilters(typed).q, ['rust', 'machine learning', 'kubernetes', 'go'], 'a keyword already chosen, case aside, is not added twice');
+  assert.deepEqual(lake.draftFilters(lake.EMPTY_LAKE_DRAFT), lake.EMPTY_LAKE_FILTERS);
+  // The note says how several values and keywords are read.
+  assert.match(lake.LAKE_FILTER_NOTE, /^A box with several choices finds a job matching any of them\. Full text finds a job matching any keyword; a keyword of several words needs all of them\./);
+  assert.match(lake.LAKE_FILTER_NOTE, /A word of one or two letters, like Go, is found only as a whole word\./);
 });
 
 test('Push to Google Sheet asks first, naming how many go and that it replaces Temp For AI, and waits for the search it pushes', () => {
@@ -814,24 +930,31 @@ test('a push sends the filters Search applied: the same jobs in the same order, 
   const since = new Date(now - 2.5 * DAY).toISOString().slice(0, 10);
   const cases = [
     {},
-    { jobType: 'remote' },
-    { jobType: 'on_site' },
-    { jobType: 'not_specified' },
+    { jobType: ['remote'] },
+    { jobType: ['on_site'] },
+    { jobType: ['not_specified'] },
+    { jobType: ['remote', 'hybrid'] },
     { clearance: 'true' },
     { clearance: 'false' },
-    { industry: 'finance' },
-    { industry: 'healthcare' },
-    { field: 'backend' },
-    { field: 'devops', clearance: 'true' },
-    { company: 'alpha co.' },
+    { industry: ['finance'] },
+    { industry: ['healthcare'] },
+    { industry: ['finance', 'healthcare'] },
+    { field: ['backend'] },
+    { field: ['backend', 'devops'] },
+    { field: ['devops'], clearance: 'true' },
+    { company: ['alpha co.'] },
+    { company: ['alpha co.', 'Gamma'] },
     { salaryMin: '110000' },
     { updatedFrom: since },
-    { requestedBy: 'nobody' },
-    { q: 'nothing-matches-this' },
+    { requestedBy: ['nobody'] },
+    { q: ['nothing-matches-this'] },
+    { q: ['nothing-matches-this', 'Delta'] },
     // Refused, before anything is written - in Search's words.
-    { jobType: 'onsite' },
+    { jobType: ['onsite'] },
+    { jobType: ['remote', 'onsite'] },
     { clearance: 'yes' },
-    { industry: 'Healthcare' },
+    { industry: ['Healthcare'] },
+    { company: Array.from({ length: 26 }, (_, n) => `Company ${n}`) },
     { salaryMin: 'lots' },
     { updatedTo: '2026-13-45' },
   ];
@@ -863,7 +986,7 @@ test('a push sends the filters Search applied: the same jobs in the same order, 
   assert.equal(lake.describePushResult(all.body), 'Pushed 4 jobs into Temp For AI, newest first, replacing what it held.');
   assert.equal(lake.safeWebLink(all.body.tabUrl), all.body.tabUrl, 'the link to the tab reaches an anchor');
   assert.match(all.body.tabUrl, /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[^/]+\/edit#gid=9$/);
-  const none = await pushAs({ ...lake.EMPTY_LAKE_FILTERS, company: 'Nobody Here' });
+  const none = await pushAs({ ...lake.EMPTY_LAKE_FILTERS, company: ['Nobody Here'] });
   assert.equal(none.body.pushed, 0);
   assert.equal(lake.describePushResult(none.body), 'No job matched these filters, so Temp For AI is now empty under its header.');
 
@@ -940,11 +1063,110 @@ test("a lake job's type, clearance and industry read in the server's words", asy
     (await h.call('owner', 'GET', `/admin/job-lake?${lake.lakeQueryString({ ...lake.EMPTY_LAKE_FILTERS, ...filters })}`)).body.rows
       .map((row) => row.company)
       .sort();
-  assert.deepEqual(await only({ jobType: 'on_site' }), ['Older Co']);
-  assert.deepEqual(await only({ jobType: 'not_specified' }), ['Silent Co']);
+  assert.deepEqual(await only({ jobType: ['on_site'] }), ['Older Co']);
+  assert.deepEqual(await only({ jobType: ['not_specified'] }), ['Silent Co']);
+  assert.deepEqual(await only({ jobType: ['on_site', 'remote'] }), ['Older Co', 'Stated Co']);
   assert.deepEqual(await only({ clearance: 'true' }), ['Stated Co']);
-  assert.deepEqual(await only({ industry: 'healthcare' }), ['Older Co']);
-  assert.deepEqual(await only({ industry: 'not_specified' }), ['Silent Co']);
+  assert.deepEqual(await only({ industry: ['healthcare'] }), ['Older Co']);
+  assert.deepEqual(await only({ industry: ['not_specified'] }), ['Silent Co']);
+  assert.deepEqual(await only({ industry: ['not_specified', 'healthcare'] }), ['Older Co', 'Silent Co']);
+});
+
+test("Find Jobs: what an export did, said from the server's own answers, and an order's jobs accepted as the server reads them", async (t) => {
+  const h = await serve('frontend-find-jobs');
+  const jobExport = require('../dist/services/sheets/jobExport');
+  const { JOB_SHEET_HEADERS } = require('../dist/integrations/googleSheets');
+  // The account's All tab, in memory: what the export reads and writes.
+  const all = { rows: {} };
+  const letter = (n) => String.fromCharCode(64 + n);
+  const cellsOf = (range) => /^'All'!([A-Z])(\d+)?:([A-Z])(\d+)?$/.exec(range);
+  jobExport.setJobExportSheetsClientForTests({
+    async inspectTab() {
+      return { gid: 7, title: 'All', columnCount: 12, rowCount: 1000, headerRow: [...JOB_SHEET_HEADERS], protectedRanges: [] };
+    },
+    async verifyTab() {
+      return { gid: 7, protection: 'intact', grewColumns: false, wroteHeader: false, jobTab: true };
+    },
+    async readRanges(_id, ranges) {
+      return ranges.map((range) => {
+        const [, from, fromRow, to, toRow] = cellsOf(range);
+        const last = toRow ? Number(toRow) : Math.max(1, ...Object.keys(all.rows).map(Number));
+        const grid = [];
+        for (let row = fromRow ? Number(fromRow) : 1; row <= last; row += 1) {
+          const values = [];
+          for (let col = from.charCodeAt(0) - 64; col <= to.charCodeAt(0) - 64; col += 1) values.push(String(all.rows[row]?.[letter(col)] ?? ''));
+          grid.push(values);
+        }
+        return grid;
+      });
+    },
+    async batchUpdate() {},
+    async writeRaw(_id, data) {
+      for (const { range, values } of data) {
+        const [, from, fromRow] = cellsOf(range);
+        values.forEach((cells, offset) => {
+          const row = (all.rows[Number(fromRow) + offset] ??= {});
+          cells.forEach((value, index) => {
+            row[letter(from.charCodeAt(0) - 64 + index)] = value;
+          });
+        });
+      }
+    },
+  });
+  t.after(() => {
+    jobExport.setJobExportSheetsClientForTests();
+    h.close();
+  });
+  const lake = display();
+  const lakeService = require('../dist/services/jobLake/index');
+  const { getJobAnalysisById } = require('../dist/database/jobAnalysisRepository');
+  const merge = (company, n) => {
+    const id = storeJobAnalysis({ jobField: 'backend' }, { jobDescription: posting(n), jobLink: `https://jobs.example.com/${n}` });
+    return lakeService.mergeIntoLake(lakeService.lakeJobFromAnalysis(getJobAnalysisById(id), 'merge', { company }), null, {
+      reward: false,
+      now: Date.now() - (10 - n) * 60_000,
+    }).lakeId;
+  };
+  const ids = [merge('Alpha Co', 1), merge('Beta LLC', 2), merge('Gamma Inc', 3)];
+
+  const exported = await h.call('user', 'POST', '/jobs/lake/export', { ids });
+  assert.equal(exported.status, 200, JSON.stringify(exported.body));
+  assert.equal(
+    lake.describeExportResult(exported.body),
+    'Exported 3 jobs into All, rows 2 to 4, each with its analysis, so building from them analyses nothing again.'
+  );
+  assert.equal(lake.safeWebLink(exported.body.tabUrl), exported.body.tabUrl, 'the link to the tab reaches an anchor');
+  const again = await h.call('user', 'POST', '/jobs/lake/export', { ids: [ids[0], 999999] });
+  assert.equal(
+    lake.describeExportResult(again.body),
+    'No job was exported into All. 1 was in All already - the same link, or the same company and title - so it was ' +
+      'left out. 1 is no longer in the lake.'
+  );
+  const twice = await h.call('user', 'POST', '/jobs/lake/export', { ids });
+  assert.match(lake.describeExportResult(twice.body), /^No job was exported into All\. 3 were in All already .* so they were left out\.$/);
+
+  // The page's cap is the server's, and the buttons say why they wait.
+  const page = (await h.call('user', 'GET', '/jobs/lake')).body;
+  assert.equal(page.exportMaxRows, require('../dist/config/operational').jobLakeExportMaxRows());
+  const tooMany = await h.call('user', 'POST', '/jobs/lake/export', { ids: Array.from({ length: page.exportMaxRows + 1 }, (_, n) => n + 1) });
+  assert.equal(tooMany.body.error, lake.exportBlocker({ count: page.exportMaxRows + 1, max: page.exportMaxRows, busy: false, sheetReady: true }));
+  assert.equal(lake.exportBlocker({ count: 2, max: page.exportMaxRows, busy: false, sheetReady: true }), '');
+  assert.equal(lake.orderBlocker({ count: 2, max: 200, busy: false, orderable: 2 }), '');
+  assert.equal(lake.orderBlocker({ count: 201, max: 200, busy: false, orderable: 2 }), 'You can select at most 200 jobs at a time.');
+  assert.match(lake.orderBlocker({ count: 1, max: 200, busy: false, orderable: 0 }), /^None of the selected jobs has a stored analysis/);
+
+  // A builder's rows name nobody who reported a job; the jobs an order sends are accepted by the server's own reader.
+  for (const row of page.rows) assert.equal('requester' in row || 'requestedBy' in row || 'reward' in row, false);
+  const { normalizeJobs } = require('../dist/routes/generation');
+  const { jobs, skipped } = lake.lakeOrderJobs([...page.rows, { company: 'No Analysis Co', title: 'X', url: '', analysisId: null }]);
+  assert.equal(skipped, 1);
+  const normalized = normalizeJobs({ jobs });
+  assert.deepEqual(
+    normalized.map((job) => [job.companyName, job.analysisId, job.jobLink]),
+    page.rows.map((row) => [row.company, row.analysisId, row.url])
+  );
+  assert.equal(lake.describeOrderSkipped(skipped), ' 1 job was left out: the lake has no stored analysis to build it from.');
+  assert.equal(lake.lakeOrderLabel(3), 'Find Jobs (3 jobs)');
 });
 
 test("a run draws the owner's line from the server's own summary, its red rows are the ones it paints, and a notes tab is refused in the page's words", async (t) => {

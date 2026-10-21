@@ -43,6 +43,18 @@ const PROFILE_FIELDS = [
   'softSkills',
   'education',
   'certifications',
+  // The other section kinds (config/profileSections.ts) and the order they
+  // print in: a file holding only a person's projects is still their profile.
+  'projects',
+  'languages',
+  'awards',
+  'publications',
+  'volunteering',
+  'courses',
+  'interests',
+  'references',
+  'customSections',
+  'sectionOrder',
   'profileSettings',
   'totalYearsExperience',
   'preferredTemplate',

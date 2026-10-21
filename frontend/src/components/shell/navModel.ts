@@ -1,6 +1,6 @@
 import type { IconName } from '@/components/icons';
 import { BUILDER_ROLES, REPORTER_HOME, type UserRole } from '@/lib/roles';
-import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscriptions';
+import { subscriptionAtLeast, type AccountSubscriptionId, type LockedFeatureId } from '@/lib/subscriptions';
 
 /**
  * The whole navigation, and what each entry requires.
@@ -13,6 +13,11 @@ import { subscriptionAtLeast, type AccountSubscriptionId } from '@/lib/subscript
  * Hiding is not the protection. Every page carries its own gate and every route
  * behind it carries middleware; this only stops the app offering somebody a
  * door that will not open.
+ *
+ * A ROLE hides an entry; a SUBSCRIPTION never does. An entry a builder's tier
+ * does not include is drawn LOCKED (`isNavLocked`): the lock icon, and a
+ * press that says what it needs and leads to the Subscription page - so the
+ * account learns what a higher subscription adds, instead of never seeing it.
  */
 
 /** The lowest account subscription that includes the entry. */
@@ -38,20 +43,24 @@ export type NavItem = {
   icon: IconName;
   /** Who sees it, by role. Absent means the builders: users and administrators. */
   roles?: Roles;
-  /** The subscription it needs, on top of the role. Absent means every subscription. */
+  /**
+   * The subscription it needs, on top of the role: below it the entry is drawn
+   * locked, never hidden. Absent means every subscription.
+   */
   needs?: NavNeeds;
-  /** Leaves the app; rendered as an anchor with target=_blank. */
-  external?: boolean;
-  title?: string;
+  /** What a locked entry's dialog says it is (lib/subscriptions.ts `describeLock`). Set with `needs`. */
+  feature?: Exclude<LockedFeatureId, 'more-profiles'>;
 };
 
 /**
- * The primary destinations, in the order the rail shows them.
+ * The primary destinations, in the order the rail shows them - every one a
+ * page of the app.
  *
- * "Find Jobs" has no href of its own - it opens the account's own job sheet,
- * whose URL is fetched once by the shell, in a new tab. It sits second because
- * it is the second thing in the day's loop: profiles first, then the jobs
- * those profiles are for, then the resumes built for them.
+ * Find Jobs (/jobs) searches the Job Data Lake, exports the jobs picked into
+ * the account's own sheet and orders resumes for them; "Go to my sheet" on
+ * that page opens the sheet itself. It sits after Profiles and Groups because
+ * it is the next thing in the day's loop: profiles first, then the jobs those
+ * profiles are for, then the resumes built for them.
  */
 export const SIDEBAR_MAIN: NavItem[] = [
   /*
@@ -63,13 +72,10 @@ export const SIDEBAR_MAIN: NavItem[] = [
   // "Profiles" here is the resume profiles - the career data a resume is built
   // from. The account you are signed in as lives under Settings instead.
   { href: '/admin/profiles', label: 'Profiles', icon: 'profile' },
-  {
-    href: '',
-    label: 'Find Jobs',
-    icon: 'search',
-    external: true,
-    title: 'Opens the All tab of your job sheet in a new tab',
-  },
+  // Sets of profiles built for together. Premium and up (the backend's
+  // `requireSubscription(MULTI_PROFILE_SUBSCRIPTION)`): drawn locked below it.
+  { href: '/admin/groups', label: 'Groups', icon: 'groups', needs: 'premium', feature: 'groups' },
+  { href: '/jobs', label: 'Find Jobs', icon: 'search' },
   { href: '/', label: 'Build Resumes', icon: 'build' },
   { href: '/orders', label: 'Orders', icon: 'orders' },
   // A reporter's too: their earnings and the payouts recorded against them.
@@ -140,23 +146,29 @@ export const SETTINGS_ADMIN_TABS: SettingsTab[] = [
 export const SETTINGS_ITEMS: SettingsTab[] = [...SETTINGS_ACCOUNT_TABS, ...SETTINGS_ADMIN_TABS];
 
 /**
- * Whether an account with this role and subscription is offered the entry.
- *
- * The role first, by name, so an unknown role - a server newer than this
- * page - is offered nothing a builder is. Then the subscription, which an
- * administrator is exempt from, as the backend's `requireSubscription` is
- * (owner decision B1).
+ * Whether an account with this role is offered the entry at all - by the
+ * role alone, by name, so an unknown role (a server newer than this page) is
+ * offered nothing a builder is. The subscription never hides an entry: it
+ * locks it (`isNavLocked`).
  */
-export function canSee(item: { roles?: Roles; needs?: NavNeeds }, role: unknown, subscription: unknown): boolean {
+export function canSee(item: { roles?: Roles }, role: unknown): boolean {
   const roles = item.roles ?? BUILDER_ROLES;
-  if (!roles.some((allowed) => allowed === role)) return false;
-  if (!item.needs) return true;
-  return role === 'admin' || subscriptionAtLeast(subscription, item.needs);
+  return roles.some((allowed) => allowed === role);
+}
+
+/**
+ * Whether an entry this role is offered is drawn LOCKED for this
+ * subscription: it needs a tier the account is below. An administrator is
+ * exempt, as from the backend's `requireSubscription` (owner decision B1).
+ */
+export function isNavLocked(item: { roles?: Roles; needs?: NavNeeds }, role: unknown, subscription: unknown): boolean {
+  if (!item.needs || !canSee(item, role)) return false;
+  return role !== 'admin' && !subscriptionAtLeast(subscription, item.needs);
 }
 
 /** The account tabs of Settings this role is offered, in order. */
 export function settingsTabsFor(role: unknown): SettingsTab[] {
-  return SETTINGS_ACCOUNT_TABS.filter((tab) => canSee(tab, role, undefined));
+  return SETTINGS_ACCOUNT_TABS.filter((tab) => canSee(tab, role));
 }
 
 function matches(pathname: string, href: string): boolean {

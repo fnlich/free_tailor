@@ -7,7 +7,8 @@ import type { LakeSettingKey, SettingSource } from './settingSources';
 
 /**
  * The Job Data Lake's API: Report Jobs (`/api/report`, a reporter's own sheet
- * and runs) and the administrators' lake (`/api/admin/job-lake`).
+ * and runs), the administrators' lake (`/api/admin/job-lake`) and Find Jobs
+ * (`/api/jobs/lake`, every builder's).
  *
  * Shapes only, as the server answers them - what a page decides about them
  * (the summary line, which rows are skipped, the query a filter form builds,
@@ -428,13 +429,92 @@ export const adminJobLakeApi = {
     apiFetch<Paged<MergeCandidate>>(`/admin/job-lake/merge?offset=${offset}&limit=${limit}`),
   merge: (body: { analysisIds: string[] } | { all: true }) =>
     apiFetch<MergeReport>('/admin/job-lake/merge', { method: 'POST', body: JSON.stringify(body) }),
-  jobFields: () => apiFetch<JobFieldCatalog>('/resume/job-fields'),
   /**
    * Push to Google Sheet: `filters` is lib/jobLakeDisplay.ts's
    * `lakeFilterBody` of the filters the table shows - the list's own, as a
-   * JSON body. 409 `push-in-progress`, `tab-name-clash` or `not-job-tab`, and
-   * Search's own 400s, each in a sentence for the page.
+   * JSON body, a list filter's values as an array. 409 `push-in-progress`,
+   * `tab-name-clash` or `not-job-tab`, and Search's own 400s, each in a
+   * sentence for the page.
    */
   push: (filters: LakeFilterBody) =>
     apiFetch<LakePushResult>('/admin/job-lake/push', { method: 'POST', body: JSON.stringify(filters) }),
+};
+
+/* ------------------------------------------------------------ Find Jobs */
+
+/**
+ * A lake job as Find Jobs lists it - the server's allowlist
+ * (services/jobLake/findJobs.ts): the job, its facts and the analysis it came
+ * from. Never what a reporter was paid, how often it was seen, its hash or
+ * its sync; who reported it (`requestedBy`, `requester`, `source`) only on an
+ * administrator's row.
+ */
+export type FindJobsRow = LakeFacts & {
+  id: number;
+  company: string;
+  title: string;
+  url: string;
+  jobFieldId: string;
+  jobFieldLabel: string;
+  salary: JobSalary | null;
+  updatedAt: string;
+  /** The posting's stored analysis, which an order of the job builds on; null when none is on record. */
+  analysisId: string | null;
+  requestedBy?: string | null;
+  requester?: LakeRequester;
+  source?: 'report' | 'merge';
+};
+
+/** One job's details: its row and the posting's text. */
+export type FindJobsDetail = FindJobsRow & { jobDescription: string };
+
+/**
+ * GET /api/jobs/lake's page, with what the job type and industry filters may
+ * be, and the most jobs one Export into Sheet takes (JOB_LAKE_EXPORT_MAX_ROWS)
+ * - the most the page lets anybody select.
+ */
+export type FindJobsPage = Paged<FindJobsRow> & {
+  options: { jobTypes: LakeFilterOption[]; industries: LakeFilterOption[] };
+  exportMaxRows: number;
+};
+
+/** A company the lake holds, for the Company box: as its newest job spells it, and how many jobs it has. */
+export type CompanySuggestion = { name: string; jobs: number };
+
+/**
+ * What Export into Sheet did: the rows written into the All tab of the
+ * caller's own job sheet, the jobs that were there already (the same link, or
+ * the same company and title), those gone from the lake since, and a link
+ * that opens the tab.
+ */
+export type LakeExportResult = {
+  exported: number;
+  skippedDuplicates: number;
+  missing: number;
+  tabName: string;
+  tabUrl: string;
+  startRow: number;
+  endRow: number;
+  maxRows: number;
+};
+
+export const jobLakeApi = {
+  /** `query` is lib/jobLakeDisplay.ts's `lakeQueryString` - no Requested by but an administrator's. */
+  list: (query: string) => apiFetch<FindJobsPage>(`/jobs/lake${query ? `?${query}` : ''}`),
+  get: (id: number) => apiFetch<{ entry: FindJobsDetail }>(`/jobs/lake/${id}`),
+  /** The companies whose name starts with what was typed, compared as the lake compares them. */
+  companies: (prefix: string, signal?: AbortSignal) =>
+    apiFetch<{ companies: CompanySuggestion[] }>(`/jobs/lake/companies?${new URLSearchParams({ prefix }).toString()}`, {
+      signal,
+    }),
+  /**
+   * Export into Sheet: the jobs, by their lake ids, into the All tab of the
+   * caller's OWN job sheet. 400 `too-many-jobs` past the cap, 404
+   * `jobs-not-found`, 409 `tab-name-clash` / `not-job-tab` / `sheet-changed`, 503
+   * with no Google Sheets - each in a sentence for the page.
+   */
+  exportToSheet: (ids: number[]) =>
+    apiFetch<LakeExportResult>('/jobs/lake/export', { method: 'POST', body: JSON.stringify({ ids }) }),
+  /** The job fields, as GET /api/resume/job-fields lists them for a filter. */
+  jobFields: () => apiFetch<JobFieldCatalog>('/resume/job-fields'),
 };

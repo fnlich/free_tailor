@@ -11,8 +11,15 @@ import {
   type EnvReading,
   type EnvSource,
 } from './envValue';
+import {
+  MAX_SUBSCRIPTION_PRICE_MILLI,
+  PAID_SUBSCRIPTION_IDS,
+  SUBSCRIPTION_PRICE_FIELDS,
+  type PaidSubscriptionId,
+} from './accountSubscriptions';
 import type { OperationalVariable } from './operational';
 import { MAX_REPORT_RATE_MILLI } from './reportRate';
+import type { TailorMode } from '../types/profile';
 import {
   DEFAULT_GENERATED_RESUMES_DIR,
   DEFAULT_OUTPUT_PATH_PREFIX,
@@ -68,6 +75,11 @@ export type ThemeMode = (typeof THEME_MODES)[number];
 
 export const DEFAULT_RESUME_SELECTIONS = ['single', 'all', 'group'] as const;
 export type DefaultResumeSelection = (typeof DEFAULT_RESUME_SELECTIONS)[number];
+
+/** Partial or Fully tailor (types/profile.ts `TailorMode`), in the order the editor offers them. */
+export const TAILOR_MODES = ['partial', 'full'] as const satisfies readonly TailorMode[];
+/** What a profile that has chosen no tailoring mode gets when `.env` names none either. */
+export const CODE_DEFAULT_TAILOR_MODE: TailorMode = 'partial';
 
 /* ===================================================== payment limits */
 
@@ -153,6 +165,14 @@ export const CODE_SETTING_DEFAULTS = {
   analysisModelId: '',
   outputPathPrefix: DEFAULT_OUTPUT_PATH_PREFIX as string,
   requireThreeDSecure: false,
+  /**
+   * What each paid subscription costs for 30 days, in thousandths: null, not
+   * offered. Nobody is charged for a tier until somebody decides what it is
+   * worth, as no model is priced until one is.
+   */
+  premiumPriceMilli: null as number | null,
+  premiumPlusPriceMilli: null as number | null,
+  premiumMaxPriceMilli: null as number | null,
 } as const;
 
 /** `generated/` in the checkout, as an absolute path - where resumes have always been filed by default. */
@@ -184,6 +204,12 @@ export const APP_SETTING_ENV_VARIABLES = {
     PAYMENT_LIMIT_VARIABLES.crypto.max,
   ],
   requireThreeDSecure: ['REQUIRE_THREE_D_SECURE'],
+  // Saved as `premiumPriceUsd` and its two siblings - a request carries dollars -
+  // and served in thousandths under these names (accountSubscriptions.ts
+  // `SUBSCRIPTION_PRICE_FIELDS`, which a test holds to this table).
+  premiumPriceMilli: ['SUBSCRIPTION_PREMIUM_PRICE_USD'],
+  premiumPlusPriceMilli: ['SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD'],
+  premiumMaxPriceMilli: ['SUBSCRIPTION_PREMIUM_MAX_PRICE_USD'],
 } as const satisfies Record<string, readonly string[]>;
 
 /** The app-settings fields that resolve stored > `.env` > code default. */
@@ -322,6 +348,18 @@ export function envOutputPathSuffix(env: EnvSource = process.env): EnvReading<st
   return envOutputPath('OUTPUT_PATH_SUFFIX', DEFAULT_OUTPUT_PATH_SUFFIX, validateOutputSuffix, env);
 }
 
+/**
+ * How a profile that has chosen no tailoring mode is tailored: `partial` (its
+ * own descriptions and achievements rewritten for the posting) or `full` (only
+ * each role's title, company and dates sent, the experience written for the
+ * posting). A per-profile default, like OUTPUT_PATH_SUFFIX's per-account one:
+ * a profile's own choice, made in its editor, wins (services/profileService.ts
+ * `getProfileTailorMode`). Junk warns once and `partial` is used.
+ */
+export function envDefaultTailorMode(env: EnvSource = process.env): EnvReading<TailorMode> {
+  return readEnvEnum('DEFAULT_TAILOR_MODE', CODE_DEFAULT_TAILOR_MODE, { values: TAILOR_MODES, caseInsensitive: true }, env);
+}
+
 /** One payment bound from `.env`, in whole cents from $0.01 - or the default, with a warning. */
 function envLimitCents(name: string, fallbackCents: number, env: EnvSource): EnvReading<number> {
   const reading = readEnvDollarsMilli(name, centsToMilli(fallbackCents), { maxMilli: centsToMilli(MAX_AMOUNT_CENTS) }, env);
@@ -416,6 +454,36 @@ export function envJobLakeReportRateMilli(env: EnvSource = process.env): EnvRead
 /** The lake's daily cap per reporter when /admin/job-lake has stored none; null is no cap. */
 export function envJobLakeDailyCapMilli(env: EnvSource = process.env): EnvReading<number | null> {
   return readEnvDollarsMilli('JOB_LAKE_DAILY_CAP_USD', null, { maxMilli: MAX_DAILY_CAP_MILLI }, env);
+}
+
+/**
+ * A subscription price as `.env` gives it - and whether the variable holds
+ * something that is not a price at all (`unreadable`), which reads as not
+ * offered like an unset one, but is nobody's decision.
+ */
+export type EnvSubscriptionPrice = EnvReading<number | null> & { unreadable: boolean };
+
+/**
+ * A paid subscription's price for 30 days when Admin -> Settings -> General
+ * stores none, in thousandths: `SUBSCRIPTION_<TIER>_PRICE_USD`, in dollars to
+ * $0.001, at most $10,000 (above it clamps, with a warning). Unset - or 0 -
+ * is null, not offered: the tier's card asks for the administrator, and
+ * nobody can buy it. Junk warns once and is not offered either - but it is
+ * flagged `unreadable`, because a typo must not end the subscriptions already
+ * paid for as if somebody had stopped offering the tier
+ * (aiModelConfig.ts `getSubscriptionPriceReading`, the renewal sweep's read).
+ */
+export function envSubscriptionPriceMilli(tier: PaidSubscriptionId, env: EnvSource = process.env): EnvSubscriptionPrice {
+  const name = SUBSCRIPTION_PRICE_FIELDS[tier].env;
+  const reading = readEnvDollarsMilli(
+    name,
+    CODE_SETTING_DEFAULTS[SUBSCRIPTION_PRICE_FIELDS[tier].setting],
+    { maxMilli: MAX_SUBSCRIPTION_PRICE_MILLI },
+    env
+  );
+  if (reading.value === 0) return { value: null, fromEnv: false, unreadable: false };
+  // Set, and still not read from the environment: the reader refused it.
+  return { ...reading, unreadable: !reading.fromEnv && envRaw(name, env) !== null };
 }
 
 /**
@@ -536,6 +604,12 @@ export const SETTING_DEFAULT_VARIABLES: readonly OperationalVariable[] = [
     'services/outputPath.ts (for an account that has set no folder path of its own)',
     (env) => envOutputPathSuffix(env).value
   ),
+  entry(
+    'DEFAULT_TAILOR_MODE',
+    CODE_DEFAULT_TAILOR_MODE,
+    'services/profileService.ts (for a profile that has chosen no tailoring mode of its own)',
+    (env) => envDefaultTailorMode(env).value
+  ),
   paymentEntry('card', 'min'),
   paymentEntry('card', 'max'),
   paymentEntry('crypto', 'min'),
@@ -563,5 +637,14 @@ export const SETTING_DEFAULT_VARIABLES: readonly OperationalVariable[] = [
     '',
     'services/jobLake/settings.ts (an administrator\'s cap on /admin/job-lake wins)',
     (env) => dollarsText(envJobLakeDailyCapMilli(env).value)
+  ),
+  // '' is not offered: nobody can buy that tier until it has a price.
+  ...PAID_SUBSCRIPTION_IDS.map((tier) =>
+    entry(
+      SUBSCRIPTION_PRICE_FIELDS[tier].env,
+      '',
+      'services/subscriptions (when Admin -> Settings -> General stores no price)',
+      (env) => dollarsText(envSubscriptionPriceMilli(tier, env).value)
+    )
   ),
 ];

@@ -83,6 +83,217 @@ test("the builder's multi-profile lock is the backend's: Premium and up, adminis
   }
 });
 
+// -- the locks ---------------------------------------------------------------- //
+
+test("the lock's names and profile limits are the backend's catalogue", () => {
+  const frontend = loadFrontendModule('lib/subscriptions.ts');
+  const backend = require('../dist/config/accountSubscriptions');
+  for (const tier of backend.listSubscriptions()) {
+    assert.equal(frontend.SUBSCRIPTION_LABELS[tier.id], tier.label, tier.id);
+    assert.equal(frontend.SUBSCRIPTION_PROFILE_LIMITS[tier.id], tier.profileLimit, tier.id);
+  }
+  assert.deepEqual(Object.keys(frontend.SUBSCRIPTION_LABELS), [...backend.SUBSCRIPTION_IDS]);
+  assert.deepEqual(Object.keys(frontend.SUBSCRIPTION_PROFILE_LIMITS), [...backend.SUBSCRIPTION_IDS]);
+});
+
+test('a lock names what it is, the tier that unlocks it and the account\'s own, never a "plan"', () => {
+  const { describeLock } = loadFrontendModule('lib/subscriptions.ts');
+  const { MULTI_PROFILE_SUBSCRIPTION } = require('../dist/config/accountSubscriptions');
+
+  const many = describeLock('many-profiles', { subscription: 'default' });
+  assert.equal(many.title, 'Building for several profiles');
+  assert.equal(many.needs, MULTI_PROFILE_SUBSCRIPTION);
+  assert.equal(many.needsLabel, 'Premium');
+  assert.equal(
+    many.body,
+    'Your Default subscription builds for one profile at a time. Premium and higher build for the profiles you choose, every profile, or a group of them, in one run.'
+  );
+
+  const groups = describeLock('groups', { subscription: 'default' });
+  assert.equal(groups.title, 'Groups');
+  assert.equal(groups.needs, 'premium');
+  assert.equal(
+    groups.body,
+    'Groups need a Premium subscription or higher, and your account is on Default. A group is a set of profiles you build for together.'
+  );
+  // A stored tier this page does not know reads as Default, as the backend's `resolveSubscription` does.
+  assert.equal(describeLock('groups', { subscription: 'premium-ultra' }).body, groups.body);
+
+  // More profiles names the cheapest tier with room for one more.
+  const cases = [
+    [{ subscription: 'default', profilesUsed: 1 }, 'premium', 'The Default subscription allows 1 profile, and you have 1. Premium allows up to 5.'],
+    [{ subscription: 'premium', profilesUsed: 5 }, 'premium-plus', 'The Premium subscription allows 5 profiles, and you have 5. Premium+ allows up to 25.'],
+    [{ subscription: 'premium-plus', profilesUsed: 25 }, 'premium-max', 'The Premium+ subscription allows 25 profiles, and you have 25. Premium Max has no limit on profiles.'],
+    // Kept above a lower limit after a lapse: still the tier with room for one more.
+    [{ subscription: 'default', profilesUsed: 7 }, 'premium-plus', 'The Default subscription allows 1 profile, and you have 7. Premium+ allows up to 25.'],
+  ];
+  for (const [account, needs, body] of cases) {
+    const lock = describeLock('more-profiles', account);
+    assert.equal(lock.title, 'More profiles');
+    assert.equal(lock.needs, needs, JSON.stringify(account));
+    assert.equal(lock.body, body);
+  }
+
+  for (const feature of ['many-profiles', 'groups', 'more-profiles']) {
+    const lock = describeLock(feature, { subscription: 'default', profilesUsed: 1 });
+    assert.doesNotMatch(`${lock.title} ${lock.body}`, /\bplans?\b/i, feature);
+  }
+});
+
+test("a lock for what the server refused is worded from the refusal, never from a session that is behind it", () => {
+  const frontend = loadFrontendModule('lib/subscriptions.ts');
+  const backend = require('../dist/config/accountSubscriptions');
+  const { ProfileLimitError } = require('../dist/database/profileRepository');
+
+  // 403 subscription-too-low for several profiles: the server holds the
+  // account below Premium, which is Default - whatever tier the page's session
+  // still says (a paid Premium that lapsed at renewal while the page was open).
+  const tooLow = frontend.describeTooLowRefusal();
+  assert.equal(tooLow.needs, backend.MULTI_PROFILE_SUBSCRIPTION);
+  assert.equal(
+    tooLow.body,
+    'Your Default subscription builds for one profile at a time. Premium and higher build for the profiles you choose, every profile, or a group of them, in one run.'
+  );
+  assert.deepEqual(tooLow, frontend.describeLock('many-profiles', { subscription: 'default' }));
+
+  // 402 profile-limit: its `limit` names the tier, as the backend's error
+  // carries it, and the server counted at least that many.
+  for (const tier of backend.listSubscriptions()) {
+    if (tier.profileLimit === null) continue;
+    assert.equal(frontend.tierWithProfileLimit(tier.profileLimit), tier.id);
+    const refusal = new ProfileLimitError(tier.label, tier.profileLimit, tier.profileLimit);
+    assert.equal(refusal.status, 402);
+    assert.deepEqual(refusal.extra, { limit: tier.profileLimit });
+  }
+  assert.equal(frontend.tierWithProfileLimit(7), null);
+  assert.equal(frontend.tierWithProfileLimit('5'), null);
+  const cases = [
+    // A profile added in another tab: the page had 4 of Premium's 5, the server counted 5.
+    [{ limit: 5, used: 4 }, { subscription: 'premium' }, 'premium-plus', 'The Premium subscription allows 5 profiles, and you have 5. Premium+ allows up to 25.'],
+    // The list read again after the refusal says 5.
+    [{ limit: 5, used: 5 }, { subscription: 'premium' }, 'premium-plus', 'The Premium subscription allows 5 profiles, and you have 5. Premium+ allows up to 25.'],
+    // A paid Premium that lapsed to Default under the page: the session still says Premium, with 3.
+    [{ limit: 1, used: 3 }, { subscription: 'premium' }, 'premium', 'The Default subscription allows 1 profile, and you have 3. Premium allows up to 5.'],
+    // A stale Premium+ session over a server-side Default with one profile.
+    [{ limit: 1, used: 1 }, { subscription: 'premium-plus' }, 'premium', 'The Default subscription allows 1 profile, and you have 1. Premium allows up to 5.'],
+    // No limit in the answer: the session's tier, and the page's own count.
+    [{ used: 5 }, { subscription: 'premium' }, 'premium-plus', 'The Premium subscription allows 5 profiles, and you have 5. Premium+ allows up to 25.'],
+  ];
+  for (const [refusal, account, needs, body] of cases) {
+    const lock = frontend.describeProfileLimitRefusal(refusal, account);
+    assert.equal(lock.feature, 'more-profiles');
+    assert.equal(lock.needs, needs, JSON.stringify(refusal));
+    assert.equal(lock.body, body, JSON.stringify(refusal));
+    // Never the tier the refusal was about, or one below it.
+    const refusedTier = frontend.tierWithProfileLimit(refusal.limit) ?? account.subscription;
+    assert.ok(
+      frontend.SUBSCRIPTION_ORDER.indexOf(lock.needs) > frontend.SUBSCRIPTION_ORDER.indexOf(refusedTier),
+      JSON.stringify(refusal)
+    );
+  }
+});
+
+// -- who a run builds for ------------------------------------------------------ //
+
+/**
+ * lib/runChoices.ts imports lib/subscriptions.ts at runtime and nothing else,
+ * so it is loaded with that one module handed to it.
+ */
+function loadRunChoices() {
+  const subscriptions = loadFrontendModule('lib/subscriptions.ts');
+  const file = path.join(SRC, 'lib/runChoices.ts');
+  const { outputText } = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    fileName: file,
+  });
+  const module = { exports: {} };
+  const resolve = (specifier) => {
+    if (specifier === './subscriptions') return subscriptions;
+    throw new Error(`lib/runChoices.ts imports ${specifier}; it may import only ./subscriptions at runtime`);
+  };
+  new Function('module', 'exports', 'require', outputText)(module, module.exports, resolve);
+  return module.exports;
+}
+
+test('a run builds for the profile chosen, the several chosen, every profile, or the enabled members of a group - as the server is asked', () => {
+  const choices = loadRunChoices();
+  const profiles = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const groups = [
+    { id: 'g1', profileIds: ['c', 'a', 'gone'] },
+    { id: 'empty', profileIds: ['gone'] },
+  ];
+  const ids = (list) => list.map((profile) => profile.id);
+  const choice = (kind, profileId = 'b', groupId = 'g1', profileIds = ['c', 'a']) => ({ kind, profileId, profileIds, groupId });
+
+  assert.deepEqual(ids(choices.targetProfiles(choice('single'), profiles, groups)), ['b']);
+  assert.deepEqual(ids(choices.targetProfiles(choice('all'), profiles, groups)), ['a', 'b', 'c']);
+  // The page's order (newest first), never the group's; a member that is no longer enabled is left out.
+  assert.deepEqual(ids(choices.targetProfiles(choice('group'), profiles, groups)), ['a', 'c']);
+  assert.deepEqual(ids(choices.targetProfiles(choice('group', 'b', 'nope'), profiles, groups)), []);
+  // Several: the ones chosen, in the page's order too; one no longer enabled is left out.
+  assert.deepEqual(ids(choices.targetProfiles(choice('several'), profiles, groups)), ['a', 'c']);
+  assert.deepEqual(ids(choices.targetProfiles(choice('several', 'b', 'g1', ['gone', 'b']), profiles, groups)), ['b']);
+  assert.deepEqual(ids(choices.targetProfiles({ kind: 'several', profileId: 'b', groupId: '' }, profiles, groups)), []);
+
+  assert.equal(choices.targetBlocker(choice('single'), profiles, groups), null);
+  assert.equal(choices.targetBlocker(choice('single', null), profiles, groups), 'Please select a profile.');
+  assert.equal(choices.targetBlocker(choice('single', 'x'), profiles, groups), 'Selected profile could not be found.');
+  assert.equal(choices.targetBlocker(choice('several'), profiles, groups), null);
+  assert.equal(choices.targetBlocker(choice('several', 'b', 'g1', []), profiles, groups), 'Please select the profiles to build for.');
+  assert.equal(choices.targetBlocker(choice('several', 'b', 'g1', ['gone']), profiles, groups), 'Selected profiles could not be found.');
+  assert.equal(choices.targetBlocker(choice('all'), [], groups), 'No profiles available for multi-profile generation.');
+  assert.equal(choices.targetBlocker(choice('group', 'b', ''), profiles, groups), 'Please select a group.');
+  assert.equal(choices.targetBlocker(choice('group', 'b', 'empty'), profiles, groups), 'Selected group has no enabled profiles.');
+
+  // Only Single builds for one profile; the kind in effect is Single for an account that cannot build for several.
+  assert.deepEqual(choices.TARGET_KINDS.map(choices.isMultiProfileTarget), [false, true, true, true]);
+  for (const kind of choices.TARGET_KINDS) {
+    assert.equal(choices.targetInEffect(kind, true), kind);
+    assert.equal(choices.targetInEffect(kind, false), 'single');
+  }
+});
+
+test("a page starts on the administrator's default target, profile and group - Single below Premium - and its files", async () => {
+  const choices = loadRunChoices();
+  const { hasSubscription } = require('../dist/middleware/auth');
+  const { MULTI_PROFILE_SUBSCRIPTION } = require('../dist/config/accountSubscriptions');
+  const profiles = [{ id: 'a' }, { id: 'b' }];
+  const groups = [{ id: 'g1', profileIds: ['a'] }];
+  const settings = { defaultResumeSelection: 'group', defaultProfileId: 'b', defaultGroupId: 'g1' };
+
+  assert.deepEqual(choices.startingTarget(settings, profiles, groups, true), { kind: 'group', profileId: 'b', groupId: 'g1' });
+  assert.deepEqual(choices.startingTarget(settings, profiles, groups, false), { kind: 'single', profileId: 'b', groupId: '' });
+  // A default that no longer exists falls to the first profile, and to no group.
+  assert.deepEqual(
+    choices.startingTarget({ ...settings, defaultProfileId: 'gone', defaultGroupId: 'gone' }, profiles, groups, true),
+    { kind: 'group', profileId: 'a', groupId: '' }
+  );
+  assert.deepEqual(choices.startingTarget({ ...settings, defaultResumeSelection: 'all' }, [], groups, true), {
+    kind: 'all',
+    profileId: null,
+    groupId: '',
+  });
+
+  // The lock is the server's: a multi-profile target is exactly what it refuses below Premium.
+  for (const subscription of ['default', 'premium']) {
+    const account = { role: 'user', subscription };
+    const many = hasSubscription(account, MULTI_PROFILE_SUBSCRIPTION);
+    for (const kind of choices.TARGET_KINDS) {
+      const inEffect = choices.targetInEffect(kind, many);
+      assert.equal(choices.isMultiProfileTarget(inEffect) && !many, false, `${subscription}/${kind}`);
+    }
+  }
+
+  assert.deepEqual(choices.defaultRunFormat({ defaultResumeDocxEnabled: true, defaultCoverLetterDocxEnabled: false }), {
+    format: 'both',
+    includeCoverLetterDocx: false,
+  });
+  assert.deepEqual(choices.defaultRunFormat({ defaultResumeDocxEnabled: false, defaultCoverLetterDocxEnabled: true }), {
+    format: 'pdf',
+    includeCoverLetterDocx: true,
+  });
+});
+
 // -- the admin Settings seat cards ------------------------------------------ //
 
 test("each seat's card shows that seat's own holds, Gemini's included", () => {
@@ -306,34 +517,24 @@ test("the builder follows its run until the server says it is over: empty attach
 
 test('the Profiles list names the template a profile is drawn with, as the server picks it', () => {
   const { drawnTemplate } = loadFrontendModule('lib/profileDraft.ts');
-  const template = (id, skillsLayouts) => ({ id, name: id, skillsLayouts });
-  const templates = [
-    template('forest-chips', ['categorized']),
-    template('default', ['categorized', 'flat']),
-    template('ink-ledger', ['categorized', 'flat']),
-  ];
+  const template = (id) => ({ id, name: id });
+  const templates = [template('forest-chips'), template('default'), template('ink-ledger')];
   const plain = (preferredTemplate) => ({ preferredTemplate, profileSettings: { technicalSkillsLayout: 'flat' } });
+  const grouped = (preferredTemplate) => ({ preferredTemplate, profileSettings: {} });
   const ids = ({ stored, drawn }) => [stored?.id ?? null, drawn?.id ?? null];
 
-  // An administrator made Forest Chips Grouped-only after a Plain profile chose it.
-  assert.deepEqual(ids(drawnTemplate(templates, plain('forest-chips'))), ['forest-chips', 'default']);
-  assert.equal(drawnTemplate(templates, plain('forest-chips')).layout, 'flat');
-  // Fits: drawn with its own.
-  assert.deepEqual(ids(drawnTemplate(templates, plain('ink-ledger'))), ['ink-ledger', 'ink-ledger']);
-  assert.deepEqual(
-    ids(drawnTemplate(templates, { preferredTemplate: 'forest-chips', profileSettings: {} })),
-    ['forest-chips', 'forest-chips']
-  );
+  // Every template prints both layouts: a profile is drawn with its own, whatever its layout.
+  for (const profile of [plain('forest-chips'), grouped('forest-chips')]) {
+    assert.deepEqual(ids(drawnTemplate(templates, profile)), ['forest-chips', 'forest-chips']);
+  }
+  assert.equal('layout' in drawnTemplate(templates, plain('forest-chips')), false);
   // None named: default, which is "stored" in the sense of what it renders with.
   assert.deepEqual(ids(drawnTemplate(templates, plain(undefined))), ['default', 'default']);
-  // One no longer offered.
+  // One no longer offered: default.
   assert.deepEqual(ids(drawnTemplate(templates, plain('gone'))), [null, 'default']);
-  // No default offering the layout: the first template that does.
-  const noDefault = [template('forest-chips', ['categorized']), template('ink-ledger', ['flat'])];
-  assert.deepEqual(ids(drawnTemplate(noDefault, plain('forest-chips'))), ['forest-chips', 'ink-ledger']);
-  // Nothing prints it at all: the choice as it is, as the server does.
-  assert.deepEqual(ids(drawnTemplate([template('forest-chips', ['categorized'])], plain('forest-chips'))), [
-    'forest-chips',
-    'forest-chips',
-  ]);
+  // ...and with no default offered either, the first template, as the server takes it.
+  const noDefault = [template('ink-ledger'), template('forest-chips')];
+  assert.deepEqual(ids(drawnTemplate(noDefault, grouped('gone'))), [null, 'ink-ledger']);
+  // Nothing offered at all.
+  assert.deepEqual(ids(drawnTemplate([], plain('forest-chips'))), [null, null]);
 });

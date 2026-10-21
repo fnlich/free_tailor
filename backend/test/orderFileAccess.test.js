@@ -78,18 +78,18 @@ async function serve() {
       { userId: bob.id, batchId, retentionDays: 5, kind, ...(folder ? { outputRootFor: plan.rootFor } : {}) },
       [{ seq: 0, profileId: 'p1', profileName: 'Bob Smith', companyName: 'Stripe', role: 'SWE' }]
     );
-    const { relativeBase } = await getGeneratedOutputPath({ name: 'Bob Smith', profileSettings: {} }, 'Stripe', 'SWE', {
+    const { storagePathBase } = await getGeneratedOutputPath({ name: 'Bob Smith', profileSettings: {} }, 'Stripe', 'SWE', {
       output: plan.placeFor(order.number),
     });
-    const resume = `${relativeBase}/Bob_Smith.pdf`;
-    const coverLetter = `${relativeBase}/Bob_Smith_cover_letter.pdf`;
+    const resume = `${storagePathBase}/Bob_Smith.pdf`;
+    const coverLetter = `${storagePathBase}/Bob_Smith_cover_letter.pdf`;
     write(outputBaseDir, resume, `BOB'S ${kind.toUpperCase()} RESUME`);
     write(outputBaseDir, coverLetter, `BOB'S ${kind.toUpperCase()} COVER LETTER`);
     if (record) {
       orders.recordItemOutcome(batchId, 0, { state: 'done', files: [{ kind: 'resume-pdf', path: resume }] });
       orders.settleOrderIfFinished(order.id);
     }
-    return { order, resume, coverLetter, relativeBase };
+    return { order, resume, coverLetter, storagePathBase };
   }
 
   return {
@@ -208,8 +208,8 @@ test('a symlink inside the output directory is not another path to somebody\'s f
   // path; a symlink is the alias Linux can show.
   const server = await serve();
   try {
-    const { resume, relativeBase } = await server.bobsRun('immediate');
-    fs.symlinkSync(path.join(server.outputBaseDir, ...relativeBase.split('/')), path.join(server.outputBaseDir, 'shortcut'));
+    const { resume, storagePathBase } = await server.bobsRun('immediate');
+    fs.symlinkSync(path.join(server.outputBaseDir, ...storagePathBase.split('/')), path.join(server.outputBaseDir, 'shortcut'));
 
     for (const route of ROUTES) {
       const stolen = await server.get('mallory', `${route}shortcut/Bob_Smith.pdf`);
@@ -253,11 +253,11 @@ test("a run's folder still claims its files after the prefix changes", async () 
   const server = await serve();
   try {
     const before = await server.bobsRun('order', { record: false });
-    assert.match(before.relativeBase, /^bob_smith_acme_com\/ft_\d{8}_\d{4}\//);
+    assert.match(before.storagePathBase, /^bob_smith_acme_com\/ft_\d{8}_\d{4}\//);
 
     await server.config.updateAppSettings({ outputPathPrefix: '/{{date}}/runs/{{order_number}}' });
     const after = await server.bobsRun('order', { record: false });
-    assert.match(after.relativeBase, /^\d{4}_\d{2}_\d{2}\/runs\/ft_\d{8}_\d{4}\//, 'the new prefix files the next run');
+    assert.match(after.storagePathBase, /^\d{4}_\d{2}_\d{2}\/runs\/ft_\d{8}_\d{4}\//, 'the new prefix files the next run');
 
     for (const { resume, coverLetter } of [before, after]) {
       for (const file of [resume, coverLetter]) {
@@ -268,7 +268,7 @@ test("a run's folder still claims its files after the prefix changes", async () 
     // The folder, as the order recorded it, and absolute.
     assert.equal(
       server.orders.getOrder(before.order.id).outputRoot,
-      path.join(server.outputBaseDir, ...before.relativeBase.split('/').slice(0, 2))
+      path.join(server.outputBaseDir, ...before.storagePathBase.split('/').slice(0, 2))
     );
   } finally {
     server.close();

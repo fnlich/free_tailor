@@ -1,12 +1,15 @@
 import { describeDollarProblem, formatMoney, parseDollars, toDollarInput } from './format';
 import { parseReportRate } from './reporterPay';
 import { LAKE_SETTING_ENV_VARIABLES, readSettingSource, type SettingSource } from './settingSources';
+import type { SubmitBatchRequest } from './generationQueue';
 import type {
   AdminLakeSheet,
   AdminLakeSyncStatus,
   DuplicateWindow,
+  FindJobsRow,
   JobReportOutcome,
   LakeEntry,
+  LakeExportResult,
   LakeFacts,
   LakeFilterOption,
   LakePushResult,
@@ -26,21 +29,27 @@ import type {
 } from './jobLake';
 
 /**
- * What the Job Data Lake's two pages decide, with no React in it: Report Jobs
+ * What the Job Data Lake's pages decide, with no React in it: Report Jobs
  * (/report) - the range a run is asked for, which previewed rows it will
  * skip and what became of them the first time, how a row's outcome reads and
- * which are red, and the owner's summary line - and Admin -> Job Lake
- * (/admin/job-lake) - the order of the filter form's boxes and the query
- * (or push body) it sends, what Push to Google Sheet asks first and says it
+ * which are red, and the owner's summary line - the lake's filter form
+ * (components/jobLake/LakeFilterForm.tsx, on Admin -> Job Lake and Find
+ * Jobs) - its boxes and their order, what typed text Search takes, the query
+ * (or push body) it sends and what the server would refuse - Admin -> Job
+ * Lake (/admin/job-lake) - what Push to Google Sheet asks first and says it
  * did, how a job's facts, a reward, a revoke, the duplicate window, the sync
- * and a merge read, and which settings a save sends.
+ * and a merge read, and which settings a save sends - and Find Jobs (/jobs):
+ * the selection, when Export into Sheet and Order Immediately may be pressed,
+ * the jobs an order sends and what an export did.
  *
- * Imports only frontend leaves (lib/format.ts, lib/reporterPay.ts) at runtime
- * - the API shapes come in as types - so backend/test/frontendJobLake.test.js
- * loads it and runs the copies of the server's rules here against the server's
- * own: the range a run takes (`readRunRange`), the settings it stores
- * (`updateLakeSettings`), the filters the lake route and its push accept
- * (`readLakeFilters`), and a push's answer.
+ * Imports only frontend leaves (lib/format.ts, lib/reporterPay.ts,
+ * lib/settingSources.ts) at runtime - the API shapes come in as types - so
+ * backend/test/frontendJobLake.test.js and frontendFindJobs.test.js load it
+ * and run the copies of the server's rules here against the server's own: the
+ * range a run takes (`readRunRange`), the settings it stores
+ * (`updateLakeSettings`), the filters every lake route accepts
+ * (`readLakeFilters`), the jobs an order may name (`normalizeJobs`), and a
+ * push's and an export's answers.
  */
 
 const plural = (count: number, noun: string, many = `${noun}s`): string => `${count} ${count === 1 ? noun : many}`;
@@ -345,41 +354,151 @@ export function describeEarnedToday(overview: Pick<ReportOverview, 'earnedTodayM
   return `${earned} of ${formatMoney(overview.dailyCapMilli)}`;
 }
 
-/* ================================================================ the admin lake */
+/* ================================================================ the lake's filters */
 
 /**
- * The Lake tab's filter form, as typed. Every field a string; '' means "any".
- * `jobType` and `industry` are an id from the server's own lists (GET
- * /api/admin/job-lake's `options`, `not_specified` for a posting that does not
- * say), `clearance` is 'true' or 'false'.
+ * The lake's filters, as a search sends them - Admin -> Job Lake's Search and
+ * Push to Google Sheet, and Find Jobs. The six LIST filters hold their chosen
+ * values (a job matching ANY of them passes); the others a string as typed,
+ * '' for "any". `jobType` and `industry` are ids from the server's own lists
+ * (the lake route's `options`; `not_specified` for a posting that does not
+ * say), `clearance` is 'true' or 'false', `requestedBy` account ids - an
+ * administrator's filter alone.
  */
 export type LakeFilters = {
-  q: string;
-  company: string;
-  field: string;
+  q: string[];
+  company: string[];
+  field: string[];
+  requestedBy: string[];
+  jobType: string[];
+  industry: string[];
   salaryMin: string;
   salaryMax: string;
-  requestedBy: string;
   updatedFrom: string;
   updatedTo: string;
-  jobType: string;
   clearance: string;
-  industry: string;
 };
 
+/** The filters that take several values. */
+export const LAKE_MULTI_FILTERS = ['q', 'company', 'field', 'requestedBy', 'jobType', 'industry'] as const;
+export type LakeMultiFilter = (typeof LAKE_MULTI_FILTERS)[number];
+
+const isMulti = (key: keyof LakeFilters): key is LakeMultiFilter =>
+  (LAKE_MULTI_FILTERS as readonly string[]).includes(key);
+
 export const EMPTY_LAKE_FILTERS: LakeFilters = {
-  q: '',
-  company: '',
-  field: '',
+  q: [],
+  company: [],
+  field: [],
+  requestedBy: [],
+  jobType: [],
+  industry: [],
   salaryMin: '',
   salaryMax: '',
-  requestedBy: '',
   updatedFrom: '',
   updatedTo: '',
-  jobType: '',
   clearance: '',
-  industry: '',
 };
+
+/**
+ * What is typed in the two boxes that take values of their own - Company and
+ * Full text - and is not a chip yet. Search takes it as it stands
+ * (`draftFilters`): nobody should have to press Enter before Search.
+ */
+export type LakeTypedText = { company: string; q: string };
+
+/** The filter form as it stands: the chosen values, and what is typed but not chosen. */
+export type LakeFilterDraft = { filters: LakeFilters; typed: LakeTypedText };
+
+export const EMPTY_LAKE_DRAFT: LakeFilterDraft = { filters: EMPTY_LAKE_FILTERS, typed: { company: '', q: '' } };
+
+/**
+ * The most values the open-ended lists take in one search - the server's
+ * (services/jobLake/filters.ts `LAKE_FILTER_MAX_VALUES`, which
+ * backend/test/frontendJobLake.test.js holds this copy to).
+ */
+export const LAKE_FILTER_MAX_VALUES = { company: 25, q: 10, requestedBy: 25 } as const;
+
+/**
+ * The most words Full text's keywords hold in all, as the index splits them
+ * (`keywordWords`) - the server's LAKE_KEYWORD_MAX_WORDS, which bounds what
+ * one search costs it; held to it by the same test.
+ */
+export const LAKE_KEYWORD_MAX_WORDS = 25;
+
+/** The most characters (code points) one keyword holds - the server's LAKE_KEYWORD_MAX_LENGTH; held by the same test. */
+export const LAKE_KEYWORD_MAX_LENGTH = 100;
+
+/**
+ * What the server says past each cap (services/jobLake/filters.ts
+ * `LAKE_FILTER_SENTENCES`) - said by `lakeFilterProblem` before it is asked,
+ * and by the form's boxes when they are full. Held to the server's words by
+ * backend/test/frontendJobLake.test.js.
+ */
+export const LAKE_FILTER_CAP_SENTENCES = {
+  q: `Search for at most ${LAKE_FILTER_MAX_VALUES.q} keywords at a time.`,
+  words: `Search for at most ${LAKE_KEYWORD_MAX_WORDS} words in all, across the keywords.`,
+  keywordLength: `A keyword can be at most ${LAKE_KEYWORD_MAX_LENGTH} characters.`,
+  company: `Choose at most ${LAKE_FILTER_MAX_VALUES.company} companies.`,
+  requestedBy: `Choose at most ${LAKE_FILTER_MAX_VALUES.requestedBy} people under Requested by.`,
+} as const;
+
+/** Where typed Full text splits into keywords. A company is never split: "OpenAI, Inc." is one. */
+export const LAKE_KEYWORD_SPLIT = /[,;\n]+/;
+
+/**
+ * A keyword's words as the server counts and looks for them
+ * (database/jobLakeRepository.ts `keywordWords`, the full-text index's own
+ * split): after NFKC, anything that is not a letter or a digit separates
+ * them - `node.js` is two words - and so do the 21 letters SQLite's
+ * tokenizer still reads as marks (U+19B0-U+19C0, U+19C8-U+19C9,
+ * U+1CF2-U+1CF3).
+ */
+export function keywordWords(keyword: string): string[] {
+  return typeof keyword === 'string'
+    ? keyword
+        .normalize('NFKC')
+        .split(/(?:[^\p{L}\p{N}]|[ᦰ-ᧀᧈᧉᳲᳳ])+/u)
+        .filter(Boolean)
+    : [];
+}
+
+/** A list's values as sent: each trimmed, the empty ones and repeats left out - what the server counts. */
+function cleanList(values: readonly string[]): string[] {
+  const clean = new Set<string>();
+  for (const value of values) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (trimmed) clean.add(trimmed);
+  }
+  return [...clean];
+}
+
+/** Typed text added to a list's values: split where `split` says, a value already there - case aside - not twice. */
+function withTyped(values: readonly string[], typed: string, split?: RegExp): string[] {
+  const parts = (split ? typed.split(split) : [typed]).map((part) => part.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  const next = [...values];
+  const there = new Set(values.map((value) => value.trim().toLowerCase()));
+  for (const part of parts) {
+    if (there.has(part.toLowerCase())) continue;
+    there.add(part.toLowerCase());
+    next.push(part);
+  }
+  return next;
+}
+
+/**
+ * The filters a Search applies: the chosen values, plus what is typed in
+ * Company (one company, as typed) and Full text (split into keywords on
+ * commas, semicolons and new lines). Past a list's cap, `lakeFilterProblem`
+ * says so - nothing is cut here.
+ */
+export function draftFilters(draft: LakeFilterDraft): LakeFilters {
+  return {
+    ...draft.filters,
+    company: withTyped(draft.filters.company, draft.typed.company),
+    q: withTyped(draft.filters.q, draft.typed.q, LAKE_KEYWORD_SPLIT),
+  };
+}
 
 /**
  * The filter form's boxes in the order the page draws them - the owner's
@@ -400,6 +519,15 @@ export const LAKE_FILTER_ORDER: ReadonlyArray<keyof LakeFilters> = [
   'q',
 ];
 
+/**
+ * The boxes a form draws: every one for an administrator; without Requested
+ * by for anybody else - Find Jobs never says who reported a job, and the
+ * server refuses the filter (403 `not-an-admin`).
+ */
+export function lakeFilterOrderFor(admin: boolean): ReadonlyArray<keyof LakeFilters> {
+  return admin ? LAKE_FILTER_ORDER : LAKE_FILTER_ORDER.filter((key) => key !== 'requestedBy');
+}
+
 /** Each box's label, as the form shows it. */
 export const LAKE_FILTER_LABELS: Readonly<Record<keyof LakeFilters, string>> = {
   updatedFrom: 'Updated from',
@@ -416,8 +544,8 @@ export const LAKE_FILTER_LABELS: Readonly<Record<keyof LakeFilters, string>> = {
 };
 
 /**
- * What the Job type box offers besides Any: the three a posting can state, in
- * the server's ids and words (services/jobAnalysis/facts.ts
+ * What the Job type box offers: the three a posting can state, in the
+ * server's ids and words (services/jobAnalysis/facts.ts
  * `listJobTypesForClient`, which backend/test/frontendJobLake.test.js holds
  * this copy to) - a copy so the box is whole before the first page answers.
  * The server also takes `not_specified`; the owner's box does not offer it.
@@ -437,7 +565,14 @@ export const LAKE_CLEARANCE_CHOICES: readonly LakeFilterOption[] = [
 /** The lists the job type and industry filters choose from, as the lake route serves them. */
 export type LakeFilterOptions = { jobTypes: readonly LakeFilterOption[]; industries: readonly LakeFilterOption[] };
 
-/** The route's number rule (routes/jobLake.ts `readNumber`): digits, an optional fraction. */
+/** The note under the form: how several values, keywords, salaries and dates are read. */
+export const LAKE_FILTER_NOTE =
+  'A box with several choices finds a job matching any of them. Full text finds a job matching any keyword; a ' +
+  'keyword of several words needs all of them. A word of one or two letters, like Go, is found only as a whole ' +
+  'word. Separate keywords with a comma or Enter. A salary filter keeps the jobs whose stated range reaches yours - ' +
+  'the figures as stated, whatever their currency or period - and leaves out jobs that state none. Dates are UTC days.';
+
+/** The route's number rule (services/jobLake/filters.ts `readNumber`): digits, an optional fraction. */
 const SALARY = /^\d+(\.\d+)?$/;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -448,13 +583,28 @@ function readableDate(text: string, end: boolean): boolean {
 }
 
 /**
- * Why the lake route would answer these filters 400, in its words - or ''
- * when it would not. Checked before asking, so the form says which box is
- * wrong rather than emptying the table. A job type or industry is checked
- * against the server's lists when the page has them; without them the
- * server's answer says it.
+ * Why the lake routes would answer these filters 400, in their words - or ''
+ * when they would not - in the order the server reads them
+ * (services/jobLake/filters.ts `readLakeFilters`): how many keywords, how
+ * long each is and how many words they hold in all, how many companies and people, then the
+ * salary range, the dates, each job type, clearance, each industry. Checked
+ * before asking, so the form says which box is wrong rather than emptying
+ * the table. A job type or industry is checked against the server's lists
+ * when the page has them; without them the server's answer says it.
  */
 export function lakeFilterProblem(filters: LakeFilters, options?: LakeFilterOptions | null): string {
+  const keywords = cleanList(filters.q);
+  if (keywords.length > LAKE_FILTER_MAX_VALUES.q) return LAKE_FILTER_CAP_SENTENCES.q;
+  if (keywords.some((keyword) => [...keyword].length > LAKE_KEYWORD_MAX_LENGTH)) {
+    return LAKE_FILTER_CAP_SENTENCES.keywordLength;
+  }
+  if (keywords.reduce((words, keyword) => words + keywordWords(keyword).length, 0) > LAKE_KEYWORD_MAX_WORDS) {
+    return LAKE_FILTER_CAP_SENTENCES.words;
+  }
+  if (cleanList(filters.company).length > LAKE_FILTER_MAX_VALUES.company) return LAKE_FILTER_CAP_SENTENCES.company;
+  if (cleanList(filters.requestedBy).length > LAKE_FILTER_MAX_VALUES.requestedBy) {
+    return LAKE_FILTER_CAP_SENTENCES.requestedBy;
+  }
   const salaryMin = filters.salaryMin.trim();
   const salaryMax = filters.salaryMax.trim();
   if (salaryMin && !SALARY.test(salaryMin)) return 'The lowest salary must be a number.';
@@ -464,35 +614,50 @@ export function lakeFilterProblem(filters: LakeFilters, options?: LakeFilterOpti
   if (from && !readableDate(from, false)) return 'Updated from must be a date, like 2026-10-05.';
   if (to && !readableDate(to, true)) return 'Updated to must be a date, like 2026-10-05.';
   const listed = (list: readonly LakeFilterOption[], value: string) => list.some((option) => option.id === value);
-  const jobType = filters.jobType.trim();
-  if (jobType && options && !listed(options.jobTypes, jobType)) return 'That job type is not one of the list.';
+  if (options && cleanList(filters.jobType).some((jobType) => !listed(options.jobTypes, jobType))) {
+    return 'That job type is not one of the list.';
+  }
   const clearance = filters.clearance.trim();
   if (clearance && clearance !== 'true' && clearance !== 'false') return 'Clearance must be true or false.';
-  const industry = filters.industry.trim();
-  if (industry && options && !listed(options.industries, industry)) return 'That industry is not one of the list.';
+  if (options && cleanList(filters.industry).some((industry) => !listed(options.industries, industry))) {
+    return 'That industry is not one of the list.';
+  }
   return '';
 }
 
 /**
- * The filters as sent: each one set, trimmed, in the form's order - the query
- * string's parameters, and Push to Google Sheet's JSON body, which the route
- * reads with the same rules (routes/jobLake.ts `readLakeFilters`), so a push
- * holds exactly the rows Search showed.
+ * The filters as sent: each one set, in the form's order - a list as its
+ * values (trimmed, each once), the rest trimmed. Push to Google Sheet's JSON
+ * body, and the query string's parameters (`lakeQueryString`), which every
+ * lake route reads with the same rules (services/jobLake/filters.ts), so a
+ * push holds exactly the rows Search showed.
  */
-export type LakeFilterBody = Partial<Record<keyof LakeFilters, string>>;
+export type LakeFilterBody = Partial<{ [K in keyof LakeFilters]: LakeFilters[K] }>;
 
 export function lakeFilterBody(filters: LakeFilters): LakeFilterBody {
-  const body: LakeFilterBody = {};
+  const body: Record<string, string | string[]> = {};
   for (const key of LAKE_FILTER_ORDER) {
-    const value = filters[key].trim();
-    if (value) body[key] = value;
+    if (isMulti(key)) {
+      const values = cleanList(filters[key]);
+      if (values.length > 0) body[key] = values;
+    } else {
+      const value = filters[key].trim();
+      if (value) body[key] = value;
+    }
   }
-  return body;
+  return body as LakeFilterBody;
 }
 
-/** The query string GET /api/admin/job-lake is asked with: what was typed, trimmed, then the page. */
+/**
+ * The query string a lake route is asked with: the filters, in the form's
+ * order, a list's values each under its own key (`field=backend&field=devops`
+ * - what Express reads as a list), then the page.
+ */
 export function lakeQueryString(filters: LakeFilters, offset = 0, limit?: number): string {
-  const params = new URLSearchParams(lakeFilterBody(filters) as Record<string, string>);
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(lakeFilterBody(filters))) {
+    for (const one of Array.isArray(value) ? value : [value]) params.append(key, one);
+  }
   if (typeof limit === 'number') params.set('limit', String(limit));
   if (offset > 0) params.set('offset', String(offset));
   return params.toString();
@@ -503,9 +668,13 @@ export function hasLakeFilters(filters: LakeFilters): boolean {
   return Object.keys(lakeFilterBody(filters)).length > 0;
 }
 
-/** Whether two forms ask the server the same question: the same filters set, to the same trimmed values. */
+/** Whether two forms ask the server the same question: the same values in each list, whatever their order. */
 export function sameLakeFilters(a: LakeFilters, b: LakeFilters): boolean {
-  return lakeQueryString(a) === lakeQueryString(b);
+  const key = (filters: LakeFilters) =>
+    JSON.stringify(
+      Object.entries(lakeFilterBody(filters)).map(([name, value]) => [name, Array.isArray(value) ? [...value].sort() : value])
+    );
+  return key(a) === key(b);
 }
 
 /* ------------------------------------------------- Push to Google Sheet */
@@ -975,4 +1144,166 @@ export function describeDeleteConfirm(
 export function describeRequester(entry: Pick<LakeEntry, 'requester' | 'requestedBy'>): string {
   if (entry.requester) return entry.requester.email || entry.requester.name;
   return entry.requestedBy ? 'Deleted account' : 'Nobody on record';
+}
+
+/* ================================================================ Find Jobs */
+
+/** The jobs picked on Find Jobs, by lake id - kept across pages, until Search or an order clears them. */
+export type JobSelection = ReadonlyMap<number, FindJobsRow>;
+
+/** What is said when a pick would go past the cap (JOB_LAKE_EXPORT_MAX_ROWS, which the list answers as `exportMaxRows`). */
+export function selectionLimitSentence(max: number): string {
+  return `You can select at most ${max} jobs at a time.`;
+}
+
+/** A row picked, or un-picked when it was; a pick past `max` changes nothing and says so (`refused`). */
+export function toggleSelected(
+  selection: JobSelection,
+  row: FindJobsRow,
+  max: number
+): { selection: Map<number, FindJobsRow>; refused: boolean } {
+  const next = new Map(selection);
+  if (next.has(row.id)) {
+    next.delete(row.id);
+    return { selection: next, refused: false };
+  }
+  if (next.size >= max) return { selection: next, refused: true };
+  next.set(row.id, row);
+  return { selection: next, refused: false };
+}
+
+/**
+ * The page's select-all: when every row of the page is picked, all of them
+ * un-picked; else the page's other rows picked too, in order, up to `max` in
+ * all - `refused` when some did not fit.
+ */
+export function togglePageSelected(
+  selection: JobSelection,
+  rows: readonly FindJobsRow[],
+  max: number
+): { selection: Map<number, FindJobsRow>; refused: boolean } {
+  const next = new Map(selection);
+  if (rows.length > 0 && rows.every((row) => next.has(row.id))) {
+    for (const row of rows) next.delete(row.id);
+    return { selection: next, refused: false };
+  }
+  let refused = false;
+  for (const row of rows) {
+    if (next.has(row.id)) continue;
+    if (next.size >= max) {
+      refused = true;
+      break;
+    }
+    next.set(row.id, row);
+  }
+  return { selection: next, refused };
+}
+
+/** How much of a page is picked: the select-all box's checked, or its indeterminate state. */
+export function pageSelectionState(selection: JobSelection, rows: readonly Pick<FindJobsRow, 'id'>[]): 'none' | 'some' | 'all' {
+  const picked = rows.filter((row) => selection.has(row.id)).length;
+  if (picked === 0) return 'none';
+  return picked === rows.length ? 'all' : 'some';
+}
+
+/** "27 jobs selected", or '' for none. */
+export function describeSelection(count: number): string {
+  return count > 0 ? `${jobCount(count)} selected` : '';
+}
+
+/** Why Export into Sheet cannot be pressed now, or '' when it can. */
+export function exportBlocker(input: { count: number; max: number; busy: boolean; sheetReady: boolean }): string {
+  if (input.busy) return 'Wait for the export or the order to finish first.';
+  if (!input.sheetReady) return 'Your job sheet is not available, so there is nowhere to export the jobs to yet.';
+  if (input.count === 0) return 'Select the jobs to export first.';
+  if (input.count > input.max) return `Export at most ${input.max} jobs at a time.`;
+  return '';
+}
+
+/**
+ * Why Order Immediately cannot be pressed now, or '' when it can. `orderable`
+ * is how many of the picked jobs have a stored analysis to build on.
+ */
+export function orderBlocker(input: { count: number; max: number; busy: boolean; orderable: number }): string {
+  if (input.busy) return 'Wait for the export or the order to finish first.';
+  if (input.count === 0) return 'Select the jobs to order resumes for first.';
+  if (input.count > input.max) return selectionLimitSentence(input.max);
+  if (input.orderable === 0) return 'None of the selected jobs has a stored analysis to build from.';
+  return '';
+}
+
+/**
+ * The jobs an order sends for the rows picked - each by its company, title,
+ * link and its posting's stored analysis, so nothing is analysed again (the
+ * server builds only on an analysis it stored). A row with no analysis on
+ * record cannot be built from and is left out, counted in `skipped`.
+ */
+export function lakeOrderJobs(
+  rows: readonly Pick<FindJobsRow, 'company' | 'title' | 'url' | 'analysisId'>[]
+): { jobs: SubmitBatchRequest['jobs']; skipped: number } {
+  const jobs: SubmitBatchRequest['jobs'] = [];
+  let skipped = 0;
+  for (const row of rows) {
+    if (!row.analysisId) {
+      skipped += 1;
+      continue;
+    }
+    jobs.push({
+      companyName: row.company,
+      role: row.title,
+      ...(row.url ? { jobLink: row.url } : {}),
+      analysisId: row.analysisId,
+    });
+  }
+  return { jobs, skipped };
+}
+
+/** The order receipt's tail for the rows an order left out: '' when none were. */
+export function describeOrderSkipped(skipped: number): string {
+  if (skipped <= 0) return '';
+  return ` ${jobCount(skipped)} ${skipped === 1 ? 'was' : 'were'} left out: the lake has no stored analysis to build ${skipped === 1 ? 'it' : 'them'} from.`;
+}
+
+/** What an order from Find Jobs is called on Orders. */
+export function lakeOrderLabel(count: number): string {
+  return `Find Jobs (${jobCount(count)})`;
+}
+
+/**
+ * What Export into Sheet did, from its answer: the rows written and where,
+ * the jobs that were in the tab already (the same link, or the same company
+ * and title) and those gone from the lake since the page listed them.
+ */
+export function describeExportResult(
+  result: Pick<LakeExportResult, 'exported' | 'skippedDuplicates' | 'missing' | 'tabName' | 'startRow' | 'endRow'>
+): string {
+  const tab = result.tabName || 'All';
+  const parts: string[] = [];
+  if (result.exported > 0) {
+    const rows = result.exported === 1 ? `row ${result.startRow}` : `rows ${result.startRow} to ${result.endRow}`;
+    parts.push(
+      `Exported ${jobCount(result.exported)} into ${tab}, ${rows}, each with its analysis, so building from ` +
+        `${result.exported === 1 ? 'it' : 'them'} analyses nothing again.`
+    );
+  } else {
+    parts.push(`No job was exported into ${tab}.`);
+  }
+  if (result.skippedDuplicates > 0) {
+    const one = result.skippedDuplicates === 1;
+    parts.push(
+      `${one ? '1 was' : `${grouped(result.skippedDuplicates)} were`} in ${tab} already - the same link, or the same ` +
+        `company and title - so ${one ? 'it was' : 'they were'} left out.`
+    );
+  }
+  if (result.missing > 0) {
+    parts.push(`${result.missing === 1 ? '1 is' : `${grouped(result.missing)} are`} no longer in the lake.`);
+  }
+  return parts.join(' ');
+}
+
+/** What the table says when there is nothing to list. */
+export function describeFindJobsEmpty(filtered: boolean): { title: string; body: string } {
+  return filtered
+    ? { title: 'No job matches', body: 'Nothing in the lake matches these filters. Clear them to see every job.' }
+    : { title: 'No jobs yet', body: 'The lake fills as the jobs reporters find are added to it. Come back to it later.' };
 }

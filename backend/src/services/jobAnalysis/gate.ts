@@ -404,7 +404,7 @@ async function askJobFacts(
  * The two model calls, and the row they leave.
  *
  * On the analysis model whatever either prompt record names
- * (`runChoiceWins`): the setting under Admin -> Settings is the one place
+ * (`runChoiceWins`): the setting under Admin -> Models is the one place
  * that decides which model reads postings, so every posting's job field
  * comes from one model. In parallel, so the facts call adds no wait to the
  * analysis a build is waiting on; and either failing aborts the other - one

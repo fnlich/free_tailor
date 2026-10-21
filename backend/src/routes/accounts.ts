@@ -1,7 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 
 import { isAccountRole, listRoles, ROLE_LABELS } from '../config/accountRoles';
-import { isSubscriptionId, listSubscriptions, resolveSubscription } from '../config/accountSubscriptions';
+import {
+  isSubscriptionId,
+  listSubscriptions,
+  resolveSubscription,
+  type AccountSubscriptionId,
+} from '../config/accountSubscriptions';
 import { isConfiguredAdmin, resolveAdminIdentity, type AdminSource } from '../config/adminIdentity';
 import { parseReportRateUsd } from '../config/reportRate';
 import { globalReportRateMilli } from '../services/jobLake/settings';
@@ -20,11 +25,21 @@ import {
   setReportRateMilli,
   updateUser,
 } from '../database/userRepository';
+import {
+  getSubscriptionBilling,
+  listPaidSubscriptions,
+  type SubscriptionBilling,
+} from '../database/subscriptionRepository';
 import { requireAdmin } from '../middleware/auth';
 import { sendPublicError } from '../middleware/publicError';
 import { ensureAccountSheet } from '../services/sheets/accountSheet';
 import { getLedger, grantCredits, PAYOUT_REQUEST_ID, readPayoutNote, setBalance } from '../services/credits';
 import { recordDirectPayout } from '../services/refunds';
+import {
+  applyAdministratorChange,
+  describeDisabledPaidTier,
+  reportEndedByAdministrator,
+} from '../services/subscriptions';
 import type { AccountUpdate, UserAccount, UserRole } from '../types/account';
 import { describeDollarProblem, formatMoney, parseDollars } from '../utils/money';
 
@@ -70,7 +85,36 @@ type AccountRow = UserAccount & {
    * wrong setting.
    */
   configuredAdminSource: Exclude<AdminSource, 'none'> | null;
+  /**
+   * The tier the account PAID for from its balance, while it is paid: when
+   * the 30 days end, whether they renew, and a lower tier chosen for the
+   * next ones. Null for a tier that is not paid - Default, or one an
+   * administrator set. Setting the tier here ends a paid one.
+   */
+  subscriptionBilling: { paidThrough: string; renews: boolean; next: AccountSubscriptionId | null } | null;
 };
+
+/**
+ * The paid period, read on its own: a failure there - an install that could
+ * not add the columns - leaves the accounts page working, with no account
+ * shown as paid, and is said once.
+ */
+let warnedBillingRead = false;
+function readBilling<T>(read: () => T, fallback: T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (!warnedBillingRead) {
+      warnedBillingRead = true;
+      console.warn('[accounts] Could not read the paid subscriptions; accounts are listed without them.', error);
+    }
+    return fallback;
+  }
+}
+
+function billingView(billing: SubscriptionBilling | null | undefined): AccountRow['subscriptionBilling'] {
+  return billing ? { paidThrough: billing.paidThrough, renews: billing.renews, next: billing.next } : null;
+}
 
 /** The setting that makes `email` an administrator at every sign-in, if one does. */
 function configuredAdminSource(email: string): Exclude<AdminSource, 'none'> | null {
@@ -79,7 +123,10 @@ function configuredAdminSource(email: string): Exclude<AdminSource, 'none'> | nu
   return source === 'none' ? null : source;
 }
 
-function describe(account: UserAccount, rates?: Map<string, number | null>): AccountRow {
+function describe(
+  account: UserAccount,
+  lists?: { rates: Map<string, number | null>; paid: Map<string, SubscriptionBilling> }
+): AccountRow {
   const subscription = resolveSubscription(account.subscription);
   return {
     ...account,
@@ -87,9 +134,12 @@ function describe(account: UserAccount, rates?: Map<string, number | null>): Acc
     profileLimit: subscription.profileLimit,
     profilesUsed: countProfilesForOwner(account.id),
     roleLabel: ROLE_LABELS[account.role],
-    reportRateMilli: rates ? (rates.get(account.id) ?? null) : getReportRateMilli(account.id),
+    reportRateMilli: lists ? (lists.rates.get(account.id) ?? null) : getReportRateMilli(account.id),
     configuredAdmin: isConfiguredAdmin(account.email),
     configuredAdminSource: configuredAdminSource(account.email),
+    subscriptionBilling: billingView(
+      lists ? lists.paid.get(account.id) : readBilling(() => getSubscriptionBilling(account.id), null)
+    ),
   };
 }
 
@@ -106,6 +156,24 @@ function readRole(req: Request, res: Response): UserRole | undefined | null {
   res.status(400).json({
     error: `The role must be one of ${listRoles().map((role) => role.id).join(', ')}.`,
     code: 'bad-role',
+  });
+  return null;
+}
+
+/**
+ * A `subscription` from a body: undefined when it is not there, the
+ * subscription when it is one this build has, or null after answering 400.
+ * Refused rather than ignored, on a create as on an edit: an invite meant for
+ * Premium that quietly made a Default account would leave its owner locked out
+ * of what they were promised, with nothing saying why.
+ */
+function readSubscription(req: Request, res: Response): AccountSubscriptionId | undefined | null {
+  const value = req.body?.subscription;
+  if (value === undefined) return undefined;
+  if (isSubscriptionId(value)) return value;
+  res.status(400).json({
+    error: `"${value}" is not a subscription this build knows about.`,
+    code: 'bad-subscription',
   });
   return null;
 }
@@ -240,9 +308,12 @@ function readDollars(
 }
 
 router.get('/', (_req: Request, res: Response) => {
-  const rates = listReportRates();
+  const lists = {
+    rates: listReportRates(),
+    paid: readBilling(() => listPaidSubscriptions(), new Map<string, SubscriptionBilling>()),
+  };
   res.json({
-    accounts: listUsers().map((account) => describe(account, rates)),
+    accounts: listUsers().map((account) => describe(account, lists)),
     subscriptions: listSubscriptions(),
     // The role catalog rides along like the subscriptions, so the page's
     // select is not a second copy of it.
@@ -272,10 +343,12 @@ router.get('/:id', (req: Request<{ id: string }>, res: Response) => {
  * for a reporter, before they ever see the builder.
  *
  * `{ email, name?, role?, subscription?, balanceUsd?, reportRateUsd? }`.
- * `role` is user (the default), reporter or admin; `reportRateUsd` only with
- * reporter. An address the configuration names as an administrator is made
- * one at its first sign-in whatever role it was created with
- * (`configuredAdmin` on the row says so).
+ * `role` is user (the default), reporter or admin; `subscription` one this
+ * build has (Default when absent); `reportRateUsd` only with reporter. Each is
+ * read before the account exists, so a refused one creates nothing. An
+ * address the configuration names as an administrator is made one at its
+ * first sign-in whatever role it was created with (`configuredAdmin` on the
+ * row says so).
  */
 router.post('/', (req: Request, res: Response) => {
   const email = normalizeEmail(req.body?.email);
@@ -300,6 +373,8 @@ router.post('/', (req: Request, res: Response) => {
   const role: UserRole = requestedRole ?? 'user';
   const rate = readReportRate(req, res, role);
   if (rate === null) return;
+  const subscription = readSubscription(req, res);
+  if (subscription === null) return;
 
   const account = createUser({
     email,
@@ -308,7 +383,7 @@ router.post('/', (req: Request, res: Response) => {
   });
 
   const update: AccountUpdate = {};
-  if (isSubscriptionId(req.body?.subscription)) update.subscription = req.body.subscription;
+  if (subscription !== undefined) update.subscription = subscription;
   const patched = Object.keys(update).length > 0 ? updateUser(account.id, update) : account;
   if (rate && rate.milli !== null) setReportRateMilli(account.id, rate.milli);
 
@@ -348,15 +423,9 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
   // reportRateUsd: '0.050' }` makes a reporter and sets their rate at once.
   const rate = readReportRate(req, res, update.role ?? target.role);
   if (rate === null) return;
-  if (req.body?.subscription !== undefined) {
-    if (!isSubscriptionId(req.body.subscription)) {
-      res
-        .status(400)
-        .json({ error: `"${req.body.subscription}" is not a subscription this build knows about.` });
-      return;
-    }
-    update.subscription = req.body.subscription;
-  }
+  const subscription = readSubscription(req, res);
+  if (subscription === null) return;
+  if (subscription !== undefined) update.subscription = subscription;
   // Read from the same body but applied separately: a balance is the sum of a
   // ledger, not a column to be overwritten, so it goes through setBalance which
   // writes the difference and a row explaining it. Dollars, exactly: "3.977"
@@ -390,12 +459,17 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
   }
   if (rate) setReportRateMilli(target.id, rate.milli);
 
-  const updated =
-    Object.keys(update).length > 0 ? updateUser(target.id, update) : getUserById(target.id);
-  if (!updated) {
+  // A tier the account paid for ends when the tier is set here, or the role
+  // moves away from user (updateUser clears it), and stops renewing while the
+  // account is disabled: the account and its paid period are read either side
+  // of the change, in its transaction, to say so.
+  const change = applyAdministratorChange(target.id, update);
+  if (!change) {
     res.status(404).json({ error: 'No such account.' });
     return;
   }
+  const updated = change.account;
+  const billingNotes = [reportEndedByAdministrator(change), describeDisabledPaidTier(change)];
 
   // A disabled account's sessions go immediately. `resolveSession` refuses a
   // disabled account anyway, so this is belt and braces - but it also means the
@@ -412,7 +486,7 @@ router.patch('/:id', (req: Request<{ id: string }>, res: Response) => {
   // LEASE_READER_LIFETIME_MS + IMMEDIATE_TAB_GRACE_MS after the change.
   if (update.disabled === true) destroySessionsForUser(updated.id);
 
-  const note = configuredAdminNote(target, update.role);
+  const note = [configuredAdminNote(target, update.role), ...billingNotes].filter(Boolean).join(' ');
   res.json({ account: describe(updated), ...(note ? { note } : {}) });
 });
 

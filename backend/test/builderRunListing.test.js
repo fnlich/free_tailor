@@ -88,10 +88,10 @@ test('the active list is the caller\'s own runs, never an order - administrators
 
   try {
     const alicesRun = (await call('alice', '/batches', { jobs: jobs(1), profileIds: ['p-alice'] })).batchId;
-    const alicesOrder = (await call('alice', '/batches', { jobs: jobs(1), profileIds: ['p-alice'], asOrder: true }))
+    const alicesOrder = (await call('alice', '/batches', { jobs: jobs(1), profileIds: ['p-alice'], mode: 'order' }))
       .batchId;
     const adminsRun = (await call('admin', '/batches', { jobs: jobs(1), profileIds: ['p-admin'] })).batchId;
-    const adminsOrder = (await call('admin', '/batches', { jobs: jobs(1), profileIds: ['p-admin'], asOrder: true }))
+    const adminsOrder = (await call('admin', '/batches', { jobs: jobs(1), profileIds: ['p-admin'], mode: 'order' }))
       .batchId;
     assert.ok(alicesRun && alicesOrder && adminsRun && adminsOrder);
 

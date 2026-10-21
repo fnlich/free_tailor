@@ -570,6 +570,23 @@ export function credentialPathVariable(
   return '';
 }
 
+/**
+ * Whether the default locations are searched at all: off only when
+ * TAILOR_GOOGLE_CREDENTIAL_SEARCH is `off`, which the test runner sets
+ * (scripts/runTests.js, and test/helpers.js for a file run on its own).
+ *
+ * The search also looks beside the compiled code, wherever the process runs
+ * from, so a checkout holding a real credential - backend/
+ * google-oauth-credentials.json once `sheets:login` has run - lent it to every
+ * test, and a test that signed an account in allocated a REAL spreadsheet in
+ * that Google account (four hundred and more in one owner's Drive). Off, only
+ * a file a variable names is read; a test that needs the search turns it back
+ * on for its own scope.
+ */
+function searchesDefaultLocations(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.TAILOR_GOOGLE_CREDENTIAL_SEARCH ?? '').trim().toLowerCase() !== 'off';
+}
+
 export async function resolveCredentialPath(): Promise<string> {
   const explicitVariable = credentialPathVariable();
   const explicitPath = explicitVariable ? process.env[explicitVariable]!.trim() : '';
@@ -577,7 +594,7 @@ export async function resolveCredentialPath(): Promise<string> {
   const directories = [cwd, path.join(cwd, 'backend'), path.join(__dirname, '../..'), path.join(__dirname, '../../..')];
   const candidates = [
     explicitPath,
-    ...CREDENTIAL_FILENAMES.flatMap((name) => directories.map((dir) => path.join(dir, name))),
+    ...(searchesDefaultLocations() ? CREDENTIAL_FILENAMES.flatMap((name) => directories.map((dir) => path.join(dir, name))) : []),
   ].filter((value): value is string => Boolean(value));
 
   // Deduplicated by resolved path, and case-insensitively because Windows
@@ -614,7 +631,9 @@ export async function resolveCredentialPath(): Promise<string> {
     console.warn(
       `[sheets] ${explicitVariable} names ${path.resolve(explicitPath)}, which does not exist` +
         `${path.isAbsolute(explicitPath) ? '' : ` (a relative path resolves from ${cwd})`}. ` +
-        'Searching the default locations instead.'
+        (searchesDefaultLocations()
+          ? 'Searching the default locations instead.'
+          : 'The default locations are not searched either (TAILOR_GOOGLE_CREDENTIAL_SEARCH=off).')
     );
   }
 
@@ -2408,6 +2427,41 @@ export async function batchUpdateValuesRaw(
       data: data.map((entry) => ({ range: entry.range, majorDimension: 'ROWS', values: entry.values })),
     }),
   });
+}
+
+/** How many bytes of JSON a row adds to a values write. */
+function jsonBytes(row: unknown): number {
+  return Buffer.byteLength(JSON.stringify(row), 'utf8');
+}
+
+/**
+ * Rows in writes of at most `maxRows` rows and about `maxBytes` of JSON each,
+ * in order: a row can carry a 50,000-character description and an Analysis
+ * cell as long, and Google refuses a request body past a few megabytes. One
+ * row bigger than the budget still goes - alone. `sizeOf` measures a row
+ * that is not yet its cells (the export's, numbered only as each write is
+ * placed).
+ */
+export function boundedWriteChunks<Row>(
+  rows: readonly Row[],
+  limits: { maxRows: number; maxBytes: number },
+  sizeOf: (row: Row) => number = jsonBytes
+): Row[][] {
+  const chunks: Row[][] = [];
+  let current: Row[] = [];
+  let bytes = 0;
+  for (const row of rows) {
+    const size = sizeOf(row);
+    if (current.length > 0 && (current.length >= limits.maxRows || bytes + size > limits.maxBytes)) {
+      chunks.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(row);
+    bytes += size;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 /** A1 notation for a block of a tab, the title quoted as Google wants it. */

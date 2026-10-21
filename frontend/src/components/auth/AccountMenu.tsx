@@ -167,8 +167,8 @@ export default function AccountMenu({ sheetUrl = '' }: { sheetUrl?: string }) {
             {/*
               The reporter's sheet, first: it is where every job they report
               comes from. Not a Link - it leaves the app for Google's own page,
-              in a new tab, like the rail's Find Jobs. Left out until there is
-              an address for it: one that opens about:blank is worse than none.
+              in a new tab, like Find Jobs' Go to my sheet. Left out until there
+              is an address for it: one that opens about:blank is worse than none.
             */}
             {sheetLink && (
               <a

@@ -466,13 +466,11 @@ const PROFILE = {
 
 function pathInfoIn(dir) {
   return {
-    relativeBase: 'jane',
     absoluteDir: dir,
     storagePathBase: 'jane',
     profileSlug: 'jane',
     resumeFileStem: 'Jane',
     coverLetterFileStem: 'Jane_cover_letter',
-    roleSlug: 'eng',
   };
 }
 

@@ -1,18 +1,25 @@
 /*
  * A stand-in for Stripe and Cryptomus, loaded into the real server.
  *
- * Run as `node --require ./fake-providers.js dist/index.js`, so this file is
- * evaluated before the app requires its integration modules and replaces every
- * function that reaches the network. NOTHING else is replaced: the routes,
- * the database, the webhook mount, the signature verification and the ledger
- * are the real ones, which is the whole point - the only thing faked is the
- * company at the other end of the wire.
+ * Run from backend/ as
+ *
+ *   node --require ./test/e2e/fake-providers.js dist/index.js
+ *
+ * so this file is evaluated before the app requires its integration modules
+ * and replaces every function that reaches the network (no-google.js, which
+ * it requires first, keeps the backend from Google). NOTHING else is
+ * replaced: the routes, the database, the webhook mount, the signature
+ * verification and the ledger are the real ones, which is the whole point -
+ * the only thing faked is the company at the other end of the wire.
  *
  * It also serves a hosted checkout page of its own, because a checkout the
  * browser cannot actually visit is not an end-to-end test of anything. Pay
  * sends a properly signed webhook to the server, exactly as the real provider
  * would, and then redirects the browser back to the success URL.
  */
+
+// First, before anything loads the backend: no real Google credential, whatever this checkout holds.
+require('./no-google');
 
 const http = require('http');
 const crypto = require('crypto');

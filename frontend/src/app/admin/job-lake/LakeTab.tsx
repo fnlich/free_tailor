@@ -1,9 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import TablePager from '@/components/credits/TablePager';
 import { usePagedList } from '@/components/credits/usePagedList';
+import { Cell, WebLink } from '@/components/jobLake/LakeCells';
+import LakeFilterForm from '@/components/jobLake/LakeFilterForm';
 import Dialog from '@/components/ui/Dialog';
 import { EmptyState, ErrorNotice, Field, Notice, Pill, Spinner, StaticValue } from '@/components/ui/kit';
 import { accountsApi, type ManagedAccount } from '@/lib/auth';
@@ -11,6 +13,7 @@ import { formatDate } from '@/lib/format';
 import { formatSalary } from '@/lib/jobAnalysis';
 import {
   adminJobLakeApi,
+  jobLakeApi,
   type JobFieldCatalog,
   type LakeEntry,
   type LakeHistoryEntry,
@@ -29,22 +32,20 @@ import {
   describePushConfirm,
   describePushResult,
   describeSource,
+  draftFilters,
+  EMPTY_LAKE_DRAFT,
   EMPTY_LAKE_FILTERS,
   hasLakeFilters,
-  LAKE_CLEARANCE_CHOICES,
-  LAKE_FILTER_LABELS,
-  LAKE_FILTER_ORDER,
-  LAKE_JOB_TYPE_CHOICES,
   lakeFactCells,
   lakeFilterBody,
   lakeFilterProblem,
   lakeQueryString,
-  linkHost,
   PUSH_TAB,
   PUSH_USES_SEARCHED_FILTERS,
   pushBlocker,
   safeWebLink,
   sameLakeFilters,
+  type LakeFilterDraft,
   type LakeFilterOptions,
   type LakeFilters,
 } from '@/lib/jobLakeDisplay';
@@ -59,11 +60,12 @@ import {
  * analysis, in the server's words); a row's detail with its history, and
  * Delete (optionally taking the reward back) and Revoke reward.
  *
- * The filter boxes come in the owner's order (lib/jobLakeDisplay.ts
- * `LAKE_FILTER_ORDER`): when it was updated and who reported it, the job
- * field, job type, clearance and industry, the company, the salary range,
- * then the full text. They are applied by Search, not per keystroke: each one
- * is a query the server runs, and half a company name is a different question.
+ * The filter form is the one Find Jobs draws (components/jobLake/
+ * LakeFilterForm.tsx), with Requested by: the owner's order, and every box
+ * but the dates, the salary range and Clearance taking several values, a job
+ * matching any of them found. The filters are applied by Search, not per
+ * keystroke: each one is a query the server runs, and half a company name is
+ * a different question.
  *
  * Push to Google Sheet, beside Search, writes the jobs of the search on the
  * page - the filters Search applied, not boxes changed since - newest first
@@ -74,21 +76,6 @@ import {
  */
 
 const PAGE_SIZE = 25;
-
-function Cell({ children, muted = false }: { children: React.ReactNode; muted?: boolean }) {
-  // A colour on a .tl-table cell goes on an inner span - the unlayered td rule beats a utility on the td.
-  return <span className={muted ? 'text-subtle' : 'text-ink'}>{children}</span>;
-}
-
-function WebLink({ value }: { value: string }) {
-  const href = safeWebLink(value);
-  if (!href) return value.trim() ? <span className="break-all">{value}</span> : <span className="text-subtle">-</span>;
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="tl-link break-all" title={href}>
-      {linkHost(href)}
-    </a>
-  );
-}
 
 function HistoryList({ history }: { history: LakeHistoryEntry[] }) {
   if (history.length === 0) {
@@ -336,21 +323,6 @@ function EntryDialog({
   );
 }
 
-/** Each filter box's input id. `lake-company` and the rest are what the e2e scripts type into. */
-const FILTER_INPUT_IDS: Readonly<Record<keyof LakeFilters, string>> = {
-  updatedFrom: 'lake-updated-from',
-  updatedTo: 'lake-updated-to',
-  requestedBy: 'lake-requested-by',
-  field: 'lake-field',
-  jobType: 'lake-job-type',
-  clearance: 'lake-clearance',
-  industry: 'lake-industry',
-  company: 'lake-company',
-  salaryMin: 'lake-salary-min',
-  salaryMax: 'lake-salary-max',
-  q: 'lake-q',
-};
-
 /** The push's confirm: what goes where, that it replaces the tab, and which filters it uses. */
 function PushDialog({
   matched,
@@ -399,7 +371,7 @@ function PushDialog({
 }
 
 export default function LakeTab() {
-  const [draft, setDraft] = useState<LakeFilters>(EMPTY_LAKE_FILTERS);
+  const [draft, setDraft] = useState<LakeFilterDraft>(EMPTY_LAKE_DRAFT);
   const [applied, setApplied] = useState<LakeFilters>(EMPTY_LAKE_FILTERS);
   // Bumped by Search, Clear and a delete: back to the first page, and asked again.
   const [epoch, setEpoch] = useState(0);
@@ -430,7 +402,7 @@ export default function LakeTab() {
   // boxes still work, with fewer choices.
   useEffect(() => {
     let alive = true;
-    adminJobLakeApi.jobFields().then(
+    jobLakeApi.jobFields().then(
       (catalog) => {
         if (alive) setFields(catalog);
       },
@@ -470,19 +442,16 @@ export default function LakeTab() {
   );
   const list = usePagedList<LakeEntry>(fetchPage, PAGE_SIZE, epoch);
 
-  const set = (key: keyof LakeFilters) => (value: string) => setDraft((current) => ({ ...current, [key]: value }));
-
-  const search = (event: FormEvent) => {
-    event.preventDefault();
-    const found = lakeFilterProblem(draft, options);
+  const search = (filters: LakeFilters) => {
+    const found = lakeFilterProblem(filters, options);
     setProblem(found);
     if (found) return;
-    setApplied({ ...draft });
+    setApplied(filters);
     setEpoch((value) => value + 1);
   };
 
   const clear = () => {
-    setDraft(EMPTY_LAKE_FILTERS);
+    setDraft(EMPTY_LAKE_DRAFT);
     setApplied(EMPTY_LAKE_FILTERS);
     setProblem('');
     setEpoch((value) => value + 1);
@@ -512,127 +481,26 @@ export default function LakeTab() {
   const pushBlocked = pushBlocker({ loaded: answered, failed: list.failed, pushing });
   const tabHref = pushResult ? safeWebLink(pushResult.tabUrl) : null;
 
-  const control = (key: keyof LakeFilters) => {
-    const id = FILTER_INPUT_IDS[key];
-    const value = draft[key];
-    const change = (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => set(key)(event.target.value);
-    switch (key) {
-      case 'updatedFrom':
-      case 'updatedTo':
-        return <input id={id} type="date" value={value} onChange={change} className="tl-input mt-2" />;
-      case 'requestedBy':
-        return (
-          <select id={id} value={value} onChange={change} className="tl-input mt-2">
-            <option value="">Anybody</option>
-            {accounts.map((account) => (
-              <option key={account.id} value={account.id}>
-                {account.email} ({account.roleLabel})
-              </option>
-            ))}
-          </select>
-        );
-      case 'field':
-        return (
-          <select id={id} value={value} onChange={change} className="tl-input mt-2">
-            <option value="">Any job field</option>
-            {fields?.areas.map((area) => (
-              <optgroup key={area.number} label={area.label}>
-                {fields.fields
-                  .filter((field) => field.area === area.number)
-                  .map((field) => (
-                    <option key={field.id} value={field.id}>
-                      {field.label}
-                    </option>
-                  ))}
-              </optgroup>
-            ))}
-          </select>
-        );
-      case 'jobType':
-      case 'clearance':
-      case 'industry': {
-        // Job type and clearance are known here; the industries are the
-        // server's own list, which arrives with the first page.
-        const choices =
-          key === 'jobType' ? LAKE_JOB_TYPE_CHOICES : key === 'clearance' ? LAKE_CLEARANCE_CHOICES : (options?.industries ?? []);
-        return (
-          <select id={id} value={value} onChange={change} className="tl-input mt-2">
-            <option value="">Any</option>
-            {choices.map((choice) => (
-              <option key={choice.id} value={choice.id}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-        );
-      }
-      case 'company':
-        return (
-          <input
-            id={id}
-            type="text"
-            value={value}
-            onChange={change}
-            placeholder="OpenAI, Inc. = Open AI LLC"
-            className="tl-input mt-2"
-          />
-        );
-      case 'salaryMin':
-      case 'salaryMax':
-        return (
-          <input
-            id={id}
-            type="text"
-            inputMode="numeric"
-            value={value}
-            onChange={change}
-            placeholder="Any"
-            className="tl-input mt-2 tabular-nums"
-          />
-        );
-      case 'q':
-        return (
-          <input
-            id={id}
-            type="search"
-            value={value}
-            onChange={change}
-            placeholder="Words in the company, title or description"
-            className="tl-input mt-2"
-          />
-        );
-    }
-  };
-
   return (
     <div className="space-y-6">
-      <form onSubmit={search} className="tl-card space-y-4 p-5" aria-label="Filter the lake">
-        {/* The owner's order, row by row: when and who, what kind of job, which company and its pay, the words. */}
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {LAKE_FILTER_ORDER.map((key) => (
-            <div key={key} className={key === 'q' ? 'sm:col-span-2' : undefined}>
-              <label htmlFor={FILTER_INPUT_IDS[key]} className="tl-label">
-                {LAKE_FILTER_LABELS[key]}
-              </label>
-              {control(key)}
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-subtle">
-          A salary filter keeps the jobs whose stated range reaches yours - the figures as stated, whatever their
-          currency or period - and leaves out jobs that state none. Dates are UTC days. Push to Google Sheet writes the
-          jobs of the search on the page, newest first, into the {PUSH_TAB} tab of your own job sheet, replacing what
-          it holds.
-        </p>
-        {problem && (
-          <p className="tl-status" data-tone="error" role="alert">
-            {problem}
-          </p>
-        )}
-        <div className="flex flex-wrap justify-end gap-3">
-          <button type="button" className="tl-button-quiet" onClick={clear} disabled={!filtered && !hasLakeFilters(draft)}>
-            Clear
-          </button>
+      <LakeFilterForm
+        ariaLabel="Filter the lake"
+        draft={draft}
+        onDraftChange={setDraft}
+        options={options}
+        fields={fields}
+        requesters={accounts}
+        problem={problem}
+        onSearch={search}
+        onClear={clear}
+        clearable={filtered || hasLakeFilters(draftFilters(draft))}
+        note={
+          <>
+            Push to Google Sheet writes the jobs of the search on the page, newest first, into the {PUSH_TAB} tab of
+            your own job sheet, replacing what it holds.
+          </>
+        }
+        actions={
           <button
             type="button"
             className="tl-button-quiet"
@@ -645,11 +513,8 @@ export default function LakeTab() {
           >
             {pushing ? 'Pushing...' : 'Push to Google Sheet'}
           </button>
-          <button type="submit" className="tl-button">
-            Search
-          </button>
-        </div>
-      </form>
+        }
+      />
 
       {pushResult && (
         <Notice tone={pushResult.capped ? 'warn' : 'success'} role="status">
@@ -775,7 +640,7 @@ export default function LakeTab() {
         <PushDialog
           matched={searched?.total ?? list.total}
           maxRows={pushMaxRows}
-          filtersChanged={!sameLakeFilters(draft, applied)}
+          filtersChanged={!sameLakeFilters(draftFilters(draft), applied)}
           pushing={pushing}
           onCancel={() => setConfirmingPush(false)}
           onPush={() => void push()}

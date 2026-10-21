@@ -10,10 +10,11 @@ const ROUTE = path.join(__dirname, '..', 'src', 'routes', 'resume.ts');
  *
  * Read from the SOURCE, like `resumeRouteCancellation`, because the property
  * has to hold for endpoints not yet written and the failure being guarded
- * against is somebody adding a seventh batch path as a `for ... await` loop -
- * which is exactly how the multi-job endpoint was written, and it is invisible
- * in the response: the results are identical, they just take ten times longer
- * and leave every slot on the seat but one idle for the whole run.
+ * against is somebody adding another batch path as a `for ... await` loop -
+ * which is exactly how the multi-posting analysis (removed since) was first
+ * written, and it is invisible in the response: the results are identical,
+ * they just take ten times longer and leave every slot on the seat but one
+ * idle for the whole run.
  */
 
 function routeSource() {
@@ -64,10 +65,11 @@ test('every batch endpoint takes its width from the chosen provider', () => {
   const fanOuts = [...source.matchAll(/mapWithConcurrency\(\s*[\w.]+\s*,\s*([^,]+),/g)].map(
     (match) => match[1].trim()
   );
-  // The multi-job analysis, the per-profile tailoring and the preview of every
-  // profile. (The synchronous generate-all and multi-job generate paths were
-  // deleted; generation goes through the queue, which sizes each seat's lane.)
-  assert.ok(fanOuts.length >= 3, `expected every batch path to fan out, found ${fanOuts.length}`);
+  // The per-profile tailoring and the preview of every profile. (The
+  // synchronous generate-all and multi-job generate paths and the multi-posting
+  // analysis were deleted; generation goes through the queue, which sizes each
+  // seat's lane, and a posting is analysed through the gate, one per request.)
+  assert.ok(fanOuts.length >= 2, `expected every batch path to fan out, found ${fanOuts.length}`);
   for (const width of fanOuts) {
     assert.match(
       width,
@@ -94,7 +96,7 @@ test('results are collected by input index, not completion order', () => {
     ...source.matchAll(/[oO]utcomes\.forEach\(\(outcome, index\)/g),
     ...source.matchAll(/for \(const \[index, outcome\] of \w*[oO]utcomes\.entries\(\)\)/g),
   ];
-  assert.ok(collectors.length >= 3, 'every batch path - analysis, tailoring, preview - must collect by index');
+  assert.ok(collectors.length >= 2, 'every batch path - tailoring, preview - must collect by index');
   assert.doesNotMatch(
     source,
     /[oO]utcomes\.forEach\(\(outcome\)\s*=>/,

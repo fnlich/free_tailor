@@ -89,7 +89,7 @@ function jobsFor(count) {
   }));
 }
 
-test('a submission with asOrder comes back with an order number, and one without does not', async () => {
+test('a submission with mode order comes back with an order number, and one without does not', async () => {
   const server = await serve();
   try {
     const plain = await (await server.post('/api/generation/batches', { jobs: jobsFor(2) })).json();
@@ -97,7 +97,7 @@ test('a submission with asOrder comes back with an order number, and one without
     assert.equal(plain.orderId, undefined);
 
     const ordered = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(3), asOrder: true })
+      await server.post('/api/generation/batches', { jobs: jobsFor(3), mode: 'order' })
     ).json();
     assert.match(ordered.orderNumber, /^FT-\d{8}-\d{4}$/, ordered.orderNumber);
     assert.ok(ordered.orderId.startsWith('ord_'));
@@ -111,7 +111,7 @@ test('the items exist before any task can finish, one per resume, in submitted o
   const server = await serve();
   try {
     const { orderId } = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(4), asOrder: true })
+      await server.post('/api/generation/batches', { jobs: jobsFor(4), mode: 'order' })
     ).json();
 
     // Read straight after submit: `submit` dispatches immediately, so an order
@@ -143,7 +143,7 @@ test('an order and a Generate Immediately run are both filed under their own fol
     const { outputBaseDir } = await config.getAdminAppSettings();
 
     const ordered = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
+      await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })
     ).json();
     const immediate = await (await server.post('/api/generation/batches', { jobs: jobsFor(1) })).json();
 
@@ -189,7 +189,7 @@ test('an order and a Generate Immediately run are both filed under their own fol
     await config.updateAppSettings({ outputPathPrefix: '/runs/{{order_number}}' });
     users.setOutputPathSuffix(server.account.id, null);
     assert.equal(readPayload(ordered.batchId).output.prefix, orderedPayload.output.prefix);
-    const later = await (await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })).json();
+    const later = await (await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })).json();
     const laterPayload = readPayload(later.batchId);
     assert.equal(laterPayload.output.prefix, `runs/${sanitizePathSegment(later.orderNumber)}`);
     assert.equal(laterPayload.output.suffix, '/{{date}}/{{profile_name}}/{{company_name}}/{{role}}', 'the default again');
@@ -230,10 +230,10 @@ test('two orders for the same job on the same day write to different paths', asy
     // first: the first order would then list files holding the second's
     // contents, and its earlier expiry would delete files the second offers.
     const first = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
+      await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })
     ).json();
     const second = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(1), asOrder: true })
+      await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })
     ).json();
 
     const placeFor = (batchId) => {

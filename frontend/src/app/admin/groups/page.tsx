@@ -232,7 +232,8 @@ function GroupsPageBody() {
 
 /**
  * Included from Premium upwards, and for any administrator whatever their own
- * subscription (owner decision B1).
+ * subscription (owner decision B1). Below it the page is drawn locked, with
+ * the way to the Subscription page.
  *
  * The gate is `hasSubscription`, through `RequiresSubscription`, matching
  * `requireSubscription(MULTI_PROFILE_SUBSCRIPTION)` on the routes: a page that
@@ -241,7 +242,7 @@ function GroupsPageBody() {
  */
 export default function GroupsPage() {
   return (
-    <RequiresSubscription minimum="premium" label="Premium">
+    <RequiresSubscription feature="groups">
       <GroupsPageBody />
     </RequiresSubscription>
   );

@@ -33,6 +33,9 @@
  * on either is refused before anything is touched.
  */
 
+// First, before anything loads the backend: no real Google credential, whatever this checkout holds.
+require('./no-google');
+
 const path = require('path');
 
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');

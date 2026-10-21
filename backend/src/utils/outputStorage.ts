@@ -347,9 +347,9 @@ export type FileNameVariables = {
   companyName: string;
   rowNumber?: string;
   jobTitle: string;
-  /** The account's email, for `{{account name}}`; `unknown` when there is none. */
+  /** The account's email, for `{{user_email}}`; `unknown` when there is none. */
   accountName?: string;
-  /** The run's order number, for `{{order number}}`; `unknown` when there is none. */
+  /** The run's order number, for `{{order_number}}`; `unknown` when there is none. */
   orderNumber?: string;
 };
 

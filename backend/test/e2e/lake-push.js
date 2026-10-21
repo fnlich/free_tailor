@@ -10,9 +10,10 @@
  *
  *   - the filter boxes are in the owner's order - Updated from, Updated to,
  *     Requested by, Job field, Job type, Clearance, Industry, Company, Salary
- *     from, Salary to, Full text - Job type offers Any, Remote, Hybrid,
- *     Onsite, Clearance Any, Required, Not required, and Industry Any and the
- *     server's own list
+ *     from, Salary to, Full text - Job type's list offers Remote, Hybrid,
+ *     Onsite, Clearance Any, Required, Not required, and Industry's list the
+ *     server's own; the list boxes take several values, and Remote with
+ *     Hybrid finds the jobs of either
  *   - Push to Google Sheet asks first, naming how many jobs go, that only the
  *     newest go past JOB_LAKE_PUSH_MAX_ROWS (the server runs with 4, the lake
  *     holds 5), and that it replaces the Temp For AI tab of your own sheet;
@@ -97,6 +98,35 @@ async function pressButton(page, text, inDialog = false) {
     text,
     inDialog
   );
+}
+
+/** Opens the list box `#id` and picks its option labelled `label`. Answers whether there was one. */
+async function pick(page, id, label) {
+  await page.click(`#${id}`);
+  await page.waitForSelector(`#${id}-listbox [role="option"]`, { timeout: 5000 }).catch(() => null);
+  return page.evaluate(
+    (listId, wanted) => {
+      const option = Array.from(document.querySelectorAll(`#${listId} [role="option"]`)).find(
+        (node) => node.querySelector('[data-option-label]')?.textContent.trim() === wanted
+      );
+      option?.click();
+      return Boolean(option);
+    },
+    `${id}-listbox`,
+    label
+  );
+}
+
+/** The labels the list box `#id` offers, read from its list opened - and closed again with Escape. */
+async function optionsOf(page, id) {
+  await page.click(`#${id}`);
+  await page.waitForSelector(`#${id}-listbox`, { timeout: 5000 }).catch(() => null);
+  const labels = await page.evaluate(
+    (listId) => Array.from(document.querySelectorAll(`#${listId} [role="option"] [data-option-label]`)).map((node) => node.textContent.trim()),
+    `${id}-listbox`
+  );
+  await page.keyboard.press('Escape');
+  return labels;
 }
 
 async function signIn(page, token) {
@@ -262,12 +292,15 @@ async function main() {
       const options = (id) => Array.from(document.getElementById(id)?.options ?? []).map((option) => option.textContent.trim());
       return {
         labels: Array.from(document.querySelectorAll('form[aria-label="Filter the lake"] label')).map((label) => label.textContent.trim()),
-        jobTypes: options('lake-job-type'),
         clearance: options('lake-clearance'),
-        industries: options('lake-industry'),
-        buttons: Array.from(document.querySelectorAll('form[aria-label="Filter the lake"] button')).map((b) => b.textContent.trim()),
+        // The form's own buttons, not a list box's chip buttons.
+        buttons: Array.from(document.querySelectorAll('form[aria-label="Filter the lake"] button'))
+          .filter((b) => !b.closest('[data-multiselect]'))
+          .map((b) => b.textContent.trim()),
       };
     });
+    form.jobTypes = await optionsOf(page, 'lake-job-type');
+    form.industries = await optionsOf(page, 'lake-industry');
     check(
       "the filter boxes are in the owner's order",
       form.labels.join(' | ') ===
@@ -275,13 +308,13 @@ async function main() {
       JSON.stringify(form.labels)
     );
     check(
-      'Job type offers Any, Remote, Hybrid, Onsite; Clearance Any, Required, Not required',
-      form.jobTypes.join(',') === 'Any,Remote,Hybrid,Onsite' && form.clearance.join(',') === 'Any,Required,Not required',
+      "Job type's list offers Remote, Hybrid, Onsite; Clearance Any, Required, Not required",
+      form.jobTypes.join(',') === 'Remote,Hybrid,Onsite' && form.clearance.join(',') === 'Any,Required,Not required',
       JSON.stringify([form.jobTypes, form.clearance])
     );
     check(
-      "Industry offers Any and the server's own list",
-      form.industries.join(',') === ['Any', ...(lakeAnswer.body?.options?.industries ?? []).map((option) => option.label)].join(',') &&
+      "Industry's list offers the server's own",
+      form.industries.join(',') === (lakeAnswer.body?.options?.industries ?? []).map((option) => option.label).join(',') &&
         form.industries.includes('Healthcare'),
       JSON.stringify(form.industries)
     );
@@ -372,7 +405,7 @@ async function main() {
     );
 
     /* -------------------------- the second push: the search on the page */
-    await page.select('#lake-job-type', 'remote');
+    check('Remote is picked under Job type', await pick(page, 'lake-job-type', 'Remote'));
     check('Search is pressed with Job type: Remote', await pressButton(page, 'Search'));
     await until(page, () => /2 jobs match/.test(document.body.innerText), 10_000);
     // A box changed after the search: the push still sends the search on the page.
@@ -454,6 +487,33 @@ async function main() {
       "every push wrote into the pushing administrator's sheet alone",
       readState().events.filter((event) => event.kind.startsWith('push-')).every((event) => event.id === adminSheetId)
     );
+
+    /* ---------------------------------------- several values: any of them */
+    // What was typed into Company since is cleared; Hybrid joins Remote.
+    await page.click('#lake-company', { clickCount: 3 });
+    await page.keyboard.press('Backspace');
+    check('Hybrid is picked beside Remote', await pick(page, 'lake-job-type', 'Hybrid'));
+    const chips = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('#lake-job-type')[0]?.closest('[data-multiselect]')?.querySelectorAll('.tl-multiselect-chip > span') ?? []).map((node) => node.textContent.trim())
+    );
+    check('Job type holds Remote and Hybrid as chips', chips.join(',') === 'Remote,Hybrid', JSON.stringify(chips));
+    check('Search is pressed with Job type: Remote, Hybrid', await pressButton(page, 'Search'));
+    const either = await until(page, () => /3 jobs match/.test(document.body.innerText) && document.querySelectorAll('tbody tr').length === 3, 10_000);
+    check(
+      'Remote and Hybrid find the jobs of either: 3',
+      either,
+      await page.evaluate(() => Array.from(document.querySelectorAll('tbody tr td:nth-child(2)')).map((cell) => cell.textContent.trim()).join(', '))
+    );
+    check('Push to Google Sheet is pressed for them', await pressButton(page, 'Push to Google Sheet'));
+    await until(page, () => /Push to Google Sheet\?/.test(document.querySelector('[role="dialog"]')?.innerText ?? ''), 5000);
+    const eitherConfirm = await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText.replace(/\s+/g, ' ') ?? '');
+    check(
+      'its confirm names the 3 jobs that search found',
+      eitherConfirm.includes('Push the 3 jobs these filters match into the Temp For AI tab of your own job sheet') &&
+        !eitherConfirm.includes('You changed the filters since the last Search'),
+      eitherConfirm
+    );
+    check('the confirm is cancelled', await pressButton(page, 'Cancel', true));
 
     /* ------------------------------------- a Temp For AI of the person's own */
     const clashPage = await browser.newPage();

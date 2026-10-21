@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import type { AiChoice } from '../config/aiPreferences';
 import { describeAiChoice } from '../config/aiPreferences';
 import { tailorReviseMaxTerms, tailorRevisePass } from '../config/operational';
-import { Profile } from '../types/profile';
+import { Profile, TailorMode } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, SkillGroup, TailoredContent } from '../types/template';
 import { createPromptCompletion, createPromptCompletionResult, DEFAULT_PROVIDER } from './ai';
 import { UNCLASSIFIED_JOB_FIELD_ID } from '../config/jobFields';
@@ -19,7 +19,9 @@ import {
 import {
   DEFAULT_COVER_LETTER_PROMPT_ID,
   DEFAULT_RESUME_PROMPT_ID,
+  FULL_TAILOR_PROMPT_ID,
   getProfileResumeSections,
+  getProfileTailorMode,
 } from './profileService';
 import { findSoftSkillGroup, flattenSkillGroups, sanitizeSkillGroups } from './skillGroups';
 import {
@@ -35,12 +37,14 @@ import {
 } from './tailorContract';
 import {
   buildReviseResumeCoveragePromptValues,
-  figureCount,
+  droppedProfileFigures,
   FIGURES_NOTE_WORDING,
   mergeRevision,
   missingTerms,
+  profileEvidence,
   REVISE_PROMPT_ID,
   revisionWanted,
+  supportedTerms,
 } from './reviseCoverage';
 
 /**
@@ -314,27 +318,44 @@ function stripUnsafeResumeSentences(value: string, company?: string): string {
  * `softSkills` is never here: the soft skills a tailored resume prints are
  * the posting's, the last group of the model's skills block, and an untailored
  * one prints the profile's own.
+ *
+ * Fully tailor (`mode` 'full', the owner's request of 2026-10-20) sends less
+ * still: each role as its title, company and dates, and no summary - "only
+ * company, date, role" - because the whole experience and the summary are
+ * written for the posting (`tailor-resume-full`). The person's own
+ * descriptions, achievements, role skills and summary stay with the profile,
+ * unsent. Everything else is the same in both modes.
  */
-function buildPromptProfile(profile: Profile): Record<string, unknown> {
+function buildPromptProfile(profile: Profile, mode: TailorMode = 'partial'): Record<string, unknown> {
   const sections = getProfileResumeSections(profile);
+  const full = mode === 'full';
   return {
     name: profile.name,
     title: profile.title,
-    totalYearsExperience: profile.totalYearsExperience,
-    summary: profile.summary,
-    experience: profile.experience.map((experience) => ({
-      title: experience.title,
-      company: experience.company,
-      startDate: experience.startDate,
-      endDate: experience.endDate,
-      location: experience.location,
-      // The raw description is replaced, not passed alongside: it is the field
-      // most likely to carry a sentence about the COMPANY rather than the
-      // person, and `stripUnsafeResumeSentences` is what takes those out.
-      companyContext: stripUnsafeResumeSentences(experience.description ?? '', experience.company),
-      achievements: experience.achievements,
-      skills: experience.skills,
-    })),
+    totalYearsExperience: yearsOfExperience(profile),
+    ...(full ? {} : { summary: profile.summary }),
+    experience: profile.experience.map((experience) =>
+      full
+        ? {
+            title: experience.title,
+            company: experience.company,
+            startDate: experience.startDate,
+            endDate: experience.endDate,
+          }
+        : {
+            title: experience.title,
+            company: experience.company,
+            startDate: experience.startDate,
+            endDate: experience.endDate,
+            location: experience.location,
+            // The raw description is replaced, not passed alongside: it is the field
+            // most likely to carry a sentence about the COMPANY rather than the
+            // person, and `stripUnsafeResumeSentences` is what takes those out.
+            companyContext: stripUnsafeResumeSentences(experience.description ?? '', experience.company),
+            achievements: experience.achievements,
+            skills: experience.skills,
+          }
+    ),
     ...(sections.strengths ? { strengths: profile.strengths } : {}),
     skills: profile.skills,
     // Sent when the profile has one: the model writes the skills block, and
@@ -343,6 +364,54 @@ function buildPromptProfile(profile: Profile): Record<string, unknown> {
     education: profile.education,
     certifications: profile.certifications,
   };
+}
+
+const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * A role's date as a count of months, or null when it names no year: "07/2019",
+ * "2019-07", "Jul 2019", "July 2019" or a bare "2019" (January for a start, the
+ * end of the year for an end). "Present", "Current", "Now" and an empty end are
+ * `now`.
+ */
+function monthOf(value: unknown, edge: 'start' | 'end', now: Date): number | null {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (edge === 'end' && (!text || /^(?:present|current|now|today|ongoing)$/i.test(text))) {
+    return now.getFullYear() * 12 + now.getMonth();
+  }
+  const year = text.match(/\b(19|20)\d\d\b/);
+  if (!year) return null;
+  const numeric = text.match(/\b(\d{1,2})\s*[/.-]\s*(?:19|20)\d\d\b|\b(?:19|20)\d\d\s*[/.-]\s*(\d{1,2})\b/);
+  const monthNumber = numeric ? Number(numeric[1] ?? numeric[2]) : NaN;
+  const named = MONTH_NAMES.findIndex((name) => new RegExp(`\\b${name}`, 'i').test(text));
+  const month =
+    monthNumber >= 1 && monthNumber <= 12 ? monthNumber - 1 : named !== -1 ? named : edge === 'start' ? 0 : 11;
+  return Number(year[0]) * 12 + month;
+}
+
+/**
+ * The span of experience the prompts may state as a numeral: the profile's own
+ * `totalYearsExperience` when it has one, else the whole years from its
+ * earliest role start to its latest role end ("Present" being today). A model
+ * left to add the dates up itself does not know today's date - the live run
+ * that showed it wrote "6 years" where the dates gave 7 - so the code does it.
+ * Undefined (left out of the JSON) under one year or with no dated role.
+ */
+function yearsOfExperience(profile: Profile, now: Date = new Date()): number | undefined {
+  if (typeof profile.totalYearsExperience === 'number' && profile.totalYearsExperience > 0) {
+    return profile.totalYearsExperience;
+  }
+  let first: number | null = null;
+  let last: number | null = null;
+  for (const role of Array.isArray(profile.experience) ? profile.experience : []) {
+    const start = monthOf(role?.startDate, 'start', now);
+    const end = monthOf(role?.endDate, 'end', now);
+    if (start !== null && (first === null || start < first)) first = start;
+    if (end !== null && start !== null && (last === null || end > last)) last = end;
+  }
+  if (first === null || last === null || last < first) return undefined;
+  const years = (last - first - ((last - first) % 12)) / 12;
+  return years >= 1 ? years : undefined;
 }
 
 /**
@@ -384,7 +453,14 @@ function printsWhole(value: string): boolean {
 }
 
 /** A list of bullets as printed: strings only, each sanitised and dash-checked, empties and repeats dropped. */
-function cleanBullets(values: unknown): string[] {
+/**
+ * Bullets as a resume prints them: strings only, each with its markup and
+ * employer-side sentences taken out (`sanitizeResumeText`) and its dashes
+ * backstopped, trimmed, repeats dropped. Exported for the Write Entry Bullets
+ * feature (services/entryBullets.ts), which holds a model's bullets to the
+ * same rule a tailoring's are held to.
+ */
+export function cleanBullets(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   return normalizeSkillsList(
     values
@@ -483,11 +559,6 @@ function normalizeTailoredContent(raw: Record<string, unknown>, jobAnalysis: Job
     skills: hardSkills,
     softSkills,
     strengths: sections.strengths ? ownStrengths(profile) : [],
-    // Always empty now: every printed skill is the model's or the profile's,
-    // and none of them is checked against the library, so there is nothing
-    // to offer for confirming.
-    unconfirmedHardSkills: [],
-    unconfirmedSoftSkills: [],
     ...(typeof raw.coverLetter === 'string' ? { coverLetter: dashBackstop(raw.coverLetter.trim()) } : {}),
   };
 }
@@ -577,11 +648,19 @@ export function parseJobFacts(content: string): JobFactsAnswer {
  * section, are decided when the resume is drawn, from the model's skills block.
  * The Strengths switch still reaches the model the one way it matters: the
  * profile's own strengths are in `profileJson` only while it is on.
+ *
+ * Both tailoring prompts take these same values - Tailor Resume for a profile
+ * set to Partial tailor, Tailor Resume (Fully) for Fully - and only
+ * `profileJson` differs by the mode (`buildPromptProfile`).
  */
-export function buildTailorResumePromptValues(profile: Profile, jobAnalysis: JobAnalysis): Record<string, string> {
+export function buildTailorResumePromptValues(
+  profile: Profile,
+  jobAnalysis: JobAnalysis,
+  mode: TailorMode = getProfileTailorMode(profile)
+): Record<string, string> {
   const lists = buildTailorLists(jobAnalysis, tailorSeed(profile.id, jobAnalysis));
   return {
-    profileJson: promptJson(buildPromptProfile(profile)),
+    profileJson: promptJson(buildPromptProfile(profile, mode)),
     jobAnalysisJson: promptJson(analysisForPrompt(lists.posting)),
     jobTitle: lists.targetRoleTitle,
     targetRoleTitle: lists.targetRoleTitle,
@@ -678,8 +757,8 @@ function sha256(value: string): string {
 
 /**
  * What else a stored tailoring was made from, beyond the tailoring call's own
- * inputs: the revise pass - its prompt's text, the figures sentence the code
- * writes into it, and the two settings that decide whether it runs and how much
+ * inputs: the revise pass - its prompt's text, the wording of the figures note
+ * the code writes into it, and the two settings that decide whether it runs and how much
  * it is given. A cached answer is the MERGED resume, so any of these changing
  * is another question.
  */
@@ -706,14 +785,39 @@ type RevisionOutcome = {
 const warnedReviseFailures = new Set<string>();
 
 /**
+ * The profile as the tailoring call was shown it, which is where the revise
+ * pass's two measures read it: each role's description through the filter
+ * that makes its `companyContext` in `buildPromptProfile`. A sentence about
+ * the COMPANY ("Acme serves 40M customers", "Acme runs on Kafka") is neither
+ * a term nor a figure of the candidate's, and the tailoring never saw it.
+ */
+function profileAsShown(profile: Profile): Profile {
+  return {
+    ...profile,
+    experience: (profile.experience ?? []).map((role) => ({
+      ...role,
+      description: stripUnsafeResumeSentences(role.description ?? '', role.company),
+    })),
+  };
+}
+
+/**
  * The revise pass (`revise-resume-coverage`, services/reviseCoverage.ts) on a
  * draft the tailoring call has just written. It runs only when the draft is
- * missing checklist terms, or its bullets carry fewer than five figures and
- * could carry more; on the model the resume is charged at, whatever the
- * prompt record names (`runChoiceWins`), with the same signal - and inside
+ * missing checklist terms the profile's own words carry (`supportedTerms` -
+ * a term the profile never names is one the tailoring was told to leave out,
+ * and the revise call cannot see the profile to check), or has dropped a
+ * figure the profile's own lines state (`droppedProfileFigures`); on the
+ * model the resume is charged at, whatever the prompt record names
+ * (`runChoiceWins`), with the same signal - and inside
  * the same provider pin a queued task runs under. The answer is folded in and
  * finished like the draft. A failure is never the resume's: the draft is the
  * resume, said once; an abort is the caller going away and is passed on.
+ *
+ * Fully tailor measures the draft against the whole checklist - the
+ * experience was written for the posting, so every term of it is wanted, and
+ * the profile's own lines were never sent - and asks back no figure of the
+ * profile's, for the same reason.
  */
 async function revisePass(
   draft: TailoredContent,
@@ -721,24 +825,28 @@ async function revisePass(
   jobAnalysis: JobAnalysis,
   lists: TailorLists,
   choice: AiChoice,
+  mode: TailorMode,
   signal?: AbortSignal
 ): Promise<RevisionOutcome> {
   const unchanged: RevisionOutcome = { content: draft, changed: false, failed: false, fellBackTo: null };
   if (!tailorRevisePass()) return unchanged;
-  const missing = missingTerms(draft, lists.checklist, tailorReviseMaxTerms());
-  const figures = figureCount(draft);
-  if (!revisionWanted(missing, figures)) return unchanged;
+  const shown = profileAsShown(profile);
+  const full = mode === 'full';
+  const wanted = full ? lists.checklist : supportedTerms(lists.checklist, profileEvidence(shown));
+  const missing = missingTerms(draft, wanted, tailorReviseMaxTerms());
+  const dropped = full ? [] : droppedProfileFigures(shown, draft);
+  if (!revisionWanted(missing, dropped)) return unchanged;
 
   const startedAt = process.hrtime.bigint();
   console.log(
-    `[Resume timing] Revise pass started: ${missing.length} missing term(s), ${figures.carried} figure(s) ` +
+    `[Resume timing] Revise pass started: ${missing.length} missing term(s), ${dropped.length} dropped figure line(s) ` +
       `(${describeAiChoice(choice)})`
   );
   try {
     const result = await createPromptCompletionResult({
       promptId: REVISE_PROMPT_ID,
       callSite: REVISE_PROMPT_ID,
-      promptValues: buildReviseResumeCoveragePromptValues(draft, missing, figures),
+      promptValues: buildReviseResumeCoveragePromptValues(draft, missing, dropped),
       fallbackProvider: choice.provider,
       fallbackModelName: choice.modelName,
       maxTokens: 8000,
@@ -788,9 +896,13 @@ export async function tailorResume(
   cache?: TailorCacheContext
 ): Promise<TailoredContent> {
   const { provider, modelName } = choice;
-  const promptId = await resolveProfileResumePromptId(profile);
+  // Fully tailor runs its one prompt whatever the profile chose for Partial;
+  // the two differ in the prompt id and in what `profileJson` holds, so they
+  // never share a tailoring-cache key.
+  const mode = getProfileTailorMode(profile);
+  const promptId = mode === 'full' ? FULL_TAILOR_PROMPT_ID : await resolveProfileResumePromptId(profile);
   // Built before the lookup: they are part of the key (see cacheKeyFor).
-  const promptValues = buildTailorResumePromptValues(profile, jobAnalysis);
+  const promptValues = buildTailorResumePromptValues(profile, jobAnalysis, mode);
   let cacheKey: string | null = null;
   if (cache?.analysisId) {
     const revisePrompt = await resolvePromptByExactId(REVISE_PROMPT_ID).catch(() => null);
@@ -812,11 +924,15 @@ export async function tailorResume(
     }
   }
   const secondCallStartedAt = process.hrtime.bigint();
-  console.log(`[Resume timing] Second LLM call started: tailor resume (${describeAiChoice(choice)})`);
+  console.log(
+    `[Resume timing] Second LLM call started: tailor resume, ${mode === 'full' ? 'fully' : 'partially'} ` +
+      `(${describeAiChoice(choice)})`
+  );
   const result = await createPromptCompletionResult({
     promptId,
-    // The prompt record can be a per-profile custom one; the timeout and the
-    // usage bucket belong to the FEATURE, which is always this.
+    // The prompt record can be a per-profile custom one, or Fully tailor's;
+    // the timeout and the usage bucket belong to the tailoring, which is
+    // always this.
     callSite: DEFAULT_RESUME_PROMPT_ID,
     promptValues,
     fallbackProvider: provider,
@@ -842,7 +958,7 @@ export async function tailorResume(
   }
 
   const lists = buildTailorLists(jobAnalysis, tailorSeed(profile.id, jobAnalysis));
-  const revision = await revisePass(draft, profile, jobAnalysis, lists, choice, signal);
+  const revision = await revisePass(draft, profile, jobAnalysis, lists, choice, mode, signal);
 
   // Kept only once it parsed: an answer that could not be read is never
   // handed to the next generation as if it could. Nor one a fallback model
@@ -868,16 +984,75 @@ export async function tailorResume(
   return revision.content;
 }
 
+/** A role's company and title as the cover letter matches a tailored role to the profile's. */
+function roleMatchKey(company: unknown, title: unknown): string {
+  const norm = (value: unknown) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().toLowerCase() : '');
+  return `${norm(company)}\u0000${norm(title)}`;
+}
+
+/**
+ * The profile as the cover letter reads it when a tailored resume exists: the
+ * tailoring's projection with the resume's own summary and, per role, the
+ * bullets it printed - so a letter written beside a Fully tailored resume (or
+ * a role the Partial prompt wrote from the posting) tells what that resume
+ * tells, not a bare list of titles and dates. A role is matched by company,
+ * title and dates - the resume's are the profile's own, restored by the parse,
+ * so two stints at one company under one title each keep their own bullets -
+ * else by company and title, first unclaimed; one the resume does not print
+ * keeps no bullets.
+ */
+function profileAsTheResumeSays(
+  shown: Record<string, unknown>,
+  resume: Pick<TailoredContent, 'summary' | 'experience'>
+): Record<string, unknown> {
+  const printed = (Array.isArray(resume.experience) ? resume.experience : []).map((role) => ({
+    pair: roleMatchKey(role?.company, role?.title),
+    stint: `${roleMatchKey(role?.company, role?.title)}\u0000${roleMatchKey(role?.startDate, role?.endDate)}`,
+    bullets: (Array.isArray(role?.achievements) ? role.achievements : []).filter((line): line is string => typeof line === 'string'),
+    claimed: false,
+  }));
+  const claim = (found: (typeof printed)[number] | undefined): string[] => {
+    if (!found) return [];
+    found.claimed = true;
+    return found.bullets;
+  };
+  const roles = Array.isArray(shown.experience) ? (shown.experience as Record<string, unknown>[]) : [];
+  return {
+    ...shown,
+    summary: typeof resume.summary === 'string' && resume.summary.trim() ? resume.summary : (shown.summary ?? ''),
+    experience: roles.map((role) => {
+      const { companyContext: _companyContext, ...facts } = role;
+      const pair = roleMatchKey(role.company, role.title);
+      const stint = `${pair}\u0000${roleMatchKey(role.startDate, role.endDate)}`;
+      const achievements = claim(
+        printed.find((entry) => !entry.claimed && entry.stint === stint) ??
+          printed.find((entry) => !entry.claimed && entry.pair === pair)
+      );
+      return { ...facts, achievements };
+    }),
+  };
+}
+
 export function buildCoverLetterPromptValues(
   profile: Profile,
   companyName: string,
-  role: string
+  role: string,
+  /**
+   * The tailored resume this letter is written beside, when there is one: the
+   * letter is then told what the resume says (`profileAsTheResumeSays`).
+   */
+  resume?: Pick<TailoredContent, 'summary' | 'experience'> | null
 ): Record<string, string> {
+  // The same projection the tailoring call uses - in the profile's mode
+  // beside a tailored resume, whose lines replace the profile's; without one
+  // the resume printed is the profile's own text, untailored, so the letter
+  // is told that whatever the mode (Fully's titles and dates alone would give
+  // it nothing to write about). A cover letter needs the person's history and
+  // nothing about this installation - and it certainly does not need their
+  // phone number, which is what the whole record carried.
+  const shown = buildPromptProfile(profile, resume ? getProfileTailorMode(profile) : 'partial');
   return {
-    // The same projection the tailoring call uses. A cover letter needs the
-    // person's history and nothing about this installation - and it certainly
-    // does not need their phone number, which is what the whole record carried.
-    profileJson: promptJson(buildPromptProfile(profile)),
+    profileJson: promptJson(resume ? profileAsTheResumeSays(shown, resume) : shown),
     companyName,
     role,
   };
@@ -899,12 +1074,14 @@ export async function generateCoverLetter(
    * is written for, the posting's analysis when there is one, the model and the
    * cover-letter prompt's text.
    */
-  cache?: TailorCacheContext
+  cache?: TailorCacheContext,
+  /** The tailored resume the letter goes with, when one was written (`buildCoverLetterPromptValues`). */
+  resume?: Pick<TailoredContent, 'summary' | 'experience'> | null
 ): Promise<string> {
   // The built-in, always: a cover letter has one prompt (promptService's
   // single-prompt features), edited under Admin -> Prompts.
   const promptId = DEFAULT_COVER_LETTER_PROMPT_ID;
-  const promptValues = buildCoverLetterPromptValues(profile, companyName, role);
+  const promptValues = buildCoverLetterPromptValues(profile, companyName, role, resume);
   const cacheKey = await cacheKeyFor('cover-letter', profile, choice, promptId, cache, {
     promptValues,
     extra: { companyName, role },

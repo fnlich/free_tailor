@@ -6,8 +6,10 @@ export type PromptFeatureKey =
   | 'analyze-job-description'
   | 'filter-google-sheet-job'
   | 'tailor-resume'
+  | 'tailor-resume-full'
   | 'revise-resume-coverage'
   | 'generate-cover-letter'
+  | 'write-entry-bullets'
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume';
 

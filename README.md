@@ -24,7 +24,7 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | Feature | Description |
 |---------|-------------|
 | **Accounts** | Sign in with Google or a code emailed to you. Your profiles belong to your account and nobody else on the installation can see them |
-| **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited). An administrator sets each account's subscription; there is no checkout for one |
+| **Subscriptions** | Default (1 profile), Premium (5), Premium+ (25), Premium Max (unlimited), bought from the credit balance, 30 days at a time, at the prices an administrator sets, and renewed from it; Premium and up build for several profiles and use Groups. An administrator can still set any account's subscription. See [Subscriptions](#subscriptions) |
 | **Credits** | A credit is a dollar, to the thousandth (`$0.023`), shown without trailing zeros (`$1`, `$4.1`). Each resume costs the price an administrator set for the model it is built with, in steps of `$0.001`, or nothing on a free model. The builder shows what a run will cost before it starts. Charged before the first model call and given back for any resume that does not build, exactly, so credit spent always pays for resumes delivered. Previews are free; administrators are exempt. Every movement has a ledger row explaining it |
 | **Roles** | User, Reporter and Administrator. Users build resumes. Reporters add job postings to the installation's job lake and are paid per job accepted, with no resume builder. Admins manage accounts, prompts, models, templates, the skill library and settings - everything shared by everybody. See [Roles](#roles) |
 | **Single or Batch** | Generate for one profile, a group, or all profiles at once |
@@ -35,9 +35,10 @@ It runs on **subscription seats you already pay for**, never on metered API toke
 | **Several sign-ins per seat** | An administrator can add more **providers** of a seat - another Claude, Codex or Gemini account signed in at a folder of its own - each with its own limit and queue, and resumes spread over them. Building again for an unchanged profile, posting and model reuses the tailoring with no model call |
 | **Profile import** | Move a profile between installs, restore one from a backup, or write one by hand: upload the JSON under Admin → Profiles |
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
-| **Templates** | Built-in professional templates plus manual and uploaded templates. Each says which Technical Skills layouts it can print, and a profile is offered only the ones that print its own |
+| **Templates** | Built-in professional templates plus manual and uploaded templates. Every one prints Technical Skills both ways, **Grouped** under headings or **Plain** as one list, and the template chooser and **View** show either |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
-| **Per-Profile Settings** | Each profile chooses its tailoring prompt, template and file naming, whether its Technical Skills print as one **Plain** list or **Grouped** under headings, and whether its resumes carry a **Soft Skills** and a **Strengths** section |
+| **Per-Profile Settings** | Each profile chooses its tailoring prompt, template and file naming, whether its Technical Skills print as one **Plain** list or **Grouped** under headings, whether its resumes carry a **Soft Skills** and a **Strengths** section, which further sections it has - Certifications, Projects, Languages, Awards, Publications, Volunteering, Courses, Interests, References, custom ones - and the **order** they all print in, dragged in the editor and honoured by every template |
+| **Write with AI** | In the profile editor, an experience, project or volunteering entry's bullets written or improved by the app default model from the facts typed into it, free, with an Undo; nothing is saved until Save |
 | **Live preview** | Editing a profile shows the resume it makes beside the form, redrawn as you type or pick a template - free, untailored, and nothing is saved until you press Save |
 | **Admin Panel** | Manage accounts, groups, templates, prompts, skills, and the AI models - each with a display name, a seat, a model picked from that seat's own list, and a price per resume |
 | **Plain messages** | A failure tells an ordinary account what it can do about it, never how the server is set up; anything else is a generic sentence with a reference such as `ERR-7F3A9C`, and the cause is in the server log under it. Administrators see the cause on the page as well |
@@ -51,6 +52,54 @@ Support for older builds - upgrading their databases, reading their data,
 rolling back to them - and the Apify Job Search are removed, and the server now
 refuses at startup a database an older build never finished upgrading (see
 [Upgrading](#4-upgrading)).
+
+**Find Jobs is a page of its own.** The sidebar's **Find Jobs** used to open
+your job sheet in a new tab; it now opens `/jobs`, the job lake for everybody
+who builds resumes. Search it with the lake's filter form, pick jobs across
+pages, then **Export into Sheet** - into the All tab of your own job sheet,
+each job with its analysis, one already there left out - or **Order
+Immediately**, an Order of a resume per job for the profiles you choose (one,
+several picked from a list, every profile or a group), priced and asked about
+first. Your sheet is **Go to my sheet**, top right. Who
+reported a job stays an administrator's to see. A new setting,
+`JOB_LAKE_EXPORT_MAX_ROWS` (200 by default), caps one export or order. See
+[The Job Data Lake](#the-job-data-lake).
+
+**The lake's filters take several values.** On Admin → Job Lake and Find
+Jobs, Job field, Job type, Industry, Company, Requested by and Full text take
+several values as chips, and a job matching any of them is found. Full text
+takes several keywords, separated by a comma or Enter: a job with any of them
+is found, and a keyword of several words needs all of them - so *react,
+typescript*, which used to need both words, now finds either; type *react
+typescript* for both. A word of one or two letters is now matched as a whole
+word - *Go* finds Go, not Google - and one search holds at most 25 words
+across its keywords, each at most 100 characters (a pasted paragraph used to
+be cut to its first 12 words silently; it is now refused, with the reason). Push to Google Sheet
+pushes exactly what such a search shows. A tab left open from before the
+release sends the old single values, which the server still reads; reload it
+for the chips.
+
+**The tests no longer touch your Google account.** On a checkout holding a
+Google credential in `backend/`, `npm test` (and an e2e backend started
+without a sheets stub) used it, and every test sign-in made a real
+spreadsheet in that Drive; the test runner and the e2e preloads now turn the
+credential search off. Spreadsheets named *Free Tailor - admin@example.com*
+and the like are theirs and can be deleted (see
+[Troubleshooting](#-troubleshooting)).
+
+**Partial and Fully tailor, and a skills block built from the posting.** A
+profile of titles and dates only came out with an empty Experience and an
+empty Technical Skills. Each profile now chooses, under **Customize →
+Generation → Tailoring**: **Partial tailor** (the default) rewrites your own
+summary, descriptions and achievements for each posting, and writes a role you
+left empty from the posting; **Fully tailor** sends only each role's company,
+title and dates and writes the whole experience and the summary for the
+posting, with plausible figures, through its own prompt, **Tailor Resume
+(Fully)**. In both, Technical Skills leads with every hard skill the posting
+names, whether or not your profile lists it. `DEFAULT_TAILOR_MODE` sets the
+default for profiles that have not chosen. An edit of the tailoring prompt
+saved before this release gives way to the shipped text until it is saved
+again. See [Partial and Fully tailor](#partial-and-fully-tailor).
 
 **Admin settings have defaults in `.env`.** The default model, the
 analysis model (`ANALYSIS_MODEL`), Build Resumes' starting choices, the output
@@ -106,11 +155,32 @@ type, onsite interview, company category (its industry), seniority,
 clearance, salary and location, plus the job field the code asks for itself.
 Still once per posting, ever: postings already analysed keep their analysis.
 A prompt edit saved for the older prompts - one naming a variable this
-version no longer supplies, or any edit of the analysis, job facts or
-tailoring prompts saved before this release - is marked *Needs update* and
-the shipped text runs in its place, with no migration; saving it again lets
-it run. The analysis, the job facts, the revise
-pass and the cover letter each have exactly one prompt.
+version no longer supplies, or any edit of the analysis, job facts,
+tailoring, revise or cover letter prompts saved before this release - is
+marked *Needs update* and the shipped text runs in its place, with no
+migration; saving it again lets it run. The analysis, the job facts, Fully
+tailor, the revise pass and the cover letter each have exactly one prompt.
+
+**A Partial tailored resume's sentences claim only what the profile says.**
+The shipped prompts were rewritten to close the ways a model could invent: the
+Partial tailoring prompt makes the profile the only source of fact for the
+summary and every role it describes (the posting decides emphasis and
+spelling, never what exists), puts a posting's technology in those sentences
+only where the profile names it, writes a figure only where the profile
+states it (the old "at least five figures" rule, which asked for "modest"
+figures the work "implies", is gone), and ends with a self-check against the
+profile. Two places are written from the posting instead (see **Partial and
+Fully tailor** above): a role the profile leaves empty - which the summary
+may then mention - and the **Technical Skills block, which leads with the
+posting's own hard skills** in its spelling, then the profile's - 15 to 30
+entries, no concept, no guessed version, nothing twice. The analysis extracts what a posting states
+in its own words, with no implied skills and no target counts. The revise
+pass is given only the checklist terms the profile itself names (a term it
+never names is never asked for), and the profile's own lines whose figures the
+draft dropped, instead of a request for more figures. The cover letter, the
+resume extractor and the Bid Assistant's answers are held to the same rule,
+and the Bid Assistant now sends each role's own bullets, so an answer about
+the candidate's work has their work to draw on.
 
 **Tailoring follows the owner's tailoring prompt, and a second pass fills its
 gaps.** The model is given the posting's own lists in the posting's spelling -
@@ -125,9 +195,9 @@ eight bullets carrying the most checklist terms, spans of years as numerals
 and no em dashes (a range such as $5M–$10M becomes $5M-$10M, never a list). The summary is no longer rewritten into the
 "{Title} with about N years" opening, and no *Working style* sentence is
 added. Then **Revise Resume Coverage** - a second call on the same model,
-switched by `TAILOR_REVISE_PASS` - works the terms the draft left out, and
-figures when it has fewer than five, into the summary and bullets; a failure
-leaves the draft as the resume. A repeat build reuses the revised resume from
+switched by `TAILOR_REVISE_PASS` - puts back the terms the draft left out that
+the profile itself names, and the profile's figures the draft dropped, into the
+summary and bullets; a failure leaves the draft as the resume. A repeat build reuses the revised resume from
 the tailoring cache. The profile's hard-skill ordering setting is gone: the
 skills print in the model's order.
 
@@ -158,6 +228,90 @@ library). The profile editor says what each switch does to a tailored resume.
 Prompt Test names both analysis prompts, shows the job type, seniority and
 clearance beside the job field and salary, and marks only the posting's
 keywords - never the facts.
+
+**Profiles look and work like FlowCV's.** **My Profiles** shows each profile
+as its first page, with when it was edited and its template, and Edit,
+Duplicate, Download JSON, Disable and Delete under **⋮**. **New profile**
+starts by choosing a template - **All Templates**, **Simple**, **Modern** or
+**Creative**, each template with its details and **Use this template** - then
+asks whether to **Import resume** (a PDF an AI call reads) or **Start from
+blank**. The editor has **Content** and **Customize** tabs and a card per
+section, dragged into the order the resume prints; **+ Add content** adds
+projects, languages, awards, publications, volunteering, courses, interests,
+references and sections of your own, and an entry's bullets have **Write with
+AI** / **Improve with AI**. See [Editing a profile](#editing-a-profile).
+
+**Every template prints both Technical Skills layouts.** Grouped or Plain is a
+profile's choice on any template. Burgundy Rule and Navy Rule, which were
+Grouped only, draw Plain as one list across the row; an uploaded template laid
+out as a grid of category cells gets the same; and an uploaded template that
+joins its skills into one line - the ATS templates - prints Grouped one line
+per heading instead of one run-on paragraph. The list of layouts each template
+was offered for is gone: the picker lists every template, changing the layout
+no longer moves a profile to another template, a `skillsLayouts` an older
+release stored is not read, and `PATCH /api/templates/:id` takes a name, a
+description or `disabled` - nothing else - and refuses a body with none of
+them. The template chooser's details and **Admin → Templates → View** have a
+**Grouped** / **Plain** switch, and **Use this template** starts the profile in
+the layout shown. A page left open from before the upgrade may fail to draw
+the template picker until it is reloaded. See [Templates and the two skills
+layouts](#templates-and-the-two-skills-layouts).
+
+**Subscriptions are bought from the credit balance.** Premium, Premium+ and
+Premium Max are bought by the account itself, 30 days at a time, from its
+credit, at the prices an administrator sets under Settings → General →
+Subscriptions (with `.env` defaults, `SUBSCRIPTION_PREMIUM_PRICE_USD` and its
+two siblings; none is offered until it is priced), and renewed from the
+balance every 30 days at the price in effect then (checked every
+`SUBSCRIPTION_RENEWAL_SWEEP_MS`, ten minutes by default). A balance too low at
+renewal ends it, back to Default or to the subscription an administrator gave
+the account, with a notice - and so does a disabled account, which is never
+charged for another period. A price `.env` sets in a shape that cannot be read
+holds the subscriptions paid for on it, rather than ending them. Moving up
+costs the new price less the unused days, at once; moving down and cancelling
+take effect at the renewal, and nothing is refunded. A purchase is charged
+exactly the amount the page showed, or refused (`charge-changed`). An
+administrator setting a paying account's subscription, or its role, ends what
+it paid for at once, refunds nothing and is told how much was unused. The
+refusals that send somebody to a higher subscription now point to the
+Subscription page, and `GET /api/auth/subscriptions` is gone: the page reads
+`GET /api/subscription`. See [Subscriptions](#subscriptions).
+
+**Settings → Subscription is a page to buy from.** The tiers are cards side
+by side, each with its price, what it includes and **Subscribe**, **Upgrade**
+(for what it takes now), **Switch at renewal** or **Keep**; under them the
+subscription you are on, when it renews or ends, and **Cancel subscription**.
+Administrators set the three prices under **Settings → General →
+Subscriptions**, each with its source line and Reset to default, and **Admin →
+Accounts** says *Paid · renews ...* under a paid tier and asks before a change
+there ends it.
+
+**Locks instead of a *Premium* pill.** What a subscription does not include is
+drawn with a lock - the builder's multi-profile choices and Select Group,
+**Groups**, which is in the sidebar now for every builder, and New profile and
+Duplicate at the profile limit - and pressing it opens *Locked: <what>* with
+**Go to subscription**. A profile refused at the limit says the same, and a
+run refused for the subscription opens the lock rather than an error.
+
+**Everything that spends credit asks first.** Generate Immediately, every
+Order and every subscription change open a confirm with what it takes from
+your credit and the balance after, Proceed off when the balance is short, and
+**Do not show again** per kind of action. Before, only Generate Immediately
+asked, without the cost, and its *Don't show again* is not read any more: each
+kind asks once more. See [Order & Download](#order--download).
+
+**What only older versions needed is gone.**
+`POST /api/resume/analyze-multi-job`, which no page called, answers 404: a
+posting is analysed by `POST /api/resume/analyze`, one per request, through the
+same gate as everything else. `POST /api/generation/batches` no longer reads
+`asOrder: true` - a run is an order only with `mode: "order"`, and without a
+`mode` it is Generate Immediately. The always-empty `unconfirmedHardSkills`
+and `unconfirmedSoftSkills` lists are gone from tailored content and from
+every answer, and `POST /api/templates/upload-json` answers
+`{ templates, imported, keptIds }`, without a copy of the first template's
+fields beside them. Adding an account (`POST /api/admin/accounts`) now refuses
+a subscription this build does not have (400 `bad-subscription`), as editing
+one already did, instead of creating the account on Default.
 
 ---
 
@@ -720,6 +874,158 @@ is refused rather than told that nothing could be reversed. Crypto cannot be
 refunded automatically - crypto can only be sent back, not pulled - and
 the app says so rather than pretending.
 
+### Subscriptions
+
+Every account is on one of four subscriptions - **Default** (1 profile),
+**Premium** (5, and building for several profiles at once, and Groups),
+**Premium+** (25) and **Premium Max** (unlimited) - and **buys a higher one
+itself, from its credit balance, 30 days at a time**, on **Settings →
+Subscription**. Nothing is paid through a card or a crypto invoice for it: a
+subscription is paid from credit already bought, and every charge is a row in
+Credit History.
+
+**The page** lays the four out as cards, side by side (one a row on a phone),
+the way Claude's and ChatGPT's upgrade pages do: each with its price for 30
+days (*Free*, or *Not offered* - whose card says to ask the administrator, with
+Contact admin), what it is for, what it includes, and the one thing to do -
+**Subscribe**, **Upgrade · $10.333** (with *$19.99 less $9.657 for 29 unused
+days of Premium* under it), **Switch at renewal**, **Keep** - or the words
+where there is nothing to press (*Current subscription*, *Included in yours*,
+*You return here if you cancel*). Under them, **Current subscription** says
+where yours came from (paid from your credit, set by an administrator, or an
+administrator's own), the profiles it uses, when it started and renews, ends
+or switches, and the next charge, with **Cancel subscription** - which asks in
+a dialog of its own: *Premium stays until ..., then your account returns to
+Default. Nothing is refunded.* A balance short of the next renewal is warned
+about at the top, with **Buy credits**. Buying, switching and keeping ask first,
+with the amount and the balance after (and *Do not show again*, see
+[Order & Download](#order--download)); a price that moved between showing it
+and confirming it is refused, and the page reads the subscription again and
+says so.
+
+**The prices are the administrator's.** Each paid subscription's price for 30
+days is set under **Settings → General → Subscriptions**, in dollars to the
+thousandth (up to $10,000), with a `.env` default under it
+(`SUBSCRIPTION_PREMIUM_PRICE_USD`, `SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD`,
+`SUBSCRIPTION_PREMIUM_MAX_PRICE_USD`) and the same *Set here* / *From .env* /
+*Default* line and **Reset to default** as every other setting. A
+subscription priced nowhere is **not offered**: nobody can buy it, and its card
+says to ask the administrator. Out of the box none is priced, so nothing is
+for sale until somebody decides what it is worth; an emptied box is the
+administrator's own *not offered*, which beats a price `.env` gives.
+
+**Buying** takes the subscription's price from the balance at once, and the
+30 days start then. The amount the page shows is the amount taken: the page
+sends it back with the purchase, the server works it out again in the same
+transaction that charges, and a figure that has changed since - a new price,
+or a day gone by - is refused (*This change costs $X now, not the $Y you were
+shown ...*, 409 `charge-changed`, with the new figure) rather than charged.
+Too little credit is refused with what it costs and what you have (402
+`insufficient-credits`), and nothing moves.
+
+**Moving up** happens at once, and costs the new price **less what the unused
+days of the paid one are worth**: its price × the days left ÷ 30, rounded down
+to the thousandth, a day that has started counting as left. Bought Premium at
+$9.99 and moved to Premium+ at $19.99 a day later, 29 days were unused - worth
+$9.657 - so the move costs $10.333, and a fresh 30 days of Premium+ start then.
+The days left change once a day, at the hour the subscription was bought, so a
+price shown stays good for the rest of that day. A higher subscription priced
+below what is left of yours costs nothing, and the rest of that credit is not
+paid out. Moving up from a subscription an administrator gave you costs the
+full price - nothing was paid for it.
+
+**Moving down** happens at the renewal: **Switch at renewal** keeps the
+subscription you paid for to the end of its 30 days, then renews as the lower
+one at its price. **Cancel subscription** stops the renewal - the subscription
+stays until its 30 days end, then the account returns to where it started -
+and refunds nothing. **Keep** undoes a cancel, or a switch you chose. None of
+the three takes anything when you choose it.
+
+**Renewing.** When a paid subscription's 30 days are up, the server renews it
+from the balance at the price in effect that day, as one charge, and the next
+30 days start where the last ones ended. It looks every ten minutes
+(`SUBSCRIPTION_RENEWAL_SWEEP_MS`) and once at startup - as soon as the credit
+held by runs that never finished has been given back, so a renewal sees the
+balance as it really is - so a subscription is renewed at most that late and
+keeps its features until then; a server that was stopped renews at its next
+start, and one stopped for longer than a whole period starts the new one from
+that moment - nobody pays for days already gone. The subscription **ends**
+instead, and the account gets a notice saying why, when it was cancelled, when
+that subscription is no longer offered, when **the account is disabled** (it
+can neither use another 30 days nor sign in to cancel them, so it is not
+charged for them), or when **the balance cannot cover the renewal** (*Premium
+ended: not enough credit*). A renewal is never clamped to what the balance
+holds: it is taken whole, or the subscription ends. A renewal at a different
+price, or as a lower subscription you switched to, says so in its notice.
+
+**A price that cannot be read is not a decision.** A subscription is *not
+offered* when nobody priced it, or somebody emptied its box; a
+`SUBSCRIPTION_<TIER>_PRICE_USD` that is not an amount in dollars (`9,99`,
+`TBD`) is not offered for sale either, but nobody decided that, so the
+subscriptions already paid for on it are **held** at their renewal - neither
+renewed nor ended, keeping their features - and each pass that holds one logs
+which price it could not read. Correct the line (and restart), or save the
+price on **Settings → General**, and the next pass renews them from where
+their 30 days ended. Every other subscription renews as usual meanwhile.
+
+**Where a subscription returns to.** A paid subscription that ends returns the
+account to the one it held when it first paid - Default, or the subscription
+an administrator gave it - never below it, so cancelling a Premium+ bought on
+top of an administrator's Premium leaves the account on Premium. Profiles above
+the new limit are kept; only adding another is refused.
+
+**Administrators** have every subscription's features and are never charged,
+so there is nothing for them to buy: their page is read-only, and every
+purchase answers 409 `admin-exempt`. **A reporter has no subscription**: their
+balance is earnings, which are never spent on one, and the routes answer them
+403 `role-not-allowed`.
+
+**An administrator can still set any account's subscription** on **Admin →
+Accounts**. That makes it the administrator's: a subscription the account paid
+for **ends at once and nothing is refunded automatically** - the answer's note
+says how much of it was unused (*Ended alice@example.com's Premium+ paid from
+credit until 2026-11-18; nothing was refunded. About $13.326 of it was unused -
+give it back with +/- beside the balance if you mean to.*), and the account is
+told in its bell. Changing a paying user's role to reporter or administrator
+ends it the same way, returning the account to where it started. Setting the
+subscription it already pays for does nothing. **Disabling** a paying account
+ends nothing at once - enabled again in time, it renews as before - but a
+disabled account is not renewed, so the answer says when its subscription
+ends (*alice@example.com pays for Premium from credit until 2026-11-18. A
+disabled account does not renew: unless it is enabled again by then, Premium
+ends that day and nothing more is taken.*). A note is worked out from reads
+made in the same transaction as the change, so it describes exactly what the
+change ended, even when another server on the same database renews or buys at
+that moment. The accounts list shows which accounts pay, and until when.
+
+Every charge is one conditional debit - the account is a user, is not
+disabled, AND holds the amount - that is refused rather than clamped, in the
+same transaction as the subscription it pays for, under a ledger key that can
+be used once
+(`subscription:<account>:<tier>:<start>` for a purchase,
+`subscription-renewal:<account>:<end>` for a renewal). Two presses, two tabs,
+a renewal run twice or a server restarted mid-way charge once. The ledger
+reasons are `subscription-purchase` and `subscription-renewal`; a move up that
+the unused days cover entirely writes no row.
+
+| Route | What it does |
+|---|---|
+| `GET /api/subscription` | The account's subscription, where it came from (`default`, `admin`, `paid`, `exempt`), the paid period (`paidThrough`, `renews`, `next`, the renewal's price and how far the balance is short of it), every subscription's price and offer (`subscribe`, `upgrade` with its `chargeMilli`, `creditMilli` and `daysLeft`, `switch-at-renewal`, `included`, `not-offered`...), and the balance |
+| `POST /api/subscription/subscribe` | `{ subscription, chargeUsd }`: buy, or move up now. `chargeUsd` is the amount the page showed, in dollars |
+| `POST /api/subscription/downgrade` | `{ subscription }`: a lower paid subscription at renewal |
+| `POST /api/subscription/cancel` | Stop renewing |
+| `POST /api/subscription/resume` | Undo a cancel, or a switch chosen |
+
+A change answers the subscription as it stands afterwards, with `changed`
+(`false`: a repeat that moved nothing) and, for a purchase, `chargedMilli`.
+Each refusal carries a `code`: `bad-subscription`, `admin-exempt`,
+`not-an-upgrade`, `not-offered`, `charge-required`, `bad-charge`,
+`charge-changed`, `insufficient-credits`, `not-subscribed`, `not-a-downgrade` -
+and `account-disabled` (403) for a change that was already on its way when an
+administrator disabled the account; every later request is refused at sign-in.
+`GET /api/auth/subscriptions`, the catalogue an older Subscription page read,
+is gone (404): every subscription is in `GET /api/subscription`.
+
 ### Refund and payout requests
 
 **Only a reporter asks, and only to be paid out.** Users and administrators do
@@ -884,7 +1190,8 @@ administrator).
 | | |
 |---|---|
 | **Profiles** | the resume profiles you build from |
-| **Find Jobs** | the All tab of your own job sheet, in a new tab - once the server has one for you |
+| **Groups** | sets of profiles you build for together - Premium and above; below it the row carries a lock, and pressing it says what it needs, with **Go to subscription** |
+| **Find Jobs** | the job lake, searched: export the jobs you pick into your own job sheet, or order resumes for them - and **Go to my sheet**, top right, opens your sheet's All tab in a new tab |
 | **Build Resumes** | the builder |
 | **Orders** | what you ordered, and the files |
 | **Credits** | your balance, buying more, and the history of both |
@@ -894,8 +1201,13 @@ then, under an *Assistant* divider, **Job Filter**, **Bid Assistant** and
 Settings is your account's own tabs - Profile, Job Sheet, Payment Methods,
 Subscription - and for an administrator one more, **Administration**, whose
 ten shared-configuration pages appear as a second row once you are in it.
-Groups (`/admin/groups`, Premium and above) has no entry of its own; it is
-reached by its address.
+
+**Locked, not hidden.** What your subscription does not include is drawn with
+a lock rather than left out - Groups in the sidebar, the builder's
+multi-profile choices, New profile at your subscription's limit - so you can
+see what a higher one adds. Pressing the lock, or the locked choice, opens
+*Locked: <what>*: what it needs, and **Go to subscription**, where you can buy
+it.
 
 **A reporter's** shell is three rows: **Report Jobs** (their home), **Credits**
 (what they have earned and the payouts recorded against it) and **Settings**,
@@ -914,7 +1226,7 @@ Every account holds exactly one role, and an administrator changes it on
 
 | Role | Who | What they reach |
 |---|---|---|
-| **User** | every new sign-in | the resume builder and everything around it: profiles, templates, Build Resumes, Orders, groups (by subscription), the job pages and buying credits |
+| **User** | every new sign-in | the resume builder and everything around it: profiles, templates, Build Resumes, Orders, groups (by subscription), Find Jobs and the other job pages, and buying credits |
 | **Reporter** | made by an administrator - by changing a user's role, or by adding the account as a Reporter before its first sign-in | **Report Jobs**, **Credits** (their earnings, payouts and **Ask for Refund** - a payout request), a link to their own job sheet, **Settings → Profile** and **Job Sheet**, notifications and **Contact admin**. No resume builder, no buying credits |
 | **Administrator** | the addresses in `ADMIN_EMAILS` (else `SMTP_USER`), and anybody an administrator promotes | everything, including what the whole installation shares |
 
@@ -965,6 +1277,7 @@ everybody but a reporter.
 | **Orders** | users | their own orders only, by id - somebody else's answers 404, never 403, because the difference would confirm it exists |
 | **Buy credits** (and saved cards, purchase history) | users | their own payments only, by the same 404 rule. Never a reporter: their balance is earnings, paid out by hand |
 | **Credits** (balance and history) | anybody signed in, reporters included | their own. A reporter's history is their earnings and payouts |
+| **Subscription** (buying, changing) | users | their own, paid from their own balance (`/api/subscription`). A reporter is refused with 403 `role-not-allowed` - their balance is earnings - and an administrator, who has every subscription's features, reads the page and buys nothing (409 `admin-exempt`). Setting somebody else's is an administrator's, on Admin → Accounts |
 | **Your account** (Settings → Profile, Job Sheet) | anybody signed in, reporters included | their own name and their own job sheet |
 | **Resume files** (Settings → Profile: your folder path and its preview) | users | where their own resumes are filed, after the administrator's prefix (`PUT /api/auth/account`, `POST /api/auth/output-path/preview`). A reporter builds nothing and is refused with 403 `role-not-allowed` |
 | **Report Jobs** | reporters (administrators may open it) | adding jobs from their own sheet to the job lake |
@@ -975,9 +1288,9 @@ everybody but a reporter.
 | **Refund requests** (asking) | nobody | removed: there is no route to ask through any more. Somebody who thinks they are owed a refund contacts the administrator |
 | **Refund requests** (reading your own) | anybody signed in | an account made a reporter after asking still sees how its request ended |
 | **Contact the administrator** | **everybody**, signed in or not | the people who most need it are the ones who cannot sign in. Editing the list is an administrator's, under Settings |
-| **Find Jobs** | anybody signed in | opens the All tab of their own job sheet in a new tab: from the sidebar for users and administrators, from the account menu and Report Jobs for a reporter |
-| **Groups** | **Premium and above**, and administrators | an entitlement, checked on the subscription - a group is a way to build for several profiles at once |
-| **Building for several profiles** (Multiple, All profiles, Specific group, Select Group) | **Premium and above**, and administrators | a Default subscription supports one profile. The run, its quote and the multi-profile preview answer 403 `subscription-too-low`; a single-profile run - Generate Immediately or Order - is open to everybody |
+| **Find Jobs** | users | search the job lake, export the jobs they pick into their own All tab, and order resumes for them. Who reported a job - its filter, column and line - is an administrator's alone; anybody else naming it is refused (403 `not-an-admin`). A reporter is sent to Report Jobs, and reaches their own sheet from the account menu and Report Jobs |
+| **Groups** | **Premium and above**, and administrators | an entitlement, checked on the subscription - a group is a way to build for several profiles at once. In the sidebar for every builder, shown with a lock below Premium, and the page drawn locked with **Go to subscription** |
+| **Building for several profiles** (Multiple, All profiles, Specific group, Select Group; Find Jobs' Several profiles) | **Premium and above**, and administrators | a Default subscription supports one profile. The run, its quote and the multi-profile preview answer 403 `subscription-too-low`; a single-profile run - Generate Immediately or Order - is open to everybody. Below Premium the choices are shown with a lock |
 | **Bid Assistant** (the shared parts) | **administrators** | the job board is shared, so deleting a job - which takes every account's saved answers for it - and the one Ask AI prompt template every account uses are an administrator's. Everybody else reads the template and may mark a job as an error; their saved sheet sources and their answers are their own, and a job reads as *Answered* only to an account that answered it |
 | **Skill library** (adding, editing, deleting) | **administrators** | one library is shared by every account: it files and filters the technical skills of an untailored resume (the profile editor's preview, a resume built without a posting); tailoring reads none of it. A hard skill typed into a profile is added to it for any user (`POST /api/resume/skills/confirm`) |
 | **Templates** (looking at them) | users | the gallery and the full-page preview of each, from the sidebar. Choosing a template is no use without seeing what it produces |
@@ -987,8 +1300,10 @@ everybody but a reporter.
 | **Test** | **administrators** | runs prompts directly and shows raw model output; a tool for whoever maintains the prompts |
 | **Settings** (the shared configuration - General, Accounts, Models...) | **administrators** | every page under it changes something shared |
 
-An entry nobody may use is not shown in the navigation, and the page behind it
-explains itself if the URL is typed - a blank screen reads as a broken link. A
+An entry a ROLE may not use is not shown in the navigation, and the page behind
+it explains itself if the URL is typed - a blank screen reads as a broken link.
+One a SUBSCRIPTION does not include is shown with a lock instead, and so is its
+page (see [Getting around](#getting-around)). A
 reporter is sent to Report Jobs from any page that is not theirs. **Hiding is
 not the protection**: every one of these is enforced by middleware on the
 routes, so an old tab or a hand-made request is refused just the same - a
@@ -1054,23 +1369,122 @@ stored.
 
 ### Editing a profile
 
-**Profiles** in the sidebar lists your profiles. **New Profile** opens
-`/admin/profiles/new` and a profile's name or **Edit** opens
-`/admin/profiles/<id>` - a page of its own, so a profile can be linked to and
-survives a reload. **Upload Resume PDF**, and an **Import JSON** of a single
-profile, land in the new profile's editor. Despite the `/admin/` in the
-address, every signed-in account edits its own profiles here.
+**Profiles** in the sidebar opens **My Profiles**, laid out like FlowCV's "My
+Resumes": a dashed **New profile** tile, then a card per profile - its first
+page as the server draws it (the stored profile on its own template, with
+nothing filled in from the sample person, so an empty section is empty there
+too), its name, *Edited 6 hours ago · <template>* (a date after a week), and
+**⋮** with **Edit**, **Duplicate** (everything but the template, which each
+profile has of its own - the copy is drawn with the default until one is
+chosen - and a model choice no longer offered, which goes back to the app
+default), **Download JSON** (the profile as a file the import takes back),
+**Disable** / **Enable** (a disabled profile is kept but left out of Build
+Resumes) and **Delete**. A card opens `/admin/profiles/<id>`, the editor - a
+page of its own, so a profile can be linked to and survives a reload. Despite
+the `/admin/` in the address, every signed-in account edits its own profiles
+here. At the subscription's profile limit, **New profile** and **Duplicate**
+carry a lock (*Needs Premium* on Default, *Needs Premium+* on Premium...):
+pressing either says what that subscription allows, with **Go to
+subscription**, and `/admin/profiles/new`
+is drawn locked the same way. A save or an import the server refuses at the
+limit says so with the same link.
 
-The form is on the left and **the resume it makes is on the right**, redrawn as
-you work: a template, a layout or a switch shows at once, and typing about
-400 ms after the last key. Narrower than 1100px, the two are **Form** and
-**Preview** tabs, and nothing is drawn while the preview tab is hidden. The page
-on screen stays up while the next one draws, so typing never blanks it; a
-failure says *Not updated* with the reason and **Try again**, and leaves the
-last page up. A *Page 2* line marks roughly where the printed page breaks, and
-**Full size** opens the page at its printed width. The page is scaled to the
-pane as if a scrollbar were always there, so it holds still whether or not the
-pane scrolls (see Troubleshooting for the shake this replaced).
+**A new profile starts with a template**, in FlowCV's steps. **New profile**
+opens *Start building your profile* (`/admin/profiles/new`): the templates as
+pages, drawn with the sample person, under **All Templates**, **Simple**,
+**Modern** and **Creative** (a template's `category`, see [Templates and the
+two skills layouts](#templates-and-the-two-skills-layouts)). A page opens its
+details - the page large, its description, a **Technical skills** switch,
+**Grouped** / **Plain**, that redraws the page in either layout (every template
+prints both; the details open on Grouped, every profile's default, and keep
+the choice while the arrows step through the templates), and what it does
+(the switched sections it has room for, the added sections, the section
+order) - with **Use this template**, and the arrow keys (anywhere but on the
+switch) or Previous / Next step through the templates the filter shows. A template another of your
+profiles uses says so and cannot be used, as in the editor's picker; when
+every one is taken, *Start without a template* leaves the choice for later.
+**Use this template** opens the editor on it in the layout the details showed
+(`?template=<id>`, and `&layout=flat` for Plain, so a reload keeps the choice
+and Back returns to the templates) and asks **Import your
+existing resume**: **Import resume** reads a resume PDF into a new profile with
+an AI call (free, like every profile upload), puts the chosen template on it
+and opens its editor; **Start from blank** (or Close) leaves the empty editor.
+**Import existing resume** on the templates page takes a **Resume PDF** the
+same way, or a **Profile JSON file** - one profile, a list, or `{ "profiles":
+[...] }`, no AI call - and one imported profile opens in its editor. Both
+check the subscription's profile limit first, as New profile does.
+
+The editor is laid out like FlowCV's, on a warm desk of its own (dark navy in
+dark mode): a bar across the top - **Profiles** back to the list, the
+**Content** and **Customize** tabs, whether anything is unsaved, and **Save
+Profile** - then **section cards** on the left and **the resume they make on
+the right**, redrawn as you work: a template, a layout, a switch or a dragged
+card shows at once, and typing about 400 ms after the last key. Narrower than
+1100px, a **Form** / **Preview** switch in the bar shows one at a time, and
+nothing is drawn while the preview is hidden. The page on screen stays up while the
+next one draws, so typing never blanks it; a failure says *Not updated* with
+the reason and **Try again**, and leaves the last page up. A *Page 2* line
+marks roughly where the printed page breaks, and **Full size** opens the page
+at its printed width. The page is scaled to the pane as if a scrollbar were
+always there, so it holds still whether or not the pane scrolls (see
+Troubleshooting for the shake this replaced).
+
+**Content** starts with your name, headline and contact details, one line
+each with its icon (the round pink pencil opens them), then one card per
+section - Summary, Experience, Education, Technical skills, Soft skills,
+Strengths, Certifications - each folded to its title until you open it; a card
+you have just added opens by itself. An entry card lists its entries as rows
+(*Senior DevOps Engineer at G2O · 12/2022 - Present*); a row opens an **Edit
+entry** panel in the column's place (its fields, its bullets one per line, the
+bin beside the title to delete it, and **Done** pinned at the foot), and the
+dashed *+ Add <entry>* opens a new one. An entry left wholly blank is dropped
+when the panel closes or the profile is saved. **+ Add content** under the
+cards adds a section the profile does not have yet - *Projects, Languages,
+Awards, Publications, Volunteering, Courses, Interests, References* - or a
+**Custom section** under a title of your own, as many as you like. A section
+prints only when it has an entry; an added section with nothing in it is
+saved as added, so its empty card is there after a reload and prints nothing.
+The seven default cards stay; an added section has a bin among its heading's
+controls (*Remove section*), which asks first when it has entries.
+
+**Customize** holds **Template** (the picker, and what the chosen template
+prints), **Layout** (Plain or Grouped and, once you have arranged the
+sections, *Use the template's order*) and **Generation** (the model, the
+tailoring prompt and the file names).
+
+**Every card can be dragged** by its grip, which shows when you hover the card
+(or moved with the arrows beside its chevron - shown on hover or keyboard
+focus, and on a touch screen while the card is open), and the order is saved
+with the profile and printed by every
+template, PDF and DOCX alike. Until you arrange them, the cards and the
+resume follow **the template's own order** - switch templates and both follow
+the new one - and *Use the template's order* takes you back to that. A
+template still decides which **column** a section lives in: the order applies
+within that column, so on a sidebar template Technical skills stays in the
+sidebar wherever its card sits. The section kinds beyond the classic six print
+where each template puts them - after Education in the main column of every
+built-in - and a template uploaded before this release prints them nowhere
+until its markup says where (see [Templates and the two skills
+layouts](#templates-and-the-two-skills-layouts)); the card says so, and the
+entries are saved regardless.
+
+**Write with AI.** An experience, project or volunteering entry's panel has
+**Write with AI** when it has no bullets yet and **Improve with AI** when it
+has, with a one-line box for a note (*lead with the cost savings, four
+bullets*). It sends the entry as typed, five facts about you (name, headline,
+years, summary, skills - never your contact details) and your note to the
+**Write Entry Bullets** prompt on the app default model, and puts the answer
+in the bullets box; **Undo** brings the previous bullets back until you edit
+them. It is free - no credit is reserved - and nothing is saved until **Save**.
+The model is told to use only facts in the entry and the note, never to invent
+a figure or a technology, and to write 3 to 8 one-line bullets in plain words
+without the tailoring prompt's banned vocabulary; what comes back is held to a
+tailored resume's rule (no markup, dashes backstopped, at most eight bullets of
+at most 300 characters). An entry with nothing that names it (a role with
+neither title nor company, a project without a name) is refused before any
+model is asked, and so is a second request while one is running for your
+account - wait for it, then try again. Administrators edit the prompt under
+**Admin → Prompts**; it has one prompt, no variants.
 
 What the preview is, exactly:
 
@@ -1115,19 +1529,22 @@ While Grouped, each skill has a heading menu: *Work it out* lets the shared
 library file it, and anything else puts it where you say. Plain keeps the
 headings you assigned, so switching back restores them.
 
-The **Template** picker lists only templates that can print the profile's
-layout - see [Templates and the two skills
-layouts](#templates-and-the-two-skills-layouts) - and says how many it left
-out. A template another of your profiles uses is listed greyed out as *(used by
-&lt;name&gt;)*, so a short list never looks short for no reason; the current
-profile's own template is always selectable. Switching layout while the chosen
-template cannot print the new one moves the profile to one that can - its
-saved template if that fits, else `default` - and says so beside the control.
+The **Template** picker lists every template on offer: each prints Technical
+Skills both ways - see [Templates and the two skills
+layouts](#templates-and-the-two-skills-layouts) - so switching layout changes
+how the skills are drawn and nothing else; the template stays. A template
+another of your profiles uses is listed greyed out as *(used by
+&lt;name&gt;)*, so the list never looks short for no reason; the current
+profile's own template is always selectable.
 
 On a **tailored** resume the model writes the Technical Skills block - its own
-headings, about thirty skills, the posting's technologies inside the stack
-your history shows - and it is printed exactly as returned: nothing from the
-skill library pads it, filters it or reorders it.
+headings over the technologies your profile names (in its skills, a role's
+skills, a bullet, a role's description or a certification), the ones the
+posting asks for first and in the posting's spelling, usually 10 to 25 of them
+and never padded to a number - and it is printed exactly as returned: nothing
+from the skill library pads it, filters it or reorders it. A technology the
+posting asks for that your profile never names is left out of the block and
+the bullets alike; add it to the profile if you have used it.
 
 | Layout | What Technical Skills lists |
 |---|---|
@@ -1204,32 +1621,128 @@ path (preview, PDF, DOCX, the queue) whatever the content carries.
 
 ### Templates and the two skills layouts
 
-**Every template says which Technical Skills layouts it prints**, as
-`skillsLayouts` - `["categorized", "flat"]` or one of them. Seventeen of the
-nineteen built-ins print both. **Burgundy Rule and Navy Rule** lay their skills
-out as a grid of category cells, which has nothing sensible to do with one
-plain list, so they are `["categorized"]`: a Plain profile is not offered them.
-`default` prints both, and is where every fallback ends.
+**Every template prints both Technical Skills layouts**, Grouped and Plain -
+the nineteen built-ins, the manual builder's, and every template uploaded or
+extracted from a PDF. The renderer compiles each template twice, once per
+layout, and the two differ only in Technical Skills; nothing about the stored
+template decides which a profile may use. How each shape of skills markup is
+drawn:
 
-A template that does not say - an uploaded one, a PDF extraction, one stored
-before this field existed - gets a list from its markup when it is
-read, with no migration: a per-item `{{#each hardSkills}}` or `{{#each skills}}`
-loop prints both; a template that reads only `{{#each skillCategories}}` is a
-category design and prints Grouped only (an `{{#each skills}}` INSIDE that
-loop is the category's own list and does not count); one with no skills at all
-is offered for both. An import keeps the list the file states; the manual builder's
-templates print both.
+| The template's skills markup | Templates | Grouped | Plain |
+|---|---|---|---|
+| A box per skill, `{{#each hardSkills}}<div class="skill-box">` | `default`, `azure-stack`, the manual builder | A cell per group, its heading over its skills | A box per skill |
+| An item per skill, `{{#each hardSkills}}<li>` | Fourteen of the built-ins - every one not named in the rows above and below | An item per group, its heading in bold over its skills | An item per skill |
+| A loop over the groups, `{{#each skillCategories}}` | Burgundy Rule, Navy Rule, Charcoal Sidebar, and uploaded category designs | A cell per group | One group with no heading, across the row (below) |
+| One joined line, `<p>{{join hardSkills ", "}}</p>` | Uploaded ATS-style templates | A line per group - *Languages: C#, Python* - in the template's own element and separator (below) | The one line, the template's own label and all |
+| A loop over `skills`, `{{#each skills}}<li>` | Some uploaded templates | An item per group, *Heading: a, b* | An item per skill |
 
-An administrator can reclassify any template with `PATCH /api/templates/:id`
-and `{ "skillsLayouts": ["categorized"] }`. A built-in's goes into its override
-row, beside its name, description and disabled flag, and its file stays as
-shipped. Anything but a non-empty list of `categorized` and `flat` is refused
-with a 400 that says so.
+**Plain on a grid of category cells.** Plain reaches a `{{#each
+skillCategories}}` design as one group with no heading: the heading element
+is taken out, and the one group must not sit in a single cell of a
+three-column grid, as it did on Burgundy Rule and Navy Rule. Those two carry a
+rule for it in their stylesheets - `.skill-category:not(:has(.skill-category-title))
+{ grid-column: 1 / -1; min-height: 0; }`, since the empty heading is gone from
+exactly that cell - and for every template the renderer marks the element the
+loop sits directly in with `data-plain-skills` and puts one small stylesheet in
+the head (`<style id="plain-skills-style">`) that makes each child of it take
+the whole row: every grid column, every column of a multi-column list, no
+float, full width, no fixed or minimum height. It marks an element only when
+the loop - with any `{{#if}}` guard around it - is all the element holds: the
+rule overrides each child's own sizes, even an inline style, so a divider, a
+badge or a photo after the loop would lose theirs, and an element holding more
+than the skills is the template's column rather than its skills block.
+Charcoal Sidebar's loop sits in its sidebar column, where one group already
+reads well. The net does not reach a flex row whose items have a fixed
+`flex-basis`, a loop in an element that holds anything else - a heading before
+it, a divider or another block after it - or a template rule on the same
+property that is `!important` and more specific; Troubleshooting has the rule
+to add to such a template.
 
-Two more things every template payload carries, worked out from the markup on
+**Grouped on a joined line.** An uploaded template that prints its skills as
+one joined line - `<p class="skills-line"><strong>Technical Skills:</strong>
+{{join hardSkills ", "}}</p>` - printed Grouped as one run-on paragraph,
+*Languages: C#, Python, Frameworks: React, ...*. The renderer now prints a line
+per group, with the group's heading in bold where the static label was and the
+template's own separator between the skills; a group with no heading prints its
+skills alone. It does so for a `p`, `div`, `li`, `span` or `td` holding the join
+and nothing else but an optional bold label. A `p`, `div` or `li` is repeated
+once per group, a line of its own each; a `span` or `td` stays the one element
+it is, with its groups on lines of their own inside it - copies of a span would
+run together inside its line, and copies of a td would add a column to its
+table. A join in an attribute, one beside other text, and a join over anything
+but `hardSkills` are left as written. Like every compile step, it never
+rewrites the stored file.
+
+**There is no layout list.** A `skillsLayouts` key in a template file, an
+imported file or a built-in's override row - written by an older release - is
+not read, and the next edit of a saved template writes its file without it.
+`PATCH /api/templates/:id` takes `name`, `description` and `disabled` (a
+built-in's go into its override row, and its file stays as shipped), and
+refuses a body naming none of them with *There is nothing to change: send a
+name, a description or disabled.*
+
+**Every built-in is filed under a style** for the new-profile chooser's
+filters, as `category`: `"simple"` (eight of the nineteen), `"modern"` (six) or
+`"creative"` (five). A saved template keeps a `category` its JSON states when
+it is imported - any other word is dropped, on read and on write - and is
+listed under **All Templates** only without one. No route changes it: a
+built-in's is its file's.
+
+Four more things every template payload carries, worked out from the markup on
 every read and never stored: `supportsSoftSkills` and `supportsStrengths` -
-whether it has a section to put each in. The manual builder offers both
-sections now, guarded so an empty one prints nothing.
+whether it has a section to put each in - and, since the editor's section
+cards, `printsSections`, the kinds of section the markup prints (`summary`,
+`experience`, `education`, `skills`, `softSkills`, `strengths`,
+`certifications`, `projects`, `volunteering`, `awards`, `publications`,
+`courses`, `languages`, `interests`, `references`, and `custom` for the custom
+sections), and `nativeSectionOrder`, the order its own markup prints them in -
+what a profile that has not arranged its cards is shown and drawn in. The
+manual builder offers both switched sections, guarded so an empty one prints
+nothing, and prints the other kinds after its main column.
+
+**The sections beyond the classic six print through one line in the
+template**, the extra-sections macro:
+
+```
+{{> extra-sections sectionClass="section" headingClass="section-title" headingTextClass="section-title-text" contentClass="section-content" titleClass="degree" subClass="institution" datesClass="edu-date" bulletsClass="achievements"}}
+```
+
+It looks like a Handlebars partial and is not one: the renderer expands it,
+before Handlebars sees the markup, into one block per kind - Certifications,
+Projects, Volunteering, Awards, Publications, Courses, Languages, Interests,
+References - and one per custom section, each guarded on its list (an empty
+kind prints nothing, heading included), each marked `section-<kind>` and
+`data-section="<kind>"` like a built-in's own sections, and each drawn in the
+classes the parameters name, so it takes the template's own look; a small
+baseline under neutral `xs-*` classes covers whatever the template leaves
+unstyled. Every built-in carries the line once, in its main column after
+Education. An **uploaded template prints these sections nowhere until it
+carries the line** - put it where they should print, name the classes your
+template already uses for a heading, an entry title, a sub line, a date line
+and a bullet list - and a template that loops over one of the kinds itself
+(`{{#each certifications}}`) keeps its own block: the macro never prints a
+kind twice. The lists reach every template under their own names, prepared -
+`dates` joined, a project's or a publication's `link` kept only as an
+`http(s)` href - so a template may draw a kind in its own markup instead.
+
+**A profile's section order is honoured at compile time, within each
+column.** With a stored order (`sectionOrder` on the profile: kind ids and
+`custom:<key>` refs, in print order), the renderer finds every section - by the
+marker class every built-in carries (`section-summary`, `section-experience`,
+`section-education`, `section-skills`, `section-soft-skills`,
+`section-strengths`, and `section-<kind>` on the generated blocks), by a
+`data-section` attribute (azure-stack, the manual builder), else from its
+heading and list the way a switched-off section is found - groups them by the
+element they sit in, and refills each group's slots in the stored order: a
+listed section to its place, an unlisted one after the listed ones in the
+template's own order. A section never leaves the column its template put it
+in, and what sits between sections (a header, a photo) never moves. With no
+stored order nothing moves at all. A reorder that would split a Handlebars
+block (one that opens inside a section and closes outside it) is dropped for
+the template's own order, said once; a section the finder cannot locate stays
+where it is, said once per template and kind - mark it `section-<kind>` and it
+moves. The DOCX prints the same order, in its one fixed look, and prints a
+filled kind whether or not the PDF's template carries the macro.
 
 **A section switched off goes whole - heading included - and nothing else goes
 with it.** The renderer finds it, at compile time and never by rewriting the
@@ -1258,17 +1771,16 @@ compiles (a Handlebars block that opens inside the section's element and
 closes outside it), the template is drawn with less found rather than not at
 all, and the backend says so once.
 
-**A resume never fails over a layout.** The template is the one asked for, else
-the profile's own, else `default` - the first of those that is enabled and
-prints the profile's layout; failing that, any enabled template that does; and
-failing even that, the first enabled one as it is. A choice that no longer
-fits, because an administrator reclassified it or the profile changed layout
-while a run was queued, is logged once, as `[templates] Profile <id> uses the flat skills
-layout, which template "<id>" does not offer; drawing it with "<id>" instead.`
-The live preview, the builder's previews, generation and the queue all ask the
-same question (`services/templateChoice.ts`), so the preview cannot show one
-template while the PDF prints another; when it falls back, the preview says
-*Drawn with ...* and why.
+**Which template draws a resume.** The one asked for, else the profile's own,
+else `default` - the first of those that exists and is enabled (an
+administrator previewing a disabled template by name still sees it); failing
+all three, the first enabled template there is, newest first as the list is
+served; and only with no template enabled at all, *No resume template is
+available right now* with a ref. The layout plays no part. The live preview,
+the builder's previews, generation and the queue all ask the same question
+(`services/templateChoice.ts`), so the preview cannot show one template while
+the PDF prints another; when the profile's own template is not offered any
+more, the preview says *Drawn with ...* and why.
 
 The gallery's preview takes the same choices a profile makes:
 `GET /api/templates/:id/preview?layout=flat&softSkills=1&strengths=1`. It draws
@@ -1279,16 +1791,58 @@ descriptions, and a skills block of the model's shape whose last group,
 and the template has one. With no choices it is Grouped, without either
 section. It is served under
 the same no-script policy as the profile preview, and a disabled template is a
-404 for anybody but an administrator.
+404 for anybody but an administrator. The template chooser's details and
+**Admin → Templates → View** each have a **Grouped** / **Plain** switch that
+asks it for `layout=categorized` or `layout=flat` (View's *Open in new tab*
+too); the grids of pages around them draw every template Grouped.
+
+### Partial and Fully tailor
+
+Every profile is tailored in one of two ways, chosen in its editor under
+**Customize → Generation → Tailoring**:
+
+| | Partial tailor (the default) | Fully tailor |
+|---|---|---|
+| What the AI is sent about each role | Its title, company, dates, location, description, achievements and skills | Its **title, company and dates only** |
+| The profile's summary | Sent, and rewritten | Not sent; the summary is written from the roles and the posting |
+| The experience bullets | Your own descriptions and achievements, rewritten for the posting - they claim only what you wrote. A role you left **empty** (no description, no achievements) is written from the posting instead of printed blank, with plausible figures, and the summary may mention that work | Written for the posting: work a person with that title at that company would plausibly have done in those years, with **plausible figures** |
+| The prompt | **Tailor Resume** (`tailor-resume`), or the variant the profile picks under Building prompt | **Tailor Resume (Fully)** (`tailor-resume-full`), one prompt, whatever the Building prompt says |
+
+In both, the **Technical Skills block leads with the posting's own hard
+skills** - every technology, language, framework, platform, database, tool
+and protocol the posting names, in its spelling, whether or not your profile
+lists it - then your own, 15 to 30 entries in all. Abilities ("code review"),
+practices and concepts ("CI/CD", "microservices") stay in the sentences, with
+the tool for them in the block. In Partial, a posting technology you never
+named is in the block and in no sentence about a role you described.
+
+A profile that has not chosen follows `DEFAULT_TAILOR_MODE` in `.env`
+(`partial` unless set; see Configuration); the editor says which, and **Use
+the default** lets a choice go. Your name, headline, years, skills,
+education, certifications - and strengths while that switch is on - are sent
+in both modes; contact details and settings never are. When the profile
+states no years of experience, the span sent is worked out from the roles'
+dates ("Present" being today). Fully tailor's figures and work - and an empty
+role's under Partial - are written to fit, not measured: read the resume
+before you send it. The cover letter is written with the resume and tells
+what it tells; a build with no posting to tailor to gets a letter from your
+own text.
+
+A profile of titles and dates only - no descriptions, no achievements, no
+skills - used to come out with an empty Experience and an empty Technical
+Skills, because the tailoring was told to claim nothing the profile does not
+say. Partial now writes such roles from the posting, Fully writes every role,
+and both fill the skills block from the posting.
 
 ### Prompts and the section switches
 
-The tailoring prompt (`tailor-resume`) is given the posting's lists, in the
-posting's own spelling, and nothing that depends on the section switches:
+The tailoring prompts (`tailor-resume`, and `tailor-resume-full` for a profile
+set to Fully tailor) are given the posting's lists, in the posting's own
+spelling, and nothing that depends on the section switches:
 
 | Variable | What it holds |
 |---|---|
-| `[[profileJson]]` | The candidate - headline, years, roles and achievements, skills, education. Strengths only while the Strengths switch is on; your own soft skills never |
+| `[[profileJson]]` | The candidate - headline, years, roles and achievements, skills, education. Strengths only while the Strengths switch is on; your own soft skills never. Under Fully tailor each role is its title, company and dates, and there is no summary |
 | `[[jobAnalysisJson]]` | The posting's analysis in the analysis prompt's own shape - never the posting's text, salary or filter facts |
 | `[[targetRoleTitle]]`, `[[jobTitle]]` | The posting's own title |
 | `[[skillsJSON]]` | The abilities, tools, technologies and protocols it names |
@@ -1325,13 +1879,24 @@ prompt "..." (...) does not use [[jobAnalysisJson]] and
 Resume prompt runs instead until it is updated under Admin -> Prompts.*).
 
 **The revise pass** (`revise-resume-coverage`, one prompt, edited under Admin →
-Prompts like the analysis) runs after a fresh tailoring that left checklist
-terms out, or whose bullets carry fewer than five figures. It is given
-`[[draftJson]]` (the draft's summary and each role's company, title and
-bullets), `[[missingTermsJson]]` (the terms it lacks, the posting's top five
-first, never one with a banned word in it, at most `TAILOR_REVISE_MAX_TERMS`)
-and `[[figuresNote]]` (a sentence asking for modest figures in the bullets, or
-empty); the first two are required. Its answer replaces only the summary and
+Prompts like the analysis) runs after a fresh tailoring that left out
+checklist terms the profile itself names, or dropped a figure the profile
+states. It is given `[[draftJson]]` (the draft's summary and each role's
+company, title, dates and bullets - the dates so a technology goes only into
+a role whose years it fits), `[[missingTermsJson]]` (the terms it lacks that
+the profile's own words carry - its skills, its roles' titles, descriptions,
+bullets and skills, its summary, soft skills, strengths, certifications and
+other sections, never a company's name nor a description's sentence about the
+company - the posting's top five first, never
+one with a banned word in it, at most `TAILOR_REVISE_MAX_TERMS`) and
+`[[figuresNote]]` (the profile's own lines, under their roles, whose figures
+the draft no longer shows, at most twelve, with the one instruction to put a
+figure back where a bullet of that role describes the same work; or empty);
+the first two are required. A posting term the profile never names is never
+asked for: the revise call reads the draft, not the profile, and the
+tailoring was told to leave such a term out. After a **Fully tailored** draft
+it is asked for every checklist term the draft left out, and given no
+figures note - the profile's own lines were never sent. Its answer replaces only the summary and
 whole roles' bullets, matched by company and title (of two stints at one
 company under one title, when it returns only one, the stint whose bullets it
 repeats - else neither), and is finished like the
@@ -1352,8 +1917,9 @@ save cleanly and then fail every resume that used it. `POST
 older version's prompt, say, naming `[[jobFieldList]]` - is marked *Needs
 update* and never runs: the built-in prompt of its feature runs in its place,
 exactly as for a missing required variable. So does any stored edit of the
-analysis, job facts or tailoring prompts - the built-in edited, or a variant -
-saved before this release's prompts, whatever variables it names: an analysis
+analysis, job facts, tailoring, revise or cover letter prompts - the built-in
+edited, or a variant - saved before this release's prompts, whatever variables
+it names: an analysis
 edit from before the job field lists, or a job filter edit from before it was
 retired, uses only `[[jobDescription]]`, as the new texts do, and only its
 date tells it apart (*Not run: it dates from an older version of this
@@ -1497,7 +2063,8 @@ rather than wrapped:
 | | Date | NO(DATE) | Company | Job Title | Job Link | Job Description | Job Field | Salary | Job Type | Clearance | Industry | Analysis |
 
 **A to F are yours** to fill in (Push to Google Sheet fills them in Temp For
-AI). **G to L are the job analysis's, and protected**: only the server's own
+AI, and Find Jobs' **Export into Sheet** appends the jobs you pick to All,
+analysis columns and all). **G to L are the job analysis's, and protected**: only the server's own
 Google identity can edit them, and the app fills all six from a posting's one
 analysis - Job Type is Remote, Hybrid or Onsite (empty when the posting does not
 say), Clearance a real TRUE/FALSE, and the Analysis cell the whole analysis,
@@ -1649,7 +2216,7 @@ consent screen still in **Testing** expires its refresh tokens after seven days,
 on every machine equally. Publish it.
 
 **The job pages use it, and only it.** Build Resumes, the Job Filter, Report
-Jobs and the range importer read and write the signed-in account's own sheet
+Jobs, Find Jobs' Export into Sheet and the range importer read and write the signed-in account's own sheet
 and nothing else - an administrator's included.
 A spreadsheet id a request names is checked rather than trusted, and any id
 but your own is a 404, decided before Google is asked. This matters more than
@@ -1827,9 +2394,24 @@ its own. **Lake** lists the lake - newest first, with each job's type,
 clearance and industry - filtered, when **Search** is pressed, by *Updated
 from* and *Updated to* (UTC days), *Requested by*, *Job field*, *Job type*
 (Remote, Hybrid, Onsite), *Clearance* (Required or Not required), *Industry*,
-*Company* (compared as above), a salary range (*Salary from*, *Salary to*) and
-*Full text* over company, title and description, in that order - and
-**Details** opens a row with its description and history, where **Revoke
+*Company* (compared as above, and suggested from the lake as it is typed), a
+salary range (*Salary from*, *Salary to*) and *Full text* over company, title
+and description, in that order. Every box but the dates, the salary range and
+Clearance takes **several values**, as chips: a job matching **any** of a
+box's values is found - Remote and Hybrid finds the jobs of either - and every
+box filled in must match. *Full text* takes several **keywords**, separated by
+a comma, a semicolon, a new line or Enter: a job with any of them is found,
+and a keyword of several words needs all of them (*machine learning* is both
+words, each a word's start; *react, typescript* is either). A word of one or
+two letters or digits is matched whole - *Go* finds Go, not Google; *C*, *AI*
+and *3* likewise - and a word is split where the full-text index splits text,
+so *node.js* is two words. A company is never split on its comma - *OpenAI,
+Inc.* is one. A search takes at most 10 keywords of at most 100 characters
+each, 25 words across them, 25 companies and 25 people under Requested by. What is typed and not yet a chip
+is taken by Search as it stands; what is typed into Job field, Job type,
+Industry or Requested by only narrows that box's list, and Search and Clear
+empty it. **Details** opens a row with its
+description and history, where **Revoke
 reward** takes the reward back and **Delete** removes the job (it can then be
 reported again, as a new one), with **Also revoke the reward** to take its
 reward back in the same step. **Push to Google Sheet**, beside Search, writes
@@ -1854,6 +2436,56 @@ is shared with, how many jobs wait to be appended and why the last attempt
 failed, **Retry now**, and **Create a new admin sheet**. **Admin → Accounts**
 names the global rate in every empty per-reporter rate box.
 
+**Find Jobs (everybody who builds resumes).** **Find Jobs** in the sidebar
+(`/jobs`) is the lake for users as well as administrators: the same filter
+form as the Lake tab - without *Requested by*, which is an administrator's -
+the same list, newest first, and **Details** with a job's facts, link and
+description. What a user is shown of a job is its company, title, link, job
+field, salary, job type, clearance, industry and when it was updated - never
+who reported it, what they were paid, how often it was seen, its hash or the
+admin sheet; an administrator's list adds who reported it, as a column, a
+filter and a line in Details. **Go to my sheet**, top right, opens the All tab
+of your own job sheet in a new tab.
+
+Pick jobs with the box on each row - or all of a page with the box in the
+header, or **Select this job** in a job's Details - across pages, up to
+`JOB_LAKE_EXPORT_MAX_ROWS` (200 by default) at a time; **Search** and
+**Clear** let the picked jobs go. Then:
+
+- **Export into Sheet** appends them to the **All** tab of your own job
+  sheet, after its last used row, dated today and numbered in NO(DATE) like a
+  job you added, each with its six analysis cells - so building resumes from
+  those rows analyses none of them again. A job already in All - the same
+  link, tracking parameters aside, or for a job with no link the same company
+  and title - is left out, and the page says how many; a job deleted from the
+  lake since the list was read is counted as no longer there. No other tab,
+  and nobody else's sheet, is ever written. The picked jobs stay picked, to
+  order next.
+- **Order Immediately** places an **Order** - a resume for each picked job,
+  built on the server and collected on **Orders** - for the profiles you
+  choose: a single profile, **several profiles** picked from a list of your
+  enabled ones, every profile or a group (all but the first **Premium** and
+  above, drawn with a lock below it), and the model for this order if not
+  each profile's own. The cost line prices it before you press **Place
+  order** - or, while there is nobody to build for yet (no profile picked, a
+  group whose profiles are all disabled), says why in its place. Place order
+  asks first, as every Order does - what it takes from your credit and what
+  is left, with **Do not show again**; closing the dialog while it works out
+  the price places nothing. The receipt appears on the page, *You ordered
+  successfully: Order number - ...*, linking to the order, and the picked
+  jobs are let go. Each job goes by its stored analysis, so nothing is
+  analysed again; a picked job the lake has no analysis on record for is left
+  out, and the receipt says so.
+
+**How a search is read, at any size.** No search sorts the lake. With
+neither a company nor a job field it walks the lake newest first by its
+`updated_at` index and tests the other filters on the way - except Requested
+by alone, which reads those people's rows by its own index and sorts only
+them; several companies,
+or up to 25 job fields, are one ordered index read each, merged in date order;
+keywords are matched once, through the full-text index, and tested as the
+read goes. `backend/test/jobLakeStore.test.js` pins every one of these plans.
+
 ### Order & Download
 
 Every build is queued on the server, and there are two ways to start one -
@@ -1874,9 +2506,26 @@ alike - need Premium or higher. Everything else is open to every
 subscription: sheet mode, a single profile, Generate Immediately and **Order**
 (a Default account orders for its one profile, with no row limit).
 Administrators are exempt whatever their own subscription. The builder shows
-the locked choices greyed out with a *Premium* pill; the server is the real
-lock - a run, a quote or a multi-profile preview for more than one profile (or
-for all of them) is refused with 403 `subscription-too-low`.
+the locked choices greyed out with a lock beside each - Select Group a locked
+button where the select would be - and pressing the lock or the choice opens
+*Locked: Building for several profiles*, which says what Premium adds, with
+**Go to subscription** and **Close**. The server is the real lock - a run, a
+quote or a multi-profile preview for more than one profile (or for all of
+them) is refused with 403 `subscription-too-low`, and the page answers that
+refusal with the same dialog.
+
+**Anything that spends credit asks first.** Generate Immediately, every
+**Order** (the header's, the multi-profile preview's and the sheet panel's)
+and buying, switching or keeping a subscription open a confirm that says what
+it takes from your credit - *This takes $0.161 from your credit, for 7 resumes
+at $0.023 each. Your balance after: $3.816.* - priced by the server's own quote
+for exactly that run. A balance that cannot cover it says how short it is, with
+**Buy credits**, and Proceed is off. **Do not show again** stops it asking, in
+this browser, for that kind of action only - Generate Immediately, Order and
+subscriptions each remember it apart. An Order or a subscription change that
+takes nothing (a free model, an administrator) does not ask; Generate
+Immediately always does until skipped, because it also carries the warning
+below.
 
 **Sheet mode reads a job tab of your own sheet.** Pick the **Tab** (every tab
 is listed, All selected, and one that is not a job tab greyed out with why)
@@ -1894,7 +2543,8 @@ names (see [Job analysis: once per posting](#job-analysis-once-per-posting)).
 
 **Generate Immediately is tied to its tab.** The first click asks *"If you
 close the tab or the network drops, the run can be stopped. Would you like to
-proceed?"* (with *Don't show again*, remembered by the browser). While the page
+proceed?"*, beside what the run takes from your credit (with *Do not show
+again*, remembered by the browser). While the page
 is open it follows the run, with progress and **Stop**, and each finished
 resume - resume and cover letter, in the formats the run asked for - downloads
 by itself, once. The run's files are also listed under the progress (*This
@@ -1986,7 +2636,7 @@ For a page or a script, the queue's contract is:
 
 | Call | What it does |
 |---|---|
-| `POST /api/generation/batches` | Queues a run. `mode: "immediate"` (the default) or `"order"` (`asOrder: true` is the older spelling); `tabId` names the starting tab of an immediate run. Answers `202 { batchId, kind, total, ... }`, plus `orderId` and `orderNumber` for an order |
+| `POST /api/generation/batches` | Queues a run. `mode: "immediate"` (the default) or `"order"`; `tabId` names the starting tab of an immediate run. Answers `202 { batchId, kind, total, ... }`, plus `orderId` and `orderNumber` for an order |
 | `GET /api/generation/batches/:id/stream?tab=<tabId>` | Progress as NDJSON. The run's own tab, open, is what keeps an immediate run alive |
 | `GET /api/generation/batches?active=1&tab=<tabId>` | The immediate runs started from that tab and still going - what a reloaded tab reattaches to |
 | `POST /api/generation/batches/:id/release?tab=<tabId>` | Stops an immediate run now. No body, and the session cookie suffices, so a `keepalive` fetch or `sendBeacon` from `pagehide` works |
@@ -2014,7 +2664,7 @@ For a page or a script, the queue's contract is:
 | The Job Data Lake | The same database: `job_lake` (one row per job, its `job_hash` unique, its job type, clearance and industry, the reward its current version paid and at what rate), `job_lake_history` (each version a later report replaced), `job_reports` (each posting each reporter reported, once, with what became of it the first time - what *Reported before* is decided by) and `job_lake_fts` (the full-text index, kept in step by triggers). The rewards and revokes are ledger rows (`job-report-reward`, `job-report-reward-revoked`). The lake's settings and the admin sheet's id are app settings (`job-lake`, `job-lake.admin-sheet`). The admin sheet itself is a copy - a row whose `sheet_synced_at` is empty has not reached it yet |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
 | Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
-| Built-in resume templates | `backend/static/templates/*.json`, read from the file on every request - so an edited file shows at once, with no import. What an administrator changes about a built-in - its name, description, disabled flag and the layouts it is offered for - is an override row in the database (`template_overrides`) laid over the file, never the file itself |
+| Built-in resume templates | `backend/static/templates/*.json`, read from the file on every request - so an edited file shows at once, with no import. What an administrator changes about a built-in - its name, description and disabled flag - is an override row in the database (`template_overrides`) laid over the file, never the file itself |
 | Templates an administrator saved - imported from JSON, extracted from a PDF, built in the manual editor | **Files**, in the same `backend/static/templates` directory: `<id>.json` in the shipped shape plus a `"source"` (`uploaded`, `extracted` or `manual`). A file with a `source` is a saved template, editable and deletable on **Admin → Templates**; a file without one is a built-in. Written to a temporary file and renamed into place, so a crash never leaves half a template. They are not gitignored: they show in `git status`, and committing one ships it to every install that pulls |
 
 Nothing under `backend/static` is written to at runtime **except `static/templates`**, which also holds the templates administrators save (`TAILOR_STATIC_DIR` moves the whole directory, seeds and saved templates together). Every other edit made in the admin panel goes to the database. The backend prints the templates directory under `Database:` at startup, and says so if this user cannot write to it.
@@ -2368,8 +3018,8 @@ generation works here.
 
 Cloudflare's proxy read timeout is about **100 seconds on Free, Pro and Business,
 and cannot be raised** (only Enterprise can). But `/api/resume/analyze`,
-`/generate` and `/preview` run **inline** and wait: `/generate` awaits the job
-analysis, then the tailoring, then the PDF and DOCX rendering, against budgets of
+`/preview` and `/preview-all` run **inline** and wait: a preview awaits the job
+analysis, then the tailoring and its revise pass, against budgets of
 `AI_CLI_TIMEOUT_MS=180000` and `AI_CLI_TIMEOUT_MS_TAILOR=300000` — three to five
 minutes per call, deliberately, because a subscription seat is not fast. Each of
 those requests is a guaranteed **error 524** behind the proxy, on a server that is
@@ -2652,7 +3302,7 @@ free_tailor/
 │   │                       #   .env, the port, the Windows fallback), and nextLaunch.mjs, its decisions
 │   └── src/
 │       ├── app/            # Pages (/, /orders, /credits, /report, /settings/*, /admin/*,
-│       │                   #   /jobs/filter, /bid-assistant, /calendar)
+│       │                   #   /jobs, /jobs/filter, /bid-assistant, /calendar)
 │       ├── components/     # Reusable UI components
 │       │   ├── profile/    # The profile editor and its live preview, one file per group of sections
 │       │   ├── shell/      # The app shell: top bar, sidebar, settings sub-nav
@@ -2750,22 +3400,22 @@ folder path or the file name does.
 
 | Section | Purpose |
 |---------|---------|
-| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription and role - User, Reporter or Administrator - before they arrive; it is not a way in, since they still prove the address through Google or a code. A row whose address is in `ADMIN_EMAILS` (or is `SMTP_USER`'s, when `ADMIN_EMAILS` is empty) says so, naming the setting: it can be given another role, but becomes an administrator again at its next sign-in. A **Reporter** row has a **rate per job** (dollars, empty for the global rate) and **Record payout** - the amount paid outside the app and a note saying how, taken off the balance, never more than it; recording one while the reporter has a payout request open closes that request as paid (see [Roles](#roles)) |
-| **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts and file naming - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). Three ways in: **New Profile**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile); an upload, and an import that makes exactly one profile, open its editor. Each row shows the profile's template and layout |
+| **Accounts** | Every account on the installation, with its role, subscription, balance and profile use. Set a balance outright or add a delta, in dollars to `$0.001`, and read any account's ledger to see where a balance came from. Change any of them, disable an account, end all its sessions, or delete it. The last enabled administrator cannot be demoted, disabled or deleted - account management is admin-only, so that would leave nobody who could undo it - and no administrator can demote, disable or delete the account they are signed in with (another administrator can). Adding an account here sets somebody's subscription and role - User, Reporter or Administrator - before they arrive; it is not a way in, since they still prove the address through Google or a code. A row whose address is in `ADMIN_EMAILS` (or is `SMTP_USER`'s, when `ADMIN_EMAILS` is empty) says so, naming the setting: it can be given another role, but becomes an administrator again at its next sign-in. A **Reporter** row has a **rate per job** (dollars, empty for the global rate) and **Record payout** - the amount paid outside the app and a note saying how, taken off the balance, never more than it; recording one while the reporter has a payout request open closes that request as paid (see [Roles](#roles)). An account that pays for its subscription from its balance shows until when; setting its subscription, or moving its role away from User, ends that at once and refunds nothing - the answer says how much was unused, to give back with +/- if you mean to - and disabling it says when the subscription ends, since a disabled account is not renewed (see [Subscriptions](#subscriptions)) |
+| **Profiles** | Create/edit candidate profiles - content, template, Technical Skills layout (Plain or Grouped), the Soft Skills and Strengths switches, prompts and file naming - on a page of their own with the resume drawn live beside the form (see [Editing a profile](#editing-a-profile)). **My Profiles** shows each as a card - its first page, when it was edited, its template - with Edit, Duplicate, Download JSON, Disable and Delete. **New profile** starts at the template chooser (All Templates / Simple / Modern / Creative, each template's details, **Use this template**), then the editor asks **Import your existing resume** (a resume PDF an AI call reads) or **Start from blank**; the chooser's **Import existing resume** takes a resume PDF or a profile JSON file (no AI call - the file already is a profile), and an import that makes exactly one profile opens its editor |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Credentials** | None to manage. Claude Code, Codex and the Gemini CLI run on subscription seats signed in on the server, and the app has no API key anywhere - nor a field to enter one |
 | **Providers** (on **Models**) | Every place a seat runs: the built-in provider of each type, configured from `.env`, and any added - a name, a type, a **sign-in folder** on this server (passed to the CLI as `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME`, so it can be another account), optionally its own binary, and its own **concurrency_max_requests** (1-32). Each row shows where each value comes from (this page, `.env`, or the default) and its live state. Paths are checked as they are saved; a provider building something cannot be removed, only switched off - its waiting work moves to another of its type - and a built-in one can only be switched off. See [Several providers of one type](#several-providers-of-one-type) |
 | **Models** | **Create New Model** sits at the top right, and creating or editing a model happens in a dialog, each refusal under its box in the server's words. Each model an account can pick: a **display name** (required, and the only part of it anybody else sees), a **provider** - Claude (Subscription), Codex (Subscription) or Gemini (Subscription), with a 🔒 on a seat locked here - a **model name** chosen from that provider's own list, which changes with the provider (Sonnet, Opus, Haiku, Fable for Claude; Account default, GPT-6.1-Sol, GPT-6-Astra, GPT-6-Luna and the rest for Codex; Auto, Pro, Flash, Flash-Lite and the Gemini ids for Gemini - each list overridable in `.env`), a **price per resume** in dollars (`0.023`, in steps of `$0.001` from `$0` to `$1,000`, `0` shown as *Free*; required when a model is added, since there is no default), and a description. Every enabled model priced `$0` is listed in red above the table, so a free model is always a decision somebody can see. The list shows each model's provider, model, price and status. A model whose name has since left its provider's list is flagged *Not in model list* and keeps running. The list marks the **Default** model and the **Analysis** model - the one every job posting is analysed on, the default model's while none is chosen - and each row offers **Set default** and **Use for analysis**; on the analysis model the second reads **Use the default model**. Above the list are both choices, each saying where it came from (*Set here*, *From .env (DEFAULT_MODEL)* / *(ANALYSIS_MODEL)*, or *Default*) with **Reset to default**, and a chosen analysis model that can no longer run is named as such - postings are analysed on the default model meanwhile. **Set default** and **Use for analysis** refuse a model that cannot run - switched off, on a locked seat, or on a provider switched off - rather than quietly substituting another. One model per provider and model name, and one per display name - compared trimmed and in any case, because the display name is all anybody else sees, and two models sharing one would be identical choices at different prices |
 | **AI defaults per profile** | Each profile picks its own model; the builder shows that default and can override it for a single run. Both menus list only the models that can run right now, by display name - no provider, model name, price or lock. A profile whose model has since gone shows *Unavailable model* and runs on the default until the model is back - saving the profile for any other reason keeps the choice - and the server refuses a run, or a profile save that newly picks one, with *That model isn't available* |
-| **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Each template declares the Technical Skills layouts it prints (`skillsLayouts`) - Burgundy Rule and Navy Rule are Grouped only - and a profile's picker offers only those that print its layout; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
-| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis and its facts, a resume PDF into a profile) and **Building Prompts** (the tailored resume content, its revise pass and the cover letter), in the order they run. The job analysis's two prompts (**Analyze Job Description** and **Job Facts (Filter)**), the tailoring's revise pass (**Revise Resume Coverage**) and the cover letter have exactly one prompt each - edit it, there are no variants, and the page says why and which model it runs on. Some variables are **required**: `[[jobDescription]]` in the two analysis prompts, `[[profileJson]]` in the cover letter, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in a tailoring prompt, `[[draftJson]]` and `[[missingTermsJson]]` in the revise prompt. A save that leaves one out is refused in so many words, and a stored prompt without one - or naming a variable this version no longer supplies - is marked *Needs update* and never runs - the built-in prompt of its feature runs in its place until it is updated; a stored edit of the analysis, job facts or tailoring prompts saved before this release is marked the same, whatever it names, until it is saved again; the list says why under it (*Not run: it does not use [[...]]*, *... uses [[...]], which this version does not supply* or *... dates from an older version of this prompt*), and the editor says it of the text as typed before Save. The line is what a prompt produces, not what it reads. A prompt of the other features can pin its own model - a provider and a model name from the same lists as **Models** - which decides the Bid Assistant and the extractors; a resume's tailoring always runs on the model it is charged at. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
+| **Templates** | Open to every user and administrator (not reporters) from the sidebar to look at and preview; only an administrator can add, edit, disable or delete one. Nineteen built-in templates - Professional Two-Column, Classic Serif, Developer Mono, Structured Slate, Editorial Italic, Contrast Cards, Charcoal Sidebar, Timeline Bars, Indigo Band, Forest Chips, Slate Italic, Burgundy Rule, Navy Rule, Navy Gold, Amber Gradient, Ink Ledger, Dossier Panel, Framed Serif and Azure Stack - plus manual and uploaded ones. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree. Every template prints Technical Skills both ways, and View's **Grouped** / **Plain** switch shows either; see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts) |
+| **Prompts** | Edit default prompts or add custom variants per feature, grouped into **Extracting Prompts** (a posting into its analysis and its facts, a resume PDF into a profile) and **Building Prompts** (the tailored resume content, its revise pass, the cover letter and the profile editor's **Write Entry Bullets**), in the order they run. The job analysis's two prompts (**Analyze Job Description** and **Job Facts (Filter)**), the tailoring's revise pass (**Revise Resume Coverage**), the cover letter and Write Entry Bullets have exactly one prompt each - edit it, there are no variants, and the page says why and which model it runs on. Some variables are **required**: `[[jobDescription]]` in the two analysis prompts, `[[profileJson]]` in the cover letter, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in a tailoring prompt, `[[draftJson]]` and `[[missingTermsJson]]` in the revise prompt, `[[entryJson]]` in the bullets prompt. A save that leaves one out is refused in so many words, and a stored prompt without one - or naming a variable this version no longer supplies - is marked *Needs update* and never runs - the built-in prompt of its feature runs in its place until it is updated; a stored edit of the analysis, job facts, tailoring, revise or cover letter prompts saved before this release is marked the same, whatever it names, until it is saved again; the list says why under it (*Not run: it does not use [[...]]*, *... uses [[...]], which this version does not supply* or *... dates from an older version of this prompt*), and the editor says it of the text as typed before Save. The line is what a prompt produces, not what it reads. A prompt of the other features can pin its own model - a provider and a model name from the same lists as **Models** - which decides the Bid Assistant and the extractors; a resume's tailoring always runs on the model it is charged at. Each feature's prompt may use only the variables its code supplies, all listed beside it; a name that is not one of them is refused on save. Admin-only to change, since one edit changes what every account gets; see [Prompts and the section switches](#prompts-and-the-section-switches) |
 | **Notifications** | Post a notice to everybody on the installation. It appears in the bell in every account's top bar, with an unread dot until they open it. Editing one corrects the text without marking it unread again, so fixing a typo does not light the dot for people who have already read it. The notices the app writes for one account - a refund request decided - are not listed here and cannot be edited |
 | **Payments** | Every purchase, with **Refund** for a card payment, and the **Refund requests** queue: approve, decline with a reason the person will read, or mark refunded - which makes the refund - and, for a reporter's **payout request**, **Record payout**: what was sent, up to the balance, and how (see [Refund and payout requests](#refund-and-payout-requests)) |
 | **Job Lake** | The [Job Data Lake](#the-job-data-lake): search it (when it was updated, who reported it, job field, job type, clearance, industry, company, salary, free text), open a job and its history, delete one with or without taking its reward back; **Push to Google Sheet** - the jobs of a search into the *Temp For AI* tab of your own job sheet; **Merge** the jobs builds analysed; set the **global rate per job**, the **duplicate window** and an optional **daily cap** - or **No cap**, even where `.env` sets one - (and see, for each, whether `.env` or this page decides it); open the **admin sheet**, see how many jobs wait to be appended to it and why, and **Retry now** |
 | **Google Sheets** | The range importer: read a range of your own job sheet, edit it and write it back. Your own sheet only, and never columns G to L of a job tab, which the app alone writes (*Columns G to L of a job tab are written by the app only*) |
 | **Skills** | Maintain the hard/soft skill library |
-| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the Build Resumes defaults, the output folder and the **output prefix** - the administrator's half of where every run is filed, previewed as it is typed (see [Where resumes are saved](#where-resumes-are-saved)) - the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the Analyze Job Description and Job Facts (Filter) prompts as they stand (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message. Every setting with a default in `.env` - here, on **Payments** and on **Job Lake** - says where its value came from (*Set here*, *From .env (NAME)* or *Default*) and, when it was set here, offers **Reset to default**, which removes the saved value so `.env` decides again (see [Configuration](#-configuration)) |
+| **Settings** | One entry in the sidebar covering General, Accounts, Google Sheets, Prompts, Models, Skill Library, Notifications, Payments, Job Lake and Prompt Test, which appear as a second row once you are in it. General holds AI providers, the default model, the Build Resumes defaults, the output folder and the **output prefix** - the administrator's half of where every run is filed, previewed as it is typed (see [Where resumes are saved](#where-resumes-are-saved)) - the **Subscriptions** prices, each paid subscription's for 30 days, empty for *not offered* (see [Subscriptions](#subscriptions)) - the **Contact** list - how people reach you, shown to everybody in *Contact admin* (see [Contacting the administrator](#contacting-the-administrator)) - and a live status card per provider that is not locked - one per sign-in, so a second Claude account has its own (sign-in, in-flight calls, queued and running resumes, any hold, and for Claude the usage window; Gemini's names the signed-in Google account). Each provider row shows what it reports right now. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose. Prompt Test shows a posting's analysis - the stored one, or the one made now on the analysis model with the Analyze Job Description and Job Facts (Filter) prompts as they stand (a posting is analysed once, so to try an edited prompt, try a posting it has not seen). Every page here shows the cause of a failure under its message. Every setting with a default in `.env` - here, on **Payments** and on **Job Lake** - says where its value came from (*Set here*, *From .env (NAME)* or *Default*) and, when it was set here, offers **Reset to default**, which removes the saved value so `.env` decides again (see [Configuration](#-configuration)) |
 
 ---
 
@@ -2818,7 +3468,7 @@ matching it.
 **The settings an administrator can change have defaults here too** - the
 default model and the analysis model, Build Resumes' starting choices, the
 output folder and prefix, the contact details, the payment limits and 3-D
-Secure, and the Job Data Lake's rate, window and cap (not the provider
+Secure, the subscription prices, and the Job Data Lake's rate, window and cap (not the provider
 switches, the default profile or group, or the model, provider and group
 lists, which are what an administrator makes them). The value in effect is the administrator's when
 they saved one, else `.env`'s, else the built-in default, and only what an
@@ -2851,6 +3501,7 @@ once at startup, by name, and the built-in default is used.
 | `DEFAULT_MODE` / `DEFAULT_THEME` / `DEFAULT_RESUME_SELECTION` / `DEFAULT_RESUME_DOCX` / `DEFAULT_COVER_LETTER_DOCX` | Build Resumes' starting choices while **Admin → Settings → General** has saved none: what a build does first, `preview` or `generate` (default `preview`); the theme, `light` or `dark` (default `light`); which profiles are picked, `single` or `all` (default `single`; `group` is refused, since `.env` cannot name the group - a default group is chosen, with its group, under Admin → Settings → General); and whether the resume and the cover letter are also made as Word files (default `on` for both) |
 | `OUTPUT_BASE_DIR` | Where generated resumes are filed while **Admin → Settings → General** names no folder: an absolute path, `~` for the home folder. Unset, `generated/` in the checkout. A relative path warns once and is not used - it would be read against whatever directory the server was started from |
 | `OUTPUT_PATH_PREFIX` / `OUTPUT_PATH_SUFFIX` | Where under that folder each run is filed (see [Where resumes are saved](#where-resumes-are-saved)): the prefix, the same for every account while **Admin → Settings → General** saves none (default `/{{user_email}}/{{order_number}}`; `{{user_email}}`, `{{order_number}}` and `{{date}}`, `{{order_number}}` exactly once as a folder of its own), and the folder path after it for an account that has set none of its own under **Settings → Profile** (default `/{{date}}/{{profile_name}}/{{company_name}}/{{role}}`; `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and `{{row_number}}`). Both allow text around their tokens and at most 8 folders, and refuse a `.` or `..` folder, a drive letter and `~`. A value refused warns once at startup and the default is used |
+| `DEFAULT_TAILOR_MODE` | How a profile that has not chosen under **Customize → Generation → Tailoring** in its editor is tailored (see [Partial and Fully tailor](#partial-and-fully-tailor)): `partial` (default) rewrites the profile's own summary, descriptions and achievements for each posting, and writes a role left empty from the posting; `full` sends only each role's company, title and dates and writes the whole experience and the summary for the posting, with plausible figures. A profile's own choice wins. Anything else warns once and `partial` is used |
 | `CONTACT_CHANNELS` | How to reach the administrator, shown to everybody, while **Admin → Settings → General** has saved no contact details: `type:value` pairs separated by commas, each with an optional `\|label` after the value (`email:help@example.org\|Support,telegram:@example_help`); the type is `email`, `telegram`, `discord`, `whatsapp` or `other`. Each entry is held to the admin page's rules, and one that fails them is left out with one warning naming its position, never its text. Unset, none |
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client id, for Google sign-in |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Sending the emailed sign-in codes. Port 465 is treated as implicit TLS and everything else as STARTTLS; `SMTP_SECURE` overrides that, and `SMTP_FROM` defaults to `SMTP_USER` |
@@ -2897,14 +3548,17 @@ once at startup, by name, and the built-in default is used.
 | `PAYMENT_CARD_MIN_USD` / `PAYMENT_CARD_MAX_USD` / `PAYMENT_CRYPTO_MIN_USD` / `PAYMENT_CRYPTO_MAX_USD` | The smallest and largest purchase per method, in dollars and whole cents, while **Admin → Payments** has saved none for that method - each method on its own, so saving the card's limits leaves crypto following these: card `2.50` to `100`, crypto `50` to `2000` by default. A fraction of a cent warns once and keeps that bound's default; a minimum above its maximum keeps the method's built-in pair. The preset buttons are the built-in ones, less any outside the bounds |
 | `REQUIRE_THREE_D_SECURE` | Make the cardholder's bank authenticate every card payment while **Admin → Payments** has not chosen (default `off`). It moves chargeback liability to the bank and adds a step a buyer can fail |
 | `PAYMENTS_RETURN_URL` | Where a provider sends the browser back to after paying. Must be the frontend, not the API. Unset, it is `APP_URL`, then the first `FRONTEND_URL`, then the origin the buyer's own browser is on |
+| `SUBSCRIPTION_PREMIUM_PRICE_USD` / `SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD` / `SUBSCRIPTION_PREMIUM_MAX_PRICE_USD` | What each paid [subscription](#subscriptions) costs for 30 days, in dollars to $0.001, taken from the account's credit balance when it is bought and at every renewal - while **Settings → General → Subscriptions** stores no price of its own. Unset, or `0`, is **not offered**: nobody can buy it, and its card asks people to contact the administrator. Above $10,000 is clamped, with one warning. Anything else unreadable (`9,99`, `TBD`) is not offered for sale either, with one warning - but nobody decided that, so a subscription already paid for on it is held at its renewal, neither renewed nor ended, until the line is corrected. A box emptied on that page is the administrator's *not offered*, which beats a price set here |
+| `SUBSCRIPTION_RENEWAL_SWEEP_MS` | How often the server looks for paid subscriptions whose 30 days are up, renewing each from its account's balance or ending it, besides once at startup - once the credit held by runs that never finished has been given back (default `600000`, ten minutes; range 1000-86400000). A subscription keeps its features until then, and a server that was stopped renews at its next start. *Startup* |
 | `ORDER_RETENTION_DAYS` | How long an order's resumes are kept before the server deletes them (default `5`). Stamped on each order when it is placed, so a change applies to new orders only. `0` deletes on the next sweep |
 | `ORDER_RETENTION_SWEEP_MS` | How often that sweep runs, besides once at startup (default `21600000`, six hours; range 60000-86400000). *Startup* |
 | `IMMEDIATE_TAB_GRACE_MS` | How long a **Generate Immediately** run outlives a page that went without saying so: when the run's tab stops following it (network gone, laptop asleep, browser killed), the run is cancelled after this long unless that tab reconnects - a short drop loses nothing. A connection that vanished without closing is counted gone within 20 s first (the server ends the run's stream every 20 s and a live page attaches again), so such a run stops within this plus 20 s. Resumes that had not started are refunded (default `30000`; range 5000-600000). A page that is closed, reloaded or left stops its run at once instead |
 | `IMMEDIATE_FILE_RETENTION_MS` | How long a Generate Immediately run's files stay on the server after the run ends, **downloaded or not** - the page downloads each resume as it lands, so the server copy only has to outlive that download (default `600000`, ten minutes; range 60000-86400000). Checked every minute. The resumes stay charged, and the run is never listed on **Orders** |
 | `TAILOR_CACHE_DAYS` | How long a tailored resume and a cover letter are kept for reuse (default `30`, range 1-3650): generating again for the same unchanged profile, posting, model and prompt reuses them with no model call, and the resume is charged as usual. Pruned at startup and daily - see [The tailoring cache](#the-tailoring-cache) |
-| `TAILOR_REVISE_PASS`, `TAILOR_REVISE_MAX_TERMS` | The revise pass after a fresh tailoring (default `on`): a second call, Revise Resume Coverage on the model the resume is charged at, that works the checklist terms the draft left out - and figures, when its bullets carry fewer than five - into its summary and bullets; `off` makes every resume the first draft. `TAILOR_REVISE_MAX_TERMS` (default `30`, range 1-200) is how many missing terms one call is given, the posting's top five first. Each revise call has the seat's `_TAILOR` budget |
+| `TAILOR_REVISE_PASS`, `TAILOR_REVISE_MAX_TERMS` | The revise pass after a fresh tailoring (default `on`): a second call, Revise Resume Coverage on the model the resume is charged at, that puts back into its summary and bullets the checklist terms the draft left out that the profile itself names, and the profile's figures the draft dropped; `off` makes every resume the first draft. `TAILOR_REVISE_MAX_TERMS` (default `30`, range 1-200) is how many missing terms one call is given, the posting's top five first. Each revise call has the seat's `_TAILOR` budget |
 | `JOB_LAKE_DUPLICATE_WINDOW_DAYS` | The [Job Data Lake](#the-job-data-lake)'s duplicate window: a job reported again while its lake row was added or last replaced within this many days is a **duplicate** (red in the reporter's sheet, not paid); after it, the new report **replaces** the row and counts as added (default `60`, two months; range 1-3650). An administrator's value on **Admin → Job Lake** wins over this one, and that page says which is in effect |
 | `JOB_LAKE_PUSH_MAX_ROWS` | The most jobs one **Push to Google Sheet** on **Admin → Job Lake** writes into the pushing administrator's own *Temp For AI* tab, newest first (default `1000`, range 1-5000). A filter that matches more is cut at this many, and the page says so |
+| `JOB_LAKE_EXPORT_MAX_ROWS` | The most jobs one **Export into Sheet** on **Find Jobs** writes into your own *All* tab - and so the most jobs that page lets you select at once, for an export or for **Order Immediately** (default `200`, range 1-1000). A request naming more is refused (*Export at most N jobs at a time.*), never cut |
 | `JOB_LAKE_REPORT_RATE_USD` / `JOB_LAKE_DAILY_CAP_USD` | The Job Data Lake's global rate per accepted job ($0 to $1,000) and its daily cap per reporter ($0 to $1,000,000; above it is clamped, with a warning), in dollars to $0.001, while **Admin → Job Lake → Settings** sets neither. Unset, the rate is $0 - nobody is paid - and there is no cap. **No cap** on that page is a choice of its own that beats a cap this variable sets. A reporter with a rate of their own (**Admin → Accounts**) is paid that instead |
 | `CHROME_PATH` / `PUPPETEER_EXECUTABLE_PATH` | The Chrome to print with, overriding puppeteer's download and any installed browser. `PUPPETEER_EXECUTABLE_PATH` wins when both are set. Honoured even when the file is missing, which startup reports |
 | `TAILOR_STATIC_DIR` | Where the shipped seeds - default prompts, skill library, built-in templates - are read from, instead of `backend/static`. For tests and packaging. Nothing is written there except `templates/`, where the templates administrators save are kept beside the built-ins, so it must be writable for those and backed up with the database |
@@ -2954,7 +3608,7 @@ file. Export them in the shell, for the install and the server alike:
 | The log says `[sheets] "<tab>" in <spreadsheet> is not laid out as a job tab (a tab of the person's own); its columns are left as they are` | A build ran on a tab that is not a job tab: its first row does not start with *Date, NO(DATE), Company, Job Title, Job Link, Job Description*, and it is not empty. Nothing in it is re-headered, protected, read as an analysis or written, and its postings are found in the database or analysed once. The builder offers only job tabs, so this is a tab whose first row changed after the page listed the tabs, or a request made by hand. Build from **All** or **Temp For AI**. |
 | **Settings → Job Sheet** says *Your job sheet already has a tab named "All" that is not laid out as a job tab, so it was left exactly as it is.* (or *"Temp For AI"*, or both) | The sheet already had a tab of that name - one of the person's own, or a tab with data under an empty first row - so the app did not take it over and has no **All** (or **Temp For AI**) of its own: the job pages list that tab greyed out as *All (not a job tab)* and start on the first job tab instead, the note under their tab select says to rename or delete it before copying old jobs into All (rather than to copy them into it, where nothing would read them), and the log says `[sheets] <spreadsheet> already has a tab named "All" that is not a job tab`. Rename or delete that tab in Google Sheets, then reload **Settings → Job Sheet**: that page - and only that page, so the clash costs no Google reads on every other page load - looks again and the app adds its own tab, first (**All**) or second (**Temp For AI**). Until then the other pages go on saying what was recorded. An EMPTY tab of that name is simply taken over. |
 | The **Tab** select on Build Resumes says *No job tab to read* (the Job Filter: *No job tab to filter*, Report Jobs: *No job tab to report from*), with every tab of the sheet listed greyed out | No tab of the sheet is a job tab: the app's **All** and **Temp For AI** are not there - their names are taken by tabs of the person's own (Settings → Job Sheet says so, see the row above), they were deleted or renamed in Google Sheets, or the sheet has not been laid out yet - and every other tab is one of the person's own. Open **Settings → Job Sheet**: it lays the sheet out and puts back a deleted tab (or says which name to free), then reload the page. An empty tab added in Google Sheets also works: it is offered, and laid out the first time it is used. |
-| **Your job sheet** (the account menu, Report Jobs, Find Jobs, the Job Filter) opens the spreadsheet but not on **All**, and the tab selects start on **Temp For AI** with no All listed - a page left open from before says *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.* when it reads All | **All** was deleted or renamed in Google Sheets. Every page but one links to the tabs as they were recorded, so they point at the tab that is gone; only **Settings → Job Sheet** looks at the tabs again each time it loads (Push to Google Sheet does too). Open **Settings → Job Sheet**: it puts All back, first, and every link follows from then on - the way back for anybody, a reporter included. The same goes for **Temp For AI**. A renamed All keeps its rows and stays a job tab under its new name; the new All starts empty. |
+| **Your job sheet** (the account menu, Report Jobs, Find Jobs' **Go to my sheet**, the Job Filter) opens the spreadsheet but not on **All**, and the tab selects start on **Temp For AI** with no All listed - a page left open from before says *Google Sheets could not complete that request. Check the sheet and the rows you chose, or contact your administrator.* when it reads All | **All** was deleted or renamed in Google Sheets. Every page but one links to the tabs as they were recorded, so they point at the tab that is gone; only **Settings → Job Sheet** looks at the tabs again each time it loads (Push to Google Sheet does too). Open **Settings → Job Sheet**: it puts All back, first, and every link follows from then on - the way back for anybody, a reporter included. The same goes for **Temp For AI**. A renamed All keeps its rows and stays a job tab under its new name; the new All starts empty. |
 | **Admin → Google Sheets** refuses a write: *Columns G to L of a job tab are written by the app only (Job Field, Salary, Job Type, Clearance, Industry, Analysis). Choose a range within columns A to F.* - or *Columns K to P of "<tab>" are the app's protected analysis columns, written by the app only. Choose a range outside them.* (409 `protected-columns`) | The range reaches into the protected analysis columns of a job tab, or into any columns the app's own protection covers on that tab - an older build's daily tab keeps its **K to P**, and a tab whose first row was changed (so it no longer reads as a job tab) keeps its **G to L**. The server's Google identity is the only editor the protection lets through, so a write from the range importer is the one write a person could make into those cells. Those six cells are the program's: an **Analysis** cell written there could at most name a stored analysis, which a build uses only when it is that row's posting, and Job Field to Industry would just show something false. It is decided on the protection, not on the first row, which anybody may change and change back. Write A to F (or columns past the protected ones, or a tab the app never protected); the analysis columns fill themselves from each row's analysis. The importer also reads and writes only the administrator's own sheet now: any other spreadsheet id - another account's, or a sheet saved under an older build - is *That spreadsheet was not found.* |
 | A reporter's run says *the sheet was not updated*, or a duplicate's row is not red, or a row's analysis columns stay empty after a run | Either its posting could not be analysed this time - the run's row says *Failed* with the reason and a `Ref:`: *AI generation isn't available right now. Please contact your administrator.* (a seat signed out, not installed, locked or held - see the seat rows above), *AI generation is busy right now. Please try again in a few minutes.* (a usage limit; wait), *The AI request failed. Please try again.* or *The request took too long and was cancelled.*, or, for any other failure, *The job could not be analysed. Please try again, or contact your administrator.* (or *The job could not be added to the lake*); an administrator finds the cause in the backend log under that `Ref:` - or the sheet could not be written: the log has `[lake] Report run rep_...: the duplicates of "<tab>" could not be painted` or `[sheets] Could not write the analysis of N row(s) back` (Google refused or was busy), or `Row N of "<tab>" ... no longer holds <company> (rows were sorted or deleted since); it is not painted`. Nothing is lost either way: the job is in the lake and paid if it was added, and running the same rows again finds the posting reported before - no model call, no second reward - fills its analysis columns and paints it if it was a duplicate. The run no longer writes a *Lake Status* or *Job Hash* into the row: there are no such columns now - each row's outcome is on the page. |
 | **Report Jobs** says *The server restarted while this run was going, so its progress is gone.* | Runs are kept in the server's memory while they go (and for an hour after, so the page can show the last one), and the backend was restarted - by an operator, a crash, a deploy - in the middle of one. Nothing it did is lost: every job it added is in the lake and was paid, in the same transaction. Pick the same tab and rows and run them again: every row the lost run reported is *Reported before* - skipped, no model call, no second reward, painted red again if it was a duplicate - and the rest are reported. |
@@ -2975,14 +3629,26 @@ file. Export them in the shell, for the install and the server alike:
 | Rows or notes typed into **Temp For AI** are gone after a push | By design: a push replaces the tab - every row under its header is emptied in columns A to L, a duplicate's red paint included, before the jobs are written, and the confirm says so. Columns past L and every other tab are left alone. Keep rows of your own in All, or in a tab of your own. |
 | A build fails with *That job analysis was not found. Analyse the job description again.* | The page sent the id of an analysis this server has not stored - a page left open across a database restore, or a request made by hand. Analyse the description again (the builder does it when you press Generate), which finds the posting if it is stored or analyses it once. |
 | Every page but Report Jobs, Credits and Settings sends somebody to Report Jobs, or a request answers *That part of the app is not available for your account. Ask your administrator if you need it.* (403 `role-not-allowed`) | The account's role is **Reporter**, and that is what a reporter is: no resume builder, profiles, orders, templates or buying credits (see [Roles](#roles)). If they should build resumes, an administrator changes the role to User on **Admin → Accounts**; it takes effect on their next request, and their open page catches up when it reloads. Nothing they owned before was deleted. (The other way round - a user made a reporter while their page is open - their next request is refused, and the page takes them to Report Jobs by itself.) |
-| A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before jobs can be reported.* (or that their job sheet could not be reached, with a `Ref:`); **Settings → Job Sheet** ends the same sentence *...before this page can show you one.* | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user with no **Find Jobs** row - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
+| A reporter's account menu has no **Your job sheet**, and **Report Jobs** says *Job sheets are not set up on this server yet. An administrator has to connect Google Sheets before jobs can be reported.* (or that their job sheet could not be reached, with a `Ref:`); **Settings → Job Sheet** ends the same sentence *...before this page can show you one.* | The link is their own spreadsheet, and there is none to link: the server has no Google credential, or allocating their sheet failed. It is the same cause as a user whose **Go to my sheet** on Find Jobs is greyed out - see [The job sheet](#the-job-sheet) to set Google up, and an administrator finds a failure's cause under its `Ref:` in the backend log. The link appears by itself once **Settings → Job Sheet** shows a sheet. |
+| **Export into Sheet** on Find Jobs says *Your job sheet already has a tab named "All" that is not laid out as a job tab, so it was left exactly as it is. Rename or delete it in Google Sheets, then export again.* | The tab called All in your job sheet is one of your own - its first row is not the job header - so the app never writes into it, and the export has nowhere else to go. Rename or delete that tab in Google Sheets, then open **Settings → Job Sheet** (it adds a new All) or just export again. |
+| **Export into Sheet** says *N were in All already - the same link, or the same company and title - so they were left out.* | Those jobs are already rows of your All tab: a row with the same job link (tracking parameters such as `utm_source`, `gclid` or `ref`, http/https and a trailing slash aside), or - for a job with no link - the same company (compared as the lake compares companies) and title. Nothing is written twice. Delete the row in the sheet if you want it exported again. |
+| Find Jobs says *You can select at most N jobs at a time.*, or an export says *Export at most N jobs at a time.* | One export or order takes at most `JOB_LAKE_EXPORT_MAX_ROWS` jobs (200 by default, 1000 at most). Export or order in parts, or raise the setting in `.env` and restart. A page open from before the setting was lowered can still send more; the server refuses it, and a reload brings the new cap. |
+| An **Order Immediately** receipt ends *N jobs were left out: the lake has no stored analysis to build them from.* | Those lake jobs name no analysis the server still has, and a resume is built only on a stored analysis. Build them from Build Resumes with their descriptions instead; every job reported or merged from now on carries its analysis. |
+| Find Jobs says *Only an administrator can filter jobs by who requested them.* | Requested by is an administrator's filter, and the account is not one now - the page was opened while it was, and still sends the Requested by it had then. Reload the page: the form then has no Requested by box. (Admin → Job Lake never says this: a page of it left open after a demotion is refused whole, *That is an administrator-only part of this installation.*) |
+| A lake search says *Search for at most 10 keywords at a time.*, *Search for at most 25 words in all, across the keywords.*, *A keyword can be at most 100 characters.*, *Choose at most 25 companies.* or *Choose at most 25 people under Requested by.* | One search takes at most 10 keywords of at most 100 characters each, holding 25 words between them, 25 companies and 25 people: every word of Full text is one more look-up in the full-text index, so a search's words, not its keywords, are what it costs the server. Words are counted where the index splits text - *node.js* is two, and so is a word joined by one of the few letters the index reads as a mark (some New Tai Lue and Vedic signs); a test sweeps every letter and digit through the index's own tokenizer to keep the count true. Remove some chips (each has its own ×), or shorten a keyword, and search again - or search in parts. A paragraph pasted into Full text was once cut to its first 12 words without saying so; it is now refused. |
+| Full text *go* (or *AI*, *C*, *3*) no longer finds jobs that only say *Google*, *aim* or *30* | A word of one or two letters or digits is matched as a whole word, never as the start of a longer one: *Go* finds Go. A short prefix matched nearly every job, and cost the server the most of any search. Type more of the word - *goo* still finds Google, as a word of three or more letters is still looked for as the start of a word. |
+| **Export into Sheet** on Find Jobs says *"All" in your job sheet is not laid out as a job tab any more (its first row is not the job header), so nothing was exported into it. Rename or delete that tab in Google Sheets, then export again: a new All tab is added.* | Row 1 of your All tab was changed - typed over, or emptied above the rows - so the app no longer reads it as its job tab, and an export never writes into a tab it does not recognise (409 `not-job-tab`). Find Jobs has no other tab to send the jobs to, so rename or delete that tab in Google Sheets and export again: the export puts a fresh All back first, and the renamed tab keeps everything it had. (**Settings → Job Sheet** does not report this one: the tab is still the app's by its id.) |
+| **Export into Sheet** on Find Jobs says *Your job sheet kept changing while the jobs were being written, so the rest were not exported. Try again.* | Before each block of rows (50 at most) the export reads those rows again, and moves below anything somebody typed there meanwhile, so it never writes over a row; when the rows it is about to fill are taken five times running, it stops rather than chase the sheet (409 `sheet-changed`). The blocks written before it stopped stay. Wait until nobody - a person in the sheet, or a script - is adding rows to All, then export again: the jobs already there are recognised and left out. |
 | An administrator made somebody a User or Reporter, and they are an administrator again | Their address is in `ADMIN_EMAILS` (or, with that unset, it is the `SMTP_USER` address). Those are promoted at every sign-in and every start, and never demoted, so a slip on the Accounts page cannot lock the operator out - the row and the change's own message say so. Take the address out of `ADMIN_EMAILS`, restart the backend, then change the role. |
+| Adding an account (`POST /api/admin/accounts`) answers 400 *"premium-ultra" is not a subscription this build knows about.* (code `bad-subscription`) | The request named a subscription this build does not have - a typo, or a script written against another release's tiers. Nothing was created: no account, no role, no opening balance. Send one of the ids `GET /api/admin/accounts` lists under `subscriptions` (`default`, `premium`, `premium-plus`, `premium-max`), or leave it out for Default. Editing an account refuses one the same way. The **Admin → Accounts** form offers only the server's own list, so this comes from a script. |
 | **Record payout** (on Admin → Accounts, or on a payout request in the refund queue) answers *That is more than this reporter's balance of $X. Record what was actually paid, up to the balance.* | A payout records money already paid outside the app, and is never more than the balance: it is refused rather than cut down, because a record saying less was paid than was is wrong. If more really was paid, the balance was short first - read the reporter's **History** on Admin → Accounts, and add the missing earnings with the **+/-** button beside the balance (add or take away credit, with a note) before recording the payout. *Only a reporter is paid out* means the account is not a Reporter; use the **+/-** button for anybody else. |
 | **Record payout** on a payout request answers *That account is no longer a reporter, so no payout can be recorded against its balance. Decline the request instead.* (or *That account no longer exists ...*) | The reporter was made a user or an administrator, or deleted, after asking. Nothing was recorded and the request is still open: decline it with a reason. If they are to be paid anyway, make them a Reporter again first. |
 | A reporter's **Ask for Refund** is greyed out | It asks for the whole earned balance, so it is offered only with something on the balance (`$0` has nothing to pay out) and only while no payout request of theirs is open - one at a time. The button's tooltip, and the line under it, say which; the open request is listed under it, and an administrator answers it in **Admin → Payments → Refund requests**. |
 | Credit History shows `$0.050` on an older row and `$0.05` on a newer one | Amounts are shown without trailing zeros now (`$1`, not `$1.000`). A note written into a history row is stored as text and keeps the figure it was written with; the amount column beside it is always the new format. |
 | An uploaded template still prints a **Strengths** or **Soft Skills** heading with the section switched off | The section is found by the `section-strengths` / `section-soft-skills` class, a `data-section="strengths"` / `"softSkills"` attribute, or - for markup with neither - from where the list is printed (`{{#each strengths}}`, `{{join softSkills ", "}}`): an element around it that holds the section and nothing else - no other data, no text, no picture - or the heading element before the list's container, past a divider (`<hr>`, an empty box) or a line break. A heading that is bare text beside other data, sits inside a `{{#if}}` of its own before the list, or has a picture or a line of text between it and the list is not found, and one in an element that also holds a photo or static text is taken without that element. Put the class or the attribute on the element that holds the heading and the list (not on the list alone), and the section goes whole. |
-| The backend logs `[templates] Template "<id>" does not compile with its Strengths / Soft Skills section found from the list, ...` or `... section removed, so it is drawn with both sections in place ...` | Finding the section would have cut through a Handlebars block - typically an `{{#if}}` or `{{#each}}` that opens inside the section's element and closes after it (`<div class="section-strengths">{{#if summary}}...</div>{{/if}}`), which Handlebars accepts and the cut cannot. Rather than fail every resume on the template, it is drawn with less found: only the class- or `data-section`-marked section, or none - a switched-off list still prints empty, but its heading may stay. Move the block wholly inside or wholly outside the section's element (and mark the element with `section-strengths` / `section-soft-skills`), save the template, and the section goes whole again. Logged once per template while the server runs. |
+| The backend logs `[templates] Template "<id>" does not compile with its sections found from their lists, ...` or `... section removed or its sections moved, so it is drawn with both sections in place and in its own section order ...` | Finding or moving a section would have cut through a Handlebars block - typically an `{{#if}}` or `{{#each}}` that opens inside the section's element and closes after it (`<div class="section-strengths">{{#if summary}}...</div>{{/if}}`), which Handlebars accepts and the cut cannot. Rather than fail every resume on the template, it is drawn with less found: only the class- or `data-section`-marked sections, or none - a switched-off list still prints empty, its heading may stay, and the profile's section order is not applied. Move the block wholly inside or wholly outside the section's element (and mark the element with `section-<kind>`: `section-strengths`, `section-soft-skills`, `section-experience`, ...), save the template, and the section goes whole and moves again. Logged once per template while the server runs. |
+| A section I dragged does not move on an uploaded template, or the backend logs `[templates] Template "<id>" has a <kind> section the profile's order cannot move` / `... cannot be drawn in the profile's section order` | The renderer could not find that section in the template's markup (no `section-<kind>` class, no `data-section`, and no heading it could tell from the rest), or moving it would have split a Handlebars block. It prints where the template puts it. Put `section-<kind>` on the element that holds the section's heading and list (every built-in carries them), or move the block wholly inside or outside the element, and save the template. On any template a section moves only within the column the template put it in - a sidebar's Technical skills stays in the sidebar wherever its card sits. Said once per template (and kind) while the server runs. |
+| The new section kinds (Projects, Languages, ...) print on every built-in but nowhere on an uploaded template; the editor says *... has no Projects section* | The template's markup has no place for them. Add the extra-sections line where they should print - `{{> extra-sections sectionClass="..." headingClass="..." ...}}`, naming the classes the template already uses (see [Templates and the two skills layouts](#templates-and-the-two-skills-layouts)) - and save it; the entries were saved all along and the DOCX printed them already. |
 | The Crypto button is not offered, although `CRYPTOMUS_*` is set | Both variables are needed, not one, and they are read at startup - a `.env` edited while the server was running has not been seen yet. Restart the backend and, signed in as an administrator, read the buy page's own reason under the greyed-out button: it names which key is missing. Anybody else is told only *Not available right now*. |
 | Cryptomus callbacks are refused with *Signature verification failed* | The key here and the key there disagree, and every callback is being dropped - so no crypto payment will ever credit. Check `CRYPTOMUS_PAYMENT_API_KEY` against the **payment** API key in the merchant account (Cryptomus issues more than one kind of key), and check for a trailing newline from pasting. If it is definitely right, the remaining suspect is JSON escaping: Cryptomus signs the serialized body, and PHP escapes `/` as `\/` by default while JavaScript does not. Callback bodies carry URLs. That one line lives in `verifyWebhookSign` in `backend/src/integrations/cryptomus.ts` and nowhere else. |
 | A Cryptomus invoice was paid but nothing was credited | Read the backend log for that payment's reference. *"the provider reported N against M"* means the amount did not match what was quoted - the payment is deliberately left pending for a person rather than credited to a guess. *"a paid event arrived with no amount on it"* means the callback carried nothing comparable to what was quoted, and a signature alone is not evidence of how much arrived - so that one is held for a person too. *"already handled"* on every attempt means the callback was recorded before; the credits either landed or the row is not pending. Nothing at all means the callback never arrived: check the address set in the Cryptomus dashboard, or `CRYPTOMUS_CALLBACK_URL`, points at **this server's API** - `/api/payments/webhook/cryptomus` - and not at the frontend. |
@@ -3012,10 +3678,12 @@ file. Export them in the shell, for the install and the server alike:
 | `Type '() => Promise<string> \| null' is not assignable to type '() => string \| null'` in `config/browser.ts` | The installed puppeteer is a major ahead of the one this project pins: `executablePath()` returns a string in puppeteer 24 and a promise in 25. The code now handles both, so this should not recur - but an install that far out of step with `package-lock.json` is worth correcting anyway with `npm ci --prefix backend`, which installs exactly the locked versions instead of re-resolving them. |
 | `npm run dev` stops at once with `'concurrently' is not recognized as an internal or external command, operable program or batch file.` (Windows), `sh: 1: concurrently: not found` (Ubuntu) or `concurrently: command not found` (bash's wording, which macOS's `sh` uses by default) - or, from this release, `[install] npm run dev cannot start: packages this repository needs are not installed.` `[install]   In the repository root: concurrently` `[install] Run npm run install:all from the repository root, F:\Develop\free_tailor, then npm run dev again.` (`dev:live` and `dev:poll` the same) | The repository root's own packages are not installed. `npm run dev`, `dev:live` and `dev:poll` start both halves with `concurrently`, the root package's one package - a devDependency, kept in the root's own `node_modules`, not the backend's or the frontend's. It goes missing in three ways, which look the same: the root `node_modules` was deleted (by hand, or `git clean -xdf` while sorting out a pull) and only `npm install --prefix backend` and `--prefix frontend` were run again; npm leaves devDependencies out on that machine - `NODE_ENV=production` in the environment, or `omit=dev` in npm's configuration - so every plain `npm install` *removes* `concurrently`, and with it the backend's `ts-node-dev` and `typescript` and the frontend's `tailwindcss` and `typescript`, which this repository needs to build and run; or an install failed part-way - an `EPERM` or `EBUSY` on Windows, say, where a running dev server can hold files open. **Fix:** stop any `npm run dev`, then from the repository root run `npm run install:all`. It passes `--include=dev` to all three installs, which installs devDependencies whatever `NODE_ENV` or `omit` says. `npm config get omit` shows what npm will do - `dev` in its answer means it leaves devDependencies out, whichever setting says so - and `$env:NODE_ENV` in PowerShell (`echo %NODE_ENV%` in cmd, `echo $NODE_ENV` in sh) whether `NODE_ENV` is one of them; with `NODE_ENV` cleared, `npm config get omit` still saying `dev` means an `omit=dev` (or a `production=true`) in npm's configuration as well - `npm config ls` names the `.npmrc` it comes from, and `npm config delete omit` takes it out of your user one. **What happens now:** each of the three first runs `scripts/checkInstall.mjs` (npm's `predev`, `predev:live` and `predev:poll` hooks), which checks that every package the root, backend and frontend `package.json` files name is in that package's `node_modules`. When one is not, it prints the lines above - what is missing in each package, five names at most and how many more, and the repository root by its path - and stops before `concurrently`; when npm's settings, as far as a script can see them, leave devDependencies out it adds a line saying which and pointing to `npm config get omit` (`[install] npm looks set to leave devDependencies out of installs here: ...`) - a hint, because npm does not pass every setting on to a script: with `NODE_ENV=production` in the environment an `omit=dev` never reaches it, nor does an `.npmrc`'s deprecated `production=false`, which makes npm install them after all. With everything installed it prints nothing. npm skips a `pre` hook while its `ignore-scripts` setting is on (`npm config get ignore-scripts`), and then the shell's sentence is all there is - that setting also skips the backend's Chrome download. |
 | `Cannot find module '<name>'` or `TS2307` right after pulling | A pull brings source, never packages - a commit that adds a dependency leaves `node_modules` a version behind, and the backend then fails to compile naming a module that is correctly listed in `package.json`. Run `npm run install:all`, or `npm install --include=dev --prefix backend` for the backend alone. |
-| `npm run build --prefix frontend` (or the frontend's production-style `npm run dev`) fails with `Failed to type check.` after `.next/dev/types/validator.ts(53,39): error TS2307: Cannot find module '../../../src/app/account/page.js' or its corresponding type declarations.` (and the same for `app/jobs/page.js` and `app/settings/plan/page.js`) | A Turbopack dev server - the root `npm run dev` - ran on this checkout before a pull that deleted those pages. Next writes `frontend/.next/dev/types` only when `next dev` runs, and the frontend's `tsconfig.json` includes it, so it still names the pages that are gone. Delete `frontend/.next/dev` (or run `npm run dev` once, which writes it afresh) and build again. |
+| `npm run build --prefix frontend` (or the frontend's production-style `npm run dev`) fails with `Failed to type check.` after `.next/dev/types/validator.ts(53,39): error TS2307: Cannot find module '../../../src/app/account/page.js' or its corresponding type declarations.` (and the same for `app/settings/plan/page.js`) | A Turbopack dev server - the root `npm run dev` - ran on this checkout before a pull that deleted those pages. Next writes `frontend/.next/dev/types` only when `next dev` runs, and the frontend's `tsconfig.json` includes it, so it still names the pages that are gone. Delete `frontend/.next/dev` (or run `npm run dev` once, which writes it afresh) and build again. |
+| After a pull, an edit or a release, a page's new controls look unstyled - the filter boxes on **Find Jobs** or **Admin → Job Lake** are plain lists running down the page with huge check marks, say - or styles that were removed come back, after `npm run build --prefix frontend` (the production-style `npm run dev` builds too) | Next 16.3's build used to keep a cache in `frontend/.next/cache/turbopack`, and that cache reused an old stylesheet for a newer `globals.css` - the build said *Compiled successfully* in a second or two, and touching the file did not wake it. `next.config.ts` now switches the build cache off (`turbopackFileSystemCacheForBuild: false`), so a build is always cold, about 5 seconds. If you still see old styles after updating, stop the frontend, delete `frontend/.next/cache/turbopack`, and build again. The Turbopack dev server - the root `npm run dev` - keeps its own cache in `frontend/.next/dev/cache/turbopack`; delete that the same way if `npm run dev` shows old styles. |
+| My Google Drive is full of spreadsheets named *Free Tailor - admin@example.com*, *Free Tailor - reporter@example.com* and the like | Before this release `npm test` - and an e2e backend started with no sheets stub - on a checkout holding a Google credential in `backend/` (`google-oauth-credentials.json` from `npm run sheets:login`, or `service-account-key.json`) used it: the backend also looks for a credential beside its own code, and every test sign-in allocated a real spreadsheet for its test account. This release turns that search off for the test runner and the e2e preloads (`TAILOR_GOOGLE_CREDENTIAL_SEARCH=off`; see `backend/test/README.md`). Delete those spreadsheets: every such name ends in a test address at `example.com`, while an account's real sheet is named after its real address. |
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm run install:all` from the repository root, or `npm install --include=dev --prefix backend` (never `--omit=dev`) - `--include=dev` installs them even where `NODE_ENV=production` or npm's `omit=dev` would leave them out (the `concurrently` row above). This is the same symptom as the row above with a different cause: the packages were installed, but without the dev ones that carry the types. |
-| On **Admin → Templates**, importing, extracting, building or editing a template answers *Template could not be saved. Please try again, or contact your administrator.* with a `Ref:` (or deleting one, *Template could not be deleted.*) | Saved templates are files in `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), and the server could not write there: the directory is read-only to the user the backend runs as - a checkout owned by somebody else, a read-only container layer - or the disk is full. The startup line under `Database:` says so as `Templates: <dir> is NOT writable (<reason>)`; the backend log line carrying the same `Ref` names the file and the error, and an administrator sees it under the message. Give that user write access to the directory (or point `TAILOR_STATIC_DIR` at a writable copy of `backend/static`) and try again. A failed save leaves the template as it was and no temporary file behind. Renaming, disabling or reclassifying a **built-in** still works meanwhile, because those go to the database. |
-| A template file copied into `backend/static/templates` by hand is not offered any more, a profile that used it is drawn with `default`, and the startup line under `Database:` ends *Not offered, because a template file is named <id>.json with an id of lower-case letters, digits and hyphens: Company_Brand.json* | A template's id is its file name, and ids are lower-case letters, digits and hyphens now; an older release offered a file under any name. Rename the file to its id - `Company_Brand.json` to `company-brand.json` - and it is offered at the next request, with no restart; a profile naming `Company_Brand` finds it again, because a lookup folds case and `_`. What an administrator had changed about it as a built-in on **Admin → Templates** - its name, description, disabled flag and layouts - was recorded under the old id, so set those again there. |
+| On **Admin → Templates**, importing, extracting, building or editing a template answers *Template could not be saved. Please try again, or contact your administrator.* with a `Ref:` (or deleting one, *Template could not be deleted.*) | Saved templates are files in `backend/static/templates` (or `$TAILOR_STATIC_DIR/templates`), and the server could not write there: the directory is read-only to the user the backend runs as - a checkout owned by somebody else, a read-only container layer - or the disk is full. The startup line under `Database:` says so as `Templates: <dir> is NOT writable (<reason>)`; the backend log line carrying the same `Ref` names the file and the error, and an administrator sees it under the message. Give that user write access to the directory (or point `TAILOR_STATIC_DIR` at a writable copy of `backend/static`) and try again. A failed save leaves the template as it was and no temporary file behind. Changing a **built-in**'s name, description or disabled flag still works meanwhile, because those go to the database. |
+| A template file copied into `backend/static/templates` by hand is not offered any more, a profile that used it is drawn with `default`, and the startup line under `Database:` ends *Not offered, because a template file is named <id>.json with an id of lower-case letters, digits and hyphens: Company_Brand.json* | A template's id is its file name, and ids are lower-case letters, digits and hyphens now; an older release offered a file under any name. Rename the file to its id - `Company_Brand.json` to `company-brand.json` - and it is offered at the next request, with no restart; a profile naming `Company_Brand` finds it again, because a lookup folds case and `_`. What an administrator had changed about it as a built-in on **Admin → Templates** - its name, description and disabled flag - was recorded under the old id, so set those again there. |
 | The backend stops at once with `[db] The database at <path> has not finished upgrading: <what is missing>. Start build ac3df79 once on this database to finish its upgrade, then start this build.` (exit code 1) | The database was last opened by a build older than `ac3df79`, or `ac3df79` never finished its upgrades on it - and this build carries none of the code that made them, so read as it is it would read wrongly: balances in the old unit, saved templates missing, providers that no longer exist. The line names each step that is missing - *its tables lack columns build ac3df79 adds (...)* is a database last opened by a build from before one of them, which carried the other marks already. Start build `ac3df79` once on the same `DB_DIR`, let it finish starting, stop it, then start this build again (see [Upgrading](#4-upgrading)). Where the line says the migrations *wait for an administrator*, `ac3df79` needs one before it stops: an account that already exists at the `ADMIN_EMAILS` address is made one as `ac3df79`'s backend starts, and otherwise sign in to `ac3df79` with that address, which needs its frontend built and started too (both in [Upgrading](#4-upgrading)); where it says *some saved templates could not be written*, make `backend/static/templates` writable for the user the server runs as first. A copied or restored database is checked the same way, so a backup from before that build needs the same. A database that passed once is never checked again. |
 | `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
@@ -3023,22 +3691,38 @@ file. Export them in the shell, for the install and the server alike:
 | A run survives the server restarting | The queue is on disk, in the same SQLite database as everything else, so `npm run dev` reloading on a file save no longer costs you an hour of generation. On boot the server picks up any unfinished batch: resumes already built come back built and are not rebuilt, and whatever was mid-build at the moment the process died is built again - nothing completed it, so its file does not exist. Repeating one is safe because the output path is derived from the profile, company and row, so it overwrites rather than adding a second copy. A batch is kept for an hour after it finishes and then pruned. Its credits stay as charged: the startup sweep that hands back reservations older than six hours (`[credits] Released $X from N run(s) that never finished.`) skips every batch the restore brought back - an older build released a long order's whole charge here and then built the rest of it for free - and a batch that had finished just before the stop is settled on the spot, its failures refunded and its built resumes kept charged. |
 | A run keeps going after the page is closed - or stops when it is | Which one depends on how it was started. An **Order** belongs to the queue, not to the page: closing or reloading the page does not stop it, and its files keep landing on **Orders**; to stop it, press **Cancel** there. A **Generate Immediately** run is tied to the tab that started it: a dropped connection inside `IMMEDIATE_TAB_GRACE_MS` (30 s) picks it back up without downloading anything twice, but a tab that is closed or reloaded - or a page left inside the app after confirming - stops it, and the log says which: `[queue] Immediate run bat_... stopped by its page` (the page said it was leaving) or `[queue] Immediate run bat_... stopped: no page has followed it for 30000 ms` (the tab went away without saying so and did not come back). Either way the resumes that had not started are refunded and the run's finished files stay downloadable for `IMMEDIATE_FILE_RETENTION_MS`. For a run nobody will sit through, use **Order**. |
 | A Generate Immediately run stopped part way though the tab was still open | The page lost its connection to the server for longer than the grace (plus up to 20 s: the server ends the run's progress stream every 20 s, and a page that does not attach again by then is counted gone) - a laptop that slept, a network that dropped for a minute, a proxy that cut the progress stream and did not let it reconnect. The person sees the remaining resumes as *Cancelled* and the unstarted ones refunded. Raise `IMMEDIATE_TAB_GRACE_MS` (up to ten minutes) if your users' connections are like that, or have them **Order** long runs. |
+| A script's run that used to be an Order comes back with no order number, is not on **Orders**, and - unless it finished first - stops about 30 s later (`[queue] Immediate run bat_... stopped: no page has followed it for 30000 ms (IMMEDIATE_TAB_GRACE_MS)`) | The script sends `asOrder: true`, the older spelling of an Order, which `POST /api/generation/batches` no longer reads. Without a `mode` a run is Generate Immediately, held by a tab whose progress stream the script never opens, so the lease stops it after `IMMEDIATE_TAB_GRACE_MS` and refunds what had not started. Send `mode: "order"` instead. |
 | `npm run dev` serves the frontend for a moment after *✓ Ready*, then the log's last frontend line is `[frontend] npm run dev:turbo --prefix frontend exited with code 3221225477` and the page no longer loads (Windows; printed as a signed number - PowerShell's `$LASTEXITCODE`, say - the same code is `-1073741819`) - or the frontend prints `[next] Turbopack's dev server stopped with exit code 3221225477, 0xC0000005 STATUS_ACCESS_VIOLATION.` and goes on to a webpack build | `3221225477` is `0xC0000005`, Windows' *STATUS_ACCESS_VIOLATION*: native code - Turbopack, the Rust part of Next's dev server - touched memory it may not, and Windows ended the process before Node could print anything. It is Next's bug, [vercel/next.js#95015](https://github.com/vercel/next.js/issues/95015), reported from 16.3.0-canary.49 on; the log that brought it here ran Next.js 16.3.5. The backend is not involved and keeps running. **What happens now:** when Turbopack's dev server - `dev:turbo`, which the root `npm run dev` runs - ends that way on Windows, `frontend/scripts/next.mjs` explains it once and runs the production-style server in its place, on the same host and port: `next build --webpack` (webpack, since Turbopack has just crashed natively on this machine), then `next start`. The page works but does **not** hot-reload: stop `npm run dev` and start it again to see a change to the frontend (the backend still restarts on its own). If that build fails, the frontend ends with the build's exit code and a line saying the server was not started. It happens once, only in that mode and only on Windows; every other ending is passed on as before. **To pick a mode yourself,** from the repository root (the fallback fires the same way under `cd frontend && npm run dev:turbo`, and its advice names the root's commands): `npm run dev:live` - the backend with webpack's dev server, which hot-reloads but reloads other open tabs of the app (the next row) - or `npm run dev:backend` in one terminal and `npm run dev --prefix frontend` in another (`npm run dev:poll` runs the same two in one, its backend watching by polling): the production-style server, built by **Turbopack** - whether Turbopack's build crashes the same way on a given machine has not been tried. **Check which Next runs:** the frontend pins 16.3.8, and names any other it finds before starting - `[next] Next.js 16.3.5 is installed, but frontend/package.json pins 16.3.8. Run npm run install:all.` - which `npm run install:all` puts right (see [Upgrading](#4-upgrading) if `git pull` refuses to). Whether 16.3.8 itself still crashes on Windows is not known: the issue names no fixed release, and every measurement here was on Linux. Do not go back to 16.1.6 to avoid it: `npm audit` lists critical advisories against it, remote code execution on Windows-hosted servers among them. |
 | Opening a second tab of the app reloads the first one, and a Generate Immediately run going there stops (*Your last run ended while this page was away ... Stopped after building 0 of 1 resume*) | The frontend is on **webpack's** dev server - `npm run dev:live`, or the root `npm run dev` of a release before this one. In Next 16.1 that server sends every open tab a "sync" when a new tab connects, and a tab that has not seen the latest compile (the page the new tab opened is one) takes it for a restarted server and reloads itself - and 16.3.8's reloads it just the same; a reloaded Build Resumes tab releases its run as it goes, which the server then stops and refunds. Nothing in the app reloads a tab. Run `npm run dev` (Turbopack) or the production-style `npm run dev --prefix frontend` instead - neither reloads, and a production `next start` has no such server at all. `cd backend && DB_DIR=... E2E_MODE=dev:live node test/e2e/dev-reload.js` shows which a given setup does (backend/test/e2e/README.md). |
 | Only the first resume of a Generate Immediately run downloaded, or the browser asks *This site is trying to download multiple files* | The browser blocks a page from starting several downloads on its own until it is allowed to. Choose **Allow** in that prompt (in Chrome: the icon at the end of the address bar, or *Site settings → Automatic downloads → Allow* for this site). The files are on the server for `IMMEDIATE_FILE_RETENTION_MS` after the run ends (ten minutes by default), and the page lists each one under the progress (*This run's files*) to download again while it is open; after that they are deleted, downloaded or not - an **Order** keeps them for days instead. |
 | Downloading a Generate Immediately resume answers *That file has been deleted from the server* | Its run ended more than `IMMEDIATE_FILE_RETENTION_MS` ago, and the files went with it (owner decision: an immediate run's files are only kept long enough to download). The resume stays charged; if it never reached the person, an administrator can add the credit back with the **+/-** beside their balance on Admin → Accounts. Raise the setting, or use **Order**, when files are needed for longer. |
 | A link to `/api/generated/...` answers `{"error":"File not found"}` for a file that is on disk | The file is not yours alone. It is another account's: one of their runs recorded it, or it sits in a run's own folder (the output prefix's folder - `<email>/<order number>/` by default - recorded on the run when it was placed, where a resume is written before it is recorded as finished, and stays, unrecorded, when its build fails). Or it is nobody's: no run recorded it and no run's folder holds it - a resume the removed `POST /api/resume/generate` built, something copied in by hand, or the leftover of a failed build in a run placed before runs recorded their folder - and such a file is served to nobody. Whose it is is decided on the path as the server opens it, so a `//`, a `./`, a `..`, a symlink or (on Windows and macOS) another case of the same name is the same file and gets the same answer; an administrator is refused like anybody else. Its owner downloads it from **Orders**, or from the run's own page while the files last. Otherwise the path leaves the output directory, names a folder rather than a file, or the file is gone. A link to `/api/resume/download/...` answers 404 for every file: that route went with `POST /api/resume/generate`. |
-| Building for several profiles is refused with *Building for more than one profile needs a Premium subscription or higher* | The account is on the Default subscription, which supports one profile: Multiple, All profiles, Specific group and Select Group need Premium or higher, for Generate Immediately and Order alike (403 `subscription-too-low`). One profile at a time works on every subscription. Move the account up under **Admin → Accounts → Subscription**; administrators are never refused. |
+| Building for several profiles is refused with *Building for more than one profile needs a Premium subscription or higher* | The account is on the Default subscription, which supports one profile: Multiple, All profiles, Specific group and Select Group - and Find Jobs' Several profiles - need Premium or higher, for Generate Immediately and Order alike (403 `subscription-too-low`). One profile at a time works on every subscription. Move up on **Settings → Subscription**, paid from the credit balance - or an administrator can set the subscription under **Admin → Accounts**; administrators are never refused. |
+| Pressing a choice on Build Resumes (Multiple, All profiles, Specific group, Select Group) or in Find Jobs' Order Immediately (Several profiles, All profiles, Specific group), Groups in the sidebar or New profile opens *Locked: ...* instead | The account's subscription does not include it, and the page draws it with a lock rather than hiding it. The dialog says which subscription does; **Go to subscription** goes to where it is bought. A run the server refused for the subscription - the account was moved down while the page was open - opens the same dialog. |
+| The confirm before a run or a subscription change says *Your balance, $0.05, is $0.111 short.* and **Proceed** is greyed out | The balance does not cover what it takes now - the server's own quote for exactly that run, or the subscription's amount - so pressing it could only be refused (402). Buy credits from the link in it, or choose a model that costs less. A subscription switched or kept at renewal is never blocked now: its confirm says how short the balance is of the renewal, which ends the subscription that day if it is still short. |
+| The Generate Immediately confirm shows again, though *Don't show again* was ticked before - and every Order now asks too | Since this release the confirm names what a run takes from the credit, and *Do not show again* is remembered per kind of action - Generate Immediately, Order, subscription changes - under new keys, so each asks once more. Tick it again for the kinds you do not want asked about. An Order or a subscription change that takes nothing (a free model, an administrator) never asks; Generate Immediately always does until skipped, because it also warns that closing the tab stops the run. |
+| A notice says *Premium ended: not enough credit* - *Your Premium subscription could not renew on 2026-11-18: it costs $9.99 and your balance was $4 ...* | When a paid subscription's 30 days were up, the balance could not cover the renewal, so it ended and the account went back to the subscription it had before it paid (Default, or the one an administrator gave it). A renewal is taken whole or not at all - never part of the price. Nothing else was lost: profiles above the new limit are kept. Buy credits, then subscribe again on **Settings → Subscription**; the page warns before the renewal date while the balance is short of it. |
+| Buying or moving up answers *This change costs $X now, not the $Y you were shown: the price or the days left have changed since. Check the new amount and confirm again.* (409 `charge-changed`) | Nothing was charged. A purchase carries the amount the page showed, and the server works it out again as it charges; they differ when an administrator changed the price since the page loaded, or - moving up - when the page was loaded the day before, since the unused days are counted once a day at the hour the subscription was bought. The answer carries the amount in effect (`chargeMilli`): load the page again and confirm that. |
+| A subscription's card says it is not offered, or buying it answers *Premium Max is not offered on this installation. Ask your administrator if you need it.* (409 `not-offered`) | Nobody has priced it: no price under **Settings → General → Subscriptions**, and no `SUBSCRIPTION_<TIER>_PRICE_USD` in `.env` (or that line is `0`, or unreadable - the backend log says so once at startup, as `[env] SUBSCRIPTION_PREMIUM_MAX_PRICE_USD="..." is not an amount in dollars; using the default (unset).`). An emptied box on that page is *not offered* on purpose and beats `.env`. Set a price there, or in `.env` and restart. A subscription somebody already paid for runs to the end of its 30 days, then ends with a notice - unless the price was unreadable rather than unset, which ends nobody's (see the next row). |
+| A paid subscription is past its renewal date and has not renewed or ended yet | The renewal runs every `SUBSCRIPTION_RENEWAL_SWEEP_MS` (ten minutes by default) and once at startup, so it is at most that late, and the subscription keeps its features meanwhile. A stopped server renews at its next start. A pass that could not read the prices touches nobody and says `[subscriptions] Could not read the subscription prices, so no subscription was renewed or ended; ...` - look at the cause logged with it; a settings row that cannot be read stops every admin page too. One price that is set and cannot be read holds only the subscriptions renewing as it, and each pass says `[subscriptions] N subscription(s) due were neither renewed nor ended, because a price cannot be read (Premium: SUBSCRIPTION_PREMIUM_PRICE_USD in .env). ...` - correct that line and restart, or save the price under **Settings → General → Subscriptions** (the line *the price stored under Admin -> Settings -> General* means the stored price was edited by hand: save it there); the next pass renews them from where their 30 days ended. Each pass that renewed or ended anything logs `[subscriptions] Renewal: N renewed, M ended.` |
+| A notice says *Premium ended* - *Your Premium subscription ended on 2026-11-18 without renewing, because your account was disabled then, and nothing was taken from your credit.* | An administrator disabled the account before its paid 30 days were up, and a disabled account is not charged for another period: it can neither use one nor sign in to cancel it. The account is back on the subscription it had before it paid. Once it is enabled again it can subscribe again on **Settings → Subscription**. Enabled before the 30 days were up, it would have renewed as usual. |
+| Changing an account's subscription or role on **Admin → Accounts** answers *Ended alice@example.com's Premium paid from credit until ...; nothing was refunded. About $X of it was unused ...* | The account had paid for that subscription from its balance, and an administrator's change ends that at once - it will not renew, and nothing is refunded automatically, because credit given to an account made a reporter would be paid out as earnings. The account was told in its bell. To give the unused part back, use **+/-** beside the balance with the amount the note names. Setting the subscription it already pays for changes nothing. Disabling a paying account ends nothing at once, and its answer says so instead: *... A disabled account does not renew: unless it is enabled again by then, Premium ends that day and nothing more is taken.* |
 | Behind a reverse proxy, a long batch's progress bar says *Finished 4 of 30* while the server goes on building | The page follows a running batch over one long-lived response, and a proxy closes a connection that has been quiet for a while - nginx's `proxy_read_timeout` and an AWS load balancer after 60 s by default, Cloudflare after about 100 s - while one resume can take minutes. Each cut used to cost the page one of its twenty reattaches, so a long healthy batch ran out of them and stopped following. The stream now sends a bare newline every 25 s, which keeps those proxies from seeing it as idle, and the page keeps following until the server says the run is over: after twenty attaches in a row that brought nothing it slows from one attach a second to one every 10 s, and it stops at once only when the server answers that the batch is gone (404: restarted or expired). A proxy with an idle limit under 25 s still cuts it - raise that limit for `/api/generation/batches/*/stream`. |
 | A batch of profiles or a sheet import runs one at a time | Fixed. Every batch endpoint now runs its items in parallel, as wide as the model's type can actually take: the slots of every switched-on provider of it, added together - the built-in one's `AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY` or `AI_GEMINI_CONCURRENCY` unless **Admin → Models → Providers** sets its limit, plus each added provider's own. The queues were already there - a freed slot is handed to the head of its line the moment it is released - the batch just was not offering them enough work. `AI_BATCH_CONCURRENCY` still overrides the whole thing. The backend logs the width and the reason at the start of each batch. |
 | Generation feels like it sends more than it needs to | It used to. The profile is now projected before it goes to the model: contact details, this database's ids and timestamps, and the whole of `profileSettings` (your prompt choices, file-name templates and which model you pay for) are left out, and the JSON is compact rather than pretty-printed. Measured on a five-role profile: 9,365 characters down to 6,942, and with the tailoring's lists taken from the posting alone (no skill library, no duplicate copy) 4,484 for the whole of a turn's values. Nothing the prompt reads was removed. The layout and the section switches are not sent at all: they decide how the answer is drawn. The profile's own soft skills are not sent either - a tailored resume prints the posting's. |
 | The same job posting is analysed over and over | It is not any more: a posting is analysed **once, ever**, and the analysis is stored in the database (`job_analyses`) - not for six hours, not per model, per prompt, per profile, per run or per restart. A posting is recognised by its link or its text, so a preview followed by a generate, a sheet re-run, an order of the same rows, a retry and the job filter all reuse the one analysis. Editing either analysis prompt or changing the analysis model reaches only postings never seen before - see [Job analysis: once per posting](#job-analysis-once-per-posting). The only repeats are after a call that failed, which stored nothing, and the facts call asked once more when its answer names no job field. |
-| Technical Skills shows headings you do not want | Choose **Plain** under **Technical skills → Layout** in the profile's editor. The headings you assigned are kept, not deleted, so switching back to **Grouped** restores them. If the profile's template prints Grouped only (Burgundy Rule, Navy Rule), the editor moves the profile to one that prints Plain and says which. |
+| `POST /api/resume/analyze-multi-job` answers 404 (`Cannot POST /api/resume/analyze-multi-job`) | That route was removed: no page called it. Analyse each posting with `POST /api/resume/analyze` (`{ jobDescription, jobLink?, companyName? }`), which answers the analysis and its `analysisId` - a posting already analysed costs no model call. To build for many postings, send them all to `POST /api/generation/batches`, which analyses each one once, as its first resume starts. |
+| Technical Skills shows headings you do not want | Choose **Plain** under **Technical skills → Layout** in the profile's editor. The headings you assigned are kept, not deleted, so switching back to **Grouped** restores them. Every template prints Plain, so the profile keeps its template. |
 | A skill is filed under the wrong heading | On an untailored resume (the editor's preview, a resume built without a posting), the shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. With the profile on **Grouped**, pick that skill's heading from the menu beside it under **Technical skills** instead of *Work it out*; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. A TAILORED resume prints the headings the model wrote for the job instead: to change one before building, edit `skillGroups` in the preview's **Manual Edits (JSON)** and press **Update Preview**. |
-| A template is missing from a profile's template picker | The picker lists only templates that print the profile's Technical Skills layout, and the hint under it says how many it left out. **Burgundy Rule and Navy Rule print Grouped only**, so a Plain profile is not offered them; an uploaded template that reads only `{{#each skillCategories}}` is Grouped only the same way. A template an administrator disabled is not listed to anybody. An administrator who knows a template prints both can say so with `PATCH /api/templates/:id` and `{ "skillsLayouts": ["categorized", "flat"] }`. |
+| A template is missing from a profile's template picker, or cannot be picked | The picker lists every enabled template, whatever the profile's Technical Skills layout - every template prints both. A template an administrator disabled is not listed to anybody; enable it under **Admin → Templates**. One another of your profiles uses is listed greyed out as *(used by &lt;name&gt;)*, because each profile has a template of its own: give that profile another template first. Still missing after the upgrade: reload the page, which may be from before it. |
+| A template is on *Start building your profile* under **All Templates** but under none of Simple, Modern and Creative | It has no `category`: a template an administrator saved (uploaded, extracted or built by hand) is filed only when its JSON says `"category": "simple"`, `"modern"` or `"creative"`. Every built-in has one. Add the line to its file, `backend/static/templates/<id>.json` (beside `"description"`), and it is filed at the next request; any other word is ignored. |
+| **Use this template** is off, and the template says *Used by <name>* | Each profile has a template of its own, as the editor's picker says: another of your profiles uses that one. Choose another, or give that profile another template in its editor first. With every template taken, *Start without a template* opens a new profile drawn with the default until one is free. |
 | A template in the picker is greyed out with *(used by ...)* | Another of your profiles uses it, and the editor offers each template to one profile of an account at a time. Pick another, or move the other profile off it first. The profile's own current template is always selectable. |
-| The profile preview says *Drawn with ...: ... has no Plain layout* (or *Grouped*), or *the template this profile names is not offered any more* | The profile's template cannot print its layout - an administrator reclassified it - or was disabled or deleted. Resumes for it fall back exactly as the preview did: the profile's own template, then `default`, then any enabled template that prints the layout. Pick a template in the editor to choose for yourself. The backend logs the fallback once, as `[templates] Profile <id> uses the flat skills layout, which template "<id>" does not offer; drawing it with "<id>" instead.` |
-| The profile preview, or a resume, says *No resume template is available right now. Please contact your administrator.* | No enabled template could be found to draw with: every template is disabled, `default` included - or the profile's own template and `default` are, and every template left enabled prints only the other layout. Under **Admin → Templates**, enable `default`, which prints both layouts and so serves every profile. The `Ref:` in the message finds the line in the backend log. |
+| The profile preview says *Drawn with ...: the template this profile names is not offered any more* | The profile's template was disabled or deleted. Resumes for it fall back exactly as the preview did: `default`, else the first enabled template there is. Pick a template in the editor to choose for yourself. |
+| The profile preview, or a resume, says *No resume template is available right now. Please contact your administrator.* | No enabled template could be found to draw with: every template is disabled, `default` included. Under **Admin → Templates**, enable `default` (or any template). The `Ref:` in the message finds the line in the backend log. |
+| On an uploaded template, a **Plain** Technical Skills list sits in one narrow cell, or leaves a tall empty box beside or under it | The template lays its groups out as cells - a grid, columns, floats, boxes of a fixed or minimum height - and Plain is one group with no heading, so it gets one cell. The renderer marks the element the `{{#each skillCategories}}` loop sits directly in with `data-plain-skills` and makes each child of it span the row, which covers a grid, a multi-column list, a float, a width and a height. It does not reach a loop in an element that holds anything else - a heading before it, a divider, a photo or another block after it - which it leaves as written so nothing else there loses its size (give the loop an element of its own, with only its `{{#if}}` guard around it), a flex row whose items have a fixed `flex-basis`, or a template rule that is `!important` and more specific. For those, add a rule of the template's own for the one cell with no heading, as Burgundy Rule and Navy Rule do: `.cell:not(:has(.cell-title)) { grid-column: 1 / -1; min-height: 0; }`, with the template's own class names (`flex-basis: 100%` for a flex row). |
+| On an uploaded template, a **Grouped** Technical Skills block prints as one run-on line - *Languages: C#, Python, Frameworks: React, ...* | The template joins the skills into one line, and the renderer could not tell that line apart: it prints a line per heading only for a `p`, `div`, `li`, `span` or `td` that holds `{{join hardSkills ...}}` and nothing else but an optional bold label (`<strong>Technical Skills:</strong>`) - a `p`, `div` or `li` once per group, a `span` or `td` with its groups on lines of their own inside it. Put the join alone in one of those, or loop over the groups yourself - `{{#each skillCategories}}<p><strong>{{category}}:</strong> {{join skills ", "}}</p>{{/each}}`. |
+| `PATCH /api/templates/:id` answers 400 *There is nothing to change: send a name, a description or disabled.* | The body named none of the three things the edit changes. A script that sent `skillsLayouts` was written for an older release: every template prints both layouts now, and the key is not read - send `name`, `description` or `disabled`, or drop the call. |
 | The profile preview says *Not updated* | Its last request failed; the sentence under it says why, and **Try again** sends it again. The page shown is the last one that rendered, not the current draft. Nothing is lost - the form is unsaved until **Save**, whatever the preview does. |
 | The page in the profile preview shakes - shrinks and grows by a few percent, many times a second - with nothing being typed (it looked like every template but one) | An older build: a loop through a scrollbar. The page was scaled to the room beside it, and where scrollbars take space (Windows and Linux Chrome, macOS set to always show them) a one-page resume just taller than that room brought a scrollbar in, was scaled down to fit beside it, let the scrollbar go, grew back, and so on every frame. At 1920x937 that was every one-page document; a template whose page ran to a second page kept its scrollbar and stood still, which is why one looked fine. The same happened in the narrow layout's **Preview** tab through the window's scrollbar, in a window just the page's height. The pane and the window now keep the scrollbar's strip whether or not it is showing, and the scale is taken as if it always were. Still shaking: reload, since the page may be from before the upgrade; a browser without `scrollbar-gutter` (Chrome before 94, Firefox before 97, Safari before 18.2) settles after one step instead of none. `backend/test/e2e/preview-vibration.js` measures it. |
 | An unticked **Soft skills** or **Strengths** box shows only *N ... kept with the profile* | That is the switch working: off hides the list and keeps it. Nothing was deleted - tick the box to see, print and edit the entries again. |
@@ -3046,7 +3730,9 @@ file. Export them in the shell, for the install and the server alike:
 | A skill on the profile does not show in the preview | The preview draws only skills the shared skill library knows - in Plain, and in Grouped unless you assigned headings by hand - and this one came in with an uploaded or imported profile the library has never heard of. A skill added in the editor goes into the library as it is added, so remove it and add it again, or ask an administrator to add it under **Admin → Skills**. A tailored resume prints whatever the model wrote in its skills block, library or not. |
 | Soft Skills or Strengths do not appear on a resume, although the profile has them (or the prompt asks for them) | In order: the switch is **off** - both are off until ticked under **Soft skills** and **Strengths** in the profile's editor, and an off switch empties the section whatever the prompt or the model says; the **template has no such section** - Burgundy Rule, Navy Rule and Charcoal Sidebar have neither, Ink Ledger has no Soft Skills, and the editor says so under the switch; the DOCX of that generation leaves it out too, since the template it was generated with decides both files; or **the list is empty** - a section with nothing in it prints no heading. With Strengths on, every resume prints the profile's own strengths (the model writes none), so a missing Strengths section with the switch on means the profile has none. With Soft Skills on, a tailored resume prints the posting's soft skills - the model's last skill group - and an untailored one the profile's own. |
 | The summary ends with *Working style: ...* | Content tailored by an older release: it appended that sentence when the Soft Skills switch was off. Nothing adds a sentence to a summary now - the posting's soft skills are the last group of the skills block, in its own section while the switch is on - so a resume tailored afresh has none. A preview held from before the upgrade keeps what it says; generate it again from the posting. |
-| A resume took two model calls, and the log says `Revise pass started: N missing term(s)` | The revise pass: the first draft left some of the posting's checklist terms out of the summary and bullets, or its bullets carry fewer than five figures, so **Revise Resume Coverage** was asked - on the same model - to work them in. It is what most fresh resumes get. It never runs on a resume reused from the cache or on a preview the page sent back. `TAILOR_REVISE_PASS=off` in `.env` turns it off (every resume is then the first draft); `TAILOR_REVISE_MAX_TERMS` caps how many terms it is given. |
+| A resume took two model calls, and the log says `Revise pass started: N missing term(s), M dropped figure line(s)` | The revise pass: the first draft left out of the summary and bullets some of the posting's checklist terms that your profile itself names, or dropped a figure the profile states, so **Revise Resume Coverage** was asked - on the same model - to put them back. A posting term your profile never names is not asked for, so a profile that covers little of a posting gets no second call. It never runs on a resume reused from the cache or on a preview the page sent back. `TAILOR_REVISE_PASS=off` in `.env` turns it off (every resume is then the first draft); `TAILOR_REVISE_MAX_TERMS` caps how many terms it is given. |
+| A tailored resume's Experience and Technical Skills come out **empty** - the roles' company, title and dates print with nothing under them, and no skills | The profile gives the roles no description and no achievements, and lists no skills, and the build ran on a tailoring prompt from before this release, which claimed nothing the profile does not say. This release writes such roles from the posting (Partial tailor) and fills Technical Skills with the posting's hard skills in both modes. If it still happens: under **Admin → Prompts** a *Needs update* on Tailor Resume means an older stored edit - the shipped text runs in its place; a variant the profile picks under **Building prompt** that was written for the old rules leaves empty roles empty, so pick the built-in, or set the profile to **Fully tailor** (Customize → Generation → Tailoring), which writes every role from its company, title and dates. A resume already built is not rebuilt: build it again. |
+| A tailored resume names, in Technical Skills, a technology the profile does not list, or (Partial tailor) its bullets leave out a technology the posting asks for | Working as intended. Technical Skills leads with every hard skill the posting names, in its spelling, whether or not the profile lists it, then the profile's own - 15 to 30 entries. Under **Partial tailor**, the bullets and the summary of a role you described claim only what you wrote, so a posting technology you never named is in the skills block and in no sentence about that role; if you have used it, add it to the role you used it in and build again (the changed profile is a new question to the tailoring cache). Under **Fully tailor** the bullets are written for the posting and carry its technologies wherever a role's years fit them. |
 | A resume is missing a term the posting asked for, and the log has no `Revise pass started` for it | The revise pass did not run, which is expected when: `TAILOR_REVISE_PASS=off`; the resume came from the tailoring cache (`Tailoring reused from the cache` - it was revised, or not, when it was first made); it was built from a preview's content sent back by the page (Generate Immediately or Order from a preview, which never revises what you looked at); or no term was missing as the code counts it - a term with a banned word or opener in it (*scalable*, *Led* ...) is never sent to the revise pass, a term the prose carries in another form (*CI/CD pipelines* for *CI/CD*) counts as present, and only the summary and bullets are read, not the skills block. A term from an industry the candidate has not worked in may also be left out on purpose by both prompts. |
 | A resume is missing a term the posting asked for, and the log says `[tailor] The revise pass failed on ..., so the resume is the first draft: ...` | The revise call failed (the seat was busy, timed out, signed out ...) and the resume was built from the first draft, as it is meant to be - a revision is never worth failing a resume over. The cause is on that log line. Nothing is cached for it, so building the same resume again asks for the revision again. A revision that runs but leaves a term out did so on purpose: the revise prompt keeps out a term naming an industry the candidate has not worked in, and a term carrying one of the banned words (*scalable*, *cross-functional* ...) is never asked for. |
 | A Plain Technical Skills list is a little shorter than the Grouped one for the same job | Only by repeats: Plain prints the model's groups as one list, and a skill it put under two headings is listed once. Nothing pads either layout from the skill library any more. |
@@ -3054,7 +3740,7 @@ file. Export them in the shell, for the install and the server alike:
 | A tailored resume prints no description under a role, only its bullets | By design: the tailoring prompt tells the model to leave a role's description empty and puts everything into the bullets, and the renderer prints none - not even an empty line - for any tailored role, in the PDF and the DOCX. A profile's own descriptions still print in the editor's preview. A role also prints at most eight bullets. |
 | Saving a prompt under **Admin → Prompts** says *Unknown prompt variables: ...* | The text names a `[[variable]]` the feature's code never supplies - often a typo, or one an older version's prompt used. The variables it can use are listed beside the prompt; correct the name. The editor says so under the text as you type, and Save refuses it without sending anything. This used to save, and then fail every resume that used the prompt. |
 | A run with one prompt fails with a `Ref:`, and the backend log under it says *Prompt "..." contains unknown variables: ...* | The stored prompt is attached to no feature and names a variable it does not declare - written straight into the database, or saved before saves were checked. Open it under **Admin → Prompts**, where the name is reported, and correct or remove it. (A feature's prompt in that state never runs - it is marked *Needs update*, below.) |
-| **Admin → Prompts** marks a prompt *Needs update* (*Not run: it does not use [[...]].*, *Not run: it uses [[...]], which this version does not supply.*, or *Not run: it dates from an older version of this prompt.*), or saving one says *Missing required prompt variables: ...* | Some variables are required: `[[jobDescription]]` in the Analyze Job Description and Job Facts (Filter) prompts, which cannot read a posting they are never shown, `[[profileJson]]` in the Generate Cover Letter prompt, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in every Tailor Resume prompt, and `[[draftJson]]` and `[[missingTermsJson]]` in the Revise Resume Coverage prompt. A save without them is refused. A stored prompt without them, or naming a variable this version no longer supplies - an edit saved for an older version's prompt, such as an analysis edit using `[[jobFieldList]]` and `[[industryList]]`, a job filter edit using `[[jobContent]]`, or a tailoring edit or variant using `[[includeStrengths]]`, `[[includeSoftSkills]]`, `[[technicalSkillsLayout]]` or `[[hardSkillsJson]]` - never runs: the built-in prompt of its feature runs in its place (an administrator's edit of it when that is usable, else the shipped text), and the backend log says so once: `[prompts] The prompt "..." (...) uses [[jobFieldList]] and [[industryList]], which this version does not supply; the built-in Analyze Job Description prompt runs instead until it is updated under Admin -> Prompts.` (for a missing one, *does not use [[...]], which every ... prompt must*). An edit of the Analyze Job Description, Job Facts (Filter) or Tailor Resume prompts - or a tailoring variant - saved before this release is marked too, whatever variables it names, because this release changed what those prompts are given and asked for, and an older analysis or job filter edit can name only `[[jobDescription]]`, as the new texts do: its date is the tell (*... dates from an older version of the Analyze Job Description prompt; the built-in Analyze Job Description prompt runs instead ...*). Start from the shipped prompt (`backend/static/prompts/<feature>.json`), keep your changes that still apply, and save; the mark goes - for a dated edit, saving it again as it is makes it run, so compare it with the shipped text first. |
+| **Admin → Prompts** marks a prompt *Needs update* (*Not run: it does not use [[...]].*, *Not run: it uses [[...]], which this version does not supply.*, or *Not run: it dates from an older version of this prompt.*), or saving one says *Missing required prompt variables: ...* | Some variables are required: `[[jobDescription]]` in the Analyze Job Description and Job Facts (Filter) prompts, which cannot read a posting they are never shown, `[[profileJson]]` in the Generate Cover Letter prompt, `[[profileJson]]`, `[[jobAnalysisJson]]` and `[[softSkillGroupHeading]]` in every Tailor Resume prompt, and `[[draftJson]]` and `[[missingTermsJson]]` in the Revise Resume Coverage prompt. A save without them is refused. A stored prompt without them, or naming a variable this version no longer supplies - an edit saved for an older version's prompt, such as an analysis edit using `[[jobFieldList]]` and `[[industryList]]`, a job filter edit using `[[jobContent]]`, or a tailoring edit or variant using `[[includeStrengths]]`, `[[includeSoftSkills]]`, `[[technicalSkillsLayout]]` or `[[hardSkillsJson]]` - never runs: the built-in prompt of its feature runs in its place (an administrator's edit of it when that is usable, else the shipped text), and the backend log says so once: `[prompts] The prompt "..." (...) uses [[jobFieldList]] and [[industryList]], which this version does not supply; the built-in Analyze Job Description prompt runs instead until it is updated under Admin -> Prompts.` (for a missing one, *does not use [[...]], which every ... prompt must*). An edit of the Analyze Job Description, Job Facts (Filter), Tailor Resume, Revise Resume Coverage or Generate Cover Letter prompts - or a tailoring variant - saved before this release is marked too, whatever variables it names, because this release changed what those prompts are given and asked for (the shipped texts now hold a resume and a letter to what the profile says), and an older analysis or job filter edit can name only `[[jobDescription]]`, as the new texts do: its date is the tell (*... dates from an older version of the Analyze Job Description prompt; the built-in Analyze Job Description prompt runs instead ...*). Start from the shipped prompt (`backend/static/prompts/<feature>.json`), keep your changes that still apply, and save; the mark goes - for a dated edit, saving it again as it is makes it run, so compare it with the shipped text first. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
 | A model is missing from the model menus | The menus list only models that can run right now. Under **Admin → Models**, it is either *Disabled*, on a provider switched off under Admin → Settings (*Provider off*) - or on a type whose every provider is switched off under **Admin → Models → Providers**, which reads the same - or on a seat locked in this installation (*🔒 Locked*, with the reason). Nothing is locked by default, so a lock means `AI_LOCKED_PROVIDERS` in `.env` names it; remove it there and restart. |
@@ -3076,7 +3762,7 @@ file. Export them in the shell, for the install and the server alike:
 | `[ai] gemini-cli: ... GEMINI.md is not empty, and the CLI appends it to every prompt this seat runs` | The service user's personal `~/.gemini/GEMINI.md` - notes the CLI adds to every prompt, whatever the app sends, with no way to turn it off. Empty it, or give the server a home of its own with `AI_GEMINI_HOME` and sign in there. |
 | A Gemini model fails with *The signed-in Google account cannot use model "..."* | The account's plan does not offer that model (a preview, or Pro on a plan without it), and that model is left alone for 10 minutes. Pick another model name for that record under **Admin → Models** - `auto` lets the CLI choose one the account can use. |
 | A resume built on Gemini comes back cut short, or a Gemini build is retried with *the answer opened @@BEGIN_JSON@@ and never closed it* in its log (an administrator's detail; users see *The AI request failed*) | A known limit of the Gemini CLI's stream format: an answer cut off at the model's output limit arrives marked as a success, and the CLI names no finish reason once any text was written. A structured answer - the analysis, the tailored resume - gives itself away: this seat has no JSON mode, so it is asked to wrap the document in `@@BEGIN_JSON@@` / `@@END_JSON@@`, and one that opened the first and never wrote the second was cut off. That is refused as truncated, without holding the seat, and built again (`GENERATION_MAX_ATTEMPTS`). It used NOT to fail: the JSON reader found the first complete object inside the cut-off document - one experience entry, say - and took it for the whole answer. A prose answer, such as a cover letter, has no such marker and can still arrive short. If it recurs on long resumes, use another model or seat for them. |
-| Generating a resume fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/generate` and `/preview` run inline and wait: `/generate` alone awaits the job analysis, then the tailoring, then the PDF and DOCX rendering, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
+| Analyze & Preview fails with Cloudflare **error 524**, but the backend log shows it finishing | The request went through Cloudflare's proxy, whose read timeout is ~100s on Free/Pro/Business and is not adjustable, while `/api/resume/analyze`, `/preview` and `/preview-all` run inline and wait: a preview awaits the job analysis, then the tailoring and its revise pass, against a 3-5 minute per-call budget. The server is fine; the proxy hung up. Set the site's `A` records to **DNS only** (grey cloud). `curl -sI https://yourdomain.com \| grep -i ^server:` answering `cloudflare` means a record is still proxied. Keeping the CDN means splitting the API onto a grey-clouded `api.` subdomain via `NEXT_PUBLIC_API_URL`. |
 | A resume failed but the run shows it building again | Expected: a failed build is retried, up to `GENERATION_MAX_ATTEMPTS` (default 3, counting the first go). The progress line says how many are retrying. It costs nothing extra - the resume's price is taken once at submission and returned only if the resume never delivers. A cancelled batch and a task kind this build does not know are **not** retried. |
 | One seat's work queues while another sits idle | Each provider has its own queue lane, sized by its own limit - `AI_CLI_CONCURRENCY`, `AI_CODEX_CONCURRENCY` and `AI_GEMINI_CONCURRENCY` for the built-in seats unless **Admin → Models → Providers** sets one, an added provider's own `concurrency_max_requests`. Types are deliberately not pooled with each other: one shared lane across independently-sized process pools either strands the larger or lets tasks blocked on the smaller hold slots another seat needs, and a Claude model's resume cannot run on a Codex seat. Providers of ONE type are pooled. Raise the limit of a provider of the type that is waiting - on that page it applies at once, in `.env` after a restart - or add another provider of that type. |
 | Somebody opened their sheet link and Google said they need access | Expected since sheets became private by default: the link alone no longer works, and the person it belongs to opens it through the grant their own Google account holds. If they want a link others can use, Settings > Job Sheet has a sharing toggle - or set `SHEET_DEFAULT_VISIBILITY=public` to go back to link-shared for new sheets, knowing that means anyone with the URL may edit. If the OWNER cannot open their own sheet, that is different: the writer grant failed, almost always because the Drive API is not enabled for the server's Google project. It is retried on their next sign-in, and `npm run sheets:doctor` names the cause. |
@@ -3141,7 +3827,7 @@ one logged and never thrown, and nothing at or below the database's version
 run again.
 
 Generate Immediately and Order are pinned in `immediateRuns.test.js` (kinds,
-the tab lease through the stream, the release, the owner-checked per-file
+by `mode` alone - `asOrder` is not read - the tab lease through the stream, the release, the owner-checked per-file
 download and the deletion after the run, the refund by order item),
 `tabLease.test.js` (the grace on a mock clock), `queuePriority.test.js`
 (immediate before orders on one seat, retries and restores included) and
@@ -3190,6 +3876,20 @@ by `frontendAnalysis.test.js`), and both pages in a browser by
 that analyses nothing - by `test/e2e/lake-push.js`, against a Google Sheet and
 a seat stubbed by preloads.
 
+Find Jobs is pinned in `findJobs.test.js` (its routes over HTTP: what a user's
+row and an administrator's carry, the list filters' shapes and caps, Requested
+by refused to anybody but an administrator, keywords ORed, the company
+suggestions, a reporter refused), `jobLakeStore.test.js` (several values of a
+filter, and the plans of every search - merged index reads, keywords matched
+once, never a sort of the lake), `jobSheetRoutes.test.js` (Export into Sheet
+into All: A:L with each job's analysis, the duplicate rule, the cap, a clashing
+All refused before anything is read), `frontendJobLake.test.js` (the shared
+filter form, the query string and push body as lists, an export's sentence and
+an order's jobs from real answers) and `frontendFindJobs.test.js` (the
+MultiSelect's decisions, an order's targets against the server's lock, the
+pieces Build Resumes and Find Jobs share), and in a browser by
+`test/e2e/find-jobs.js`.
+
 Providers of one type are pinned in `providerQueues.test.js` (two Claude
 providers with limits 1 and 2 running three at once, each at its own limit; a
 held provider's waiting work moving to the other; a switched-off provider
@@ -3221,9 +3921,16 @@ injected runner — so the suite needs no network, no `claude`, `codex` or
 that could not be captured here.
 
 The two skills layouts and the two section switches are pinned per template:
-`backend/test/templateLayouts.test.js` renders every built-in in each layout it
-declares and with each switch on and off, and checks the capability flags
-against the markup; `sectionHeadings.test.js` renders every built-in and a set
+`backend/test/templateLayouts.test.js` renders every built-in in both layouts -
+a category grid's one Plain group marked to span its row - and with each switch
+on and off, checks the capability flags against the markup, that no template,
+import or override row carries a layout list any more, the admin edit's
+*nothing to change*, and the template resolver's order;
+`skillsLayoutRender.test.js` holds a joined skills line to one line per
+heading (the owner's saved ATS templates too, when the checkout has them) and
+the Plain net's marking and stylesheet, and `test/e2e/skills-layouts.js` lays
+every template out in a browser in both layouts and drives the two Grouped /
+Plain switches; `sectionHeadings.test.js` renders every built-in and a set
 of uploaded-style markups (a heading before the loop, a heading in a plain div,
 a guard around the loop only, both sections in one column, a divider under the
 heading, the `join` helper...) with each switch off - no heading left,
@@ -3237,7 +3944,22 @@ effects are in `profilePreview.test.js`, run with every seat locked so a 200
 also proves no model was asked; the prompt variables, their drift check and
 the required ones - a save without one refused, a stored record without one
 never run, nor an outdated edit of the built-in that would run in its place -
-in `promptVariables.test.js`.
+in `promptVariables.test.js`. The section catalogue and the section order are
+in `profileSections.test.js` (the order's rules, the new kinds' normalisers,
+`[]` clearing an order, the preview passing every list through) and
+`sectionOrder.test.js` (every built-in rendered with every kind filled and a
+reversed order: the sections in that order within each column, everything
+printed once, no compile fallback; nothing moving without a stored order and
+the render following `nativeSectionOrder`; an unlisted section after the
+listed ones; an empty added kind printing no heading; uploaded-style markup
+reordered through its headings, or left in its own order with one warning; a
+template printing a kind itself beside the macro printing it once; the DOCX in
+the stored order; the derived fields never written to a saved file). Write
+Entry Bullets is in `entryBullets.test.js`: its four prompt values, the
+refusals by code, the sanitised answer over HTTP, a reporter refused before any
+model is asked, one call per account at a time, every seat locked and an
+unparsable answer; and the frontend's copy of the catalogue is held to the
+server's in `frontendEditorHelpers.test.js`.
 
 Refund requests are pinned in `refundRequests.test.js` - every allowed and
 refused state change, a double-pressed *Refunded* moving money once, a card's
@@ -3259,8 +3981,10 @@ a router is mounted with no row, when any route carries a different guard from
 the one its row decides - read off the router itself, so a route added without
 `requireAdmin` to a router guarded per route is caught - and, over HTTP with a
 session for each role, unless a reporter is refused every route that is not
-theirs with 403 `role-not-allowed` and reaches the ones that are. Roles, the
-reporter's rate per job and **Record payout** (never above the balance, once
+theirs with 403 `role-not-allowed` and reaches the ones that are. Roles,
+subscriptions (one this build lacks refused with `bad-subscription`, on a
+create - which creates nothing - as on an edit), the reporter's rate per job
+and **Record payout** (never above the balance, once
 per press, the ledger still summing to the balance) are in
 `accountRoutes.test.js` and `accounts.test.js`; payout requests - only a
 reporter asks, one at a time, never at `$0`; Record payout writes one row keyed
@@ -3276,6 +4000,33 @@ truncates or float-parses an amount, and that the docs outside the release
 history spell an amount the same way, with no padding zeros) and
 `paymentFees.test.js` (a purchase credits exactly what it charges, by card and
 by crypto).
+
+Subscriptions are pinned in `subscriptionBilling.test.js` (the rules as
+tables: the days left and what they are worth, what moving up costs - $19.99
+less 29 unused days of $9.99 is $10.333 - the period a renewal buys, every
+card's offer in every state, and why a due subscription renews or ends),
+`subscriptionRoutes.test.js` (over HTTP, on a fake clock: the view, a purchase
+charged exactly once in one ledger row with its key and note and the base
+captured, a move up prorated, a short balance or a changed price refused with
+nothing moved, two purchases at once charged once, every refusal, the switch,
+cancel and keep with their repeats, and an administrator's subscription or
+role change ending a paid one with its note and notice and no refund) and
+`subscriptionRenewal.test.js` (a renewal charged once however often the sweep
+runs and across a restart, a late one starting at the old end and a missed
+period from now, the switch at renewal, every way one ends with its notice, a
+pass that cannot read the prices touching nobody, a renewal decided on a period
+that moved on doing nothing, the due query's plan, the columns reaching an
+older database, and the timer). The prices' `.env` defaults, their *not
+offered* and their refusals are in `settingDefaults.test.js`. The Subscription
+page's half is `frontendSubscription.test.js` - the frontend's own client
+against the real routes, every card and the "Current subscription" summary
+drawn from real answers in each state, the amount it sends back accepted to
+the thousandth - and the confirm before anything spends credit is
+`frontendSpendConfirm.test.js` (*Do not show again* per kind, who is asked,
+the amount and the balance after, and every run and subscription change going
+through it). `test/e2e/subscription.js` buys, moves up, switches, cancels,
+renews and lapses in a browser, with the sweep run every second, and checks
+the locks at the profile limit.
 
 The frontend has no test runner, so its decisions that need no browser are
 small modules the backend suite transpiles and tests

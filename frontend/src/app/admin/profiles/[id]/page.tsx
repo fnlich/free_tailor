@@ -12,8 +12,12 @@ import { profilesApi, type Profile } from '@/lib/api';
  *
  * A route of its own rather than the dialog it used to be, so the editor has
  * the width for a form and a page side by side, and a profile can be linked to
- * and survives a reload. No <main>: app/admin/layout.tsx draws it.
+ * and survives a reload. No <main>: app/admin/layout.tsx draws it - bare, for
+ * this route, so the editor can lay out its own full-width desk; the loading
+ * and error states pad themselves (`PADDED`).
  */
+
+const PADDED = 'mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8';
 export default function EditProfilePage() {
   const params = useParams<{ id: string }>();
   const profileId = typeof params?.id === 'string' ? params.id : '';
@@ -47,12 +51,16 @@ export default function EditProfilePage() {
   }, [profileId]);
 
   if (!loaded || loaded.id !== profileId) {
-    return <Spinner label="Loading the profile..." />;
+    return (
+      <div className={PADDED}>
+        <Spinner label="Loading the profile..." />
+      </div>
+    );
   }
 
   if (!loaded.profile) {
     return (
-      <div className="space-y-4">
+      <div className={`${PADDED} space-y-4`}>
         <ErrorNotice error={loaded.error} fallback="Could not load this profile" />
         <Link href="/admin/profiles" className="tl-button-quiet">
           Back to profiles

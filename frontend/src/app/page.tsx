@@ -11,6 +11,7 @@ import {
   UserAppSettings,
   AiPreferences,
   isInsufficientCredits,
+  isSubscriptionTooLow,
   normalizeAiPreferences,
   toAiRequestOverrides,
   Profile,
@@ -22,8 +23,8 @@ import { dropsHeldAnalysis, heldAnalysisFor, holdAnalysis, type HeldAnalysis } f
 import { readTailoredDraft, TAILORED_DRAFT_NOTE, tailoredDraftOf } from '@/lib/tailoredDraft';
 import AnalysisFacts from '@/components/AnalysisFacts';
 import {
-  browserStorage,
   currentTabId,
+  estimateRun,
   generationApi,
   releaseRun,
   saveTaskFile,
@@ -36,21 +37,33 @@ import GenerationProgress, { type GenerationProgressState } from '@/components/G
 import ProfileSelector from '@/components/ProfileSelector';
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import ResumePreview from '@/components/ResumePreview';
-import ImmediateRunConfirm from '@/components/ImmediateRunConfirm';
 import ImmediateRunFiles from '@/components/ImmediateRunFiles';
 import SheetsSourcePanel, { type SheetRunKind, type SheetRunSource } from '@/components/SheetsSourcePanel';
+import CostLine, { type CreditShortfall } from '@/components/builder/CostLine';
+import ProfileTargets from '@/components/builder/ProfileTargets';
+import OrderReceipt, { placedOrderFrom, type PlacedOrder } from '@/components/orders/OrderReceipt';
+import { useSpendConfirm } from '@/components/SpendConfirm';
+import { ChoiceCard, useLockedFeature } from '@/components/subscription/LockedFeature';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import type { SheetJob } from '@/lib/sheetRows';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
-import { describeRunCost, formatMoney } from '@/lib/format';
+import { formatMoney } from '@/lib/format';
 import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
 import { nextAttach, reattachTarget } from '@/lib/batchFollow';
-import { canBuildForManyProfiles, startingResumeSelection } from '@/lib/subscriptions';
+import { canBuildForManyProfiles, describeLock, describeTooLowRefusal } from '@/lib/subscriptions';
 import {
-  confirmsImmediate,
+  defaultRunFormat,
+  startingTarget,
+  targetBlocker,
+  targetInEffect,
+  targetProfiles as profilesOfTarget,
+  type TargetChoice,
+  type TargetKind,
+} from '@/lib/runChoices';
+import {
   describeRunEnd,
   downloadKey,
   forgetRun,
@@ -59,48 +72,16 @@ import {
   readRememberedRun,
   rememberRun,
   savedFileCount,
-  skipImmediateConfirm,
   withDownloaded,
   type DownloadKind,
   type PendingDownload,
   type RememberedRun,
 } from '@/lib/immediateRun';
-import {
-  cancelOrderQuestion,
-  describeCancelOutcome,
-  isOrderLive,
-  ordersApi,
-  type CancelOutcome,
-  type Order,
-  type OrderState,
-} from '@/lib/orders';
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
 type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
-type SheetsTargetMode = 'single' | 'all' | 'group';
-
-/** What a placed order reports back, before any of it has been built. */
-type PlacedOrder = {
-  id: string;
-  number: string;
-  total: number;
-  jobCount: number;
-  profileCount: number;
-  skippedNote: string;
-  /** Set once Cancel on the receipt went through: what it stopped. */
-  cancelled?: CancelOutcome;
-  /**
-   * Set once the order is over by any other way - built, failed, or cancelled
-   * from Orders - as the receipt's poll (or a Cancel the server answered 409)
-   * found it: no Cancel is offered for it any more.
-   */
-  ended?: { state: OrderState; built?: number };
-};
-
-/** How often the receipt asks whether its order is still being built: as often as /orders does. */
-const RECEIPT_POLL_MS = 5000;
 
 /**
  * The Generate Immediately run this page is following: built while this tab
@@ -116,10 +97,6 @@ const NONE_DOWNLOADED: ReadonlySet<string> = new Set();
 /** What leaving Build Resumes inside the app asks while a run is going. */
 const LEAVE_CONFIRM =
   'Leave Build Resumes? Your Generate Immediately run stops when you leave this page: resumes not started yet are refunded, and ones not finished are not downloaded.';
-
-/** Where the multi-profile choices' Premium pill leads, and what it says on hover. */
-const SUBSCRIPTION_PATH = '/settings/subscription';
-const ONE_PROFILE_NOTE = 'Your subscription supports one profile';
 
 type MultiplePreview = {
   profileId: string;
@@ -166,9 +143,6 @@ function getAnalysisJobTitle(analysis?: AnalyzedJob): string {
  */
 const QUOTE_JOBS: SubmitBatchRequest['jobs'] = [{ companyName: 'Quote', role: 'Quote' }];
 
-/** A 402 from a run, as the sentence the page shows for it. */
-type CreditShortfall = { message: string };
-
 /** Waits `ms`, or less when `signal` aborts first; never rejects. */
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -191,67 +165,30 @@ function plural(count: number, noun: string): string {
 }
 
 /**
- * What a run will cost, beside the button that starts it.
- *
- * A refused run's shortfall takes its place, with the way to fix it - inside
- * the preview dialogs too, which cover the page's own error area.
+ * What a quote is asked about before a run spends credit: the profiles it
+ * builds for, as many placeholder jobs as it has postings, the model chosen
+ * for this run, and - when finalising previews - what the submission will
+ * carry of them: each one's content, and the token naming the model that
+ * wrote it. Both, because the server prices them together: a valid token is
+ * charged its model, while content whose token has expired (a day on) or was
+ * never given is charged at least the profile's own model. Quoted with the
+ * tokens alone, such a run showed the cheaper model the page names, and was
+ * charged more than the alert said.
  */
-function CostLine({
-  quote,
-  shortfall = null,
-  label = 'This run',
-}: {
-  quote: GenerationQuote | null;
-  /** Passed only where the page's own notice is hidden: inside a dialog. */
-  shortfall?: CreditShortfall | null;
-  /** What is being priced: "This run", or one sheet row when the row count is not known yet. */
-  label?: string;
-}) {
-  if (shortfall) {
-    return (
-      <span className="tl-status" data-tone="error" role="alert">
-        {shortfall.message}{' '}
-        <Link href="/credits" className="tl-link">
-          Buy credits
-        </Link>
-      </span>
-    );
-  }
-  if (!quote) return null;
-  if (quote.exempt) return <span className="text-sm text-muted">Administrators are not charged</span>;
-  const short = quote.costMilli > quote.balanceMilli;
-  return (
-    <span
-      className={short ? 'tl-status tabular-nums' : 'text-sm tabular-nums text-muted'}
-      data-tone={short ? 'error' : undefined}
-    >
-      {/* "7 resumes × $0.023 = $0.161": the price, so the total can be checked by eye. */}
-      {label}: {describeRunCost(quote)} · balance {formatMoney(quote.balanceMilli)}
-      {short && (
-        <>
-          {' '}
-          ·{' '}
-          <Link href="/credits" className="tl-link">
-            Buy credits
-          </Link>
-        </>
-      )}
-    </span>
-  );
-}
-
-/**
- * The "Premium" pill on a choice the account's subscription does not include:
- * a link to the page that explains subscriptions, with the reason on hover.
- * The choice beside it is disabled; the server refuses the run anyway (403
- * `subscription-too-low`) - this only stops the page offering it.
- */
-function PremiumLock() {
-  return (
-    <Link href={SUBSCRIPTION_PATH} title={ONE_PROFILE_NOTE} aria-label={`Premium: ${ONE_PROFILE_NOTE}`} className="ml-auto shrink-0">
-      <Pill tone="violet">Premium</Pill>
-    </Link>
-  );
+function quoteBody(
+  overrides: Pick<SubmitBatchRequest, 'model'>,
+  profileIds: string[],
+  jobCount = 1,
+  previews: Pick<SubmitBatchRequest, 'tailoredContentByProfileId' | 'previewTokenByProfileId'> = {}
+): SubmitBatchRequest {
+  const { tailoredContentByProfileId = {}, previewTokenByProfileId = {} } = previews;
+  return {
+    ...overrides,
+    profileIds,
+    jobs: Array.from({ length: Math.max(1, jobCount) }, () => QUOTE_JOBS[0]),
+    ...(Object.keys(tailoredContentByProfileId).length > 0 ? { tailoredContentByProfileId } : {}),
+    ...(Object.keys(previewTokenByProfileId).length > 0 ? { previewTokenByProfileId } : {}),
+  };
 }
 
 /**
@@ -304,6 +241,11 @@ export default function Home() {
    * page cannot leave a locked choice selected.
    */
   const manyProfiles = canBuildForManyProfiles(account);
+  /** What a locked choice says - and the dialog that says it. */
+  const manyLock = describeLock('many-profiles', account);
+  const locked = useLockedFeature();
+  /** What is asked before a run spends credit (Generate Immediately always, Order when it costs). */
+  const spend = useSpendConfirm();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
@@ -319,8 +261,8 @@ export default function Home() {
   const generateMode: GenerateMode = manyProfiles ? generateModeChoice : 'single';
   const [multipleTarget, setMultipleTarget] = useState<'all' | 'group'>('group');
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
-  const [sheetsTargetChoice, setSheetsTargetMode] = useState<SheetsTargetMode>('single');
-  const sheetsTargetMode: SheetsTargetMode = manyProfiles ? sheetsTargetChoice : 'single';
+  const [sheetsTargetChoice, setSheetsTargetMode] = useState<TargetKind>('single');
+  const sheetsTargetMode = targetInEffect(sheetsTargetChoice, manyProfiles);
   const [selectedSheetsProfileId, setSelectedSheetsProfileId] = useState<string | null>(null);
   const [selectedSheetsGroupId, setSelectedSheetsGroupId] = useState<string>('');
   const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
@@ -367,8 +309,6 @@ export default function Home() {
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const activeRunRef = useRef<ActiveRun | null>(null);
   const [stopping, setStopping] = useState(false);
-  /** A Generate Immediately waiting on its confirm: the run to start on Proceed. */
-  const [pendingImmediate, setPendingImmediate] = useState<(() => void) | null>(null);
   /** Aborted when the page goes: stops following and downloading, never the server's work by itself. */
   const pageAbortRef = useRef<AbortController | null>(null);
   /**
@@ -398,6 +338,14 @@ export default function Home() {
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState('');
+  /**
+   * The run buttons wait from a press until the run starts or is declined:
+   * between the two, the confirm is pricing the run (POST /generation/quote),
+   * nothing is open yet and another press is ignored - so the button that
+   * builds says what is happening rather than looking dead.
+   */
+  const runBusy = isGenerating || spend.pending;
+  const runStep = spend.pending ? 'Checking the price...' : generationStep;
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
   /**
    * What went wrong: one of the page's own sentences ("Please select a
@@ -414,9 +362,8 @@ export default function Home() {
    * Replaced by the next run; cleared when a new build starts.
    */
   const [runNotice, setRunNotice] = useState('');
-  /** The receipt for a placed order, kept as data so it can carry a link and a Cancel. */
+  /** The receipt for a placed order, kept as data so it can carry a link and a Cancel (components/orders/OrderReceipt). */
   const [placedOrder, setPlacedOrder] = useState<PlacedOrder | null>(null);
-  const [cancellingOrder, setCancellingOrder] = useState(false);
   /** A resume of the run that could not be downloaded, apart from the run's own failures. */
   const [downloadIssue, setDownloadIssue] = useState('');
   /**
@@ -517,37 +464,19 @@ export default function Home() {
         applyTheme(modelData.defaultTheme);
       }
 
-      if (enabledProfiles.length > 0) {
-        const defaultProfileExists = enabledProfiles.some((profile) => profile.id === modelData.defaultProfileId);
-        const initialProfileId = defaultProfileExists ? modelData.defaultProfileId : enabledProfiles[0].id;
-        setSelectedProfileId(initialProfileId);
-        setSelectedSheetsProfileId(initialProfileId);
+      // The administrator's default target, profile and group - except that an
+      // account that supports one profile starts on Single, whatever the
+      // default target says (lib/runChoices.ts).
+      const start = startingTarget(modelData, enabledProfiles, groupsData, manyProfiles);
+      if (start.profileId) {
+        setSelectedProfileId(start.profileId);
+        setSelectedSheetsProfileId(start.profileId);
       }
-
-      // An account that supports one profile starts on Single, whatever the
-      // administrator's default target says.
-      const startingSelection = startingResumeSelection(modelData.defaultResumeSelection, manyProfiles);
-      if (startingSelection === 'single') {
-        setGenerateMode('single');
-        setMultipleTarget('group');
-        setSelectedGroupId('');
-        setSheetsTargetMode('single');
-        setSelectedSheetsGroupId('');
-      } else if (startingSelection === 'all') {
-        setGenerateMode('multiple');
-        setMultipleTarget('all');
-        setSelectedGroupId('');
-        setSheetsTargetMode('all');
-        setSelectedSheetsGroupId('');
-      } else {
-        const defaultGroupExists = groupsData.some((group) => group.id === modelData.defaultGroupId);
-        setGenerateMode('multiple');
-        setMultipleTarget('group');
-        const initialGroupId = defaultGroupExists ? modelData.defaultGroupId : '';
-        setSelectedGroupId(initialGroupId);
-        setSheetsTargetMode('group');
-        setSelectedSheetsGroupId(initialGroupId);
-      }
+      setGenerateMode(start.kind === 'single' ? 'single' : 'multiple');
+      setMultipleTarget(start.kind === 'all' ? 'all' : 'group');
+      setSelectedGroupId(start.groupId);
+      setSheetsTargetMode(start.kind);
+      setSelectedSheetsGroupId(start.groupId);
     } catch (err) {
       setError(err ?? 'Failed to load data.');
     } finally {
@@ -555,10 +484,6 @@ export default function Home() {
     }
   };
 
-  const getDefaultGenerationOptions = () => ({
-    format: (modelSettings.defaultResumeDocxEnabled ? 'both' : 'pdf') as 'both' | 'pdf',
-    includeCoverLetterDocx: modelSettings.defaultCoverLetterDocxEnabled,
-  });
   const shouldShowRoleInput = modelSettings.outputPathUsesJobTitle;
   /**
    * The spreadsheet a sheet run reads: the account's own, and only that
@@ -574,20 +499,28 @@ export default function Home() {
    * members. What the "Generate All" count and the quote both read, so neither
    * counts a profile the run would skip.
    */
-  const manualRunProfiles = useMemo<Profile[]>(() => {
-    if (generateMode === 'single') return profiles.filter((profile) => profile.id === selectedProfileId);
-    if (multipleTarget === 'all') return profiles;
-    const group = groups.find((entry) => entry.id === selectedGroupId);
-    return group ? profiles.filter((profile) => group.profileIds.includes(profile.id)) : [];
-  }, [generateMode, groups, multipleTarget, profiles, selectedGroupId, selectedProfileId]);
+  const manualTarget = useMemo<TargetChoice>(
+    () => ({
+      kind: generateMode === 'single' ? 'single' : multipleTarget,
+      profileId: selectedProfileId,
+      groupId: selectedGroupId,
+    }),
+    [generateMode, multipleTarget, selectedGroupId, selectedProfileId]
+  );
+  const manualRunProfiles = useMemo<Profile[]>(
+    () => profilesOfTarget(manualTarget, profiles, groups),
+    [groups, manualTarget, profiles]
+  );
 
   /** The same for a sheet import's target. */
-  const sheetsRunProfiles = useMemo<Profile[]>(() => {
-    if (sheetsTargetMode === 'single') return profiles.filter((profile) => profile.id === selectedSheetsProfileId);
-    if (sheetsTargetMode === 'all') return profiles;
-    const group = groups.find((entry) => entry.id === selectedSheetsGroupId);
-    return group ? profiles.filter((profile) => group.profileIds.includes(profile.id)) : [];
-  }, [groups, profiles, selectedSheetsGroupId, selectedSheetsProfileId, sheetsTargetMode]);
+  const sheetsTarget = useMemo<TargetChoice>(
+    () => ({ kind: sheetsTargetMode, profileId: selectedSheetsProfileId, groupId: selectedSheetsGroupId }),
+    [selectedSheetsGroupId, selectedSheetsProfileId, sheetsTargetMode]
+  );
+  const sheetsRunProfiles = useMemo<Profile[]>(
+    () => profilesOfTarget(sheetsTarget, profiles, groups),
+    [groups, profiles, sheetsTarget]
+  );
 
   // The ready set as a string, so editing a preview's JSON or resetting the
   // form - each a new array - does not re-ask for the same price.
@@ -661,11 +594,20 @@ export default function Home() {
   }, [refreshAccount, runRevision]);
 
   /**
-   * A failed run, as the page reports it. A 402 is the one failure with a
-   * remedy the person can take themselves, so it gets the numbers and a way to
-   * buy credits rather than a bare sentence.
+   * A failed run, as the page reports it. A 402 and a 403 for the
+   * subscription are the failures with a remedy the person can take
+   * themselves: the first gets the numbers and a way to buy credits, the
+   * second the lock - the subscription changed under this page - with the way
+   * to the Subscription page, and the account re-read so the choices lock too.
+   * That lock is worded from the refusal, not from this page's session, which
+   * still has the tier the server no longer does (`describeTooLowRefusal`).
    */
   const reportRunFailure = (err: unknown, fallback: string) => {
+    if (isSubscriptionTooLow(err)) {
+      locked.open(describeTooLowRefusal());
+      void refreshAccount();
+      return;
+    }
     if (isInsufficientCredits(err)) {
       const needed = err.number('neededMilli');
       const balance = err.number('balanceMilli');
@@ -838,36 +780,11 @@ export default function Home() {
     };
   }, [activeRun]);
 
+  /** The profiles a sheet run builds for, or the sentence saying why it cannot run yet. */
   const getSelectedProfilesForSheetsBuilder = () => {
-    if (sheetsTargetMode === 'single') {
-      if (!selectedSheetsProfileId) {
-        throw new Error('Please select a profile before importing from Sheets.');
-      }
-      const profile = profiles.find((item) => item.id === selectedSheetsProfileId);
-      if (!profile) {
-        throw new Error('Selected profile could not be found.');
-      }
-      return [profile];
-    }
-
-    if (sheetsTargetMode === 'all') {
-      if (!profiles.length) {
-        throw new Error('No profiles available for multi-profile generation.');
-      }
-      return profiles;
-    }
-
-    const selectedGroup = groups.find((group) => group.id === selectedSheetsGroupId);
-    if (!selectedGroup) {
-      throw new Error('Please select a group before importing from Sheets.');
-    }
-
-    const selectedProfiles = profiles.filter((profile) => selectedGroup.profileIds.includes(profile.id));
-    if (!selectedProfiles.length) {
-      throw new Error('Selected group has no enabled profiles.');
-    }
-
-    return selectedProfiles;
+    const blocker = targetBlocker(sheetsTarget, profiles, groups);
+    if (blocker) throw new Error(blocker);
+    return sheetsRunProfiles;
   };
 
   const clearGenerationProgress = () => {
@@ -905,22 +822,11 @@ export default function Home() {
     });
   };
 
+  /** The profiles a manual run builds for, or the sentence saying why it cannot run yet. */
   const getSelectedProfilesForManualBuilder = (): Profile[] => {
-    if (multipleTarget === 'all') {
-      return profiles;
-    }
-
-    const selectedGroup = groups.find((group) => group.id === selectedGroupId);
-    if (!selectedGroup) {
-      throw new Error('Please select a group');
-    }
-
-    const selectedProfiles = profiles.filter((profile) => selectedGroup.profileIds.includes(profile.id));
-    if (!selectedProfiles.length) {
-      throw new Error('Selected group has no enabled profiles.');
-    }
-
-    return selectedProfiles;
+    const blocker = targetBlocker(manualTarget, profiles, groups);
+    if (blocker) throw new Error(blocker);
+    return manualRunProfiles;
   };
 
   /**
@@ -968,7 +874,7 @@ export default function Home() {
       ],
       ...(Object.keys(tailoredByProfileId).length > 0 ? { tailoredContentByProfileId: tailoredByProfileId } : {}),
       ...(Object.keys(tokensByProfileId).length > 0 ? { previewTokenByProfileId: tokensByProfileId } : {}),
-      ...getDefaultGenerationOptions(),
+      ...defaultRunFormat(modelSettings),
     };
   };
 
@@ -1133,15 +1039,9 @@ export default function Home() {
    */
   const placeOrder = async (request: SubmitBatchRequest, skippedNote = '') => {
     const submitted = await generationApi.submit({ ...request, mode: 'order' });
-    if (submitted.orderId && submitted.orderNumber) {
-      setPlacedOrder({
-        id: submitted.orderId,
-        number: submitted.orderNumber,
-        total: submitted.total,
-        jobCount: submitted.jobCount,
-        profileCount: submitted.profileCount,
-        skippedNote,
-      });
+    const receipt = placedOrderFrom(submitted, skippedNote);
+    if (receipt) {
+      setPlacedOrder(receipt);
     } else {
       // A server that did not file it as an order. The work is queued either
       // way, so say so rather than leaving the click looking like it failed.
@@ -1163,77 +1063,20 @@ export default function Home() {
     }
   };
 
-  /** The receipt's order is over: it says how, and offers no Cancel. */
-  const markReceiptEnded = (order: Order) => {
-    setPlacedOrder((current) =>
-      current && current.id === order.id && !current.cancelled
-        ? { ...current, ended: { state: order.state, built: order.counts.done } }
-        : current
-    );
-  };
-
-  /** Cancel on the order receipt: what is left of it, refunded. */
-  const cancelPlacedOrder = async () => {
-    const order = placedOrder;
-    if (!order || !window.confirm(cancelOrderQuestion(order.number))) return;
-    setCancellingOrder(true);
-    try {
-      const outcome = await ordersApi.cancel(order.id);
-      setPlacedOrder((current) => (current && current.id === order.id ? { ...current, cancelled: outcome } : current));
-      afterRun();
-    } catch (err) {
-      // 409: there was nothing left to cancel - it finished between the poll
-      // and the press. Not a failure to report: the receipt says how it ended.
-      if (err instanceof ApiResponseError && err.status === 409) {
-        const latest = await ordersApi.get(order.id).catch(() => null);
-        if (latest) markReceiptEnded(latest);
-        else
-          setPlacedOrder((current) =>
-            current && current.id === order.id && !current.cancelled ? { ...current, ended: { state: 'done' } } : current
-          );
-      } else {
-        setError(err ?? 'Could not cancel that order.');
-      }
-    } finally {
-      setCancellingOrder(false);
-    }
-  };
-
-  /*
-   * The receipt follows its order until it ends, reading it every few seconds
-   * as /orders does - so it stops offering Cancel, and saying "being built",
-   * for an order that has finished. It stops asking once the order is over,
-   * cancelled from here, or the receipt is cleared.
-   */
-  const followedReceipt = placedOrder && !placedOrder.cancelled && !placedOrder.ended ? placedOrder.id : '';
-  useEffect(() => {
-    if (!followedReceipt) return;
-    let stopped = false;
-    const check = async () => {
-      try {
-        const order = await ordersApi.get(followedReceipt);
-        if (!stopped && !isOrderLive(order)) markReceiptEnded(order);
-      } catch {
-        // Offline, or a restart in progress: the next tick asks again.
-      }
-    };
-    const timer = window.setInterval(() => void check(), RECEIPT_POLL_MS);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-    };
-  }, [followedReceipt]);
-
   /**
-   * Generate Immediately asks first - unless "Don't show again" was ticked in
-   * this browser - because closing the tab stops it (owner decision B4).
+   * Every run asks before it spends credit (components/SpendConfirm): what it
+   * takes, from the server's quote for these profiles, and the balance after.
+   * Generate Immediately asks always - closing the tab stops it (owner
+   * decision B4) - and an Order only when it costs something; each until "Do
+   * not show again" for that kind in this browser. `body` is what the quote
+   * prices (`quoteBody`).
    */
-  const withImmediateConfirm = (start: () => void) => {
-    if (!confirmsImmediate(browserStorage())) {
-      start();
-      return;
-    }
-    setPendingImmediate(() => start);
+  const confirmSpend = (kind: SheetRunKind, body: SubmitBatchRequest, start: () => void) => {
+    const fallback = { balanceMilli: account?.balanceMilli ?? null, exempt: account?.role === 'admin' };
+    void spend.ask(
+      { kind, title: kind === 'order' ? 'Order' : 'Generate Immediately', price: () => estimateRun(body, fallback) },
+      start
+    );
   };
 
   /**
@@ -1539,14 +1382,16 @@ export default function Home() {
         sourceRowNumber: job.sourceRowNumber,
       })),
       sheet: meta.sheet,
-      ...getDefaultGenerationOptions(),
+      ...defaultRunFormat(modelSettings),
     };
     const skippedNote = meta.skippedRows
       ? ` Skipped ${plural(meta.skippedRows, 'row')} with no company or no job description.`
       : '';
-    const start = () => void runSheet(kind, request, skippedNote, jobs.length);
-    if (kind === 'immediate') withImmediateConfirm(start);
-    else start();
+    confirmSpend(
+      kind,
+      quoteBody(aiRequestOverrides, request.profileIds ?? [], jobs.length),
+      () => void runSheet(kind, request, skippedNote, jobs.length)
+    );
   };
 
   const runSheet = async (kind: SheetRunKind, request: SubmitBatchRequest, skippedNote: string, jobCount: number) => {
@@ -1586,7 +1431,11 @@ export default function Home() {
       return;
     }
     if (autoGenerate) {
-      withImmediateConfirm(() => void runManual('immediate'));
+      confirmSpend(
+        'immediate',
+        quoteBody(aiRequestOverrides, manualRunProfiles.map((profile) => profile.id)),
+        () => void runManual('immediate')
+      );
       return;
     }
 
@@ -1666,7 +1515,11 @@ export default function Home() {
       setError(problem);
       return;
     }
-    void runManual('order');
+    confirmSpend(
+      'order',
+      quoteBody(aiRequestOverrides, manualRunProfiles.map((profile) => profile.id)),
+      () => void runManual('order')
+    );
   };
 
   /**
@@ -1738,7 +1591,14 @@ export default function Home() {
       setError('Fix manual edits before generating.');
       return;
     }
-    withImmediateConfirm(() => void finalizeSingle());
+    // Priced as the run will be charged: the previewed content, at the model that wrote it (its token).
+    const previews = tailoredContent
+      ? {
+          tailoredContentByProfileId: { [selectedProfileId]: tailoredContent },
+          previewTokenByProfileId: previewToken ? { [selectedProfileId]: previewToken } : {},
+        }
+      : {};
+    confirmSpend('immediate', quoteBody(aiRequestOverrides, [selectedProfileId], 1, previews), () => void finalizeSingle());
   };
 
   const finalizeSingle = async () => {
@@ -1864,9 +1724,29 @@ export default function Home() {
         return;
       }
     }
-    const start = () => void finalizeMultiple(kind);
-    if (kind === 'immediate') withImmediateConfirm(start);
-    else start();
+    // What the finalise builds: the profiles with preview content, each at the model that wrote it.
+    const previews = new Map(multiplePreviews.map((preview) => [preview.profileId, preview]));
+    const ready = manualRunProfiles.filter((profile) => previews.get(profile.id)?.tailoredContent);
+    if (ready.length === 0) {
+      // Nothing to spend on: the finalise says so in its own words.
+      void finalizeMultiple(kind);
+      return;
+    }
+    const content: Record<string, unknown> = {};
+    const tokens: Record<string, string> = {};
+    for (const profile of ready) {
+      const preview = previews.get(profile.id);
+      content[profile.id] = preview?.tailoredContent;
+      if (preview?.previewToken) tokens[profile.id] = preview.previewToken;
+    }
+    confirmSpend(
+      kind,
+      quoteBody(aiRequestOverrides, ready.map((profile) => profile.id), 1, {
+        tailoredContentByProfileId: content,
+        previewTokenByProfileId: tokens,
+      }),
+      () => void finalizeMultiple(kind)
+    );
   };
 
   const finalizeMultiple = async (kind: SheetRunKind) => {
@@ -1979,7 +1859,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setBuilderMode(null)}
-                  disabled={isGenerating}
+                  disabled={runBusy}
                   className={`tl-button-quiet ${styles.pill}`}
                 >
                   Back
@@ -1998,6 +1878,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={handleOrderManual}
+                    disabled={spend.pending}
                     className={`tl-button-quiet ${styles.pill}`}
                     title="Built on the server whether or not this page stays open; collect the files on Orders"
                   >
@@ -2007,14 +1888,14 @@ export default function Home() {
                 {builderMode === 'manual' && (
                   <button
                     onClick={handleGenerate}
-                    disabled={isGenerating}
+                    disabled={runBusy}
                     className={`tl-button ${styles.wrap}`}
                     data-shape="pill"
                   >
-                    {isGenerating ? (
+                    {runBusy ? (
                       <>
                         <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"></span>
-                        {generationStep || 'Generating...'}
+                        {runStep || 'Generating...'}
                       </>
                     ) : !autoGenerate ? (
                       'Analyze & Preview'
@@ -2054,57 +1935,7 @@ export default function Home() {
           )}
 
           {placedOrder && (
-            <Notice tone="success" className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-              <div className="min-w-0">
-                <p className="font-semibold">
-                  You ordered successfully: Order number -{' '}
-                  <span className="font-mono">{placedOrder.number}</span>
-                </p>
-                {placedOrder.cancelled ? (
-                  <p className="mt-1">
-                    Cancelled: {describeCancelOutcome(placedOrder.cancelled)} Anything already built is under{' '}
-                    <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
-                      Order status &amp; built resumes
-                    </Link>
-                    .
-                  </p>
-                ) : placedOrder.ended ? (
-                  <p className="mt-1">
-                    {placedOrder.ended.state === 'cancelled' ? 'This order was cancelled' : 'This order has finished'}
-                    {placedOrder.ended.built !== undefined
-                      ? `: ${placedOrder.ended.built} of ${plural(placedOrder.total, 'resume')} built`
-                      : ''}{' '}
-                    - see{' '}
-                    <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
-                      Order status &amp; built resumes
-                    </Link>
-                    .
-                  </p>
-                ) : (
-                  <p className="mt-1">
-                    {plural(placedOrder.total, 'resume')} for {plural(placedOrder.jobCount, 'job')} across{' '}
-                    {plural(placedOrder.profileCount, 'profile')} {placedOrder.total === 1 ? 'is' : 'are'} being
-                    built. You can close this page - they are waiting for you under{' '}
-                    <Link href={`/orders/${placedOrder.id}`} className="font-semibold underline underline-offset-2">
-                      Order status &amp; built resumes
-                    </Link>
-                    .{placedOrder.skippedNote}
-                  </p>
-                )}
-              </div>
-              {!placedOrder.cancelled && !placedOrder.ended && (
-                <button
-                  type="button"
-                  onClick={() => void cancelPlacedOrder()}
-                  disabled={cancellingOrder}
-                  className="tl-button-quiet shrink-0"
-                  data-tone="danger"
-                  data-size="sm"
-                >
-                  {cancellingOrder ? 'Cancelling...' : 'Cancel order'}
-                </button>
-              )}
-            </Notice>
+            <OrderReceipt order={placedOrder} onChange={setPlacedOrder} onCancelled={afterRun} onError={setError} />
           )}
 
           {successMessage && <Notice tone="success">{successMessage}</Notice>}
@@ -2238,33 +2069,28 @@ export default function Home() {
                       Generate mode
                     </label>
                     <div className="mt-2 grid gap-2">
-                      <label className="tl-choice" data-on={generateMode === 'single'}>
-                        <input
-                          type="radio"
-                          name="generateMode"
-                          value="single"
-                          checked={generateMode === 'single'}
-                          onChange={() => setGenerateMode('single')}
-                          disabled={isGenerating}
-                        />
-                        <span className="text-sm font-medium text-ink">Single (one profile)</span>
-                      </label>
-                      <label
-                        className="tl-choice"
-                        data-on={generateMode === 'multiple'}
-                        title={manyProfiles ? undefined : ONE_PROFILE_NOTE}
+                      <ChoiceCard
+                        name="generateMode"
+                        value="single"
+                        checked={generateMode === 'single'}
+                        onSelect={() => setGenerateMode('single')}
+                        disabled={isGenerating}
+                        onLocked={locked.open}
                       >
-                        <input
-                          type="radio"
-                          name="generateMode"
-                          value="multiple"
-                          checked={generateMode === 'multiple'}
-                          onChange={() => setGenerateMode('multiple')}
-                          disabled={isGenerating || !manyProfiles}
-                        />
-                        <span className="text-sm font-medium text-ink">Multiple (all profiles)</span>
-                        {!manyProfiles && <PremiumLock />}
-                      </label>
+                        Single (one profile)
+                      </ChoiceCard>
+                      {/* Locked below Premium: the lock says what it needs, and leads to the Subscription page. */}
+                      <ChoiceCard
+                        name="generateMode"
+                        value="multiple"
+                        checked={generateMode === 'multiple'}
+                        onSelect={() => setGenerateMode('multiple')}
+                        disabled={isGenerating}
+                        lock={manyProfiles ? null : manyLock}
+                        onLocked={locked.open}
+                      >
+                        Multiple (all profiles)
+                      </ChoiceCard>
                     </div>
                   </div>
 
@@ -2432,114 +2258,36 @@ export default function Home() {
 
             <div className="space-y-6 xl:col-start-1 xl:row-start-1">
               <Card title="Build target">
-                <div className="space-y-6">
-                  <div>
-                    <label className="tl-label sr-only">
-                      Build target
-                    </label>
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <label className="tl-choice" data-on={sheetsTargetMode === 'single'}>
-                        <input
-                          type="radio"
-                          name="sheetsTargetMode"
-                          value="single"
-                          checked={sheetsTargetMode === 'single'}
-                          onChange={() => setSheetsTargetMode('single')}
-                          disabled={isGenerating}
-                        />
-                        <span className="text-sm font-medium text-ink">Single profile</span>
-                      </label>
-                      <label
-                        className="tl-choice"
-                        data-on={sheetsTargetMode === 'all'}
-                        title={manyProfiles ? undefined : ONE_PROFILE_NOTE}
-                      >
-                        <input
-                          type="radio"
-                          name="sheetsTargetMode"
-                          value="all"
-                          checked={sheetsTargetMode === 'all'}
-                          onChange={() => setSheetsTargetMode('all')}
-                          disabled={isGenerating || !manyProfiles}
-                        />
-                        <span className="text-sm font-medium text-ink">All profiles</span>
-                        {!manyProfiles && <PremiumLock />}
-                      </label>
-                      <label
-                        className="tl-choice"
-                        data-on={sheetsTargetMode === 'group'}
-                        title={manyProfiles ? undefined : ONE_PROFILE_NOTE}
-                      >
-                        <input
-                          type="radio"
-                          name="sheetsTargetMode"
-                          value="group"
-                          checked={sheetsTargetMode === 'group'}
-                          onChange={() => setSheetsTargetMode('group')}
-                          disabled={isGenerating || !manyProfiles}
-                        />
-                        <span className="text-sm font-medium text-ink">Specific group</span>
-                        {!manyProfiles && <PremiumLock />}
-                      </label>
-                    </div>
-                  </div>
-
-                  {sheetsTargetMode === 'single' && (
-                    <ProfileSelector
-                      profiles={profiles}
-                      selectedId={selectedSheetsProfileId}
-                      onChange={setSelectedSheetsProfileId}
-                      isLoading={false}
-                    />
-                  )}
-
-                  {/*
-                    Shown locked rather than left out, like the two targets
-                    above it: the page says what a Premium subscription adds,
-                    instead of a Default account never learning groups exist.
-                  */}
-                  {!manyProfiles && (
-                    <div title={ONE_PROFILE_NOTE}>
-                      <div className="flex items-center gap-2">
-                        <label htmlFor="sheets-group-locked" className="tl-label">
-                          Select Group
-                        </label>
-                        <PremiumLock />
-                      </div>
-                      <select id="sheets-group-locked" value="" disabled className="tl-input mt-2">
-                        <option value="">Building for a group needs Premium</option>
-                      </select>
-                    </div>
-                  )}
-
-                  {sheetsTargetMode === 'group' && (
-                    <div>
-                      <label className="tl-label">Select Group</label>
-                      <select
-                        value={selectedSheetsGroupId}
-                        onChange={(e) => setSelectedSheetsGroupId(e.target.value)}
-                        disabled={isGenerating}
-                        className="tl-input mt-2"
-                      >
-                        <option value="">Choose a group...</option>
-                        {groups.map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.name} ({group.profileIds.length})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                </div>
+                <ProfileTargets
+                  name="sheetsTargetMode"
+                  idPrefix="sheets"
+                  value={sheetsTargetMode}
+                  onChange={setSheetsTargetMode}
+                  manyProfiles={manyProfiles}
+                  lock={manyLock}
+                  onLocked={locked.open}
+                  profiles={profiles}
+                  selectedProfileId={selectedSheetsProfileId}
+                  onProfileChange={setSelectedSheetsProfileId}
+                  groups={groups}
+                  selectedGroupId={selectedSheetsGroupId}
+                  onGroupChange={setSelectedSheetsGroupId}
+                  disabled={isGenerating}
+                />
               </Card>
 
               <SheetsSourcePanel
                 spreadsheetId={ownSpreadsheetId}
-                busy={isGenerating}
+                busy={runBusy}
                 onRowsChange={setSheetJobCount}
                 onRun={handleSheetRun}
-                costLine={<CostLine quote={quote} label={sheetJobCount ? 'This run' : 'Each sheet row'} />}
+                costLine={
+                  <CostLine
+                    quote={quote}
+                    label={sheetJobCount ? 'This run' : 'Each sheet row'}
+                    pricing={spend.pending}
+                  />
+                }
                 unavailableNotice={<p className="text-sm text-muted">There is no job sheet to read rows from yet.</p>}
               />
             </div>
@@ -2584,7 +2332,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => handleFinalizeGenerateMultiple('order')}
-                    disabled={isGenerating}
+                    disabled={runBusy}
                     className="tl-button-quiet"
                     title="Built on the server whether or not this page stays open; collect the files on Orders"
                   >
@@ -2592,10 +2340,10 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => handleFinalizeGenerateMultiple('immediate')}
-                    disabled={isGenerating}
+                    disabled={runBusy}
                     className={`tl-button ${styles.wrap}`}
                   >
-                    {isGenerating ? generationStep || 'Generating...' : 'Generate Immediately'}
+                    {runBusy ? runStep || 'Generating...' : 'Generate Immediately'}
                   </button>
                   <button
                     type="button"
@@ -2603,7 +2351,7 @@ export default function Home() {
                       setMultiplePreviews([]);
                       setMultiplePreviewIndex(0);
                     }}
-                    disabled={isGenerating}
+                    disabled={runBusy}
                     className="tl-button-quiet"
                   >
                     Close
@@ -2677,11 +2425,11 @@ export default function Home() {
             html={previewHtml}
             onGenerate={handleFinalizeGenerate}
             generateLabel="Generate Immediately"
-            isGenerating={isGenerating}
+            isGenerating={runBusy}
             isTailored={previewTailored}
             isOpen={isSinglePreviewOpen}
             onClose={() => setIsSinglePreviewOpen(false)}
-            generationStep={generationStep}
+            generationStep={runStep}
             costNote={<CostLine quote={quote} shortfall={shortfall} />}
             titleNote={<AnalysisFacts analysis={currentAnalysis?.analysis} />}
             sidebar={
@@ -2725,17 +2473,8 @@ export default function Home() {
 
       </Page>
 
-      {pendingImmediate && (
-        <ImmediateRunConfirm
-          onCancel={() => setPendingImmediate(null)}
-          onProceed={(dontShowAgain) => {
-            if (dontShowAgain) skipImmediateConfirm(browserStorage());
-            const start = pendingImmediate;
-            setPendingImmediate(null);
-            start();
-          }}
-        />
-      )}
+      {spend.dialog}
+      {locked.dialog}
 
       {/* Footer */}
       <footer className="mt-auto py-6 text-center text-sm text-subtle">

@@ -103,8 +103,6 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
     skills: ['TypeScript'],
     hardSkills: ['TypeScript'],
     softSkills: ['Communication'],
-    unconfirmedSoftSkills: [],
-    unconfirmedHardSkills: [],
     strengths: [],
   };
 
@@ -208,8 +206,6 @@ test('older tailored content is printed unpadded: nothing added, nothing gated, 
     skills: hardSkills,
     hardSkills,
     softSkills: [],
-    unconfirmedSoftSkills: [],
-    unconfirmedHardSkills: [],
     strengths: [],
   });
   const printed = (data) => data.skillCategories.flatMap((group) => group.skills);
@@ -357,7 +353,8 @@ test('the preview is the PDF document plus chrome, never a different document', 
 });
 
 test('every built-in template is present and described', async () => {
-  const templates = await getAllTemplates();
+  // The built-ins: a saved template beside them is an administrator's.
+  const templates = (await getAllTemplates()).filter((entry) => entry.isBuiltIn);
   const ids = templates.map((entry) => entry.id).sort();
 
   assert.deepEqual(ids, [
@@ -414,7 +411,7 @@ test('a template of each layout shape renders the sample resume end to end', asy
 });
 
 test('no built-in template is still named after the person who wrote it', async () => {
-  const templates = await getAllTemplates();
+  const templates = (await getAllTemplates()).filter((entry) => entry.isBuiltIn);
   for (const template of templates) {
     assert.doesNotMatch(
       template.name,

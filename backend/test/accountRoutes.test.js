@@ -94,6 +94,11 @@ test('an admin sees every account with its subscription and profile use', async 
     );
     assert.equal(body.subscriptions.at(-1).profileLimit, null, 'Premium Max is unlimited');
     assert.equal('plans' in body, false);
+    // What each includes, for the Subscription page's cards.
+    for (const tier of body.subscriptions) assert.ok(tier.features.length > 0, `${tier.id} lists its features`);
+    // Nobody here paid for a tier: an administrator's or Default.
+    assert.equal(byEmail.get('alice@example.com').subscriptionBilling, null);
+    assert.equal(byEmail.get('admin@example.com').subscriptionBilling, null);
   } finally {
     server.close();
   }
@@ -127,8 +132,39 @@ test('a subscription this build does not have is refused rather than stored', as
       body: JSON.stringify({ subscription: 'premium-ultra' }),
     });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /not a subscription/i);
+    const refusal = await response.json();
+    assert.equal(refusal.error, '"premium-ultra" is not a subscription this build knows about.');
+    assert.equal(refusal.code, 'bad-subscription');
     assert.equal(server.users.getUserById(server.alice.id).subscription, 'default');
+  } finally {
+    server.close();
+  }
+});
+
+test('a pre-created account naming an unknown subscription is refused and nothing is created', async () => {
+  // It used to be created on Default, silently: the invite said Premium, the
+  // person arrived without it, and nothing anywhere said why.
+  const server = await serve();
+  try {
+    for (const subscription of ['premium-ultra', 'Premium', '', null]) {
+      const response = await server.request(server.adminToken, '/', {
+        method: 'POST',
+        body: JSON.stringify({ email: 'odd@example.com', subscription, balanceUsd: '5' }),
+      });
+      assert.equal(response.status, 400, JSON.stringify(subscription));
+      const refusal = await response.json();
+      assert.match(refusal.error, /is not a subscription this build knows about\.$/);
+      assert.equal(refusal.code, 'bad-subscription');
+      assert.equal(server.users.getUserByEmail('odd@example.com'), null, 'no account, no opening balance');
+    }
+
+    // Absent is Default, as before.
+    const plain = await server.request(server.adminToken, '/', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'plain@example.com' }),
+    });
+    assert.equal(plain.status, 201);
+    assert.equal((await plain.json()).account.subscription, 'default');
   } finally {
     server.close();
   }

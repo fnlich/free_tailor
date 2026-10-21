@@ -65,6 +65,8 @@ export type AccountSubscription = {
   label: string;
   profileLimit: number | null;
   summary: string;
+  /** What the tier includes, a line each: "Up to 5 profiles", "Groups"... */
+  features: string[];
   order: number;
 };
 
@@ -92,8 +94,6 @@ function remember(result: SignInResponse): SignInResponse {
 
 export const authApi = {
   options: () => apiFetch<SignInOptions>('/auth/options'),
-
-  subscriptions: () => apiFetch<{ subscriptions: AccountSubscription[] }>('/auth/subscriptions'),
 
   /**
    * Who is signed in, and the PDF upload cap (`uploadMaxMb`, UPLOAD_MAX_MB on
@@ -191,6 +191,15 @@ export type ManagedAccount = Account & {
    * (lib/roles.ts `configuredAdminNotes`).
    */
   configuredAdminSource: ConfiguredAdminSource | null;
+  /**
+   * The tier the account PAYS for from its credit (Settings -> Subscription):
+   * when its 30 days end, whether it renews then, and a lower tier chosen for
+   * the next 30. Null while its tier is not paid - Default, or one an
+   * administrator set. Setting the tier, or moving the role away from user,
+   * ends it at once and refunds nothing: the answer's `note` says how much
+   * was unused.
+   */
+  subscriptionBilling: { paidThrough: string; renews: boolean; next: AccountSubscriptionId | null } | null;
 };
 
 /** A role as the accounts list offers it: `{ id: 'reporter', label: 'Reporter' }`. */

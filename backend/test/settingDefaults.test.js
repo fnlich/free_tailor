@@ -5,7 +5,7 @@ const test = require('node:test');
 const express = require('express');
 const Database = require('better-sqlite3');
 
-const { loadFresh, openTestDb, readSettingRaw, useAdminEmails, useTempStorage } = require('./helpers');
+const { loadFresh, openTestDb, readSettingRaw, useAdminEmails, useTempStorage, writeSettingRaw } = require('./helpers');
 const { resetEnvWarningsForTests } = require('../dist/config/envValue');
 const {
   APP_SETTING_ENV_VARIABLES,
@@ -69,7 +69,9 @@ const limitsOf = (rows) => rows.map((row) => [row.target, row.minMilli, row.maxM
 /**
  * One case per field with a `.env` default: what `.env` sets, what an
  * administrator saves, and what each reads as. `read` projects the served
- * value, so the payment limits are compared as (target, min, max).
+ * value, so the payment limits are compared as (target, min, max). `request`
+ * is the field a save sends it under when that is not its own name: a price
+ * is served in thousandths and saved in dollars.
  */
 const CASES = [
   { field: 'defaultMode', env: { DEFAULT_MODE: 'generate' }, fromEnv: 'generate', save: 'preview', saved: 'preview', code: 'preview' },
@@ -108,6 +110,34 @@ const CASES = [
   { field: 'defaultModelId', env: { DEFAULT_MODEL: 'claude opus' }, fromEnv: 'claude-cli-opus', save: 'claude-cli-haiku', saved: 'claude-cli-haiku', code: 'claude-cli-sonnet' },
   // '' saved is the administrator's "the default model", which beats .env.
   { field: 'analysisModelId', env: { ANALYSIS_MODEL: 'claude-cli-haiku' }, fromEnv: 'claude-cli-haiku', save: '', saved: '', code: '' },
+  // A paid subscription's price for 30 days: not offered (null) until somebody prices it.
+  {
+    field: 'premiumPriceMilli',
+    request: 'premiumPriceUsd',
+    env: { SUBSCRIPTION_PREMIUM_PRICE_USD: '9.99' },
+    fromEnv: 9_990,
+    save: '12.5',
+    saved: 12_500,
+    code: null,
+  },
+  {
+    field: 'premiumPlusPriceMilli',
+    request: 'premiumPlusPriceUsd',
+    env: { SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: '$19.99' },
+    fromEnv: 19_990,
+    save: 25,
+    saved: 25_000,
+    code: null,
+  },
+  {
+    field: 'premiumMaxPriceMilli',
+    request: 'premiumMaxPriceUsd',
+    env: { SUBSCRIPTION_PREMIUM_MAX_PRICE_USD: '49.995' },
+    fromEnv: 49_995,
+    save: '0.001',
+    saved: 1,
+    code: null,
+  },
 ];
 
 test('every field with a .env default has a case below, a variable and a row of the operational table', () => {
@@ -122,6 +152,7 @@ for (const entry of CASES) {
     const dirs = useTempStorage(`setting-defaults-${entry.field}`);
     const value = (spec) => (typeof spec === 'function' ? spec(dirs) : spec);
     const read = entry.read ?? ((served) => served);
+    const sent = entry.request ?? entry.field;
 
     await withEnv({}, async (warnings) => {
       const config = loadFresh('../dist/config/aiModelConfig');
@@ -139,7 +170,7 @@ for (const entry of CASES) {
       assert.equal(admin.settingSources[entry.field], 'env');
       assert.deepEqual(read(admin.settingDefaults[entry.field]), value(entry.fromEnv));
 
-      admin = await config.updateAppSettings({ [entry.field]: value(entry.save) });
+      admin = await config.updateAppSettings({ [sent]: value(entry.save) });
       assert.deepEqual(read(admin[entry.field]), value(entry.saved), "an administrator's value over .env");
       assert.equal(admin.settingSources[entry.field], 'admin');
       assert.deepEqual(read(admin.settingDefaults[entry.field]), value(entry.fromEnv), 'what Reset would give');
@@ -150,7 +181,7 @@ for (const entry of CASES) {
       admin = await config.updateAppSettings(other);
       assert.equal(admin.settingSources[entry.field], 'admin');
 
-      admin = await config.updateAppSettings({ [entry.field]: null });
+      admin = await config.updateAppSettings({ [sent]: null });
       assert.deepEqual(read(admin[entry.field]), value(entry.fromEnv), 'Reset to default: .env again');
       assert.equal(admin.settingSources[entry.field], 'env');
       assert.equal(entry.field in storedRow(dirs.dbDir), false, 'and nothing stored for it');
@@ -569,6 +600,7 @@ test('the startup line names the .env defaults in effect, and of CONTACT_CHANNEL
       DEFAULT_THEME: 'dark',
       PAYMENT_CARD_MIN_USD: '5',
       JOB_LAKE_REPORT_RATE_USD: '0.05',
+      SUBSCRIPTION_PREMIUM_PRICE_USD: '$9.990',
       CONTACT_CHANNELS: 'email:help@example.org|Support,whatsapp:not-a-number',
     },
     async (warnings) => {
@@ -576,6 +608,9 @@ test('the startup line names the .env defaults in effect, and of CONTACT_CHANNEL
       assert.match(line, /DEFAULT_THEME=dark/);
       assert.match(line, /PAYMENT_CARD_MIN_USD=5(,|$)/);
       assert.match(line, /JOB_LAKE_REPORT_RATE_USD=0\.05/);
+      // The price in effect, as .env would spell it.
+      assert.match(line, /SUBSCRIPTION_PREMIUM_PRICE_USD=9\.99(,|$)/);
+      assert.doesNotMatch(line, /SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD/, 'not offered is the default: not listed');
       assert.match(line, /CONTACT_CHANNELS=email:help@example\.org\|Support(,|$)/);
       assert.equal(line.includes('not-a-number'), false, 'a refused entry is not printed');
       assert.ok(warnings.some((warning) => warning.includes('CONTACT_CHANNELS: entry 2 is not a contact channel')), warnings.join('\n'));
@@ -638,6 +673,156 @@ test("the lake's rate and cap: .env under the administrator's value, each with i
     assert.equal(settings.settingSources.dailyCapMilli, 'default');
     assert.equal(settings.reportRateMilli, 0);
     assert.ok(warnings.some((line) => line.includes('JOB_LAKE_DAILY_CAP_USD="lots" is not an amount in dollars')));
+  });
+});
+
+/* ------------------------------------------------- subscription prices */
+
+test("a subscription's price: '' or $0 saved is not offered and beats .env, null resets, and a bad one is refused by its box", async () => {
+  const { dbDir } = useTempStorage('setting-defaults-subscription-prices');
+  await withEnv({ SUBSCRIPTION_PREMIUM_PRICE_USD: '9.99', SUBSCRIPTION_PREMIUM_MAX_PRICE_USD: '0' }, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    let admin = await config.getAdminAppSettings();
+    assert.equal(admin.premiumPriceMilli, 9_990);
+    assert.equal(admin.premiumPlusPriceMilli, null, 'unset: not offered');
+    assert.equal(admin.premiumMaxPriceMilli, null, '0 in .env: not offered');
+    assert.equal(admin.settingSources.premiumMaxPriceMilli, 'default', '0 is no price: nothing came from .env');
+    assert.deepEqual(await config.getSubscriptionPrices(), { premium: 9_990, 'premium-plus': null, 'premium-max': null });
+    // Unset and 0 are decisions - not offered - not prices that could not be read.
+    assert.deepEqual(await config.getSubscriptionPriceReading(), {
+      prices: { premium: 9_990, 'premium-plus': null, 'premium-max': null },
+      unreadable: [],
+    });
+
+    // An emptied box - or $0 - is the administrator's "not offered", stored as 0, and beats .env.
+    for (const notOffered of ['', ' ', '0', '$0', 0]) {
+      admin = await config.updateAppSettings({ premiumPriceUsd: notOffered });
+      assert.equal(admin.premiumPriceMilli, null, JSON.stringify(notOffered));
+      assert.equal(admin.settingSources.premiumPriceMilli, 'admin');
+      assert.equal(admin.settingDefaults.premiumPriceMilli, 9_990, 'what Reset would give');
+      assert.equal(storedRow(dbDir).premiumPriceMilli, 0);
+    }
+    assert.equal((await config.getSubscriptionPrices()).premium, null);
+    config.invalidateSettingsCache();
+    admin = await config.getAdminAppSettings();
+    assert.equal(admin.premiumPriceMilli, null, 'as read back from the row');
+    assert.equal(admin.settingSources.premiumPriceMilli, 'admin');
+
+    // Reset to default: .env's price again, nothing stored.
+    admin = await config.updateAppSettings({ premiumPriceUsd: null });
+    assert.equal(admin.premiumPriceMilli, 9_990);
+    assert.equal(admin.settingSources.premiumPriceMilli, 'env');
+    assert.equal('premiumPriceMilli' in storedRow(dbDir), false);
+
+    // Refused by name, under the box it came from, and nothing saved.
+    for (const [body, sentence, field, code] of [
+      [{ premiumPriceUsd: '10000.001' }, /^The Premium price must be at most \$10,000\.$/, 'premiumPriceUsd', 'bad-price'],
+      [{ premiumPlusPriceUsd: '1.2345' }, /^The Premium\+ price can have at most three decimal places/, 'premiumPlusPriceUsd', 'bad-price'],
+      [{ premiumMaxPriceUsd: 'abc' }, /^The Premium Max price must be an amount in dollars/, 'premiumMaxPriceUsd', 'bad-price'],
+      [{ premiumMaxPriceUsd: '-5' }, /^The Premium Max price cannot be negative\.$/, 'premiumMaxPriceUsd', 'bad-price'],
+      // A price in thousandths is never read: requests carry dollars.
+      [{ premiumPriceMilli: 9_990 }, /^Send the Premium price in dollars, as premiumPriceUsd\.$/, 'premiumPriceUsd', 'bad-price-field'],
+      [{ premiumMaxPriceMilli: null }, /^Send the Premium Max price in dollars, as premiumMaxPriceUsd\.$/, 'premiumMaxPriceUsd', 'bad-price-field'],
+    ]) {
+      const refusal = await config.updateAppSettings(body).then(
+        () => null,
+        (error) => error
+      );
+      assert.ok(refusal, `refused: ${JSON.stringify(body)}`);
+      assert.match(refusal.message, sentence);
+      assert.equal(refusal.field, field);
+      assert.equal(refusal.code, code);
+    }
+    admin = await config.getAdminAppSettings();
+    assert.equal(admin.premiumPriceMilli, 9_990, 'a refused save changed nothing');
+    assert.equal(admin.premiumPlusPriceMilli, null);
+
+    // The largest price there is, exactly, and the smallest step.
+    admin = await config.updateAppSettings({ premiumMaxPriceUsd: '10000', premiumPlusPriceUsd: 0.001 });
+    assert.equal(admin.premiumMaxPriceMilli, 10_000_000);
+    assert.equal(admin.premiumPlusPriceMilli, 1);
+    assert.deepEqual(warnings, []);
+  });
+});
+
+test("a subscription price .env cannot use: above $10,000 clamps, junk is not offered but flagged unreadable, each said once; a junk stored one is ignored", async () => {
+  const { dbDir } = useTempStorage('setting-defaults-subscription-junk');
+  await withEnv({ SUBSCRIPTION_PREMIUM_PRICE_USD: '20000', SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: 'cheap' }, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    let admin = await config.getAdminAppSettings();
+    assert.equal(admin.premiumPriceMilli, 10_000_000);
+    assert.equal(admin.settingSources.premiumPriceMilli, 'env');
+    assert.equal(admin.premiumPlusPriceMilli, null);
+    assert.equal(admin.settingSources.premiumPlusPriceMilli, 'default');
+    assert.ok(warnings.some((line) => line === '[env] SUBSCRIPTION_PREMIUM_PRICE_USD=20000 is above $10,000; using $10,000.'), warnings.join('\n'));
+    assert.ok(warnings.some((line) => line.includes('SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD="cheap" is not an amount in dollars')), warnings.join('\n'));
+    // Not for sale - but nobody decided Premium+ is not offered, and the
+    // renewal sweep must not end what was paid for on it.
+    assert.deepEqual((await config.getSubscriptionPriceReading()).unreadable, [{ tier: 'premium-plus', source: 'env' }]);
+    const { envSubscriptionPriceMilli } = require('../dist/config/settingDefaults');
+    assert.deepEqual(envSubscriptionPriceMilli('premium-plus', { SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: '9,99' }), {
+      value: null,
+      fromEnv: false,
+      unreadable: true,
+    });
+    for (const decided of [{}, { SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: '0' }, { SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: '  ' }]) {
+      assert.deepEqual(envSubscriptionPriceMilli('premium-plus', decided), { value: null, fromEnv: false, unreadable: false });
+    }
+    assert.equal(envSubscriptionPriceMilli('premium-plus', { SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: '20000' }).unreadable, false, 'clamped is read');
+
+    // A price hand-edited into the row is not one this app writes: ignored, said once, and .env's is in effect.
+    await config.updateAppSettings({ defaultMode: 'generate' });
+    writeSettingRaw(dbDir, 'app-settings', JSON.stringify({ ...storedRow(dbDir), premiumPriceMilli: 'free', premiumMaxPriceMilli: 1.5 }));
+    config.invalidateSettingsCache();
+    admin = await config.getAdminAppSettings();
+    assert.equal(admin.premiumPriceMilli, 10_000_000);
+    assert.equal(admin.settingSources.premiumPriceMilli, 'env');
+    assert.equal(admin.premiumMaxPriceMilli, null);
+    assert.equal(admin.settingSources.premiumMaxPriceMilli, 'default');
+    assert.equal(warnings.filter((line) => line.includes('The stored premiumPriceMilli is "free"')).length, 1, warnings.join('\n'));
+    assert.equal(warnings.filter((line) => line.includes('The stored premiumMaxPriceMilli is 1.5')).length, 1, warnings.join('\n'));
+    // Premium is .env's price, as the page shows it; Premium Max has nothing
+    // under the junk, so its "not offered" is unreadable too.
+    assert.deepEqual((await config.getSubscriptionPriceReading()).unreadable, [
+      { tier: 'premium-plus', source: 'env' },
+      { tier: 'premium-max', source: 'admin' },
+    ]);
+    // The next save does not keep it.
+    await config.updateAppSettings({ defaultTheme: 'dark' });
+    assert.equal('premiumPriceMilli' in storedRow(dbDir), false);
+    assert.deepEqual((await config.getSubscriptionPriceReading()).unreadable, [{ tier: 'premium-plus', source: 'env' }]);
+  });
+});
+
+test('PUT /api/admin/settings: a subscription price is saved in dollars, and a refusal names its box', async () => {
+  await withEnv({ SUBSCRIPTION_PREMIUM_PLUS_PRICE_USD: '19.99' }, async () => {
+    const s = await serveAdmin('prices');
+    try {
+      let reply = await s.call('PUT', '/api/admin/settings', { premiumPriceUsd: '9.99' });
+      assert.equal(reply.status, 200, JSON.stringify(reply.body));
+      assert.equal(reply.body.premiumPriceMilli, 9_990);
+      assert.equal(reply.body.premiumPlusPriceMilli, 19_990);
+      assert.equal(reply.body.premiumMaxPriceMilli, null);
+      assert.deepEqual(
+        [reply.body.settingSources.premiumPriceMilli, reply.body.settingSources.premiumPlusPriceMilli, reply.body.settingSources.premiumMaxPriceMilli],
+        ['admin', 'env', 'default']
+      );
+      assert.equal(reply.body.settingDefaults.premiumPlusPriceMilli, 19_990);
+
+      reply = await s.call('PUT', '/api/admin/settings', { premiumPlusPriceUsd: '12.5.0' });
+      assert.equal(reply.status, 400);
+      assert.equal(reply.body.field, 'premiumPlusPriceUsd');
+      assert.equal(reply.body.code, 'bad-price');
+      assert.match(reply.body.error, /^The Premium\+ price must be an amount in dollars/);
+
+      reply = await s.call('PUT', '/api/admin/settings', { premiumPriceMilli: 1 });
+      assert.equal(reply.status, 400);
+      assert.equal(reply.body.field, 'premiumPriceUsd');
+      assert.equal(reply.body.code, 'bad-price-field');
+      assert.equal((await s.call('GET', '/api/admin/settings')).body.premiumPriceMilli, 9_990, 'nothing was saved');
+    } finally {
+      s.close();
+    }
   });
 });
 

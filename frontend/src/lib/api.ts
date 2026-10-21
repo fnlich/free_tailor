@@ -265,6 +265,17 @@ export function isProfileLimit(error: unknown): error is ApiResponseError {
 }
 
 /**
+ * The account's subscription does not include what was asked: 403
+ * `subscription-too-low` - building for more than one profile below Premium,
+ * or Groups. A page answers it with the lock (components/subscription/
+ * LockedFeature.tsx), which leads to the Subscription page, rather than a
+ * bare sentence.
+ */
+export function isSubscriptionTooLow(error: unknown): error is ApiResponseError {
+  return error instanceof ApiResponseError && error.status === 403 && error.code === 'subscription-too-low';
+}
+
+/**
  * A run was refused for want of credit: 402 `insufficient-credits`, with what
  * the run needs and the balance it found as `neededMilli` and `balanceMilli`,
  * in thousandths of a dollar.
@@ -777,6 +788,8 @@ export interface UserAppSettings extends BuilderDefaults {
   /** Runnable models, in the administrator's order. `defaultModelId` is one of them, or ''. */
   models: PublicModelOption[];
   outputPathUsesJobTitle: boolean;
+  /** How a profile that has chosen no tailoring mode is tailored: `.env`'s DEFAULT_TAILOR_MODE, else partial. */
+  defaultTailorMode: TailorMode;
 }
 
 /**
@@ -841,6 +854,16 @@ export interface AdminAppSettings extends BuilderDefaults {
    */
   requireThreeDSecure: boolean;
   /**
+   * What each paid subscription costs for 30 days, taken from the account's
+   * credit balance when it is bought and at every renewal, in thousandths;
+   * null is not offered (nobody can buy it). Saved in dollars, as
+   * `premiumPriceUsd` and its siblings (lib/settingSources.ts
+   * `SUBSCRIPTION_PRICE_REQUEST_FIELDS`).
+   */
+  premiumPriceMilli: number | null;
+  premiumPlusPriceMilli: number | null;
+  premiumMaxPriceMilli: number | null;
+  /**
    * Where each setting with a `.env` default got the value in effect: 'admin'
    * (set here - Reset to default is offered), 'env' or 'default'
    * (lib/settingSources.ts). Every key is present; one the server left out
@@ -888,6 +911,10 @@ export interface AppSettingDefaults {
   /** In thousandths, like `paymentLimits`. */
   paymentLimits: PaymentTargetLimits[];
   requireThreeDSecure: boolean;
+  /** In thousandths; null is not offered. */
+  premiumPriceMilli: number | null;
+  premiumPlusPriceMilli: number | null;
+  premiumMaxPriceMilli: number | null;
 }
 
 /**
@@ -1017,6 +1044,7 @@ export const DEFAULT_USER_APP_SETTINGS: UserAppSettings = {
   ...DEFAULT_BUILDER_DEFAULTS,
   models: [],
   outputPathUsesJobTitle: true,
+  defaultTailorMode: 'partial',
 };
 
 /**
@@ -1206,6 +1234,7 @@ function normalizeUserAppSettings(value: unknown): UserAppSettings {
     models: normalizePublicModelOptions(source.models),
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
+    defaultTailorMode: source.defaultTailorMode === 'full' ? 'full' : 'partial',
   };
 }
 
@@ -1233,7 +1262,20 @@ function normalizeSettingDefaults(value: unknown, inEffect: Omit<AdminAppSetting
       : inEffect.paymentLimits,
     requireThreeDSecure:
       typeof source.requireThreeDSecure === 'boolean' ? source.requireThreeDSecure : inEffect.requireThreeDSecure,
+    premiumPriceMilli: priceDefault(source, 'premiumPriceMilli', inEffect.premiumPriceMilli),
+    premiumPlusPriceMilli: priceDefault(source, 'premiumPlusPriceMilli', inEffect.premiumPlusPriceMilli),
+    premiumMaxPriceMilli: priceDefault(source, 'premiumMaxPriceMilli', inEffect.premiumMaxPriceMilli),
   };
+}
+
+/** A subscription price as the server sends it: a whole number of thousandths above 0, else null - not offered. */
+function readPriceMilli(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/** A price's Reset value: the server's - null is one, "not offered" - else, left out, the value in effect. */
+function priceDefault(source: Record<string, unknown>, key: string, inEffect: number | null): number | null {
+  return Object.prototype.hasOwnProperty.call(source, key) ? readPriceMilli(source[key]) : inEffect;
 }
 
 function pickBuilderDefaults(settings: BuilderDefaults): BuilderDefaults {
@@ -1275,6 +1317,9 @@ function normalizeAdminSettingsInEffect(source: Record<string, unknown>): Omit<A
     staleDefaultModelId:
       typeof source.staleDefaultModelId === 'string' && source.staleDefaultModelId ? source.staleDefaultModelId : null,
     requireThreeDSecure: source.requireThreeDSecure === true,
+    premiumPriceMilli: readPriceMilli(source.premiumPriceMilli),
+    premiumPlusPriceMilli: readPriceMilli(source.premiumPlusPriceMilli),
+    premiumMaxPriceMilli: readPriceMilli(source.premiumMaxPriceMilli),
     settingSources: readSettingSources(source.settingSources, APP_SETTING_KEYS),
   };
 }
@@ -1304,7 +1349,17 @@ export type AdminAppSettingsUpdate = Resettable<
     paymentLimits: Array<PaymentTargetLimitsInput | PaymentTargetLimitsReset>;
     requireThreeDSecure: boolean;
   }
->;
+> & {
+  /**
+   * A subscription's price for 30 days, in DOLLARS as typed ("9.99") - never
+   * in thousandths, which the server refuses. '' is "not offered" (it beats
+   * .env); `null` is Reset to default. A refusal is 400 with `field` naming
+   * the box.
+   */
+  premiumPriceUsd?: string | null;
+  premiumPlusPriceUsd?: string | null;
+  premiumMaxPriceUsd?: string | null;
+};
 
 export interface BrowseOutputDirectoryResponse {
   selectedPath: string | null;
@@ -1627,6 +1682,89 @@ export interface Certification {
   credentialId?: string;
 }
 
+/*
+ * The other section kinds a resume commonly carries (lib/profileSections.ts
+ * is the catalogue, a copy of the server's). Each is a list of entries on the
+ * profile that prints only when it has one - there is no on/off switch for
+ * them as there is for Soft Skills and Strengths. Links are stored as typed,
+ * like `contact.github`; the renderer keeps only http(s) ones.
+ */
+export interface Project {
+  name: string;
+  role: string;
+  startDate: string;
+  endDate: string;
+  link: string;
+  description: string;
+  achievements: string[];
+}
+
+export interface Language {
+  language: string;
+  proficiency: string;
+}
+
+export interface Award {
+  title: string;
+  issuer: string;
+  date: string;
+  description: string;
+}
+
+export interface Publication {
+  title: string;
+  publisher: string;
+  date: string;
+  link: string;
+  description: string;
+}
+
+export interface Volunteering {
+  role: string;
+  organization: string;
+  startDate: string;
+  endDate: string;
+  location: string;
+  description: string;
+  achievements: string[];
+}
+
+export interface Course {
+  name: string;
+  institution: string;
+  date: string;
+}
+
+export interface Reference {
+  name: string;
+  title: string;
+  company: string;
+  email: string;
+  phone: string;
+}
+
+export interface CustomSectionEntry {
+  heading: string;
+  subheading: string;
+  startDate: string;
+  endDate: string;
+  location: string;
+  description: string;
+  achievements: string[];
+}
+
+/**
+ * A section the person titles themselves. `key` is minted by the editor
+ * (`cs-` and eight hex digits, lib/profileSections.ts `newCustomSectionKey`),
+ * unique in the profile, and `sectionOrder` refers to the section as
+ * `custom:<key>`.
+ */
+export interface CustomSection {
+  key: string;
+  title: string;
+  entries: CustomSectionEntry[];
+}
+
 /**
  * One heading in the Technical Skills block, and the skills under it.
  *
@@ -1653,6 +1791,14 @@ export interface SkillGroup extends SkillCategoryGroup {
  * of names with no headings over it.
  */
 export type TechnicalSkillsLayout = 'categorized' | 'flat';
+
+/**
+ * Partial tailor (the profile's own descriptions and achievements rewritten
+ * for each posting) or Fully tailor (only each role's title, company and dates
+ * sent; the experience and the summary written for the posting). The server's
+ * types/profile.ts `TailorMode`.
+ */
+export type TailorMode = 'partial' | 'full';
 
 /**
  * The headings the shared skill library sorts skills into.
@@ -1713,6 +1859,11 @@ export interface ProfileSettings {
   includeSoftSkills?: boolean;
   /** Whether the resume carries a Strengths section. Absent means false. */
   includeStrengths?: boolean;
+  /**
+   * Partial or Fully tailor. Absent follows the default (UserAppSettings
+   * `defaultTailorMode`); a save sends `null` to clear a stored choice.
+   */
+  tailorMode?: TailorMode | null;
   /** This profile's default model. */
   ai?: AiPreferences;
 }
@@ -1744,6 +1895,27 @@ export interface Profile {
   softSkills?: string[];
   education: Education[];
   certifications?: Certification[];
+  /*
+   * The other section kinds (lib/profileSections.ts). Absent on every profile
+   * saved before them; absent and empty read the same.
+   */
+  projects?: Project[];
+  languages?: Language[];
+  awards?: Award[];
+  publications?: Publication[];
+  volunteering?: Volunteering[];
+  courses?: Course[];
+  interests?: string[];
+  references?: Reference[];
+  customSections?: CustomSection[];
+  /**
+   * The order the resume's sections print in, by kind id or `custom:<key>`.
+   * ABSENT means the template's own order - every profile saved before the
+   * order existed, and every one whose person never arranged the cards. A
+   * kind listed here with nothing in it is an added, empty section: shown as
+   * an empty card, printed as nothing.
+   */
+  sectionOrder?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -1778,6 +1950,26 @@ export interface CreateProfileDTO {
   softSkills?: string[];
   education?: Partial<Education>[];
   certifications?: Certification[];
+  /*
+   * The other section kinds, each with the lists' rule: omitted keeps what is
+   * stored, an empty list clears it, an entry with nothing typed into it is
+   * dropped by the server.
+   */
+  projects?: Project[];
+  languages?: Language[];
+  awards?: Award[];
+  publications?: Publication[];
+  volunteering?: Volunteering[];
+  courses?: Course[];
+  interests?: string[];
+  references?: Reference[];
+  customSections?: CustomSection[];
+  /**
+   * The section order. Omitted keeps the stored order; `[]` clears it, back
+   * to the template's own; a ref the server does not know is dropped, and
+   * nothing is ever appended - completion happens where the order is read.
+   */
+  sectionOrder?: string[];
   preferredTemplate?: string;
   disabled?: boolean;
   profileSettings?: ProfileSettings;
@@ -1786,9 +1978,12 @@ export interface CreateProfileDTO {
 /**
  * What `POST /profiles/preview` answers: the draft drawn as a resume.
  *
- * `templateId` is the template it was really drawn with - not the one asked
- * for when that one does not offer the draft's layout or is no longer enabled,
- * because the server then falls back exactly as a generated resume would.
+ * `templateId` is the template it was really drawn with - not the draft's own
+ * when that one is not offered any more (disabled or deleted), because the
+ * server then falls back exactly as a generated resume would: `default`, else
+ * the first enabled template. One asked for by name (`templateId` in the
+ * request) is never swapped: missing, or disabled for anybody but an
+ * administrator, it is a 404.
  * `page` is the printed page in CSS px, which the frame is sized to before it
  * is scaled; `contentHeightPx` is one page's content box, roughly where a page
  * break falls in the continuous document.
@@ -1823,11 +2018,16 @@ export interface ManualTemplateConfigStored {
   sectionStyles?: Record<string, Record<string, { color?: string; fontSizePt?: number; fontFamily?: string; fontWeight?: string }>>;
 }
 
+/** The style a template is filed under in the new-profile chooser (the backend's config/templateCategories.ts). */
+export type TemplateCategory = 'simple' | 'modern' | 'creative';
+
 export interface Template {
   id: string;
   name: string;
   description: string;
   disabled?: boolean;
+  /** Simple, Modern or Creative - the chooser's filters. Absent: listed under All only. */
+  category?: TemplateCategory;
   htmlContent: string;
   cssContent: string;
   sections: string[];
@@ -1835,16 +2035,26 @@ export interface Template {
   updatedAt: string;
   manualConfig?: ManualTemplateConfigStored;
   isBuiltIn?: boolean;
-  /**
-   * The Technical Skills layouts this template is offered for, never empty: a
-   * category grid is Grouped only, most designs are both. Read it through
-   * lib/profileDraft.ts's `templateOffersLayout`.
+  /*
+   * No list of Technical Skills layouts: every template prints both, Grouped
+   * and Plain, and `GET /templates/:id/preview?layout=` draws either.
    */
-  skillsLayouts: TechnicalSkillsLayout[];
   /** Whether its markup has a Soft Skills section. Worked out by the server on every read. */
-  supportsSoftSkills?: boolean;
+  supportsSoftSkills: boolean;
   /** Whether its markup has a Strengths section. Worked out by the server on every read. */
-  supportsStrengths?: boolean;
+  supportsStrengths: boolean;
+  /**
+   * The sections its markup prints: every kind id (lib/profileSections.ts) it
+   * names or prints through the extra-sections macro, and `custom` when it
+   * prints custom sections. Worked out by the server on every read.
+   */
+  printsSections: string[];
+  /**
+   * The order its own markup prints the sections in, by kind id - what a
+   * profile with no stored `sectionOrder` is drawn and shown in. Worked out
+   * by the server on every read; custom sections are not in it.
+   */
+  nativeSectionOrder: string[];
 }
 
 export type PromptResponseFormat = 'json' | 'text';
@@ -1852,8 +2062,10 @@ export type PromptFeatureKey =
   | 'analyze-job-description'
   | 'filter-google-sheet-job'
   | 'tailor-resume'
+  | 'tailor-resume-full'
   | 'revise-resume-coverage'
   | 'generate-cover-letter'
+  | 'write-entry-bullets'
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume';
 
@@ -2107,7 +2319,13 @@ export const profilesApi = {
    * AbortError itself (see `apiFetch`), which the caller ignores.
    */
   preview: (
-    body: { profile: CreateProfileDTO; profileId?: string; templateId?: string },
+    body: {
+      profile: CreateProfileDTO;
+      profileId?: string;
+      templateId?: string;
+      /** false: draw the profile as it stands, nothing filled from the sample person (the Profiles page's thumbnails). */
+      sample?: false;
+    },
     signal?: AbortSignal
   ) =>
     apiFetch<ProfilePreviewResult>('/profiles/preview', {
@@ -2115,9 +2333,62 @@ export const profilesApi = {
       body: JSON.stringify(body),
       signal,
     }),
+
+  /**
+   * Writes or improves one entry's bullets, for the editor's Write with AI /
+   * Improve with AI (POST /profiles/entries/bullets).
+   *
+   * Free, and nothing is saved: the editor puts the answer in its draft, and
+   * the person saves or does not. A 400 names what the entry lacks (its
+   * `code`: `entry-incomplete`, `nothing-to-improve`), a 409 says a request is
+   * already running for the account, a 503 that no model can run here - each
+   * a sentence for the reader as it stands. Aborting `signal` rejects with the
+   * AbortError itself, which the caller ignores.
+   */
+  writeBullets: (body: WriteBulletsRequest, signal?: AbortSignal) =>
+    apiFetch<WriteBulletsAnswer>('/profiles/entries/bullets', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
 };
 
-/** What `POST /profiles/import` reports back. */
+/** The kinds of entry Write with AI serves, as the server names them (services/entryBullets.ts). */
+export type WriteBulletsKind = 'experience' | 'project' | 'volunteering';
+export type WriteBulletsTask = 'write' | 'improve';
+
+/**
+ * What `POST /profiles/entries/bullets` is sent: one entry as typed, who it
+ * belongs to, and what to do. Built by lib/profileDraft.ts's
+ * `bulletsRequestFor`, never by a page.
+ */
+export interface WriteBulletsRequest {
+  kind: WriteBulletsKind;
+  /**
+   * The entry's fields for its kind - title and company for experience, name
+   * and role for a project, role and organization for volunteering - with its
+   * dates, location, description, achievements and skills.
+   */
+  entry: Record<string, string | string[]>;
+  /** Five facts about the person, never contact details. */
+  profile?: {
+    name: string;
+    title: string;
+    totalYearsExperience?: number;
+    summary: string;
+    skills: string[];
+  };
+  task: WriteBulletsTask;
+  /** The note typed beside the button, when there is one. */
+  instructions?: string;
+}
+
+export interface WriteBulletsAnswer {
+  /** One to eight bullets, each at most 300 characters. */
+  bullets: string[];
+}
+
+/** What `POST /templates/upload-json` reports back. */
 export interface TemplateImportResult {
   templates: Template[];
   imported: number;
@@ -2184,16 +2455,8 @@ export const templatesApi = {
       options?.includeDisabled ? '/templates?includeDisabled=true' : '/templates'
     ),
 
-  update: (
-    id: string,
-    data: {
-      disabled?: boolean;
-      name?: string;
-      description?: string;
-      /** Administrators only; a non-empty list of known layouts or the server answers 400. */
-      skillsLayouts?: TechnicalSkillsLayout[];
-    }
-  ) =>
+  /** Administrators only. At least one of the three, or the server answers 400. */
+  update: (id: string, data: { disabled?: boolean; name?: string; description?: string }) =>
     apiFetch<Template>(`/templates/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),

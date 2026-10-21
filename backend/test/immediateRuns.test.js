@@ -124,8 +124,6 @@ async function serve(name) {
       pdf: `${folder}/Ada.pdf`,
       coverLetterPdf: `${folder}/Ada_cover_letter.pdf`,
       tailored: false,
-      unconfirmedHardSkills: [],
-      unconfirmedSoftSkills: [],
     });
   };
 
@@ -216,8 +214,8 @@ test('a run is Generate Immediately unless it says it is an order, and only an o
     assert.equal((await server.call('alice', `/orders/${row.id}`)).status, 404);
     assert.equal((await server.post('alice', `/orders/${row.id}/cancel`)).status, 404);
 
-    // `mode: 'order'` and the older `asOrder: true` both place an order.
-    for (const asked of [{ mode: 'order' }, { asOrder: true }, { mode: 'order', tabId: 'ignored' }]) {
+    // `mode: 'order'` places an order, with or without a tab id.
+    for (const asked of [{ mode: 'order' }, { mode: 'order', tabId: 'ignored' }]) {
       const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], ...asked });
       assert.equal(ordered.status, 202);
       assert.equal(ordered.body.kind, 'order', JSON.stringify(asked));
@@ -227,16 +225,20 @@ test('a run is Generate Immediately unless it says it is an order, and only an o
       assert.equal(orderBatch.shared.tabId, undefined, 'an order is not tied to a tab');
       assert.equal(server.leases().state(ordered.body.batchId), null, 'and holds no lease');
     }
-    assert.equal(orders.listOrdersForUser(server.alice.id).length, 3);
+    assert.equal(orders.listOrdersForUser(server.alice.id).length, 2);
 
-    // `mode` wins over `asOrder`, and a mode nobody meant is refused, not guessed.
-    const explicit = await server.post('alice', '/generation/batches', {
+    // `mode` alone decides: the retired `asOrder: true` is not read, so without
+    // a mode the run is Generate Immediately - and a mode nobody meant is
+    // refused, not guessed.
+    const retired = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(1),
       profileIds: ['p-alice'],
-      mode: 'immediate',
       asOrder: true,
     });
-    assert.equal(explicit.body.kind, 'immediate');
+    assert.equal(retired.status, 202);
+    assert.equal(retired.body.kind, 'immediate');
+    assert.equal(retired.body.orderNumber, undefined);
+    assert.equal(orders.listOrdersForUser(server.alice.id).length, 2);
     const junk = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], mode: 'later' });
     assert.equal(junk.status, 400);
     assert.match(junk.body.error, /mode must be "immediate" or "order"/);

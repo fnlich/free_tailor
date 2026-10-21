@@ -543,6 +543,23 @@ const FRONTEND_MONEY_SOURCES = [
   'app/admin/job-lake/LakeTab.tsx',
   'app/admin/job-lake/MergeTab.tsx',
   'app/admin/job-lake/SettingsTab.tsx',
+  // Subscriptions paid from the balance: the account's page, its client (which
+  // sends back the amount shown), and the prices' boxes on Settings -> General.
+  'app/settings/subscription/page.tsx',
+  'lib/subscriptionBilling.ts',
+  'app/admin/settings/page.tsx',
+  'app/admin/settings/subscriptionPriceDraft.ts',
+  'lib/subscriptionDisplay.ts',
+  'components/subscription/SubscriptionCards.tsx',
+  'components/subscription/SubscriptionStatus.tsx',
+  // What is asked before anything spends credit, and the cost beside a run.
+  'lib/spendConfirm.ts',
+  'components/SpendConfirm.tsx',
+  'components/builder/CostLine.tsx',
+  // Find Jobs: its order's price and the lake's filter form (a salary box is text, never a number box).
+  'app/jobs/page.tsx',
+  'app/jobs/OrderJobsDialog.tsx',
+  'components/jobLake/LakeFilterForm.tsx',
 ];
 
 function withoutComments(source) {

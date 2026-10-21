@@ -1,5 +1,4 @@
 import { Template, type TemplateSource } from '../types/template';
-import type { TechnicalSkillsLayout } from '../types/profile';
 import { DocumentTable } from './documentTable';
 import {
   isTemplateSource,
@@ -13,19 +12,15 @@ import {
 
 /**
  * Editable overrides for built-in (static) templates. Only presentation fields
- * can be changed; the HTML always comes from the static template file.
- *
- * `skillsLayouts` is an administrator reclassifying a built-in - saying a
- * design the shipped file offers for both layouts should be offered for one,
- * or the reverse. `data` is a JSON column, so a new field needs no schema
- * change; a row written before it simply has none and the file's list stands.
+ * can be changed - the name, the description and the disabled flag; the HTML
+ * always comes from the static template file. `data` is a JSON column, and any
+ * other key a row carries (an older build's `skillsLayouts`) is not read.
  */
 export type TemplateOverride = {
   id: string;
   name?: string;
   description?: string;
   disabled?: boolean;
-  skillsLayouts?: TechnicalSkillsLayout[];
   createdAt: string;
   updatedAt: string;
 };
@@ -86,7 +81,14 @@ export function saveStoredTemplate(template: Template): Template {
     ? template.source
     : (getStoredTemplate(template.id)?.source ?? inferTemplateSource(template));
   writeTemplateFile(template, source);
-  const { supportsSoftSkills: _soft, supportsStrengths: _strengths, isBuiltIn: _builtIn, ...stored } = template;
+  const {
+    supportsSoftSkills: _soft,
+    supportsStrengths: _strengths,
+    printsSections: _prints,
+    nativeSectionOrder: _native,
+    isBuiltIn: _builtIn,
+    ...stored
+  } = template;
   return { ...stored, source } as Template;
 }
 

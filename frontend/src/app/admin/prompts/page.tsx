@@ -72,8 +72,10 @@ const FEATURE_ORDER: PromptFeatureKey[] = [
   'analyze-job-description',
   'filter-google-sheet-job',
   'tailor-resume',
+  'tailor-resume-full',
   'revise-resume-coverage',
   'generate-cover-letter',
+  'write-entry-bullets',
   'extract-template-from-pdf',
   'extract-profile-from-resume',
 ];
@@ -87,11 +89,13 @@ function isProfileScopedFeature(featureKey?: PromptFeatureKey | null): boolean {
 }
 
 /*
- * Four features have ONE prompt each, the built-in one, edited in place
+ * Six features have ONE prompt each, the built-in one, edited in place
  * (lib/promptRequirements.ts `SINGLE_PROMPT_FEATURES`, the server's own list):
  * the job analysis's two calls - a posting is analysed once, ever, for every
  * profile and model, so a second prompt could only disagree with the first -
- * and the revise pass and the cover letter, which every profile runs. Each
+ * Tailor Resume (Fully), which every profile set to Fully tailor runs, the
+ * revise pass and the cover letter, which every profile runs, and Write
+ * Entry Bullets, the profile editor's Write with AI on one entry. Each
  * runs by its exact id on a model the server chooses, so the server refuses a
  * new variant, refuses to make an older one live, and ignores an override:
  * the page offers none of them, and says why in the feature's own words

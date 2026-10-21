@@ -168,7 +168,9 @@ export function readPostingLists(analysis: JobAnalysis): PostingLists {
  * business saying what a job pays or whether it is remote), and not the
  * duplicate lists an older analysis carries (`skills.required`,
  * `skills.preferred`, `skills.technologies`, a top-level `softSkills`), which
- * sent the same terms twice.
+ * sent the same terms twice. And not an action verb the prompt bans as an
+ * opener: handed "Architected" as the posting's own verb, the model opened a
+ * bullet with it (`[[keywordsJson]]` already leaves them out).
  */
 export function analysisForPrompt(lists: PostingLists): Record<string, unknown> {
   return {
@@ -180,7 +182,11 @@ export function analysisForPrompt(lists: PostingLists): Record<string, unknown> 
     architecturePatterns: lists.architecturePatterns,
     responsibilities: lists.responsibilities,
     domainKnowledge: lists.domainKnowledge,
-    keywords: { actionVerbs: lists.actionVerbs, buzzwords: lists.buzzwords, mustInclude: lists.mustInclude },
+    keywords: {
+      actionVerbs: lists.actionVerbs.filter((verb) => !containsBannedVocabulary(verb)),
+      buzzwords: lists.buzzwords,
+      mustInclude: lists.mustInclude,
+    },
   };
 }
 

@@ -43,9 +43,10 @@ const storage = useTempStorage('frontend-tailoring');
 fs.cpSync(path.join(__dirname, '..', 'static', 'skills'), path.join(storage.staticDir, 'skills'), { recursive: true });
 
 const { parseJobAnalysisKeywords, parseTailoredResumeContent } = require('../dist/services/resumeService');
-const { buildPreviewProfile, normalizeProfileSettings } = require('../dist/services/profileService');
+const { buildPreviewProfile, normalizeProfilePayload, normalizeProfileSettings } = require('../dist/services/profileService');
 const draftBox = loadFrontendModule('lib/tailoredDraft.ts');
 const profileDraft = loadFrontendModule('lib/profileDraft.ts');
+const profileSections = loadFrontendModule('lib/profileSections.ts');
 
 const POSTING = 'We are hiring a senior engineer to ship TypeScript services packaged with Docker. You are Adaptable.';
 
@@ -147,7 +148,7 @@ test('the Manual Edits box holds what an edit can change, and every role without
   assert.deepEqual(edit.skillGroups, content.skillGroups);
   assert.ok(edit.skillGroups.some((group) => group.soft === true));
   // Nothing derived is shown, so nothing derived can be edited and undone.
-  for (const derived of ['hardSkills', 'skills', 'softSkills', 'strengths', 'softSkillGroupHeading', 'unconfirmedHardSkills']) {
+  for (const derived of ['hardSkills', 'skills', 'softSkills', 'strengths', 'softSkillGroupHeading']) {
     assert.equal(derived in edit, false, derived);
   }
   assert.equal(draftBox.tailoredDraftOf(null), '');
@@ -296,10 +297,31 @@ test('the profile editor saves and previews only settings the server reads', () 
   assert.equal('coverLetterPromptId' in profileDraft.DEFAULT_PROFILE_SETTINGS, false);
 
   const saved = profileDraft.draftToPayload(draft, {}, []).profileSettings;
-  const serverKeys = Object.keys(normalizeProfileSettings({}));
+  // The tailoring mode is stored only once chosen, so the server's keys are
+  // read off a settings record that has one.
+  const serverKeys = Object.keys(normalizeProfileSettings({ tailorMode: 'full' }));
   for (const key of Object.keys(saved)) assert.ok(serverKeys.includes(key), `the server reads ${key}`);
   assert.equal(saved.technicalSkillsLayout, 'flat');
   assert.equal(saved.includeSoftSkills, true);
+
+  // The tailoring mode: a profile that never chose sends null - "use the
+  // default" - which keeps nothing stored, so it follows DEFAULT_TAILOR_MODE;
+  // a choice is stored as made; null lets a stored one go; omitted (an older
+  // page) keeps it.
+  assert.equal(draft.settings.tailorMode, null);
+  assert.equal(saved.tailorMode, null);
+  assert.equal('tailorMode' in normalizeProfileSettings(saved), false);
+  const fully = profileDraft.draftFromProfile(profile({ tailorMode: 'full' }));
+  assert.equal(fully.settings.tailorMode, 'full');
+  const savedFully = profileDraft.draftToPayload(fully, {}, []).profileSettings;
+  assert.equal(normalizeProfileSettings(savedFully).tailorMode, 'full');
+  assert.equal('tailorMode' in normalizeProfileSettings({ tailorMode: null }, { tailorMode: 'full' }), false);
+  assert.equal(normalizeProfileSettings({}, { tailorMode: 'full' }).tailorMode, 'full');
+  assert.equal(normalizeProfileSettings({ tailorMode: 'everything' }, { tailorMode: 'partial' }).tailorMode, 'partial');
+  assert.deepEqual(
+    profileDraft.TAILOR_MODE_CHOICES.map((choice) => choice.value),
+    [...require('../dist/config/settingDefaults').TAILOR_MODES]
+  );
 
   // The preview is sent the render settings and nothing else - each one the
   // server's preview takes from a draft.
@@ -307,16 +329,51 @@ test('the profile editor saves and previews only settings the server reads', () 
   assert.deepEqual(Object.keys(previewed).sort(), ['includeSoftSkills', 'includeStrengths', 'technicalSkillsLayout']);
   const rendered = buildPreviewProfile({ profileSettings: previewed }, null).profileSettings;
   for (const [key, value] of Object.entries(previewed)) assert.equal(rendered[key], value, key);
+
+  // The sections' content and order reach the server too: every one of the
+  // nine lists is named in a save (an omitted list would keep what is
+  // stored), and the order arranged in the editor is what a save stores and
+  // what the preview draws.
+  const arranged = profileDraft.draftFromProfile(
+    profile(
+      {},
+      {
+        projects: [{ name: 'Lakehouse', role: 'Lead', startDate: '', endDate: '', link: '', description: '', achievements: ['Fast'] }],
+        languages: [{ language: 'French', proficiency: 'Fluent' }],
+        interests: ['Chess'],
+        customSections: [{ key: 'cs-1a2b3c4d', title: 'Patents', entries: [] }],
+        sectionOrder: ['education', 'custom:cs-1a2b3c4d', 'projects', 'summary'],
+      }
+    )
+  );
+  assert.deepEqual(arranged.sectionOrder, ['education', 'custom:cs-1a2b3c4d', 'projects', 'summary']);
+  const savedProfile = normalizeProfilePayload(profileDraft.draftToPayload(arranged, {}, []));
+  assert.deepEqual(savedProfile.sectionOrder, ['education', 'custom:cs-1a2b3c4d', 'projects', 'summary']);
+  for (const key of ['projects', 'languages', 'awards', 'publications', 'volunteering', 'courses', 'interests', 'references', 'customSections']) {
+    assert.ok(Array.isArray(savedProfile[key]), `${key} is named in a save`);
+  }
+  assert.deepEqual(savedProfile.projects, [
+    { name: 'Lakehouse', role: 'Lead', startDate: '', endDate: '', link: '', description: '', achievements: ['Fast'] },
+  ]);
+  assert.deepEqual(savedProfile.customSections, [{ key: 'cs-1a2b3c4d', title: 'Patents', entries: [] }]);
+  const previewedProfile = buildPreviewProfile(profileDraft.draftToPreviewProfile(arranged, []), null);
+  assert.deepEqual(previewedProfile.sectionOrder, ['education', 'custom:cs-1a2b3c4d', 'projects', 'summary']);
+  assert.deepEqual(previewedProfile.languages, [{ language: 'French', proficiency: 'Fluent' }]);
+  // A draft that follows its template sends [], which the server reads as no order at all.
+  const following = profileDraft.draftFromProfile(profile());
+  assert.equal(following.sectionOrder, null);
+  assert.deepEqual(profileDraft.draftToPayload(following, {}, []).sectionOrder, []);
+  assert.equal('sectionOrder' in buildPreviewProfile(profileDraft.draftToPreviewProfile(following, []), null), false);
 });
 
 test("the profile editor's Experience section says what a tailored role prints", () => {
   // The parse gives every tailored role an empty description, and the render
-  // blanks it again: the editor once promised that tailoring writes one.
-  const source = fs.readFileSync(path.join(SRC, 'components', 'profile', 'HistorySections.tsx'), 'utf8');
-  const experience = source.match(/title="Experience"\s+description="([^"]*)"/);
-  assert.ok(experience, 'the Experience section states its description as a literal');
-  assert.doesNotMatch(experience[1], /writes a missing description/);
-  assert.match(experience[1], /A tailored resume prints no role description/);
+  // blanks it again: the editor once promised that tailoring writes one. The
+  // sentence is the Experience card's, in the section catalogue.
+  const experience = profileSections.SECTION_KIND_BY_ID.experience.description;
+  assert.equal(typeof experience, 'string');
+  assert.doesNotMatch(experience, /writes a missing description/);
+  assert.match(experience, /A tailored resume prints no role description/);
 
   const content = parseTailoredResumeContent(ANSWER, profile(ON), ANALYSIS);
   assert.ok(content.experience.length > 0);

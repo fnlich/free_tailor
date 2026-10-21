@@ -253,8 +253,6 @@ test("each profile is tailored by its own switches, on one analysis of the posti
   assert.doesNotMatch(bea.html, /class="section-title">(Strengths|Soft Skills)</);
   assert.ok(bea.html.includes(beaHeading.replace(/&/g, '&amp;')), 'the soft group prints under its heading');
   assert.equal(bea.html.split('Adaptable').length - 1, 1);
-  // Nothing to confirm for a section the resume does not show.
-  assert.deepEqual(bea.tailoredContent.unconfirmedSoftSkills, []);
 
   // The same posting again, for one profile at a time: the analysis comes
   // from the store whichever profile's switches ask, and - nothing about
@@ -293,7 +291,10 @@ test('a switch the template has no section for is off for the model and the cont
     const content = route === '/resume/preview' ? response.body.tailoredContent : response.body.previews[0].tailoredContent;
     assert.deepEqual(content.strengths, [], route);
     assert.deepEqual(content.softSkills, [], route);
-    assert.deepEqual(content.unconfirmedSoftSkills, [], route);
+    // Nothing to confirm, in the content or beside it.
+    assert.equal('unconfirmedSoftSkills' in content, false, route);
+    assert.equal('unconfirmedSoftSkills' in response.body, false, route);
+    assert.equal('unconfirmedHardSkills' in response.body, false, route);
     assert.deepEqual(content.skillGroups.at(-1).skills, ['Adaptable', 'Teamwork'], route);
     assert.equal(content.summary, 'Engineer building reliable services.', route);
   }

@@ -8,12 +8,20 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  * decisions S1-S3), against a sheet held in memory:
  *
  *  - the export writer (services/sheets/jobExport.ts `appendJobRows`, what
- *    the lake's Export into Sheet calls) appends A:F - Date as a real date,
+ *    Find Jobs' Export into Sheet calls) appends A:F - Date as a real date,
  *    NO(DATE) continuing the day's numbers, the posting - RAW, after one read
  *    of A:E, with the rows' layout (21 px, clipped) sent first; G:L only for
- *    a row that carries its analysis; a row typed meanwhile is stepped over,
- *    never written over; a tab that is not a job tab is refused before
- *    anything is read;
+ *    a row that carries its analysis; a posting already in the tab - the
+ *    same link, tracking aside, else the same company and title - is
+ *    skipped; a row typed meanwhile is stepped over, never written over; a
+ *    tab that is not a job tab is refused before anything is read;
+ *  - Export into Sheet itself (POST /api/jobs/lake/export): the picked lake
+ *    jobs into the caller's own All, A:L with each job's analysis, newest
+ *    first; the same jobs again are there already; a gone job is missing;
+ *    more than JOB_LAKE_EXPORT_MAX_ROWS is refused, and so is an All held by
+ *    a tab of the person's own, before anything is read; the app's own All
+ *    with its row 1 edited is refused in words that say how to get it back,
+ *    and once renamed a new All takes the export;
  *  - the Job Filter reads C:E, judges every row, answers each to the page and
  *    writes NOTHING into the sheet;
  *  - the range importer reads and writes only the administrator's own sheet,
@@ -162,7 +170,8 @@ async function serve(name, options = {}) {
     },
     async formatJobSheetTab() {},
     async addSheetTabWithHeaders(_id, title) {
-      return { gid: book.tab(title).gid, created: false, jobTab: true };
+      const t = book.tab(title);
+      return { gid: t.gid, created: false, jobTab: HEADERS.slice(0, 6).every((header, index) => t.header[index] === header) };
     },
     async shareSpreadsheetWithEmail() {},
     async hasPersonalGrant() {
@@ -190,7 +199,11 @@ async function serve(name, options = {}) {
     module[key] = fake;
   };
   const own = new Set();
-  const guard = (id) => assert.ok(own.has(id), `Google was asked about ${id}, which is nobody's own sheet here`);
+  const asked = [];
+  const guard = (id) => {
+    asked.push(id);
+    assert.ok(own.has(id), `Google was asked about ${id}, which is nobody's own sheet here`);
+  };
   swap(googleSheets, 'inspectJobSheetTab', async (id, title) => {
     guard(id);
     return book.inspect(title);
@@ -229,6 +242,8 @@ async function serve(name, options = {}) {
   });
 
   const jobExport = loadFresh('../dist/services/sheets/jobExport');
+  // Find Jobs' export holds the writer it was loaded with: fresh, so it is this install's.
+  loadFresh('../dist/services/jobLake/findJobs');
   const { attachUser } = loadFresh('../dist/middleware/auth');
   const jobs = loadFresh('../dist/routes/jobs');
   const admin = loadFresh('../dist/routes/admin');
@@ -254,8 +269,11 @@ async function serve(name, options = {}) {
     ranges,
     sheets,
     accountSheet,
+    jobExport,
+    /** Every spreadsheet id Google was asked about, in order. */
+    asked,
     /** The lake's export, as Alice: `appendJobRows` on her own sheet. */
-    exportRows: (tabName, rows, exportOptions) => jobExport.appendJobRows(users.getUserById(alice.id), tabName, rows, exportOptions),
+    exportRows: (tabName, rows) => jobExport.appendJobRows(users.getUserById(alice.id), tabName, rows),
     call: async (who, method, path, body) => {
       const response = await fetch(`http://127.0.0.1:${port}/api${path}`, {
         method,
@@ -290,12 +308,14 @@ test('the export appends A:F after the last used row: a real date, the day\'s nu
     4: { A: String(serial), B: '4', C: 'Gamma', D: 'Engineer', E: 'https://x.example/3', F: 'text' },
   });
 
-  const exported = await h.exportRows(undefined, [job('Acme', 1), job('Existing Co', 2), job('Beta', 3)]);
+  // Row 2's posting again, reached by another link to the same page: the scheme, a tracking parameter and a trailing slash aside.
+  const sameAsRow2 = { ...job('Existing Co', 2), link: 'http://x.example/1/?gclid=abc#apply' };
+  const exported = await h.exportRows(undefined, [job('Acme', 1), sameAsRow2, job('Beta', 3)]);
   assert.equal(exported.tabName, 'All', 'All when no tab is named');
   assert.equal(exported.spreadsheetId, h.sheets.alice);
   assert.equal(exported.date, today);
   assert.deepEqual([exported.rowsWritten, exported.startRow, exported.endRow, exported.firstNo, exported.lastNo], [2, 5, 6, 5, 6]);
-  assert.equal(exported.skippedDuplicates, 1, 'Existing Co is in the tab already');
+  assert.equal(exported.skippedDuplicates, 1, "row 2's posting is in the tab already");
   assert.deepEqual(exported.updatedRanges, ["'All'!A5:F6"]);
   assert.match(exported.tabUrl, /#gid=\d+$/);
 
@@ -339,9 +359,8 @@ test('a row that carries its analysis is written A:L in the same write; a long d
   assert.equal(rows[3].F.length, 50_000);
   assert.ok(rows[3].F.endsWith(ANALYSIS_TRUNCATED_MARKER));
 
-  // The duplicate rule is the caller's to give: here, the link.
-  const byLink = (row) => (row.link ? [`link:${row.link}`] : []);
-  const again = await h.exportRows('All', [job('Acme Renamed', 1), job('Gamma', 3)], { duplicateKeys: byLink });
+  // The same posting is its link, whatever the company is called now.
+  const again = await h.exportRows('All', [job('Acme Renamed', 1), job('Gamma', 3)]);
   assert.equal(again.skippedDuplicates, 1, 'the same link is in the tab already');
   assert.equal(again.rowsWritten, 1);
   assert.equal(h.book.tab('All').rows[4].C, 'Gamma');
@@ -363,6 +382,184 @@ test('a row typed after the read is stepped over, never written over; the grid g
   assert.equal(all.rows[4].C, 'Acme');
   const grown = h.book.calls.updates.flat().find((request) => request.appendDimension);
   assert.deepEqual(grown.appendDimension, { sheetId: all.gid, dimension: 'ROWS', length: 1 }, 'grown by the one row past the grid');
+});
+
+test('the duplicate rule: the same posting by its link, tracking aside - or, with no link, the same company and title', async (t) => {
+  const h = await serve('export-duplicates');
+  t.after(() => h.close());
+  Object.assign(h.book.tab('All').rows, {
+    2: { C: 'Acme', D: 'Platform Engineer', E: '' },
+    3: { C: 'Globex', D: 'Engineer', E: 'https://jobs.example.com/g?utm_source=board' },
+  });
+  const row = (company, title, link) => ({ company, title, link, description: `${company}: ${title}.` });
+  const exported = await h.exportRows('All', [
+    row('Acme Inc', ' platform  engineer ', ''), // row 2: the company as the lake compares it, the title folded
+    row('Acme', 'Data Engineer', ''), // the same company, another job
+    row('Other Name', 'Other Title', 'https://jobs.example.com/g'), // row 3's link
+    row('Globex', 'Engineer', 'https://jobs.example.com/h'), // row 3's company and title, another posting's link
+    row('Acme', 'data engineer', ''), // a repeat of the second, in the same export
+  ]);
+  assert.deepEqual([exported.rowsWritten, exported.skippedDuplicates], [2, 3]);
+  assert.deepEqual([4, 5].map((n) => h.book.tab('All').rows[n].D), ['Data Engineer', 'Engineer']);
+
+  const keys = h.jobExport.jobDuplicateKeys;
+  assert.deepEqual(keys({ company: 'Acme, Inc.', title: 'X', link: 'https://A.example/1/?gclid=1&b=2#top' }), ['link:https://a.example/1?b=2']);
+  assert.deepEqual(keys({ company: 'Acme Inc', title: ' Platform  Engineer', link: 'not a link' }), ['job:acme\u0000platform engineer']);
+  assert.deepEqual(keys({ company: '!!!', title: 'Engineer', link: '' }), [], 'no company to compare');
+  assert.deepEqual(keys({ company: 'Acme', title: '  ', link: '' }), [], 'no title to compare');
+});
+
+/**
+ * Three lake jobs from stored analyses, a day apart, the last the newest -
+ * each with its link, its posting and its company. Answers them oldest first.
+ */
+function seedLake() {
+  const lakeService = require('../dist/services/jobLake/index');
+  const analyses = require('../dist/database/jobAnalysisRepository');
+  const { storeJobAnalysis } = require('./helpers');
+  const now = Date.now();
+  return [1, 2, 3].map((n) => {
+    const company = `Lake Co ${n}`;
+    const analysisId = storeJobAnalysis(
+      { jobField: 'backend', industry: 'technology', jobMeta: { title: `Lake Engineer ${n}`, seniority: 'senior', industry: '', department: '' } },
+      { jobDescription: `Lake posting ${n}: build services.`, jobLink: `https://jobs.example.com/lake/${n}`, companyName: company }
+    );
+    const stored = analyses.getJobAnalysisById(analysisId);
+    const merged = lakeService.mergeIntoLake(lakeService.lakeJobFromAnalysis(stored, 'merge', { company }), null, {
+      reward: false,
+      now: now - (4 - n) * 24 * 60 * 60 * 1000,
+    });
+    assert.equal(merged.status, 'added', company);
+    return { lakeId: merged.lakeId, analysisId, company };
+  });
+}
+
+test('Export into Sheet: the picked lake jobs into All, A:L with their analyses, newest first - and again, they are there already', async (t) => {
+  const h = await serve('lake-export');
+  t.after(() => h.close());
+  const jobs = seedLake();
+  const today = h.accountSheet.sheetDateText();
+  const serial = h.accountSheet.sheetDateSerial(today);
+
+  const first = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[0].lakeId, String(jobs[2].lakeId)] });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const { tabUrl, ...rest } = first.body;
+  assert.deepEqual(rest, { exported: 2, skippedDuplicates: 0, missing: 0, tabName: 'All', startRow: 2, endRow: 3, maxRows: 200 });
+  assert.equal(tabUrl, `https://docs.google.com/spreadsheets/d/${h.sheets.alice}/edit#gid=${h.book.tab('All').gid}`);
+  const rows = h.book.tab('All').rows;
+  assert.deepEqual([rows[2].C, rows[3].C], ['Lake Co 3', 'Lake Co 1'], 'newest first');
+  assert.deepEqual([rows[2].A, rows[2].B, rows[3].B], [serial, 1, 2], "today's date, numbered from 1");
+  assert.deepEqual([rows[2].D, rows[2].E, rows[2].F], ['Lake Engineer 3', 'https://jobs.example.com/lake/3', 'Lake posting 3: build services.']);
+  assert.deepEqual([rows[2].G, rows[2].H, rows[2].I, rows[2].J, rows[2].K], ['Backend', '', '', false, 'Technology']);
+  assert.equal(JSON.parse(rows[2].L).id, jobs[2].analysisId, "the Analysis cell names the job's stored analysis");
+  assert.equal(JSON.parse(rows[3].L).id, jobs[0].analysisId);
+  assert.deepEqual(h.book.calls.writes.map((data) => data.map((entry) => entry.range)), [["'All'!A2:L3"]]);
+  assert.ok(h.asked.every((id) => id === h.sheets.alice), "only Alice's own sheet");
+
+  // The same jobs and one more: the two are there already, only the third is written.
+  const again = await h.call('alice', 'POST', '/jobs/lake/export', { ids: jobs.map((job) => job.lakeId) });
+  assert.deepEqual([again.body.exported, again.body.skippedDuplicates, again.body.startRow, again.body.endRow], [1, 2, 4, 4]);
+  assert.equal(rows[4].C, 'Lake Co 2');
+
+  // A job gone from the lake since the page listed it is counted, not refused; none left is a 404.
+  const gone = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[1].lakeId, 999999] });
+  assert.equal(gone.status, 200);
+  assert.deepEqual([gone.body.exported, gone.body.skippedDuplicates, gone.body.missing], [0, 1, 1]);
+  const none = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [999998, 999999] });
+  assert.deepEqual([none.status, none.body.code, none.body.error], [404, 'jobs-not-found', 'None of those jobs is in the lake any more.']);
+
+  // A spreadsheet or a tab in the body is never read: still Alice's own All.
+  const before = h.asked.length;
+  const aimed = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[0].lakeId], sheetId: h.sheets.admin, tabName: 'Temp For AI' });
+  assert.equal(aimed.status, 200);
+  assert.deepEqual([aimed.body.tabName, aimed.body.skippedDuplicates], ['All', 1]);
+  assert.ok(h.asked.slice(before).every((id) => id === h.sheets.alice), JSON.stringify(h.asked.slice(before)));
+
+  // Refused before the lake or the sheet is read.
+  const reads = h.book.calls.reads.length;
+  for (const [body, message] of [
+    [{}, 'Choose the jobs to export.'],
+    [{ ids: [] }, 'Choose the jobs to export.'],
+    [{ ids: 'all' }, 'Choose the jobs to export.'],
+    [{ ids: [jobs[0].lakeId, 'two'] }, 'Each job is named by its number in the lake.'],
+    [{ ids: [0] }, 'Each job is named by its number in the lake.'],
+    [{ ids: [1.5] }, 'Each job is named by its number in the lake.'],
+    [{ ids: [{ id: 1 }] }, 'Each job is named by its number in the lake.'],
+  ]) {
+    const refused = await h.call('alice', 'POST', '/jobs/lake/export', body);
+    assert.equal(refused.status, 400, JSON.stringify(body));
+    assert.equal(refused.body.error, message, JSON.stringify(body));
+  }
+  assert.equal(h.book.calls.reads.length, reads, 'nothing read');
+});
+
+test("Export into Sheet takes at most JOB_LAKE_EXPORT_MAX_ROWS jobs, and refuses an All held by a tab of the person's own before reading it", async (t) => {
+  const saved = process.env.JOB_LAKE_EXPORT_MAX_ROWS;
+  process.env.JOB_LAKE_EXPORT_MAX_ROWS = '2';
+  const h = await serve('lake-export-refused');
+  t.after(() => {
+    h.close();
+    if (saved === undefined) delete process.env.JOB_LAKE_EXPORT_MAX_ROWS;
+    else process.env.JOB_LAKE_EXPORT_MAX_ROWS = saved;
+  });
+  const jobs = seedLake();
+  const tooMany = await h.call('alice', 'POST', '/jobs/lake/export', { ids: jobs.map((job) => job.lakeId) });
+  assert.deepEqual(
+    [tooMany.status, tooMany.body.code, tooMany.body.error, tooMany.body.maxRows],
+    [400, 'too-many-jobs', 'Export at most 2 jobs at a time.', 2]
+  );
+  // The same cap is what the page lets anybody select.
+  assert.equal((await h.call('alice', 'GET', '/jobs/lake')).body.exportMaxRows, 2);
+  assert.equal((await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[0].lakeId, jobs[0].lakeId, jobs[1].lakeId] })).status, 200, 'a repeat is one job');
+
+  // All, deleted and replaced by a tab of the person's own (a new gid, not the job header).
+  h.book.tabs.set('All', { header: ['Idea', 'Link'], rows: { 2: { A: 'mine' } }, rowCount: 1000, gid: 99 });
+  const inspected = h.book.calls.inspected.length;
+  const reads = h.book.calls.reads.length;
+  const clash = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[2].lakeId] });
+  assert.equal(clash.status, 409, JSON.stringify(clash.body));
+  assert.equal(clash.body.code, 'tab-name-clash');
+  assert.equal(
+    clash.body.error,
+    'Your job sheet already has a tab named "All" that is not laid out as a job tab, so it was left exactly as it is. ' +
+      'Rename or delete it in Google Sheets, then export again.'
+  );
+  assert.deepEqual([h.book.calls.inspected.length, h.book.calls.reads.length], [inspected, reads], 'not even read');
+  assert.deepEqual(h.book.tab('All').rows, { 2: { A: 'mine' } });
+});
+
+test("Export into Sheet into the app's own All whose row 1 was edited: refused in words that say how to get it back, not which tab to choose", async (t) => {
+  const h = await serve('lake-export-edited');
+  t.after(() => h.close());
+  const jobs = seedLake();
+  assert.equal((await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[0].lakeId] })).status, 200);
+  const all = h.book.tab('All');
+  const gid = all.gid;
+
+  // A1 typed over in Google Sheets: the same tab under the same id, so no
+  // clash is on record - but it is no job tab, and Find Jobs has no other.
+  all.header[0] = 'Posted';
+  const writes = h.book.calls.writes.length;
+  const refused = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[2].lakeId] });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, 'not-job-tab');
+  assert.equal(
+    refused.body.error,
+    '"All" in your job sheet is not laid out as a job tab any more (its first row is not the job header), so nothing ' +
+      'was exported into it. Rename or delete that tab in Google Sheets, then export again: a new All tab is added.'
+  );
+  assert.equal(h.book.calls.writes.length, writes, 'nothing written');
+
+  // Renamed, as the sentence says: the next export adds a new All and
+  // writes there, and the renamed tab keeps exactly what it had.
+  h.book.tabs.delete('All');
+  h.book.tabs.set('Old All', all);
+  const again = await h.call('alice', 'POST', '/jobs/lake/export', { ids: [jobs[2].lakeId] });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual([again.body.exported, again.body.tabName, again.body.startRow], [1, 'All', 2]);
+  assert.notEqual(h.book.tab('All').gid, gid, 'a new All');
+  assert.equal(h.book.tab('All').rows[2].C, 'Lake Co 3');
+  assert.deepEqual(Object.keys(all.rows), ['2']);
 });
 
 test('the export and the filter refuse a tab that is not a job tab before anything else', async (t) => {

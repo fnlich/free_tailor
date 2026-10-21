@@ -3,10 +3,13 @@
 import Link from 'next/link';
 import { useEffect, useRef, type RefObject } from 'react';
 
-import { ICONS, IconExternal } from '@/components/icons';
+import { ICONS, IconLock } from '@/components/icons';
+import { lockLabel, useLockedFeature } from '@/components/subscription/LockedFeature';
+import { describeLock, type LockSpec } from '@/lib/subscriptions';
 import {
   activeHref,
   canSee,
+  isNavLocked,
   isSettingsRoute,
   SIDEBAR_ASSISTANT,
   SIDEBAR_BOTTOM,
@@ -18,28 +21,39 @@ type Props = {
   pathname: string;
   /** The account's role: a reporter's rail is Report Jobs, Credits and Settings. */
   role: unknown;
-  /** The account's subscription, for entries a tier includes. */
+  /** The account's subscription, for the entries it draws locked (navModel's `isNavLocked`). */
   subscription: unknown;
-  /** The account's own job sheet. Empty until it loads, or when there is none. */
-  sheetUrl: string;
   /** Below the md breakpoint, where the rail is an off-canvas drawer. */
   isCompact: boolean;
   drawerOpen: boolean;
   onNavigate: () => void;
+  /**
+   * For a row that opens a dialog over the page instead of navigating (a
+   * locked entry): closes the drawer with focus on its button first. The
+   * dialog gives focus back to whatever held it when it opened, and the row
+   * pressed sits in a drawer that is inert by the time it closes - focus fell
+   * to <body>, and a keyboard started again from the top of the page.
+   */
+  onOpenDialog: () => void;
   panelRef: RefObject<HTMLElement | null>;
 };
 
 function Row({
   item,
   active,
-  sheetUrl,
   onNavigate,
+  onOpenDialog,
+  lock,
+  onLocked,
   autoFocus,
 }: {
   item: NavItem;
   active: boolean;
-  sheetUrl: string;
   onNavigate: () => void;
+  onOpenDialog: () => void;
+  /** Set while the account's subscription does not include the entry. */
+  lock: LockSpec | null;
+  onLocked: (lock: LockSpec) => void;
   autoFocus?: boolean;
 }) {
   const Icon = ICONS[item.icon];
@@ -51,23 +65,30 @@ function Row({
   );
 
   /**
-   * Not a `Link`: it leaves the app entirely, for Google's own page.
-   * `target="_blank"` on purpose - somebody looking up a job is in the middle
-   * of building a resume, and taking the tab away from them would lose it.
+   * Drawn, never hidden, below the tier it needs: a button that says what it
+   * needs and leads to the Subscription page. The drawer closes first, so the
+   * dialog is not opened behind it, and hands focus to its own button, which
+   * the dialog gives it back to.
    */
-  if (item.external) {
+  if (lock) {
+    const label = lockLabel(lock);
     return (
-      <a
-        href={sheetUrl}
-        target="_blank"
-        rel="noreferrer"
-        onClick={onNavigate}
-        title={item.title}
+      <button
+        type="button"
+        onClick={() => {
+          onOpenDialog();
+          onLocked(lock);
+        }}
+        data-active={active}
+        data-locked-feature={lock.feature}
+        aria-haspopup="dialog"
+        aria-label={`${item.label}. ${label}`}
+        title={label}
         className="tl-nav-item"
       >
         {content}
-        <IconExternal className="tl-nav-out" />
-      </a>
+        <IconLock className="tl-nav-lock" />
+      </button>
     );
   }
 
@@ -89,18 +110,20 @@ export default function AppSidebar({
   pathname,
   role,
   subscription,
-  sheetUrl,
   isCompact,
   drawerOpen,
   onNavigate,
+  onOpenDialog,
   panelRef,
 }: Props) {
-  // A link that would open about:blank is worse than no link at all, so the
-  // sheet entry stays out until there is a URL for it.
-  const offered = (item: NavItem) => canSee(item, role, subscription) && (!item.external || Boolean(sheetUrl));
+  // The role decides what is offered; the subscription only locks an entry (`isNavLocked`).
+  const offered = (item: NavItem) => canSee(item, role);
   const main = SIDEBAR_MAIN.filter(offered);
   const assistant = SIDEBAR_ASSISTANT.filter(offered);
   const bottom = SIDEBAR_BOTTOM.filter(offered);
+  const locked = useLockedFeature();
+  const lockOf = (item: NavItem): LockSpec | null =>
+    isNavLocked(item, role, subscription) ? describeLock(item.feature ?? 'many-profiles', { subscription }) : null;
 
   // Resolved across every entry at once, by longest match, so a route under
   // another entry's path lights only the row that is really its own.
@@ -134,11 +157,13 @@ export default function AppSidebar({
       <div ref={firstLink} className="flex flex-col">
         {main.map((item) => (
           <Row
-            key={item.href || item.label}
+            key={item.href}
             item={item}
             active={isActive(item)}
-            sheetUrl={sheetUrl}
             onNavigate={onNavigate}
+            onOpenDialog={onOpenDialog}
+            lock={lockOf(item)}
+            onLocked={locked.open}
           />
         ))}
       </div>
@@ -155,8 +180,10 @@ export default function AppSidebar({
                 key={item.href}
                 item={item}
                 active={isActive(item)}
-                sheetUrl={sheetUrl}
                 onNavigate={onNavigate}
+                onOpenDialog={onOpenDialog}
+                lock={lockOf(item)}
+                onLocked={locked.open}
               />
             ))}
           </div>
@@ -167,15 +194,18 @@ export default function AppSidebar({
         <div className="tl-sidebar-bottom flex flex-col">
           {bottom.map((item) => (
             <Row
-              key={item.href || item.label}
+              key={item.href}
               item={item}
               active={isActive(item)}
-              sheetUrl={sheetUrl}
               onNavigate={onNavigate}
+              onOpenDialog={onOpenDialog}
+              lock={lockOf(item)}
+              onLocked={locked.open}
             />
           ))}
         </div>
       )}
+      {locked.dialog}
     </aside>
   );
 }

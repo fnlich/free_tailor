@@ -47,15 +47,15 @@ function normalizeSourceRowNumber(value: unknown): string {
 }
 
 export interface GeneratedPathInfo {
-  /** The folder under the output folder, '/'-separated: the rendered prefix, then the rendered suffix. */
-  relativeBase: string;
   absoluteDir: string;
-  /** What a written file's recorded path starts with: `relativeBase`, relative to the output folder. */
+  /**
+   * The folder under the output folder, '/'-separated: the rendered prefix,
+   * then the rendered suffix. What a written file's recorded path starts with.
+   */
   storagePathBase: string;
   profileSlug: string;
   resumeFileStem: string;
   coverLetterFileStem: string;
-  roleSlug: string;
 }
 
 export function getResumeOutputFilename(pathInfo: GeneratedPathInfo, extension: 'pdf' | 'docx'): string {
@@ -86,7 +86,7 @@ export type RunOutputPlace = {
   suffix: string;
   /** The day the run was placed, YYYY-MM-DD: what the suffix's `{{date}}` renders. */
   date: string;
-  /** For the file NAME templates' `{{account name}}` and `{{order number}}`. */
+  /** For the file NAME templates' `{{user_email}}` and `{{order_number}}`. */
   accountName: string;
   orderNumber: string;
 };
@@ -127,7 +127,6 @@ export async function getGeneratedOutputPath(
     throw new Error('Output base directory is not configured.');
   }
   const profileSlug = sanitizePathSegment(profile.name) || 'unknown';
-  const roleSlug = sanitizePathSegment(role || 'resume') || 'resume';
   const rowNumber = normalizeSourceRowNumber(options.sourceRowNumber);
 
   // The run's prefix as it was rendered when the run was placed, then this
@@ -141,7 +140,7 @@ export async function getGeneratedOutputPath(
     role: role || '',
     row_number: rowNumber,
   });
-  const relativeBase = [place.prefix, suffix].filter(Boolean).join('/');
+  const storagePathBase = [place.prefix, suffix].filter(Boolean).join('/');
 
   const fileNameVariables = {
     date: place.date,
@@ -164,13 +163,11 @@ export async function getGeneratedOutputPath(
   );
 
   return {
-    relativeBase,
-    absoluteDir: path.join(place.baseDir, ...relativeBase.split('/')),
-    storagePathBase: relativeBase,
+    absoluteDir: path.join(place.baseDir, ...storagePathBase.split('/')),
+    storagePathBase,
     profileSlug,
     resumeFileStem,
     coverLetterFileStem,
-    roleSlug,
   };
 }
 

@@ -267,6 +267,15 @@ function lakeJob(n, company, at, analysis = {}, extra = {}) {
   return stored;
 }
 
+/** Filters as a query string, a list filter's values each under its own key, as the page sends them. */
+function queryOf(filters) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    for (const one of Array.isArray(value) ? value : [value]) query.append(key, String(one));
+  }
+  return query;
+}
+
 /** Row `row` of a tab as A:N values. */
 function rowOf(t, row) {
   return COLUMNS.map((col) => t.rows[row]?.[col] ?? '');
@@ -409,9 +418,15 @@ test('the filters are the list\'s own: a push holds exactly what Search shows, a
     [{ company: 'onsite bank' }, ['Onsite Bank']],
     [{ q: 'Posting 3' }, ['Backend Health']],
     [{ updatedFrom: new Date(now - 2.5 * DAY).toISOString() }, ['Backend Bank', 'Backend Health']],
+    // Several values of a filter: a job matching any of them - in a JSON array here, repeated keys in Search's query.
+    [{ field: ['devops', 'backend'] }, ['Backend Bank', 'Backend Health', 'Onsite Bank', 'Remote Health']],
+    [{ q: ['Posting 3', 'Posting 1'] }, ['Backend Health', 'Remote Health']],
+    [{ company: ['onsite bank', 'Remote Health'] }, ['Onsite Bank', 'Remote Health']],
+    [{ jobType: ['remote', 'on_site'], industry: ['healthcare'] }, ['Backend Health', 'Remote Health']],
+    [{ field: ['devops'], clearance: 'true', company: ['Onsite Bank', 'Backend Bank'] }, ['Onsite Bank']],
   ];
   for (const [filters, companies] of cases) {
-    const query = new URLSearchParams(Object.entries(filters).map(([key, value]) => [key, String(value)]));
+    const query = queryOf(filters);
     const listed = await h.call('owner', 'GET', `/admin/job-lake?${query}`);
     assert.equal(listed.status, 200);
     assert.deepEqual(listed.body.rows.map((row) => row.company), companies, `Search ${query}`);
@@ -436,11 +451,19 @@ test('the filters are the list\'s own: a push holds exactly what Search shows, a
     [{ industry: 'piracy' }, 'That industry is not one of the list.'],
     [{ salaryMin: 'lots' }, 'The lowest salary must be a number.'],
     [{ updatedTo: 'yesterday' }, 'Updated to must be a date, like 2026-10-05.'],
+    // A list holds the list's values, each judged; one box takes one value.
+    [{ jobType: ['remote', 'sometimes'] }, 'That job type is not one of the list.'],
+    [{ field: ['devops', 'astrology'] }, 'That job field is not one of the list.'],
+    [{ clearance: ['true', 'false'] }, 'Clearance takes one value.'],
+    [{ salaryMin: ['1', '2'] }, 'Salary from takes one value.'],
+    [{ updatedFrom: ['2026-10-01', '2026-10-02'] }, 'Updated from takes one value.'],
+    [{ q: Array.from({ length: 11 }, (_, n) => `word${n}`) }, 'Search for at most 10 keywords at a time.'],
+    [{ company: Array.from({ length: 26 }, (_, n) => `Company ${n}`) }, 'Choose at most 25 companies.'],
   ]) {
     const refused = await h.pushAs('owner', filters);
     assert.equal(refused.status, 400, JSON.stringify(filters));
     assert.equal(refused.body.error, message);
-    const query = new URLSearchParams(Object.entries(filters));
+    const query = queryOf(filters);
     assert.equal((await h.call('owner', 'GET', `/admin/job-lake?${query}`)).body.error, message, 'the same words as Search');
   }
   assert.equal(h.google.calls.inspect.length, before.inspect);
@@ -486,7 +509,9 @@ test('more matches than JOB_LAKE_PUSH_MAX_ROWS: the newest are pushed and the an
   const read = lake.listLakeForPush({}, 2);
   assert.deepEqual([read.rows.map((row) => row.company), read.matched, read.capped], [['Company 5', 'Company 4'], 5, true]);
   assert.equal(read.rows[0].jobDescription, posting(5), 'each row with its description');
-  assert.deepEqual(lake.listLakeForPush({ company: '!!!' }, 2), { rows: [], matched: 0, capped: false });
+  assert.deepEqual(lake.listLakeForPush({ companies: ['!!!'] }, 2), { rows: [], matched: 0, capped: false });
+  const some = lake.listLakeForPush({ companies: ['Company 2', 'Company 4', 'Company 5'] }, 2);
+  assert.deepEqual([some.rows.map((row) => row.company), some.matched, some.capped], [['Company 5', 'Company 4'], 3, true]);
 });
 
 test('the rows go in writes of at most 200 rows and about 1.5 MB, the grid grown first, a long description cut with the marker', async (t) => {
@@ -532,10 +557,13 @@ test('the rows go in writes of at most 200 rows and about 1.5 MB, the grid grown
   assert.ok(description.endsWith(' ...[cut at 50,000 characters]'));
   assert.ok(description.startsWith(posting(1030)));
 
-  // The splitter on its own: a row bigger than the budget still goes, alone.
+  // The splitter on its own (the integration's, the export's too): a row bigger than the budget still goes, alone.
+  const { boundedWriteChunks } = require('../dist/integrations/googleSheets');
+  const limits = { maxRows: push.PUSH_WRITE_MAX_ROWS, maxBytes: push.PUSH_WRITE_MAX_BYTES };
   const huge = ['x'.repeat(push.PUSH_WRITE_MAX_BYTES + 10)];
-  assert.deepEqual(push.pushChunks([['a'], huge, ['b']]).map((chunk) => chunk.length), [1, 1, 1]);
-  assert.deepEqual(push.pushChunks(Array.from({ length: 401 }, () => ['a'])).map((chunk) => chunk.length), [200, 200, 1]);
+  assert.deepEqual(boundedWriteChunks([['a'], huge, ['b']], limits).map((chunk) => chunk.length), [1, 1, 1]);
+  assert.deepEqual(boundedWriteChunks(Array.from({ length: 401 }, () => ['a']), limits).map((chunk) => chunk.length), [200, 200, 1]);
+  assert.deepEqual(boundedWriteChunks([1, 2, 3, 4, 5], { maxRows: 9, maxBytes: 10 }, () => 4).map((chunk) => chunk.length), [2, 2, 1], 'measured as told');
   assert.equal(columns.descriptionCell('short'), 'short');
   // Never half of a character spelled with two code units: the cut lands
   // before it, so the cell reads back exactly as it was cut.

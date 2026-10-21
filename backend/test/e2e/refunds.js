@@ -31,9 +31,12 @@
  *
  * Servers are expected to be up already, sharing DB_DIR with this script -
  * the backend WITHOUT test/e2e/fake-providers.js and without Stripe keys, or
- * the card refund this relies on failing succeeds instead:
+ * the card refund this relies on failing succeeds instead, and with
+ * test/e2e/no-google.js, or on a checkout holding a Google credential every
+ * account this signs in gets a REAL spreadsheet (README.md, at the top):
  *
- *   STRIPE_SECRET_KEY= STRIPE_PUBLISHABLE_KEY= STRIPE_WEBHOOK_SECRET= DB_DIR=... PORT=3001 node dist/index.js
+ *   STRIPE_SECRET_KEY= STRIPE_PUBLISHABLE_KEY= STRIPE_WEBHOOK_SECRET= DB_DIR=... PORT=3001 \
+ *     node --require ./test/e2e/no-google.js dist/index.js
  *   DB_DIR=... node test/e2e/refunds.js
  */
 

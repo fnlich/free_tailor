@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 
-import { listSubscriptions, resolveSubscription, type AccountSubscription } from '../config/accountSubscriptions';
+import { resolveSubscription, type AccountSubscription } from '../config/accountSubscriptions';
 import { sessionTtlMs } from '../config/operational';
 import { countProfilesForOwner } from '../database/profileRepository';
 import { destroySession, updateUser } from '../database/userRepository';
@@ -135,11 +135,6 @@ router.get('/options', (_req: Request, res: Response) => {
   // and the operator has the startup log and mail:doctor for that.
   const options = describeSignInOptions();
   res.json({ google: options.google, email: { available: options.email.available } });
-});
-
-/** The subscription catalog, so Settings > Subscription is not a second copy of it. */
-router.get('/subscriptions', (_req: Request, res: Response) => {
-  res.json({ subscriptions: listSubscriptions() });
 });
 
 router.post('/google', async (req: Request, res: Response) => {

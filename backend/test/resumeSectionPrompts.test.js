@@ -179,7 +179,6 @@ test("Soft Skills on: the soft group is the section's; off: it stays the last gr
     // The model's soft list and strengths are not read, nor its hardSkills.
     assert.equal(JSON.stringify(content).includes('Model Soft'), false);
     assert.equal(content.hardSkills.includes('Model Pick'), false);
-    assert.deepEqual(content.unconfirmedSoftSkills, []);
   }
   // And nothing is added to the summary: no "Working style:" sentence.
   assert.equal(off.summary, 'Engineer building reliable services.');

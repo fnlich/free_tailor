@@ -1,11 +1,14 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { templatesApi, Template, getApiOrigin } from '@/lib/api';
+import { templatesApi, Template, getApiOrigin, type TechnicalSkillsLayout } from '@/lib/api';
+import { ALL_SKILLS_LAYOUTS, LAYOUT_LABELS } from '@/lib/profileDraft';
+import { templatePreviewPath } from '@/lib/profileGallery';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
 import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
 import chrome from '@/components/admin/profileTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
+import { useDialogLayer } from '@/components/ui/Dialog';
 import { EmptyState, Field, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { pdfSizeRefusal } from '@/lib/upload';
@@ -28,7 +31,20 @@ const PREVIEW_DOCUMENT_WIDTH_PX = 794; // A4 width at 96 DPI
 const PREVIEW_DOCUMENT_HEIGHT_PX = 1123; // A4 height at 96 DPI
 const PREVIEW_THUMBNAIL_SCALE = 0.44;
 
-/** Full-size preview: the resume at the size it will actually print. */
+/**
+ * Full-size preview: the resume at the size it will actually print, in
+ * either Technical Skills layout - every template prints both, and the
+ * Grouped / Plain switch redraws the page (and the new tab it opens) in the
+ * one chosen, each in a frame of its own: the loaded frame sent to the other
+ * address would add an entry to the browser's history per press, and Back
+ * would turn the page back under a switch still naming the other layout.
+ *
+ * A dialog like every other (`useDialogLayer`: Escape for the top one, the
+ * page's one scroll lock), and focus starts inside it and goes back to the
+ * View that opened it. It is drawn after the whole grid, so from that View
+ * the keyboard otherwise walked every card behind the overlay before it
+ * reached the switch.
+ */
 function TemplateViewModal({
   template,
   onClose,
@@ -36,38 +52,63 @@ function TemplateViewModal({
   template: Template;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    // The page behind must not scroll while the sheet is open.
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [onClose]);
+  const [layout, setLayout] = useState<TechnicalSkillsLayout>('categorized');
+  const viewer = useRef<HTMLDivElement>(null);
+  useDialogLayer(true, onClose);
 
-  const previewUrl = `${getApiOrigin()}/api/templates/${encodeURIComponent(template.id)}/preview`;
+  useEffect(() => {
+    const restoreFocusTo = document.activeElement as HTMLElement | null;
+    viewer.current?.focus({ preventScroll: true });
+    return () => restoreFocusTo?.focus?.();
+  }, []);
+
+  const previewUrl = `${getApiOrigin()}${templatePreviewPath(template.id, layout)}`;
 
   return (
     <div
-      className="fixed inset-0 z-[var(--layer-app-modal)] flex flex-col bg-black/70"
+      ref={viewer}
+      className="fixed inset-0 z-[var(--layer-app-modal)] flex flex-col bg-black/70 outline-none"
       role="dialog"
       aria-modal="true"
       aria-label={`${template.name} preview`}
+      tabIndex={-1}
       onClick={onClose}
     >
-      <div className={chrome.viewerBar}>
-        <div className="min-w-0">
+      {/*
+        Wraps on a phone: the actions drop under the name, and wrap themselves,
+        rather than run off the edge. The row breaks by the name's 14rem, not
+        by its text, so on anything wider the name shrinks and truncates beside
+        the actions - a long description pushed them to a second row on a
+        desktop.
+      */}
+      <div className={`${chrome.viewerBar} flex-wrap`}>
+        <div className="min-w-[14rem] flex-1">
           <div className="truncate font-semibold text-ink">{template.name}</div>
           <div className="truncate text-xs text-muted">
             {template.description || 'Rendered with sample data at printed page size'}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {/* Its own clicks stop here: a click that reaches the overlay closes the viewer. */}
+          <div
+            role="group"
+            aria-label="Technical skills"
+            className="flex items-center gap-1"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {ALL_SKILLS_LAYOUTS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className="tl-subtab"
+                data-active={layout === value}
+                aria-pressed={layout === value}
+                onClick={() => setLayout(value)}
+              >
+                {LAYOUT_LABELS[value]}
+              </button>
+            ))}
+          </div>
           <a
             href={previewUrl}
             target="_blank"
@@ -91,8 +132,9 @@ function TemplateViewModal({
 
       <div className="flex-1 overflow-auto p-4" onClick={onClose}>
         <iframe
+          key={previewUrl}
           src={previewUrl}
-          title={`${template.name} full preview`}
+          title={`${template.name} full preview, Technical Skills ${LAYOUT_LABELS[layout]}`}
           onClick={(event) => event.stopPropagation()}
           className={chrome.paper}
           style={{ width: PREVIEW_DOCUMENT_WIDTH_PX, height: PREVIEW_DOCUMENT_HEIGHT_PX }}
@@ -416,8 +458,8 @@ function TemplatesPageBody() {
         title="Templates"
         description={
           isAdmin
-            ? 'Every template on this installation, with a full preview of each.'
-            : 'Every template on this installation, with a full preview of each. They are shared by everybody here, so only an administrator can add or change one - you pick the one you want on your profile, or for a single run.'
+            ? 'Every template on this installation, with a full preview of each, its Technical Skills Grouped or Plain.'
+            : 'Every template on this installation, with a full preview of each, its Technical Skills Grouped or Plain. They are shared by everybody here, so only an administrator can add or change one - you pick the one you want on your profile, or for a single run.'
         }
         actions={isAdmin ? addActions : undefined}
       />
@@ -709,7 +751,7 @@ function TemplatesPageBody() {
                 style={{ height: 320 }}
               >
                 <iframe
-                  src={`${getApiOrigin()}/api/templates/${encodeURIComponent(template.id)}/preview`}
+                  src={`${getApiOrigin()}${templatePreviewPath(template.id)}`}
                   title={`Preview of ${template.name}`}
                   scrolling="no"
                   // Every card holds a real render of the resume, so without

@@ -149,6 +149,8 @@ test("an administrator's prompt edits: an analysis edit runs as written, an outd
   freshInstall('edits');
   const { saveStoredPrompt } = require('../dist/database/promptRepository');
   const at = '2026-01-01T00:00:00.000Z';
+  // A day after the prompt contract: an edit saved under this version.
+  const since = new Date(Date.parse(require('../dist/services/promptService').OWNER_PROMPTS_CONTRACT) + 86_400_000).toISOString();
   const turnOf = async (n) => {
     config.invalidateSettingsCache();
     gate.resetAnalysisGateForTests();
@@ -205,7 +207,7 @@ test("an administrator's prompt edits: an analysis edit runs as written, an outd
     content: 'My own analysis.\nJob Description:\n[[jobDescription]]',
     isBuiltIn: true,
     createdAt: at,
-    updatedAt: '2026-10-13T00:00:00.000Z',
+    updatedAt: since,
   });
   const mine = await turnOf(5);
   assert.match(mine.analysis.stableSystem, /^My own analysis/);
@@ -260,7 +262,7 @@ test("an administrator's prompt edits: an analysis edit runs as written, an outd
     content: 'Only say whether it is remote.\n[[jobDescription]]',
     isBuiltIn: true,
     createdAt: at,
-    updatedAt: '2026-10-15T00:00:00.000Z',
+    updatedAt: since,
   });
   const bare = await turnOf(9);
   assert.match(bare.facts.stableSystem, /Only say whether it is remote/);

@@ -124,6 +124,11 @@ export type ResumeTaskInput = {
 /** The kind a resume task is registered under. */
 export const RESUME_TASK_KIND = 'resume';
 
+/**
+ * What a finished resume task keeps: labels and file paths, STRINGS only. A
+ * finished batch is kept for an hour, and holding the whole TailoredContent of
+ * every resume in it is the one real way this leaks.
+ */
 export type ResumeTaskResult = {
   profileId: string;
   profileName: string;
@@ -134,8 +139,6 @@ export type ResumeTaskResult = {
   coverLetterPdf?: string;
   coverLetterDocx?: string;
   tailored: boolean;
-  unconfirmedHardSkills: string[];
-  unconfirmedSoftSkills: string[];
 };
 
 /**
@@ -274,9 +277,7 @@ export async function runResumeTask(
 ): Promise<ResumeTaskResult> {
   const { profile, job, choice } = input;
 
-  // The same choice the preview makes, against the profile
-  // as it is NOW: a task queued before its profile changed layout is drawn
-  // with a template that fits the layout it renders in.
+  // The same choice the preview makes, against the profile as it is now.
   const template = await resolveTemplateForProfile(profile, input.templateId);
   if (!template) throw new Error('Default template not available');
 
@@ -307,7 +308,9 @@ export async function runResumeTask(
 
   const coverLetterBody = tailoredContent?.coverLetter?.trim()
     ? tailoredContent.coverLetter.trim()
-    : await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal, cacheContext);
+    : // Told what the tailored resume says when there is one, so the letter
+      // matches it - a Fully tailored profile sends the letter no work of its own.
+      await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal, cacheContext, tailoredContent);
 
   const placed = await getGeneratedOutputPath(profile, job.companyName, role, {
     sourceRowNumber: job.sourceRowNumber,
@@ -327,10 +330,6 @@ export async function runResumeTask(
     coverLetterPdf,
     coverLetterDocx,
     tailored: Boolean(analysis),
-    // STRINGS only. A finished batch is kept for an hour, and holding the whole
-    // TailoredContent of every resume in it is the one real way this leaks.
-    unconfirmedHardSkills: tailoredContent?.unconfirmedHardSkills ?? [],
-    unconfirmedSoftSkills: tailoredContent?.unconfirmedSoftSkills ?? [],
   };
 
   const release = await getProviderSemaphore('resume-render', RENDER_CONCURRENCY).acquire();

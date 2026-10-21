@@ -27,6 +27,9 @@
  * which is the only kind a build trusts; Temp For AI has only its header.
  */
 
+// First, before anything loads the backend: no real Google credential, whatever this checkout holds.
+require('./no-google');
+
 const path = require('path');
 
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');

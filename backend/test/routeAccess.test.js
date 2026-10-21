@@ -78,6 +78,12 @@ const MOUNTS = [
   { mount: '/api/admin/contact', module: 'contact', exportName: 'adminContactRouter', access: 'admin' },
   { mount: '/api/admin/accounts', module: 'accounts', access: 'admin' },
   { mount: '/api/credits', module: 'credits', access: 'account', why: "a reporter's earnings and payouts (A4)" },
+  {
+    mount: '/api/subscription',
+    module: 'subscription',
+    access: 'builder',
+    why: 'a builder buys a subscription from their own balance; a reporter has none - their balance is earnings (A4)',
+  },
   { mount: '/api/notifications', module: 'notifications', access: 'account', why: 'every account reads the bell (A3)' },
   { mount: '/api/sheet', module: 'sheet', access: 'account', why: 'Settings > Job Sheet, where a reporter finds jobs (A3)' },
   {
@@ -146,7 +152,12 @@ const MOUNTS = [
       'DELETE /:id': 'admin',
     },
   },
-  { mount: '/api/jobs', module: 'jobs', access: 'builder', why: 'the Job Filter judges postings for a resume, a builder\'s (A3)' },
+  {
+    mount: '/api/jobs',
+    module: 'jobs',
+    access: 'builder',
+    why: 'Find Jobs searches the lake for postings to build for, and the Job Filter judges them - a builder\'s (A3)',
+  },
   {
     mount: '/api/bid-assistant',
     module: 'bidAssistant',
@@ -485,6 +496,11 @@ test('a user and an administrator are refused none of the builder by role', asyn
         '/api/groups',
         '/api/credits',
         '/api/sheet',
+        // Find Jobs: the lake, searched, and the companies in it.
+        '/api/jobs/lake',
+        '/api/jobs/lake/companies?prefix=a',
+        // An administrator reads it too, and buys nothing (409 admin-exempt on a purchase).
+        '/api/subscription',
       ]) {
         const answer = await server.call(role, 'GET', url);
         const where = `${role} GET ${url}: ${answer.status} ${JSON.stringify(answer.body)}`;
@@ -497,6 +513,14 @@ test('a user and an administrator are refused none of the builder by role', asyn
     // subscription, an administrator is exempt.
     assert.equal((await server.call('user', 'GET', '/api/groups')).body.code, 'subscription-too-low');
     assert.equal((await server.call('admin', 'GET', '/api/groups')).status, 200);
+
+    // The Subscription page reads for both: a user's to buy from, an administrator's to look at.
+    const mine = await server.call('user', 'GET', '/api/subscription');
+    assert.equal(mine.status, 200);
+    assert.equal(mine.body.source, 'default');
+    const theirs = await server.call('admin', 'GET', '/api/subscription');
+    assert.equal(theirs.status, 200);
+    assert.equal(theirs.body.source, 'exempt');
 
     // And the administrator-only parts stay theirs.
     assert.equal((await server.call('user', 'GET', '/api/admin/accounts')).body.code, 'not-an-admin');

@@ -95,12 +95,31 @@ test('every feature declares exactly the variables its code supplies', () => {
     'analyze-job-description': resumeService.buildAnalyzeJobDescriptionPromptValues('A posting.', 'https://jobs.example.com/1'),
     'filter-google-sheet-job': resumeService.buildJobFactsPromptValues('A posting.', 'https://jobs.example.com/1'),
     'tailor-resume': resumeService.buildTailorResumePromptValues(profile(), ANALYSIS),
+    // The same builder, for a profile set to Fully tailor: only what
+    // `profileJson` holds differs.
+    'tailor-resume-full': resumeService.buildTailorResumePromptValues(profile({ tailorMode: 'full' }), ANALYSIS),
     'revise-resume-coverage': reviseCoverage.buildReviseResumeCoveragePromptValues(
       { summary: 'Engineer.', experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Built it.'] }] },
       ['Docker'],
-      { carried: 0, wanted: 1 }
+      [{ company: 'Acme', title: 'Engineer', line: 'Cut deploys from 40 minutes to 6.' }]
     ),
     'generate-cover-letter': resumeService.buildCoverLetterPromptValues(profile(), 'Acme', 'Engineer'),
+    'write-entry-bullets': loadFresh('../dist/services/entryBullets').buildWriteEntryBulletsPromptValues(
+      {
+        kind: 'experience',
+        title: 'Engineer',
+        organization: 'Acme',
+        startDate: '2020',
+        endDate: 'Present',
+        location: 'Remote',
+        description: 'Owns the billing services.',
+        bullets: [],
+        skills: ['Node.js'],
+      },
+      { name: 'Sam', title: 'Engineer', summary: 'Builds things.', skills: ['Node.js'] },
+      'write',
+      ''
+    ),
     'extract-template-from-pdf': resumeService.buildExtractTemplatePromptValues('PDF text', 'Imported'),
     'extract-profile-from-resume': resumeService.buildExtractProfilePromptValues('Resume text'),
   };
@@ -185,9 +204,10 @@ test('the shipped prompts validate clean against what their code supplies', asyn
   const promptService = loadFresh('../dist/services/promptService');
   const prompts = await promptService.listPrompts();
 
-  // Seven features: the analysis's two calls (owner decision O1), the
-  // tailoring and its revise pass, the cover letter and the two extractors.
-  assert.equal(prompts.length, 7);
+  // Nine features: the analysis's two calls (owner decision O1), the
+  // tailoring (Partial and Fully) and its revise pass, the cover letter, the
+  // profile editor's Write Entry Bullets, and the two extractors.
+  assert.equal(prompts.length, 9);
   for (const prompt of prompts) {
     assert.deepEqual(prompt.validation.unknownVariables, [], `${prompt.id} names a variable nothing supplies`);
   }
@@ -204,12 +224,27 @@ test('the shipped prompts validate clean against what their code supplies', asyn
     'the editor is told which are required'
   );
   // The owner's tailoring text uses every list the code builds for it; jobTitle is offered, not used.
+  // Fully tailor's text is held to the same, and to the same required markers.
+  const fully = prompts.find((prompt) => prompt.id === 'tailor-resume-full');
+  for (const record of [tailor, fully]) {
+    assert.deepEqual(
+      [...record.validation.usedVariables].sort(),
+      [
+        'conceptKeywordsJson', 'conceptToolsJson', 'domainKnowledge', 'jobAnalysisJson', 'keyResponsibilitiesJson',
+        'keywordsJson', 'profileJson', 'skillsJSON', 'softSkillGroupHeading', 'targetRoleTitle', 'topSkillsJson',
+      ],
+      record.id
+    );
+  }
+  assert.equal(fully.needsUpdate, undefined);
+  assert.deepEqual(fully.validation.missingVariables, []);
   assert.deepEqual(
-    [...tailor.validation.usedVariables].sort(),
-    [
-      'conceptKeywordsJson', 'conceptToolsJson', 'domainKnowledge', 'jobAnalysisJson', 'keyResponsibilitiesJson',
-      'keywordsJson', 'profileJson', 'skillsJSON', 'softSkillGroupHeading', 'targetRoleTitle', 'topSkillsJson',
-    ]
+    fully.allowedVariables.filter((entry) => entry.required).map((entry) => entry.name),
+    ['profileJson', 'jobAnalysisJson', 'softSkillGroupHeading']
+  );
+  assert.match(
+    fully.allowedVariables.find((entry) => entry.name === 'profileJson').description,
+    /each role as its title, company and dates only/
   );
   // The contract markers of the other features, each used by its shipped text.
   const required = {
@@ -217,9 +252,15 @@ test('the shipped prompts validate clean against what their code supplies', asyn
     'filter-google-sheet-job': ['jobDescription'],
     'revise-resume-coverage': ['draftJson', 'missingTermsJson'],
     'generate-cover-letter': ['profileJson'],
+    'write-entry-bullets': ['entryJson'],
     'extract-template-from-pdf': [],
     'extract-profile-from-resume': [],
   };
+  // The bullets text uses all four of its variables.
+  assert.deepEqual(
+    [...prompts.find((entry) => entry.id === 'write-entry-bullets').validation.usedVariables].sort(),
+    ['entryJson', 'instructions', 'profileJson', 'task']
+  );
   for (const [id, names] of Object.entries(required)) {
     const prompt = prompts.find((entry) => entry.id === id);
     assert.equal(prompt.needsUpdate, undefined, `${id} ships complete`);
@@ -415,7 +456,10 @@ test('a record that needs updating is never run: the built-in prompt runs in its
  * can tell those apart from a valid edit of today, so a stored record of a
  * feature whose contract changed is dated: saved before `contractSince`, it
  * is `needsUpdate` and `savedForOlderVersion`, and the built-in runs in its
- * place until it is saved again. The shipped file is never dated.
+ * place until it is saved again. The shipped file is never dated. The revise
+ * pass and the cover letter are dated too since their texts were grounded in
+ * the profile (an older edit could still ask for a figure the work "implies"),
+ * and Write Entry Bullets, whose text never changed, is not.
  */
 test('a stored edit saved before its feature\'s contract changed gives way by its date, whatever variables it uses', async () => {
   const { staticDir } = seeded('older-contract', { prompts: true });
@@ -425,19 +469,21 @@ test('a stored edit saved before its feature\'s contract changed gives way by it
   saveStoredPrompt({ id: 'analyze-job-description', featureKey: 'analyze-job-description', content: 'OLD ADMIN ANALYSIS EDIT. Extract keywords as JSON.\n\n[[jobDescription]]', isBuiltIn: true, createdAt: before, updatedAt: before });
   saveStoredPrompt({ id: 'filter-google-sheet-job', featureKey: 'filter-google-sheet-job', content: 'OLD ADMIN FILTER EDIT.\n[[jobDescription]]', isBuiltIn: true, createdAt: before, updatedAt: before });
   saveStoredPrompt({ id: 'custom-tailor-resume-dated', name: 'Dated', featureKey: 'tailor-resume', content: `Dated variant.\n[[profileJson]]\n${MARKERS}`, isBuiltIn: false, createdAt: before, updatedAt: before });
-  // A cover letter edit meets the contract it was written for, which has not changed: never dated.
+  saveStoredPrompt({ id: 'revise-resume-coverage', featureKey: 'revise-resume-coverage', content: 'OLD REVISE EDIT.\n[[draftJson]]\n[[missingTermsJson]]\n[[figuresNote]]', isBuiltIn: true, createdAt: before, updatedAt: before });
   saveStoredPrompt({ id: 'generate-cover-letter', featureKey: 'generate-cover-letter', content: 'MY LETTER EDIT.\n[[profileJson]]', isBuiltIn: true, createdAt: before, updatedAt: before });
+  // Write Entry Bullets meets the contract it was written for, which has not changed: never dated.
+  saveStoredPrompt({ id: 'write-entry-bullets', featureKey: 'write-entry-bullets', content: 'MY BULLETS EDIT.\n[[entryJson]]', isBuiltIn: true, createdAt: before, updatedAt: before });
 
   const listed = new Map((await promptService.listPrompts()).map((prompt) => [prompt.id, prompt]));
-  for (const id of ['analyze-job-description', 'filter-google-sheet-job', 'custom-tailor-resume-dated']) {
+  for (const id of ['analyze-job-description', 'filter-google-sheet-job', 'custom-tailor-resume-dated', 'revise-resume-coverage', 'generate-cover-letter']) {
     const prompt = listed.get(id);
     assert.deepEqual(prompt.validation.missingVariables, [], id);
     assert.deepEqual(prompt.validation.unknownVariables, [], id);
     assert.equal(prompt.needsUpdate, true, id);
     assert.equal(prompt.savedForOlderVersion, true, id);
   }
-  assert.equal(listed.get('generate-cover-letter').needsUpdate, undefined);
-  assert.equal(listed.get('generate-cover-letter').savedForOlderVersion, undefined);
+  assert.equal(listed.get('write-entry-bullets').needsUpdate, undefined);
+  assert.equal(listed.get('write-entry-bullets').savedForOlderVersion, undefined);
 
   const warnings = [];
   const realWarn = console.warn;
@@ -450,7 +496,14 @@ test('a stored edit saved before its feature\'s contract changed gives way by it
     const facts = await promptService.renderPromptSegmentsByExactId('filter-google-sheet-job', { jobDescription: 'A posting.', jobLink: '' });
     assert.doesNotMatch(facts.map((segment) => segment.text).join(''), /OLD ADMIN FILTER EDIT/);
     assert.equal((await promptService.resolvePromptByExactId('custom-tailor-resume-dated')).id, 'tailor-resume');
-    assert.match((await promptService.resolvePromptByExactId('generate-cover-letter')).content, /^MY LETTER EDIT/);
+    for (const id of ['revise-resume-coverage', 'generate-cover-letter']) {
+      assert.equal(
+        (await promptService.resolvePromptByExactId(id)).content,
+        JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', `${id}.json`), 'utf8')).content.trim(),
+        `${id}: the shipped text runs in place of the older edit`
+      );
+    }
+    assert.match((await promptService.resolvePromptByExactId('write-entry-bullets')).content, /^MY BULLETS EDIT/);
   } finally {
     console.warn = realWarn;
   }
@@ -481,12 +534,90 @@ test('a stored edit saved before its feature\'s contract changed gives way by it
 
 test("the features whose contract changed are dated from the shipped files' own updatedAt", () => {
   const promptService = require('../dist/services/promptService');
-  // Each shipped file of a dated feature carries the contract's time exactly,
-  // so the next change to a contract moves the two together.
-  for (const featureKey of ['analyze-job-description', 'filter-google-sheet-job', 'tailor-resume']) {
+  // Each shipped file of a dated feature carries its contract's time exactly,
+  // so the next change to a contract moves the two together. The tailoring's
+  // moved on its own (two modes, an empty role written from the posting, the
+  // posting's hard skills in the block), and the revise pass (each role's
+  // dates, any term after a Fully draft) and the cover letter (told the
+  // tailored resume) with it; the analysis and the job facts stayed.
+  const contracts = {
+    'analyze-job-description': promptService.OWNER_PROMPTS_CONTRACT,
+    'filter-google-sheet-job': promptService.OWNER_PROMPTS_CONTRACT,
+    'tailor-resume': promptService.TAILORING_PROMPTS_CONTRACT,
+    'tailor-resume-full': promptService.TAILORING_PROMPTS_CONTRACT,
+    'revise-resume-coverage': promptService.TAILORING_PROMPTS_CONTRACT,
+    'generate-cover-letter': promptService.TAILORING_PROMPTS_CONTRACT,
+  };
+  for (const [featureKey, contract] of Object.entries(contracts)) {
     const file = JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', `${featureKey}.json`), 'utf8'));
-    assert.equal(file.updatedAt, promptService.OWNER_PROMPTS_CONTRACT, featureKey);
+    assert.equal(file.updatedAt, contract, featureKey);
   }
+  assert.ok(promptService.TAILORING_PROMPTS_CONTRACT > promptService.OWNER_PROMPTS_CONTRACT);
+});
+
+/*
+ * The shipped texts are the one place a model is told what it may claim, so
+ * the rules that keep a resume to what the candidate did are held here - each
+ * a sentence a later edit of the shipped file could drop without any other
+ * test noticing - and so is the absence of the ones they replaced.
+ */
+test('the shipped prompts keep a resume to what the profile says', () => {
+  const text = (id) => JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', `${id}.json`), 'utf8')).content;
+  // Partial tailor: the bullets and the summary of a role the profile
+  // describes claim only what it says; the skills block leads with the
+  // posting's hard skills whatever the profile lists (owner's request,
+  // 2026-10-20); a role the profile leaves EMPTY is written from the posting
+  // rather than printed blank - the empty Experience and Skills a profile of
+  // titles and dates came out with.
+  const tailor = text('tailor-resume');
+  for (const rule of [
+    /THE PROFILE IS THE ONLY SOURCE OF FACT FOR WHAT THE CANDIDATE DID/,
+    /A ROLE THE PROFILE LEAVES EMPTY/,
+    /no role is printed without bullets/,
+    /EVERY HARD SKILL THE POSTING NAMES/,
+    /whether or not the profile lists it/,
+    /A posting technology the profile does not show is in the block, and in NO sentence about a described role/,
+    /Never add a figure the profile does not state/,
+    /NEVER pick a tool from these lists that the profile does not name/,
+    /15 to 30 entries/,
+    /SELF-CHECK BEFORE YOU RETURN/,
+  ]) {
+    assert.match(tailor, rule);
+  }
+  for (const hole of [
+    /may be written even when the profile does not list it/,
+    /THIRTY is the target/,
+    /AT LEAST FIVE FIGURES/,
+    /modest figure the work itself implies/,
+    // The rule that left a bare profile's skills block empty.
+    /WHAT GOES IN: THE CANDIDATE'S OWN SKILLS, AND NOTHING ELSE/,
+    /A posting technology the profile does not show is NOT added/,
+  ]) {
+    assert.doesNotMatch(tailor, hole);
+  }
+  // Fully tailor: the frame is the profile's, the work is written for the
+  // posting, believable for the title, company and years, with modest figures.
+  const fully = text('tailor-resume-full');
+  for (const rule of [
+    /THE FRAME IS FIXED; THE WORK IS YOURS TO WRITE/,
+    /every role appears and no role is added/,
+    /Only technologies that existed, and were in ordinary use, in the role's years/,
+    /FIGURES: MODEST, PLAUSIBLE, AND IN PROPORTION/,
+    /never name a client, a colleague, a launch or an incident you cannot know/,
+    /EVERY HARD SKILL THE POSTING NAMES/,
+    /The letter tells only what the resume tells/,
+    /SELF-CHECK BEFORE YOU RETURN/,
+  ]) {
+    assert.match(fully, rule);
+  }
+  assert.doesNotMatch(fully, /THE PROFILE IS THE ONLY SOURCE OF FACT/);
+  const analysis = text('analyze-job-description');
+  assert.match(analysis, /EXTRACT WHAT THE POSTING SAYS, IN THE POSTING'S WORDS/);
+  assert.doesNotMatch(analysis, /Doubt means extract|Implied skills|Target: \d/);
+  assert.match(text('revise-resume-coverage'), /A term you cannot place honestly in either way stays missing/);
+  assert.doesNotMatch(text('revise-resume-coverage'), /unless you are asked above for more/);
+  assert.match(text('generate-cover-letter'), /the candidate's profile below is the only source of fact/);
+  assert.match(text('extract-profile-from-resume'), /Never add a skill because a title, a project or another skill implies it/);
 });
 
 /*
@@ -601,7 +732,6 @@ test('whichever record runs, nothing is appended to its turn, and the answer is 
   assert.deepEqual(off.softSkills, [], 'Soft Skills off: the soft group stays in the skills block');
   assert.deepEqual(off.skillGroups.map((group) => group.category), ['Languages', 'Soft Skills']);
   assert.deepEqual(off.hardSkills, ['TypeScript'], "the model's groups, never its hardSkills field");
-  assert.deepEqual(off.unconfirmedSoftSkills, []);
 
   const on = await resumeService.tailorResume(
     profile({ includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat', resumePromptId: custom.id }),

@@ -50,6 +50,18 @@ export const CREDIT_REASONS = [
   // balance (a reporter who was paid out already keeps $0, not a debt).
   // Keyed job-lake-revoke:<lake id>:<updated_at>, so a version is revoked once.
   'job-report-reward-revoked',
+  // A subscription bought, or moved up now (services/subscriptions), from the
+  // credit balance: the tier's price less the unused days of a paid one. Never
+  // more than the balance, never clamped: one the balance cannot cover is
+  // refused (creditRepository.debitSubscriptionCharge), and one the unused
+  // days cover entirely writes no row. Keyed
+  // subscription:<account>:<tier>:<period start>.
+  'subscription-purchase',
+  // A paid subscription's next 30 days, taken by the renewal sweep at the
+  // price in effect that day. Keyed subscription-renewal:<account>:<the
+  // paid_through it renews>, so a period renews once however often the sweep
+  // runs, and a balance that cannot cover it ends the tier instead.
+  'subscription-renewal',
   // Credits became dollars, and every balance was reset to $0. One row per
   // account that held any, in the old unit, taking it to zero - or, for one
   // whose credits were all held by a run, moving nothing and saying so.
