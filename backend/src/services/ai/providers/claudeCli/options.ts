@@ -21,7 +21,7 @@ export const DEFAULT_CLI_MODEL = 'sonnet';
  * which is exactly why it lives in this file and not in the shared types: it is
  * an implementation detail of one transport, not a concept the app has.
  *
- * There is deliberately NO per-profile or per-run control, and adding one back
+ * There is deliberately NO per-resume or per-run control, and adding one back
  * would be a regression rather than a feature. It was tried: a select that
  * reached one provider out of six meant every other model in the menu showed a
  * knob that changed nothing and said nothing, and the machinery to explain that

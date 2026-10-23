@@ -5,19 +5,19 @@ import Handlebars from 'handlebars';
 import fs from 'fs/promises';
 import path from 'path';
 import {
-  Profile,
-  type SkillCategoryGroup as ProfileSkillCategoryGroup,
+  Resume,
+  type SkillCategoryGroup as ResumeSkillCategoryGroup,
   type TechnicalSkillsLayout,
-} from '../types/profile';
+} from '../types/resume';
 import {
-  getProfileResumeSections,
-  getProfileSectionLayout,
-  profileForTemplate,
+  getResumeSections,
+  getResumeSectionLayout,
+  resumeForTemplate,
   type ResumeSectionChoices,
-} from '../services/profileService';
-import { SAMPLE_PROFILE, SAMPLE_TAILORED_CONTENT } from '../services/sampleProfile';
+} from '../services/resumeDocument';
+import { SAMPLE_RESUME, SAMPLE_TAILORED_CONTENT } from '../services/sampleResume';
 import { prepareExtraSectionData } from '../services/extraSections';
-import { sectionSortKey } from '../config/profileSections';
+import { sectionSortKey } from '../config/sectionCatalogue';
 import { expandExtraSectionsMacro, injectExtraSectionsStyle } from './extraSectionsMarkup';
 import { fitPlainSkillGroups } from './plainSkillsMarkup';
 import {
@@ -398,7 +398,7 @@ type SkillCategory = HardSkillCategory;
 /**
  * One rendered heading and the skills under it.
  *
- * `category` is a plain string, not the library's closed set: a profile may
+ * `category` is a plain string, not the library's closed set: a resume may
  * carry headings its author invented, a tailored resume prints the model's
  * own, and the flat layout carries the empty string - which is not a missing
  * heading but the statement that there is none.
@@ -788,14 +788,14 @@ type SkillsData = {
   hardSkills?: string[];
   softSkills?: string[];
   strengths?: Array<{ title?: unknown; description?: unknown }>;
-  /** The profile's own skills, in the order the person keeps them. */
+  /** The resume's own skills, in the order the person keeps them. */
   skills?: string[];
   /** The model's Technical Skills block; when it has a group it is the printed block. */
   skillGroups?: unknown;
   softSkillGroupHeading?: string;
-  /** The author's own grouping, when the profile carries one. */
-  skillCategories?: ProfileSkillCategoryGroup[];
-  profileSettings?: Profile['profileSettings'];
+  /** The author's own grouping, when the resume carries one. */
+  skillCategories?: ResumeSkillCategoryGroup[];
+  resumeSettings?: Resume['resumeSettings'];
 };
 
 /** A strength a template can show: one with a title or a description, as text. */
@@ -830,9 +830,9 @@ function flattenSkillCategories(skills: string[]): SkillCategoryGroup[] {
 /**
  * Groups the SELECTED skills using the author's own categories.
  *
- * The author's grouping covers their whole profile; what reaches here is the
- * subset this job called for. So the profile is read as a MAP from skill to
- * heading rather than as the finished block - grouping the whole profile would
+ * The author's grouping covers their whole resume; what reaches here is the
+ * subset this job called for. So the resume is read as a MAP from skill to
+ * heading rather than as the finished block - grouping the whole resume would
  * put back every skill the tailoring step deliberately left out.
  *
  * A selected skill the author never placed still has to appear, so it falls
@@ -842,7 +842,7 @@ function flattenSkillCategories(skills: string[]): SkillCategoryGroup[] {
  */
 function buildAuthoredSkillCategories(
   selected: string[],
-  authored: ProfileSkillCategoryGroup[]
+  authored: ResumeSkillCategoryGroup[]
 ): SkillCategoryGroup[] {
   const headingBySkill = new Map<string, string>();
   for (const group of authored) {
@@ -916,11 +916,11 @@ type SkillsLimitedData<T> = Omit<T, 'strengths' | 'softSkills'> & {
 /**
  * The skills a person entered, each under the library's heading for it, in
  * the order they entered them, and nothing more. There is no padding: a block
- * listing Kubernetes under a heading the person never wrote, on a profile that
+ * listing Kubernetes under a heading the person never wrote, on a resume that
  * never claimed it, is a claim on their resume they did not make.
  *
  * Library-known skills only, as the flat layout keeps: the two layouts of one
- * profile must show the same skills, and the editor adds an unknown skill to
+ * resume must show the same skills, and the editor adds an unknown skill to
  * the library as it is entered.
  */
 function groupClaimedSkills(skills: string[]): SkillCategoryGroup[] {
@@ -935,15 +935,15 @@ function groupClaimedSkills(skills: string[]): SkillCategoryGroup[] {
     .filter((group) => group.skills.length > 0);
 }
 
-/** The author's own headings, when the profile has any with something under them. */
-function authoredGroups(data: SkillsData): ProfileSkillCategoryGroup[] {
+/** The author's own headings, when the resume has any with something under them. */
+function authoredGroups(data: SkillsData): ResumeSkillCategoryGroup[] {
   return (data.skillCategories ?? []).filter(
     (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
   );
 }
 
 /**
- * The profile's OWN skills as a block - an untailored render, or the fallback
+ * The resume's OWN skills as a block - an untailored render, or the fallback
  * when tailored content has nothing printable. Unpadded. Grouped: the author's
  * own grouping as they typed it, else `groupClaimedSkills` - the library's
  * heading for each skill they claimed, the headings in the library's order and
@@ -960,8 +960,8 @@ function ownSkillCategories(data: SkillsData, layout: TechnicalSkillsLayout): Sk
 
 /**
  * THE RENDER GATE. Every path - the builder's preview, the PDF, the DOCX, the
- * queue, the gallery, the profile editor's preview - prepares its data
- * through here, so whatever the caller handed in (a profile, fresh tailoring,
+ * queue, the gallery, the resume editor's preview - prepares its data
+ * through here, so whatever the caller handed in (a resume, fresh tailoring,
  * content a page held from a preview and sent back, a queued payload from
  * before a deploy) is decided once, the same way, on every render.
  *
@@ -972,16 +972,16 @@ function ownSkillCategories(data: SkillsData, layout: TechnicalSkillsLayout): Sk
  *    it, spell-checks it or fills it out"). Grouped: the groups verbatim.
  *    Plain: one headless list of the same skills, same order, repeats
  *    removed. The soft-skill group goes to the Soft Skills section while that
- *    switch is on - as `profileForTemplate` left it, so a template with no
+ *    switch is on - as `resumeForTemplate` left it, so a template with no
  *    Soft Skills section keeps the group in the block - and stays in the
  *    block, under its heading, while it is off. A block left empty (only the
- *    soft group came back, and it was routed) is the profile's own skills.
+ *    soft group came back, and it was routed) is the source resume's own skills.
  * 2. Older tailored content with only `hardSkills`, unpadded. Plain: that
  *    list, unfiltered, in its own order. Grouped: under the author's headings
- *    when the profile has any (every skill; one they never placed goes under
+ *    when the resume has any (every skill; one they never placed goes under
  *    the library's heading), else regrouped by `groupClaimedSkills` - the
  *    library's headings in the library's order, library-known skills only.
- * 3. Otherwise the profile's own skills (`ownSkillCategories`), which also
+ * 3. Otherwise the resume's own skills (`ownSkillCategories`), which also
  *    draws only library-known skills except under the author's own headings.
  *
  * Nothing is padded from the skill library on any path, and nothing is
@@ -989,7 +989,7 @@ function ownSkillCategories(data: SkillsData, layout: TechnicalSkillsLayout): Sk
  * and the model's block in (1) never is.
  */
 function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
-  const sections = getProfileResumeSections({ profileSettings: data.profileSettings });
+  const sections = getResumeSections({ resumeSettings: data.resumeSettings });
   const layout: TechnicalSkillsLayout = sections.layout;
 
   const finish = (skillCategories: SkillCategoryGroup[], softSkills: unknown = data.softSkills): SkillsLimitedData<T> => {
@@ -997,7 +997,7 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
     return {
       ...data,
       hardSkills: lines,
-      // The two optional sections. A section the profile has switched off
+      // The two optional sections. A section the resume has switched off
       // renders nothing, whatever the content carries; one switched on renders
       // what it was given. The compile step strips or guards the same sections
       // independently (see `normalizeTemplateSkillsSections`).
@@ -1036,10 +1036,10 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
   return finish(ownSkillCategories(data, layout));
 }
 
-function getResumeTitle(profile: Profile): string {
-  const profileTitle = profile.title?.trim();
-  if (profileTitle) return profileTitle;
-  const lastRole = profile.experience?.[0]?.title?.trim();
+function getResumeTitle(resume: Resume): string {
+  const resumeTitle = resume.title?.trim();
+  if (resumeTitle) return resumeTitle;
+  const lastRole = resume.experience?.[0]?.title?.trim();
   return lastRole || 'Professional';
 }
 
@@ -1047,7 +1047,7 @@ function getResumeTitle(profile: Profile): string {
  * The headline as an ATS reads it: letters, digits, spaces and the
  * punctuation a title is written with - `| ( ) / , . & + # · -` - and nothing
  * else. Those are kept because tailoring composes the printed title from the
- * profile's headline and the kind of role ("Senior Software Engineer | Cloud
+ * resume's headline and the kind of role ("Senior Software Engineer | Cloud
  * Engineer", "Software Engineer (AI/ML Engineer)"), and because "C#",
  * "C++", "Node.js" and "R&D" are names. Any other symbol (quotes, colons,
  * brackets, `@`, `%`, arrows, emoji) becomes a space. The same rule for an
@@ -1063,7 +1063,7 @@ function sanitizeTitleForATS(title: string): string {
 /**
  * A link a person typed, as an http(s) URL - or nothing.
  *
- * http and https only. These land in an `href`, and the live profile preview
+ * http and https only. These land in an `href`, and the live resume preview
  * renders whatever is in the editor as it is typed: `javascript:` or `data:`
  * there is a link that runs something. Handlebars escapes quotes, not
  * schemes, so the scheme is the one thing the renderer has to police itself.
@@ -1208,7 +1208,7 @@ function enforceSkillCategoryLineBreaks(
 }
 
 /**
- * The two optional sections a profile switches on and off, as the compile
+ * The two optional sections a resume switches on and off, as the compile
  * step strips or guards them. WHERE each is in a template's markup is the
  * locator's to say (generators/sectionLocator.ts), shared with the reorder
  * step and with the template read that derives `printsSections` and
@@ -1310,9 +1310,9 @@ function rewritePerItemSkillLoops(html: string): string {
 }
 
 /**
- * A template's markup as it is compiled for one profile's choices.
+ * A template's markup as it is compiled for one resume's choices.
  *
- * - Soft Skills and Strengths: a section the profile switched off is removed
+ * - Soft Skills and Strengths: a section the resume switched off is removed
  *   outright, so no template - however it is written - can show one; a section
  *   switched on is guarded on its list, so an empty one leaves no heading. The
  *   data step gates the same lists independently (see `applySkillsLimit`).
@@ -1359,8 +1359,8 @@ const warnedUnorderable = new Set<string>();
 const warnedUnmovable = new Set<string>();
 
 /**
- * The markup with its sections in the profile's stored order
- * (config/profileSections.ts has the semantics; the locator says where each
+ * The markup with its sections in the resume's stored order
+ * (config/sectionCatalogue.ts has the semantics; the locator says where each
  * section is). Within each parent element - each column, in a two-column
  * template - the sections found are sorted by `sectionSortKey` and refilled
  * into the slots they occupied: a listed one to its place in the order, an
@@ -1407,7 +1407,7 @@ function reorderTemplateSections(html: string, order: readonly string[], finds: 
     if (warnedUnmovable.has(key)) continue;
     warnedUnmovable.add(key);
     console.warn(
-      `[templates] Template "${templateId}" has a ${ref} section the profile's order cannot move: it is ` +
+      `[templates] Template "${templateId}" has a ${ref} section the resume's order cannot move: it is ` +
         'marked neither with a section-' +
         ref +
         ' class nor with data-section, and could not be found from its heading, so it prints where the ' +
@@ -1424,7 +1424,7 @@ function reorderTemplateSections(html: string, order: readonly string[], finds: 
   if (!warnedUnorderable.has(templateId)) {
     warnedUnorderable.add(templateId);
     console.warn(
-      `[templates] Template "${templateId}" cannot be drawn in the profile's section order: a Handlebars ` +
+      `[templates] Template "${templateId}" cannot be drawn in the resume's section order: a Handlebars ` +
         'block opens inside one of its sections and closes outside it, so its sections print in the ' +
         "template's own order. Move the block wholly inside or outside the section."
     );
@@ -1484,7 +1484,7 @@ function guardEmptyDescriptions(html: string): string {
  * Applied to the markup rather than asked of template authors, and applied
  * after the rewrites above so it also covers the markup this file generates.
  * A template somebody uploads has never heard of the flat layout, and the
- * option would otherwise be one a profile can only safely use on the handful of
+ * option would otherwise be one a resume can only safely use on the handful of
  * templates that happened to be written for it.
  *
  * Idempotent: the negative lookbehind leaves a heading somebody already guarded
@@ -1536,28 +1536,32 @@ function tailoredRoles(experience: unknown): TailoredContent['experience'] {
 }
 
 export function prepareResumeRenderData(
-  profile: Profile,
+  resume: Resume,
   tailoredContent?: TailoredContent,
   companyName?: string,
   role?: string
 ) {
-  const linkedinHref = normalizeExternalUrl(profile.contact?.linkedin);
-  const linkedinDisplay = getExternalUrlDisplay(profile.contact?.linkedin);
+  const linkedinHref = normalizeExternalUrl(resume.contact?.linkedin);
+  const linkedinDisplay = getExternalUrlDisplay(resume.contact?.linkedin);
   const tailoredTitle = typeof tailoredContent?.title === 'string' ? tailoredContent.title.trim() : '';
   const tailoredSoftSkills = normalizeSkills(tailoredContent?.softSkills);
+  // A resume read from GET /api/resumes carries its derived `matchKeywords`
+  // (services/resumeKeywords.ts): the server's bookkeeping, not a word of the
+  // resume and no template's to print, so it never reaches the render data.
+  const { matchKeywords: _keywords, ...resumeFields } = resume as Resume & { matchKeywords?: unknown };
   const data = {
-    ...profile,
+    ...resumeFields,
     // The sections beyond the classic six, prepared (dates joined, links
-    // policed like every other href here) under the profile fields' own
+    // policed like every other href here) under the resume fields' own
     // names, so a template that loops over `certifications` itself keeps
     // working and the generated blocks read the same lists. Tailored or not:
-    // these sections always print from the profile, like education.
-    ...prepareExtraSectionData(profile, { href: normalizeExternalUrl, display: getExternalUrlDisplay }),
+    // these sections always print from the resume, like education.
+    ...prepareExtraSectionData(resume, { href: normalizeExternalUrl, display: getExternalUrlDisplay }),
     contact: {
-      ...profile.contact,
-      ...(typeof profile.contact?.github === 'string' ? { github: safeContactLink(profile.contact.github) } : {}),
-      ...(typeof profile.contact?.portfolio === 'string'
-        ? { portfolio: safeContactLink(profile.contact.portfolio) }
+      ...resume.contact,
+      ...(typeof resume.contact?.github === 'string' ? { github: safeContactLink(resume.contact.github) } : {}),
+      ...(typeof resume.contact?.portfolio === 'string'
+        ? { portfolio: safeContactLink(resume.contact.portfolio) }
         : {}),
       linkedin: linkedinHref,
       linkedinHref,
@@ -1566,15 +1570,15 @@ export function prepareResumeRenderData(
     companyName: companyName || '',
     role: role || '',
     // Tailored, the title exactly as tailoring composed it; else the
-    // profile's own headline.
-    title: sanitizeTitleForATS(tailoredTitle || getResumeTitle(profile)),
-    // The profile's own lists. Strengths stay the profile's own on every
+    // resume's own headline.
+    title: sanitizeTitleForATS(tailoredTitle || getResumeTitle(resume)),
+    // The resume's own lists. Strengths stay the resume's own on every
     // render, tailored or not: the tailoring prompt writes none, and one an
     // older build or a JSON edit put in the content is not printed. Whether
-    // either section is shown at all is the profile's switch, decided in
+    // either section is shown at all is the resume's switch, decided in
     // `applySkillsLimit`.
-    softSkills: profile.softSkills ?? [],
-    strengths: profile.strengths ?? [],
+    softSkills: resume.softSkills ?? [],
+    strengths: resume.strengths ?? [],
     ...(tailoredContent && {
       summary: tailoredContent.summary,
       experience: tailoredRoles(tailoredContent.experience),
@@ -1585,11 +1589,11 @@ export function prepareResumeRenderData(
       // list, under either name.
       hardSkills: tailoredContent.hardSkills?.length ? tailoredContent.hardSkills : (tailoredContent.skills ?? []),
       // Used only when no soft-skill group is routed: the content's own list
-      // when it has anything in it, else the profile's. Content can predate
+      // when it has anything in it, else the resume's. Content can predate
       // the switch being turned on - a held preview, a queued task - and then
       // carries nothing for the section; the person's own entries beat an
       // empty section they asked for.
-      softSkills: tailoredSoftSkills.length > 0 ? tailoredSoftSkills : (profile.softSkills ?? []),
+      softSkills: tailoredSoftSkills.length > 0 ? tailoredSoftSkills : (resume.softSkills ?? []),
     }),
   };
   return normalizeExperienceDescriptions(applySkillsLimit(data));
@@ -1610,7 +1614,7 @@ export type ResumeRenderData = ReturnType<typeof prepareResumeRenderData>;
  */
 const compiledTemplates = new Map<string, HandlebarsTemplateDelegate>();
 // Raised from 64 when the key gained the section order and the custom keys:
-// one delegate per profile that arranged its sections, per template.
+// one delegate per resume that arranged its sections, per template.
 const COMPILED_TEMPLATE_CACHE_SIZE = 128;
 
 function parsesAsHandlebars(markup: string): boolean {
@@ -1630,7 +1634,7 @@ const warnedSectionFallbacks = new Set<string>();
  * template itself parses. A cut follows the HTML, a Handlebars block need not
  * (`<div class="section-strengths">{{#if summary}}...</div>{{/if}}` is valid
  * Handlebars), and a cut through one used to fail every resume on the
- * template - with the switch off, which is every profile's default. Then the
+ * template - with the switch off, which is every resume's default. Then the
  * sections found from their loops are left out, and if that still does not
  * parse, no section is removed at all: the render gate still empties a
  * switched-off list, and only its heading may print. Logged once per template
@@ -1655,12 +1659,12 @@ function compilableMarkup(template: Template, choices: ResumeSectionChoices): st
       finds === 'marked'
         ? `[templates] Template "${template.id}" does not compile with its sections found from their lists, ` +
             'so only a section marked with its class or data-section is removed, guarded or moved into ' +
-            "the profile's order; a switched-off section's heading may still print. Put section-<kind> " +
+            "the resume's order; a switched-off section's heading may still print. Put section-<kind> " +
             '(section-strengths, section-soft-skills, section-experience, ...) on the element that holds ' +
             'the heading and the list.'
         : `[templates] Template "${template.id}" does not compile with its Strengths / Soft Skills section ` +
             'removed or its sections moved, so it is drawn with both sections in place and in its own ' +
-            "section order: a switched-off list prints empty, its heading may still print, and the profile's " +
+            "section order: a switched-off list prints empty, its heading may still print, and the resume's " +
             'section order is not applied. A Handlebars block ({{#if}}, {{#each}}) probably opens inside ' +
             "a section's element and closes outside it; move it wholly inside or outside."
     );
@@ -1674,7 +1678,7 @@ function compileTemplate(template: Template, choices: ResumeSectionChoices): Han
   }
 
   // The order and the custom keys are in the key: the markup compiled differs
-  // with each (the blocks generated, the slots refilled), and two profiles'
+  // with each (the blocks generated, the slots refilled), and two resumes'
   // orders must never share a delegate.
   const key =
     `${choices.layout}|${choices.softSkills ? 1 : 0}|${choices.strengths ? 1 : 0}|` +
@@ -1696,7 +1700,7 @@ function compileTemplate(template: Template, choices: ResumeSectionChoices): Han
 }
 
 export async function generateResumePDF(
-  profile: Profile,
+  resume: Resume,
   template: Template,
   tailoredContent: TailoredContent | undefined,
   pathInfo: GeneratedPathInfo,
@@ -1707,7 +1711,7 @@ export async function generateResumePDF(
   // the DOCX and in the tailoring that wrote this content.
   const renderData = timePdfStageSync('render data preparation', () =>
     prepareResumeRenderData(
-      profileForTemplate(profile, template),
+      resumeForTemplate(resume, template),
       tailoredContent,
       companyName,
       role
@@ -1773,35 +1777,35 @@ export async function generateResumePDF(
 
 /**
  * The builder's preview of a tailored resume, shown in the page before it is
- * generated. It carries the same Content-Security-Policy as the profile
+ * generated. It carries the same Content-Security-Policy as the resume
  * editor's preview: the document holds whatever the model wrote, and a frame
  * is only as safe as the strictest thing guarding it - the page frames it with
  * no permissions too, so either lock alone keeps a stray script or remote
  * fetch out.
  */
 export async function generatePreviewHTML(
-  profile: Profile,
+  resume: Resume,
   template: Template,
   tailoredContent?: TailoredContent
 ): Promise<string> {
-  const renderData = prepareResumeRenderData(profileForTemplate(profile, template), tailoredContent);
+  const renderData = prepareResumeRenderData(resumeForTemplate(resume, template), tailoredContent);
   return withPreviewContentSecurityPolicy(assembleResumeDocument(template, renderTemplateBody(template, renderData)));
 }
 
 /**
  * Compiles a template against render data. Shared so preview and PDF agree.
  *
- * The compile choices are read from the render data's own profile settings -
+ * The compile choices are read from the render data's own resume settings -
  * the same ones `applySkillsLimit` gated the data on - so the markup kept and
  * the data handed to it can never be decided from two different places.
  */
 function renderTemplateBody(template: Template, renderData: ResumeRenderData): string {
   // The section order travels with the switches: the data carries the stored
-  // order and the custom sections (spread from the profile), and the compile
+  // order and the custom sections (spread from the resume), and the compile
   // step moves the markup to match - decided from one place, like the switches.
   const compiledTemplate = compileTemplate(template, {
-    ...getProfileResumeSections(renderData),
-    ...getProfileSectionLayout(renderData),
+    ...getResumeSections(renderData),
+    ...getResumeSectionLayout(renderData),
   });
   return enforceSkillCategoryLineBreaks(
     rewriteLinkedInAnchorDisplay(compiledTemplate(renderData)),
@@ -1899,8 +1903,8 @@ function previewPageChrome(box: ResumePageBox): string {
 
 /**
  * A template rendered with the sample resume, for the gallery: the sample
- * person (`SAMPLE_PROFILE`) TAILORED (`SAMPLE_TAILORED_CONTENT`, both in
- * services/sampleProfile.ts), through the same tailored branch a generated
+ * person (`SAMPLE_RESUME`) TAILORED (`SAMPLE_TAILORED_CONTENT`, both in
+ * services/sampleResume.ts), through the same tailored branch a generated
  * resume takes - a model's skill groups, no role descriptions, a composed
  * title - so the gallery shows what a generated resume looks like rather
  * than a block no generation prints.
@@ -1908,7 +1912,7 @@ function previewPageChrome(box: ResumePageBox): string {
  * With no choices: Grouped, no Soft Skills or Strengths section, so the
  * sample's soft-skill group is the block's last heading. A caller may ask for
  * the flat layout or either section, so a template can be shown the way a
- * particular profile would get it; read through `profileForTemplate`, as
+ * particular resume would get it; read through `resumeForTemplate`, as
  * every generation is, so a switch the template has no section for keeps the
  * soft-skill group in the block.
  */
@@ -1916,21 +1920,21 @@ export function generateTemplatePreviewHTML(
   template: Template,
   choices: Partial<ResumeSectionChoices> = {}
 ): string {
-  const sample: Profile = {
-    ...SAMPLE_PROFILE,
-    profileSettings: {
+  const sample: Resume = {
+    ...SAMPLE_RESUME,
+    resumeSettings: {
       ...(choices.layout ? { technicalSkillsLayout: choices.layout } : {}),
       includeSoftSkills: choices.softSkills === true,
       includeStrengths: choices.strengths === true,
     },
   };
-  const renderData = prepareResumeRenderData(profileForTemplate(sample, template), SAMPLE_TAILORED_CONTENT);
+  const renderData = prepareResumeRenderData(resumeForTemplate(sample, template), SAMPLE_TAILORED_CONTENT);
   const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
   return `${document}${previewPageChrome(resolveTemplatePageBox(template))}`;
 }
 
 /**
- * What the live profile preview's document may do: draw with its own inline
+ * What the live resume preview's document may do: draw with its own inline
  * styles and embedded images and fonts, and nothing else - no script, no
  * request anywhere. The page frames it in a script-less sandbox as well; this
  * is the second lock, and it travels with the document.
@@ -1957,7 +1961,7 @@ function withPreviewContentSecurityPolicy(document: string): string {
     : `${meta}${document}`;
 }
 
-export interface ProfilePreview {
+export interface ResumeDraftPreview {
   html: string;
   /**
    * The printed page, in CSS px at 96 DPI: what the frame should be sized to
@@ -1971,18 +1975,18 @@ export interface ProfilePreview {
 }
 
 /**
- * A profile - an unsaved draft from the editor, usually - rendered through
+ * A resume - an unsaved draft from the editor, usually - rendered through
  * exactly the pipeline a generated resume takes (the same render data,
  * compile choices, post-processing and document), untailored, with the
  * gallery's page chrome so it is as wide as the printed page.
  *
  * One difference from generation, and a deliberate one: the document carries a
  * Content-Security-Policy, because it contains whatever is in the editor at
- * that moment. Its skills are the profile's own, unpadded - as every
+ * that moment. Its skills are the resume's own, unpadded - as every
  * untailored render's are (see `applySkillsLimit`).
  */
-export function generateProfilePreviewHTML(profile: Profile, template: Template): ProfilePreview {
-  const renderData = prepareResumeRenderData(profileForTemplate(profile, template));
+export function generateResumeDraftPreviewHTML(resume: Resume, template: Template): ResumeDraftPreview {
+  const renderData = prepareResumeRenderData(resumeForTemplate(resume, template));
   const box = resolveTemplatePageBox(template);
   const document = assembleResumeDocument(template, renderTemplateBody(template, renderData));
   const shrunkOntoA4 = box.mediaScale !== 1;

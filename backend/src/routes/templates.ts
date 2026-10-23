@@ -39,7 +39,7 @@ function answeredStoreFailure(req: Request, res: Response, error: unknown, fallb
  *
  * At the router rather than per route, so a route added later is protected by
  * default. Before v2 these were open, which was defensible with one user on one
- * machine and is not once profiles belong to people.
+ * machine and is not once resumes belong to people.
  */
 router.use(requireUser);
 
@@ -103,12 +103,12 @@ function queryFlag(value: unknown): boolean {
  * Get template preview HTML (sample data).
  *
  * `?layout=flat|categorized&softSkills=1&strengths=1` shows the template the
- * way a profile with those choices gets it; with none it is the gallery's
+ * way a resume with those choices gets it; with none it is the gallery's
  * usual categorized sample without either section.
  *
  * The document is served from the API's own origin and framed by the admin
  * gallery, and a template's markup is whatever was uploaded - so it goes out
- * under the same no-script, no-request policy the profile preview carries. A
+ * under the same no-script, no-request policy the resume preview carries. A
  * disabled template is an administrator's staging state and 404s for anybody
  * else, as it is missing from their list.
  */

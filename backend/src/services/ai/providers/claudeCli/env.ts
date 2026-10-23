@@ -26,7 +26,7 @@
  * adaptively, deciding per turn, and an operator who happens to have exported
  * this cannot quietly make one server answer differently from another.
  *
- * It used to be SET from the request, when thinking was a per-profile choice.
+ * It used to be SET from the request, when thinking was a per-resume choice.
  * That choice is gone - it was a single-provider on/off that every other
  * provider ignored - so nothing sets it now and the strip is all that remains.
  *

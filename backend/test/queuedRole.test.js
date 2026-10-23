@@ -44,7 +44,7 @@ const ANALYSIS = {
   softSkills: [],
 };
 
-const PROFILE = {
+const RESUME_RECORD = {
   id: 'p1',
   name: 'Ada',
   title: 'Engineer',
@@ -74,11 +74,11 @@ function stubOutputs() {
     return { id: 'fresh-analysis', analysis: ANALYSIS };
   });
   swap(resumeService, 'tailorResume', async () => ({ summary: 's', experience: [], coverLetter: '' }));
-  swap(resumeService, 'generateCoverLetter', async (_profile, _company, role) => {
+  swap(resumeService, 'generateCoverLetter', async (_resume, _company, role) => {
     seen.coverLetter.push(role);
     return 'Dear team';
   });
-  swap(generatedPath, 'getGeneratedOutputPath', async (_profile, _company, role) => {
+  swap(generatedPath, 'getGeneratedOutputPath', async (_resume, _company, role) => {
     seen.path.push(role);
     return { storagePathBase: 'x', absoluteDir: storage.rootDir };
   });
@@ -103,7 +103,7 @@ function stubOutputs() {
 function run(job, format = 'both', analysisId) {
   return runResumeTask(
     {
-      profile: PROFILE,
+      resume: RESUME_RECORD,
       job,
       format,
       includeCoverLetterDocx: true,

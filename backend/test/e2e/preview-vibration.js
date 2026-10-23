@@ -1,5 +1,5 @@
 /*
- * The profile editor's preview, held still: does the page in the preview pane
+ * The resume editor's preview, held still: does the page in the preview pane
  * keep one size, or does it shake?
  *
  * The shake this guards against is a feedback loop, not a slow render. The
@@ -16,13 +16,13 @@
  * The same loop formed one level up in the narrow layout, where the WINDOW
  * scrolls the preview and the page is scaled to the window's width: a window
  * just the height of the page (a portrait 1080x1460, say) shook through the
- * window's own scrollbar. That height depends on the profile, so a viewport
+ * window's own scrollbar. That height depends on the resume, so a viewport
  * written `1080xband` is measured first - the Preview tab's height with the
  * window's scrollbar in - and watched 5px taller, inside the band.
  *
  * Puppeteer hides scrollbars by default (`--hide-scrollbars`), which is why
  * no earlier screenshot or walkthrough ever saw it. This one launches with
- * real scrollbars, opens the editor for one profile, picks each template in
+ * real scrollbars, opens the editor for one resume, picks each template in
  * turn, in each Technical Skills layout - every template prints both, and
  * Plain changes the page's height, which is what the shake depends on - and
  * reads the page's width, the well's width and both scrollbars on EVERY
@@ -45,14 +45,16 @@
  *   E2E_API        the backend's /api (default http://127.0.0.1:3001/api)
  *   E2E_DIST       the compiled backend to seed the session with (default ../../dist)
  *   E2E_EMAIL      the account to sign in as (default vibration.probe@example.com,
- *                  created when missing; give it a profile or set E2E_PROFILE_ID)
- *   E2E_PROFILE_ID the profile to open (default: the account's first)
+ *                  created when missing; give it a resume or set E2E_RESUME_ID -
+ *                  with neither, the script makes a profile with one resume and
+ *                  deletes the profile again at the end)
+ *   E2E_RESUME_ID the resume to open (default: the account's first)
  *   E2E_VIEWPORTS  comma-separated WxH, or Wxband for the narrow window band
  *                  (default 1920x937,1903x937,1440x900,1080xband)
  *   E2E_TEMPLATES  comma-separated template ids (default: every one the picker offers)
  *   E2E_SECONDS    how long each template is watched (default 3)
  *   E2E_NO_GUTTER  1 to switch scrollbar-gutter off on every element, as a
- *                  browser without it would: proves ProfilePreview's own
+ *                  browser without it would: proves ResumeDraftPreview's own
  *                  guard settles the page by itself
  */
 
@@ -173,14 +175,49 @@ async function main() {
   const { account } = users.findOrCreateUser({ email: EMAIL, name: 'Vibration Probe' });
   const token = users.createSession(account.id);
 
-  let profileId = process.env.E2E_PROFILE_ID || '';
-  if (!profileId) {
-    const response = await fetch(`${API}/profiles`, { headers: { authorization: `Bearer ${token}` } });
+  let resumeId = process.env.E2E_RESUME_ID || '';
+  if (!resumeId) {
+    const response = await fetch(`${API}/resumes`, { headers: { authorization: `Bearer ${token}` } });
     const list = await response.json();
-    const profiles = Array.isArray(list) ? list : list.profiles || [];
-    profileId = profiles[0]?.id || '';
+    const resumes = Array.isArray(list) ? list : list.resumes || [];
+    resumeId = resumes[0]?.id || '';
   }
-  if (!profileId) throw new Error(`${EMAIL} has no profile to open; create one or set E2E_PROFILE_ID.`);
+  // A resume lives in a profile (a person). With none to open, make a profile and
+  // a resume in it, and remove the profile - and so the resume - when done.
+  let madeProfileId = '';
+  if (!resumeId) {
+    const call = async (method, route, body) => {
+      const response = await fetch(`${API}${route}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`${method} ${route} answered ${response.status}: ${text.slice(0, 300)}`);
+      return text ? JSON.parse(text) : null;
+    };
+    const profile = await call('POST', '/profiles', { name: 'Vibration Probe' });
+    madeProfileId = profile.id;
+    const resume = await call('POST', `/resumes?profileId=${encodeURIComponent(profile.id)}`, {
+      name: 'Vibration Probe',
+      title: 'Senior Engineer',
+      contact: { email: 'vibration.probe@example.com', phone: '555 0100', location: 'Remote' },
+      summary: 'Engineer who ships services and keeps them running.',
+      experience: [
+        {
+          title: 'Engineer',
+          company: 'Acme Works',
+          startDate: '01/2019',
+          endDate: 'Present',
+          location: 'Remote',
+          achievements: ['Cut build time by 37% by caching container layers.', 'Ran the on-call rotation for four teams.'],
+        },
+      ],
+      skills: ['TypeScript', 'Docker', 'Kubernetes'],
+    });
+    resumeId = resume.id;
+  }
+  if (!resumeId) throw new Error(`${EMAIL} has no resume to open; create one or set E2E_RESUME_ID.`);
 
   // Real scrollbars: the loop cannot form without them.
   const browser = await puppeteer.launch({ args: ['--no-sandbox'], ignoreDefaultArgs: ['--hide-scrollbars'] });
@@ -209,8 +246,8 @@ async function main() {
       const band = wanted.height === 'band';
       const viewport = { width: wanted.width, height: band ? 900 : wanted.height };
       await page.setViewport(viewport);
-      await page.goto(`${APP}/admin/profiles/${profileId}`, { waitUntil: 'networkidle2' });
-      await page.waitForSelector('#profile-template option[value]:not([value=""])', { timeout: 15_000 });
+      await page.goto(`${APP}/admin/resumes/${resumeId}`, { waitUntil: 'networkidle2' });
+      await page.waitForSelector('#resume-template option[value]:not([value=""])', { timeout: 15_000 });
       // A narrow window shows the form OR the preview; the preview is what is watched.
       await page.evaluate(() => {
         const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((node) => node.textContent.trim() === 'Preview');
@@ -233,7 +270,7 @@ async function main() {
         // Through the DOM, not the mouse: in the narrow layout the form is
         // behind the Preview tab and has no box to click. The template select
         // and the layout radios are on the editor's Customize tab, mounted
-        // while hidden (components/profile/TemplateCard.tsx).
+        // while hidden (components/resume/TemplateCard.tsx).
         const switched = await page.evaluate((value) => {
           const radio = document.querySelector(`input[type=radio][value="${value}"]`);
           if (!radio || radio.checked) return false;
@@ -242,15 +279,17 @@ async function main() {
         }, layout);
         if (switched) await wait(300);
         const options = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('#profile-template option'))
+          Array.from(document.querySelectorAll('#resume-template option'))
             .filter((option) => option.value && !option.disabled)
-            .map((option) => ({ id: option.value, name: option.textContent.trim().replace(/ \(.*\)$/, '') }))
+            // The name as the picker prints it: any resume may use any template, so no
+            // option carries a "(used by ...)" any more and nothing is cut off the end.
+            .map((option) => ({ id: option.value, name: option.textContent.trim() }))
         );
         for (const option of options) {
           if (probed.has(`${layout}:${option.id}`)) continue;
           if (ONLY_TEMPLATES.length > 0 && !ONLY_TEMPLATES.includes(option.id)) continue;
           probed.add(`${layout}:${option.id}`);
-          await page.select('#profile-template', option.id);
+          await page.select('#resume-template', option.id);
           const current = await waitForCurrent(page, option.name);
           // Long enough for the swap, the ResizeObserver and a re-render to
           // have happened once; a loop keeps going after that, a settle does not.
@@ -271,6 +310,12 @@ async function main() {
     }
   } finally {
     await browser.close();
+    if (madeProfileId) {
+      await fetch(`${API}/profiles/${encodeURIComponent(madeProfileId)}`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${token}` },
+      }).catch((error) => console.warn(error.message));
+    }
   }
 
   if (process.env.E2E_JSON) {

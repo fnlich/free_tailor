@@ -264,7 +264,7 @@ export default function SubscriptionSettingsPage() {
         description={
           exempt
             ? 'Administrators are never charged, for a subscription or for a resume, so nothing is taken from this balance.'
-            : 'Your subscription is paid from this balance, and so is every resume - each at the price set for the model it is built with. Every charge is a row in Credit History.'
+            : 'Your subscription is paid from this balance, and so is every resume - each at the price of the build mode you choose. Every charge is a row in Credit History.'
         }
       >
         <Field label="Balance">

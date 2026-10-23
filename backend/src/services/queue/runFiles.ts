@@ -5,7 +5,7 @@ import type { GeneratedPathInfo } from '../../utils/generatedPath';
  * Two resumes of one run never share a file.
  *
  * A run's folder is its own - the prefix holds its order number - but inside
- * it the account's folder path and the profile's file-name templates decide,
+ * it the account's folder path and the resume's file-name templates decide,
  * and the default folder path (`/{{date}}/{{profile_name}}/{{company_name}}/
  * {{role}}`) renders ONE folder for two postings with one title at one
  * company: rows 5 and 9 of a sheet, say. The generators write with
@@ -46,8 +46,8 @@ export function claimRunFileStems(
   info: GeneratedPathInfo,
   recorded: () => readonly string[] = () => recordedRunFilePaths(batchId, seq)
 ): GeneratedPathInfo {
-  const resumeStem = info.resumeFileStem || info.profileSlug;
-  const coverStem = info.coverLetterFileStem || `${info.profileSlug}_cover_letter`;
+  const resumeStem = info.resumeFileStem || info.resumeSlug;
+  const coverStem = info.coverLetterFileStem || `${info.resumeSlug}_cover_letter`;
   let batchClaims = claims.get(batchId);
   if (!batchClaims) {
     batchClaims = new Map();

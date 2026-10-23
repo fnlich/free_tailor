@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { templatesApi, Template, getApiOrigin, type TechnicalSkillsLayout } from '@/lib/api';
-import { ALL_SKILLS_LAYOUTS, LAYOUT_LABELS } from '@/lib/profileDraft';
-import { templatePreviewPath } from '@/lib/profileGallery';
+import { ALL_SKILLS_LAYOUTS, LAYOUT_LABELS } from '@/lib/resumeDraft';
+import { templatePreviewPath } from '@/lib/resumeGallery';
 import ManualTemplateEditor from '@/components/admin/ManualTemplateEditor';
 import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
-import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import chrome from '@/components/admin/resumeTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
 import { useDialogLayer } from '@/components/ui/Dialog';
 import { EmptyState, Field, Notice, PageHeader, Pill, Spinner } from '@/components/ui/kit';
@@ -459,7 +459,7 @@ function TemplatesPageBody() {
         description={
           isAdmin
             ? 'Every template on this installation, with a full preview of each, its Technical Skills Grouped or Plain.'
-            : 'Every template on this installation, with a full preview of each, its Technical Skills Grouped or Plain. They are shared by everybody here, so only an administrator can add or change one - you pick the one you want on your profile, or for a single run.'
+            : 'Every template on this installation, with a full preview of each, its Technical Skills Grouped or Plain. They are shared by everybody here, so only an administrator can add or change one - you pick the one you want on your resume, or for a single run.'
         }
         actions={isAdmin ? addActions : undefined}
       />
@@ -848,7 +848,7 @@ function TemplatesPageBody() {
  * Templates are shared by the whole installation: one person editing a layout
  * changes what every other account's resumes come out looking like, so every
  * write stays with the administrators. Looking at them is a different matter -
- * somebody choosing a template for their profile needs to see what the choice
+ * somebody choosing a template for their resume needs to see what the choice
  * actually produces, and a name in a dropdown does not tell them.
  *
  * The API already draws exactly this line (routes/templates.ts: `requireUser`

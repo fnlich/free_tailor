@@ -13,15 +13,15 @@ const { useAdminEmails, useTempStorage } = require('./helpers');
  *     every built-in renders each one properly - one item per skill Plain
  *     (the plain list), category headings Grouped - and a design built on a
  *     grid of category cells lays its one Plain group across the whole row;
- *   - Soft Skills and Strengths appear only when a profile switches them on,
+ *   - Soft Skills and Strengths appear only when a resume switches them on,
  *     only in templates that have the markup for them, and never as an empty
  *     heading;
  *   - a `skillsLayouts` an older build stored - in a saved file, an imported
  *     one, an override row - is not read, and the admin edit takes a name, a
  *     description or disabled and nothing else;
  *   - the one template resolver takes the requested template, else the
- *     profile's own, else `default`, else any enabled one - whatever the
- *     profile's layout.
+ *     resume's own, else `default`, else any enabled one - whatever the
+ *     resume's layout.
  *
  * The fixtures read the BUILT-INS only: a saved template (a file with a
  * `source`) beside them is an administrator's, and not the shipped set.
@@ -62,7 +62,7 @@ function shippedTemplates() {
  */
 const SKILLS = ['C#', 'Python', 'TypeScript', 'React', 'Node.js', 'Docker', 'PostgreSQL', 'Redis', 'AWS', 'GCP', 'Kubernetes'];
 
-function profile(settings = {}, extra = {}) {
+function resumeRecord(settings = {}, extra = {}) {
   return {
     id: 'p1',
     name: 'A Person',
@@ -75,7 +75,7 @@ function profile(settings = {}, extra = {}) {
     education: [],
     certifications: [],
     skills: SKILLS,
-    profileSettings: settings,
+    resumeSettings: settings,
     createdAt: '',
     updatedAt: '',
     ...extra,
@@ -131,7 +131,7 @@ test('no built-in carries a list of layouts: every template prints both', () => 
   assert.equal('templateSupportsLayout' in require('../dist/services/templateChoice'), false);
 });
 
-test("every built-in is filed under one of the new-profile chooser's categories, and every category has some", async () => {
+test("every built-in is filed under one of the new-resume chooser's categories, and every category has some", async () => {
   const { TEMPLATE_CATEGORIES, isTemplateCategory } = require('../dist/config/templateCategories');
   assert.deepEqual(TEMPLATE_CATEGORIES, ['simple', 'modern', 'creative']);
   const builtIns = shippedTemplates();
@@ -196,7 +196,7 @@ test('every built-in renders both layouts: one item per skill Plain, headings Gr
     const perItem = /\{\{#each\s+(?:hardSkills|skills)\s*\}\}/.test(template.htmlContent);
     const grid = GRID_DESIGNS.includes(template.id);
     for (const layout of ['categorized', 'flat']) {
-      const html = await generatePreviewHTML(profile({ technicalSkillsLayout: layout }), template);
+      const html = await generatePreviewHTML(resumeRecord({ technicalSkillsLayout: layout }), template);
       const body = bodyOf(html);
       const label = `${template.id} (${layout})`;
 
@@ -242,11 +242,11 @@ test('Soft Skills and Strengths appear only when switched on, and only where the
   const templates = await getAllTemplates();
   assert.equal(templates.length, 19);
   for (const template of templates) {
-    const on = bodyOf(await generatePreviewHTML(profile({ includeSoftSkills: true, includeStrengths: true }), template));
-    const off = bodyOf(await generatePreviewHTML(profile({}), template));
+    const on = bodyOf(await generatePreviewHTML(resumeRecord({ includeSoftSkills: true, includeStrengths: true }), template));
+    const off = bodyOf(await generatePreviewHTML(resumeRecord({}), template));
     const onButEmpty = bodyOf(
       await generatePreviewHTML(
-        profile({ includeSoftSkills: true, includeStrengths: true }, { softSkills: [], strengths: [] }),
+        resumeRecord({ includeSoftSkills: true, includeStrengths: true }, { softSkills: [], strengths: [] }),
         template
       )
     );
@@ -292,7 +292,7 @@ test('switching a section off removes that element and nothing around it', async
   seeded('strip');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   const render = (htmlContent, settings) =>
-    generatePreviewHTML(profile(settings), { id: 'custom', name: 'Custom', htmlContent, cssContent: '' });
+    generatePreviewHTML(resumeRecord(settings), { id: 'custom', name: 'Custom', htmlContent, cssContent: '' });
 
   // The old strip took the nearest <div before the class name - here the whole
   // main column, Experience included.
@@ -335,9 +335,9 @@ test('a switched-on section with nothing in it leaves no heading, in any templat
     '{{#each strengths}}<p>{{title}}</p>{{/each}}</div></div>';
   const template = { id: 'u', name: 'U', htmlContent: unguarded, cssContent: '' };
 
-  const empty = await generatePreviewHTML(profile({ includeStrengths: true }, { strengths: [] }), template);
+  const empty = await generatePreviewHTML(resumeRecord({ includeStrengths: true }, { strengths: [] }), template);
   assert.equal(empty.includes('Strengths'), false);
-  const full = await generatePreviewHTML(profile({ includeStrengths: true }), template);
+  const full = await generatePreviewHTML(resumeRecord({ includeStrengths: true }), template);
   assert.ok(full.includes('<p>Foresight</p>'));
 });
 
@@ -428,14 +428,14 @@ test('a manual template prints both layouts and builds Strengths and Soft Skills
   assert.equal(template.supportsSoftSkills, true);
   assert.match(template.htmlContent, /\[data-section="strengths"\] \.strength-title \{ color: #ff0000 \}/);
 
-  const on = await generatePreviewHTML(profile({ includeSoftSkills: true, includeStrengths: true }), template);
+  const on = await generatePreviewHTML(resumeRecord({ includeSoftSkills: true, includeStrengths: true }), template);
   assert.ok(on.includes('Foresight') && on.includes('Persistence'));
-  const off = await generatePreviewHTML(profile({}), template);
+  const off = await generatePreviewHTML(resumeRecord({}), template);
   assert.equal(off.includes('Foresight') || off.includes('Persistence'), false);
 
-  const grouped = bodyOf(await generatePreviewHTML(profile({ technicalSkillsLayout: 'categorized' }), template));
+  const grouped = bodyOf(await generatePreviewHTML(resumeRecord({ technicalSkillsLayout: 'categorized' }), template));
   assert.match(grouped, />\s*Languages\s*</, 'a category cell per group');
-  const flat = bodyOf(await generatePreviewHTML(profile({ technicalSkillsLayout: 'flat' }), template));
+  const flat = bodyOf(await generatePreviewHTML(resumeRecord({ technicalSkillsLayout: 'flat' }), template));
   for (const skill of SKILLS) assert.equal(wholeItems(flat, skill), 1, `${skill} as its own box`);
 });
 
@@ -536,15 +536,15 @@ test('the admin edit changes a name, a description or disabled - and nothing els
     assert.equal(navyGold.supportsStrengths, true);
 
     // An override row an older build wrote, narrowing a built-in to Plain: not
-    // read by the list, nor by the resolver, which draws a Grouped profile on it.
+    // read by the list, nor by the resolver, which draws a Grouped resume on it.
     const { saveTemplateOverride } = require('../dist/database/templateRepository');
-    const { resolveTemplateForProfile } = require('../dist/services/templateChoice');
+    const { resolveTemplateForResume } = require('../dist/services/templateChoice');
     const at = new Date().toISOString();
     saveTemplateOverride({ id: 'burgundy-rule', skillsLayouts: ['flat'], createdAt: at, updatedAt: at });
     const burgundy = (await server.call('alice', 'GET', '/')).body.find((template) => template.id === 'burgundy-rule');
     assert.equal('skillsLayouts' in burgundy, false);
     assert.equal(burgundy.name, 'Burgundy Rule', 'a row with no name keeps the file\'s');
-    const grouped = await resolveTemplateForProfile({ preferredTemplate: 'burgundy-rule', profileSettings: {} });
+    const grouped = await resolveTemplateForResume({ preferredTemplate: 'burgundy-rule', resumeSettings: {} });
     assert.equal(grouped.id, 'burgundy-rule');
 
     const forbidden = await server.call('alice', 'PATCH', '/navy-gold', { name: 'Mine' });
@@ -600,42 +600,42 @@ test('the gallery preview can show a layout and the sections, under a no-script 
 
 /* ----------------------------------------------------------- the resolver */
 
-test("the resolver takes the requested template, else the profile's own, else default, else any enabled one - whatever the layout", async () => {
+test("the resolver takes the requested template, else the resume's own, else default, else any enabled one - whatever the layout", async () => {
   seeded('resolver');
-  const { resolveTemplateForProfile } = require('../dist/services/templateChoice');
+  const { resolveTemplateForResume } = require('../dist/services/templateChoice');
   const { getAllTemplates, updateTemplate } = require('../dist/extractors/templateExtractor');
   const flat = (preferredTemplate) => ({
     id: 'p',
     preferredTemplate,
-    profileSettings: { technicalSkillsLayout: 'flat' },
+    resumeSettings: { technicalSkillsLayout: 'flat' },
   });
-  const grouped = (preferredTemplate) => ({ id: 'p', preferredTemplate, profileSettings: {} });
+  const grouped = (preferredTemplate) => ({ id: 'p', preferredTemplate, resumeSettings: {} });
 
-  // The two grid designs were Grouped only; a Plain profile is drawn with them now.
-  assert.equal((await resolveTemplateForProfile(flat('navy-rule'))).id, 'navy-rule');
-  assert.equal((await resolveTemplateForProfile(grouped('navy-rule'))).id, 'navy-rule');
-  assert.equal((await resolveTemplateForProfile(flat('navy-rule'), 'burgundy-rule')).id, 'burgundy-rule', 'requested beats preferred');
-  assert.equal((await resolveTemplateForProfile(flat('gone'))).id, 'default', 'a template that is gone falls to default');
-  assert.equal((await resolveTemplateForProfile(flat(undefined))).id, 'default');
+  // The two grid designs were Grouped only; a Plain resume is drawn with them now.
+  assert.equal((await resolveTemplateForResume(flat('navy-rule'))).id, 'navy-rule');
+  assert.equal((await resolveTemplateForResume(grouped('navy-rule'))).id, 'navy-rule');
+  assert.equal((await resolveTemplateForResume(flat('navy-rule'), 'burgundy-rule')).id, 'burgundy-rule', 'requested beats preferred');
+  assert.equal((await resolveTemplateForResume(flat('gone'))).id, 'default', 'a template that is gone falls to default');
+  assert.equal((await resolveTemplateForResume(flat(undefined))).id, 'default');
 
   await updateTemplate('ink-ledger', { disabled: true });
-  assert.equal((await resolveTemplateForProfile(grouped('ink-ledger'))).id, 'default', 'disabled is skipped');
-  assert.equal((await resolveTemplateForProfile(grouped('navy-rule'), 'ink-ledger')).id, 'navy-rule', 'a disabled request too');
+  assert.equal((await resolveTemplateForResume(grouped('ink-ledger'))).id, 'default', 'disabled is skipped');
+  assert.equal((await resolveTemplateForResume(grouped('navy-rule'), 'ink-ledger')).id, 'navy-rule', 'a disabled request too');
   assert.equal(
-    (await resolveTemplateForProfile(grouped(), 'ink-ledger', { allowDisabledRequested: true })).id,
+    (await resolveTemplateForResume(grouped(), 'ink-ledger', { allowDisabledRequested: true })).id,
     'ink-ledger',
     'unless an administrator asked for it by name'
   );
   assert.equal(
-    (await resolveTemplateForProfile(grouped('ink-ledger'), undefined, { allowDisabledRequested: true })).id,
+    (await resolveTemplateForResume(grouped('ink-ledger'), undefined, { allowDisabledRequested: true })).id,
     'default',
     'only a requested one: a disabled preference is skipped for an administrator too'
   );
 
-  // `default` disabled and the profile's own gone: the first enabled template
+  // `default` disabled and the resume's own gone: the first enabled template
   // there is, newest first as the list is served - never null while one is.
   await updateTemplate('default', { disabled: true });
-  const fallback = await resolveTemplateForProfile(flat('gone'));
+  const fallback = await resolveTemplateForResume(flat('gone'));
   assert.ok(fallback, 'never null while anything is enabled');
   assert.equal(fallback.disabled, false);
   assert.equal(fallback.id, (await getAllTemplates()).find((template) => !template.disabled).id);
@@ -644,10 +644,10 @@ test("the resolver takes the requested template, else the profile's own, else de
   for (const template of shippedTemplates()) {
     await updateTemplate(template.id, { disabled: true });
   }
-  assert.equal(await resolveTemplateForProfile(flat('navy-rule')), null);
-  assert.equal(await resolveTemplateForProfile(grouped(), 'navy-rule'), null);
+  assert.equal(await resolveTemplateForResume(flat('navy-rule')), null);
+  assert.equal(await resolveTemplateForResume(grouped(), 'navy-rule'), null);
   assert.equal(
-    (await resolveTemplateForProfile(grouped(), 'navy-rule', { allowDisabledRequested: true })).id,
+    (await resolveTemplateForResume(grouped(), 'navy-rule', { allowDisabledRequested: true })).id,
     'navy-rule',
     'an administrator previewing one by name still sees it'
   );

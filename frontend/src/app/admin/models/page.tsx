@@ -11,7 +11,6 @@ import {
   AIProvider,
   describeProviderModel,
   findProviderModelOption,
-  formatPricePerResume,
   getAIProviderLabel,
   isProviderLocked,
   isProviderOffered,
@@ -20,7 +19,6 @@ import {
 import { appSettingSourceLabel, canReset, resetBody } from '@/lib/settingSources';
 import { ErrorNotice, Field, Notice, Pill, Section, Spinner, StaticValue } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
-import { freeEnabledModels } from './modelPrice';
 import ModelDialog from './ModelDialog';
 import ProvidersSection from './ProvidersSection';
 
@@ -84,8 +82,8 @@ function ModelsPageBody() {
     void change(() => adminApi.deleteModel(model.id), () => 'Model deleted.', 'Failed to delete model');
   };
 
-  // `{enabled}` alone: the server keeps every other field, the price
-  // included, so a toggle can never reprice a model by accident.
+  // `{enabled}` alone: the server keeps every other field, so a toggle
+  // can never change a model by accident.
   const handleToggleEnabled = (model: AIModelRecord) =>
     void change(
       () => adminApi.updateModel(model.id, { enabled: !model.enabled }),
@@ -116,7 +114,6 @@ function ModelsPageBody() {
   }
 
   const providerEnabled = settings.providersEnabled;
-  const freeModels = freeEnabledModels(settings);
   /** What the server would run: enabled, on a provider this installation offers. */
   const canRun = (model: AIModelRecord) => model.enabled && isProviderOffered(settings, model.provider, providerEnabled);
   /*
@@ -151,9 +148,9 @@ function ModelsPageBody() {
         <div className="min-w-0 max-w-3xl">
           <h2 className="text-2xl font-bold tracking-tight text-ink">Models</h2>
           <p className="mt-1 text-sm text-muted">
-            The models people choose from in the Resume Builder and on their profiles, by the display name
-            you give each one, and what one resume on it costs - and, under Providers, every place each type
-            of model runs.
+            The models people choose from in the Resume Builder and on their resumes, by the display name
+            you give each one - and, under Providers, every place each type of model runs.{' '}
+            {'What a resume costs is set per builder mode under Settings > General > Price per resume.'}
           </p>
         </div>
         <button
@@ -169,32 +166,6 @@ function ModelsPageBody() {
           Create New Model
         </button>
       </header>
-
-      {freeModels.length > 0 && (
-        /*
-         * Red, and above everything, while any model people can pick costs
-         * nothing. After credits became dollars every price was reset to
-         * $0 (the owner's decision), and a model a migration seeds - or
-         * every seed of a fresh install - arrives unpriced too: free on
-         * purpose is allowed - 0 is a price - but never without somebody
-         * having seen it. The server names the models (`freeEnabledModelIds`),
-         * so this lists exactly what it would charge nothing for. The last
-         * sentence names no single cause: on a fresh install nothing was
-         * reset, and one priced at $0 on purpose was not either.
-         */
-        <Notice tone="error" role="alert" className="mt-6">
-          <p className="font-semibold">
-            {freeModels.length === 1
-              ? 'One enabled model is free: every resume on it costs $0.'
-              : `${freeModels.length} enabled models are free: every resume on them costs $0.`}
-          </p>
-          <p className="mt-1">
-            {freeModels.map((model) => model.name || model.id).join(', ')}. Set a price per resume with
-            Edit - in dollars, to $0.001, like 0.023 - or disable the model. A model is free until it is
-            given a price - including any priced before credits became dollars, and any an upgrade adds.
-          </p>
-        </Notice>
-      )}
 
       {(error || status) && (
         <div className="mt-6 space-y-3">
@@ -213,11 +184,11 @@ function ModelsPageBody() {
 
       <Section
         title="Default and analysis"
-        description="Each job posting is analysed once, by the analysis model, and never again - its keywords by the Analyze Job Description prompt and its facts, job field included, by the Job Facts (Filter) prompt: every profile, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way. Set either one from a row of the library below."
+        description="Each job posting is analysed once, by the analysis model, and never again - its keywords by the Analyze Job Description prompt and its facts, job field included, by the Job Facts (Filter) prompt: every resume, model, order and Job Filter run that needs the posting builds on that one analysis, so every posting is read - and classified into a job field - the same way. Set either one from a row of the library below."
       >
         <div className="grid gap-6 md:grid-cols-2">
           <div data-choice="default">
-            <Field label="Default model" hint="What Resume Builder runs when nobody chooses a model - a profile's or a prompt's choice wins.">
+            <Field label="Default model" hint="What Resume Builder runs when nobody chooses a model - a resume's or a prompt's choice wins.">
               <StaticValue>
                 <span data-default-model>{defaultName || 'None - no model can run'}</span>
               </StaticValue>
@@ -288,7 +259,6 @@ function ModelsPageBody() {
               <tr>
                 <th scope="col">Model</th>
                 <th scope="col">Provider</th>
-                <th scope="col">Price</th>
                 <th scope="col">Status</th>
                 <th scope="col">Updated</th>
                 <th scope="col">
@@ -341,20 +311,6 @@ function ModelsPageBody() {
                     <td className="whitespace-nowrap">
                       <Pill tone="grey">{getAIProviderLabel(model.provider)}</Pill>
                     </td>
-                    <td className="whitespace-nowrap tabular-nums">
-                      {/*
-                        Red while it is enabled and free - the notice above names it
-                        too. The kit's status colour, on a span: `.tl-table td` is
-                        unlayered and would beat a utility on the cell.
-                      */}
-                      {model.enabled && model.pricePerResumeMilli === 0 ? (
-                        <span className="tl-status font-semibold" data-tone="error">
-                          {formatPricePerResume(model.pricePerResumeMilli)}
-                        </span>
-                      ) : (
-                        <span className="text-ink">{formatPricePerResume(model.pricePerResumeMilli)}</span>
-                      )}
-                    </td>
                     <td>
                       <div className="flex flex-wrap gap-1.5">
                         {isDefault && <Pill tone="sky">Default</Pill>}
@@ -380,10 +336,10 @@ function ModelsPageBody() {
                     {/* The column says "Updated", so the cell is the date alone. */}
                     <td className="whitespace-nowrap text-xs">{new Date(model.updatedAt).toLocaleString()}</td>
                     <td className="min-w-[15rem]">
-                      {/* Wraps rather than widening the row: with the Price
-                          column the four buttons pushed Delete off a 1440px
-                          screen. Wide enough for two or three to a line,
-                          though: one each made every row five buttons tall. */}
+                      {/* Wraps rather than widening the row: the buttons pushed
+                          Delete off a 1440px screen once. Wide enough for two
+                          or three to a line, though: one each made every row
+                          five buttons tall. */}
                       <div className="flex flex-wrap justify-end gap-2">
                         <button
                           type="button"

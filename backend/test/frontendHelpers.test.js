@@ -48,11 +48,29 @@ test("the frontend ranks the subscriptions in the backend's order", () => {
   }
 });
 
-test("the builder's multi-profile lock is the backend's: Premium and up, administrators exempt", () => {
+test("no run is locked by a subscription: the entitlement helpers still equal the backend's, and the retired lock helpers exist on neither side", () => {
   const frontend = loadFrontendModule('lib/subscriptions.ts');
   const backendTiers = require('../dist/config/accountSubscriptions');
-  const { hasSubscription } = require('../dist/middleware/auth');
-  assert.equal(frontend.MULTI_PROFILE_SUBSCRIPTION, backendTiers.MULTI_PROFILE_SUBSCRIPTION);
+  const backendAuth = require('../dist/middleware/auth');
+  const { hasSubscription } = backendAuth;
+
+  // A run builds exactly one profile on every subscription (owner decision 10):
+  // the multi-profile lock, the target default it capped and the refusal that
+  // worded it are gone from both halves.
+  for (const retired of ['MULTI_PROFILE_SUBSCRIPTION', 'canBuildForManyProfiles', 'startingResumeSelection', 'describeTooLowRefusal']) {
+    assert.equal(retired in frontend, false, `lib/subscriptions.ts still exports ${retired}`);
+    assert.equal(retired in backendTiers, false, `config/accountSubscriptions still exports ${retired}`);
+    assert.equal(retired in backendAuth, false, `middleware/auth still exports ${retired}`);
+  }
+  // `LockedFeatureId` has exactly one member: adding a PROFILE past the limit.
+  const source = fs.readFileSync(path.join(SRC, 'lib/subscriptions.ts'), 'utf8');
+  const declared = /export type LockedFeatureId =([^;]+);/.exec(source);
+  assert.ok(declared, 'LockedFeatureId is declared');
+  assert.deepEqual(
+    declared[1].split('|').map((member) => member.trim().replace(/^['"]|['"]$/g, '')),
+    ['more-profiles']
+  );
+  assert.equal(frontend.describeLock('more-profiles', { subscription: 'default' }).feature, 'more-profiles');
 
   const tiers = [...backendTiers.SUBSCRIPTION_IDS, 'premium-ultra', undefined];
   for (const role of ['admin', 'user', 'reporter', undefined]) {
@@ -65,22 +83,12 @@ test("the builder's multi-profile lock is the backend's: Premium and up, adminis
           `${role}/${subscription} vs ${minimum}`
         );
       }
-      assert.equal(
-        frontend.canBuildForManyProfiles(account),
-        hasSubscription(account, backendTiers.MULTI_PROFILE_SUBSCRIPTION)
-      );
     }
   }
   assert.equal(frontend.hasSubscription(null, 'default'), false);
-  assert.equal(frontend.canBuildForManyProfiles({ role: 'user', subscription: 'default' }), false);
-  assert.equal(frontend.canBuildForManyProfiles({ role: 'admin', subscription: 'default' }), true);
-
-  // The administrator's default target applies - except to an account that
-  // supports one profile, which starts on Single whatever the default says.
-  for (const selection of ['single', 'all', 'group']) {
-    assert.equal(frontend.startingResumeSelection(selection, true), selection);
-    assert.equal(frontend.startingResumeSelection(selection, false), 'single');
-  }
+  // Administrators are exempt, as the server decides it (owner decision B1).
+  assert.equal(frontend.hasSubscription({ role: 'admin', subscription: 'default' }, 'premium-max'), true);
+  assert.equal(frontend.hasSubscription({ role: 'user', subscription: 'default' }, 'premium'), false);
 });
 
 // -- the locks ---------------------------------------------------------------- //
@@ -98,26 +106,12 @@ test("the lock's names and profile limits are the backend's catalogue", () => {
 
 test('a lock names what it is, the tier that unlocks it and the account\'s own, never a "plan"', () => {
   const { describeLock } = loadFrontendModule('lib/subscriptions.ts');
-  const { MULTI_PROFILE_SUBSCRIPTION } = require('../dist/config/accountSubscriptions');
 
-  const many = describeLock('many-profiles', { subscription: 'default' });
-  assert.equal(many.title, 'Building for several profiles');
-  assert.equal(many.needs, MULTI_PROFILE_SUBSCRIPTION);
-  assert.equal(many.needsLabel, 'Premium');
-  assert.equal(
-    many.body,
-    'Your Default subscription builds for one profile at a time. Premium and higher build for the profiles you choose, every profile, or a group of them, in one run.'
-  );
-
-  const groups = describeLock('groups', { subscription: 'default' });
-  assert.equal(groups.title, 'Groups');
-  assert.equal(groups.needs, 'premium');
-  assert.equal(
-    groups.body,
-    'Groups need a Premium subscription or higher, and your account is on Default. A group is a set of profiles you build for together.'
-  );
   // A stored tier this page does not know reads as Default, as the backend's `resolveSubscription` does.
-  assert.equal(describeLock('groups', { subscription: 'premium-ultra' }).body, groups.body);
+  assert.equal(
+    describeLock('more-profiles', { subscription: 'premium-ultra', profilesUsed: 1 }).body,
+    describeLock('more-profiles', { subscription: 'default', profilesUsed: 1 }).body
+  );
 
   // More profiles names the cheapest tier with room for one more.
   const cases = [
@@ -134,27 +128,21 @@ test('a lock names what it is, the tier that unlocks it and the account\'s own, 
     assert.equal(lock.body, body);
   }
 
-  for (const feature of ['many-profiles', 'groups', 'more-profiles']) {
-    const lock = describeLock(feature, { subscription: 'default', profilesUsed: 1 });
-    assert.doesNotMatch(`${lock.title} ${lock.body}`, /\bplans?\b/i, feature);
+  for (const subscription of ['default', 'premium', 'premium-plus', 'premium-max']) {
+    const lock = describeLock('more-profiles', { subscription, profilesUsed: 1 });
+    assert.doesNotMatch(`${lock.title} ${lock.body}`, /\bplans?\b/i, subscription);
   }
 });
 
 test("a lock for what the server refused is worded from the refusal, never from a session that is behind it", () => {
   const frontend = loadFrontendModule('lib/subscriptions.ts');
   const backend = require('../dist/config/accountSubscriptions');
-  const { ProfileLimitError } = require('../dist/database/profileRepository');
+  const { ProfileLimitError } = require('../dist/database/profileLimit');
 
-  // 403 subscription-too-low for several profiles: the server holds the
-  // account below Premium, which is Default - whatever tier the page's session
-  // still says (a paid Premium that lapsed at renewal while the page was open).
-  const tooLow = frontend.describeTooLowRefusal();
-  assert.equal(tooLow.needs, backend.MULTI_PROFILE_SUBSCRIPTION);
-  assert.equal(
-    tooLow.body,
-    'Your Default subscription builds for one profile at a time. Premium and higher build for the profiles you choose, every profile, or a group of them, in one run.'
-  );
-  assert.deepEqual(tooLow, frontend.describeLock('many-profiles', { subscription: 'default' }));
+  // There is no 403 subscription-too-low on a run any more (a run builds one
+  // profile on every subscription), so the only refusal a page words from the
+  // server's answer is the profile limit.
+  assert.equal('describeTooLowRefusal' in frontend, false);
 
   // 402 profile-limit: its `limit` names the tier, as the backend's error
   // carries it, and the server counted at least that many.
@@ -196,11 +184,11 @@ test("a lock for what the server refused is worded from the refusal, never from 
 // -- who a run builds for ------------------------------------------------------ //
 
 /**
- * lib/runChoices.ts imports lib/subscriptions.ts at runtime and nothing else,
+ * lib/runChoices.ts imports lib/buildModes.ts at runtime and nothing else,
  * so it is loaded with that one module handed to it.
  */
 function loadRunChoices() {
-  const subscriptions = loadFrontendModule('lib/subscriptions.ts');
+  const buildModes = loadFrontendModule('lib/buildModes.ts');
   const file = path.join(SRC, 'lib/runChoices.ts');
   const { outputText } = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -208,82 +196,104 @@ function loadRunChoices() {
   });
   const module = { exports: {} };
   const resolve = (specifier) => {
-    if (specifier === './subscriptions') return subscriptions;
-    throw new Error(`lib/runChoices.ts imports ${specifier}; it may import only ./subscriptions at runtime`);
+    if (specifier === './buildModes') return buildModes;
+    throw new Error(`lib/runChoices.ts imports ${specifier}; it may import only ./buildModes at runtime`);
   };
   new Function('module', 'exports', 'require', outputText)(module, module.exports, resolve);
   return module.exports;
 }
 
-test('a run builds for the profile chosen, the several chosen, every profile, or the enabled members of a group - as the server is asked', () => {
+test('a run builds for one profile: where a page starts, what still blocks it, the mode it starts on and the line under the mode cards', () => {
   const choices = loadRunChoices();
-  const profiles = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-  const groups = [
-    { id: 'g1', profileIds: ['c', 'a', 'gone'] },
-    { id: 'empty', profileIds: ['gone'] },
-  ];
-  const ids = (list) => list.map((profile) => profile.id);
-  const choice = (kind, profileId = 'b', groupId = 'g1', profileIds = ['c', 'a']) => ({ kind, profileId, profileIds, groupId });
+  // Nothing of the retired targets is left in the module.
+  for (const retired of [
+    'TARGET_KINDS',
+    'targetProfiles',
+    'targetBlocker',
+    'isMultiProfileTarget',
+    'targetInEffect',
+    'startingTarget',
+  ]) {
+    assert.equal(retired in choices, false, `lib/runChoices.ts still exports ${retired}`);
+  }
 
-  assert.deepEqual(ids(choices.targetProfiles(choice('single'), profiles, groups)), ['b']);
-  assert.deepEqual(ids(choices.targetProfiles(choice('all'), profiles, groups)), ['a', 'b', 'c']);
-  // The page's order (newest first), never the group's; a member that is no longer enabled is left out.
-  assert.deepEqual(ids(choices.targetProfiles(choice('group'), profiles, groups)), ['a', 'c']);
-  assert.deepEqual(ids(choices.targetProfiles(choice('group', 'b', 'nope'), profiles, groups)), []);
-  // Several: the ones chosen, in the page's order too; one no longer enabled is left out.
-  assert.deepEqual(ids(choices.targetProfiles(choice('several'), profiles, groups)), ['a', 'c']);
-  assert.deepEqual(ids(choices.targetProfiles(choice('several', 'b', 'g1', ['gone', 'b']), profiles, groups)), ['b']);
-  assert.deepEqual(ids(choices.targetProfiles({ kind: 'several', profileId: 'b', groupId: '' }, profiles, groups)), []);
+  // The profile a page starts on: the administrator's default while it is
+  // offered, else the first offered (the page's order, newest edit first), else none.
+  const profiles = [{ id: 'a' }, { id: 'b' }];
+  assert.equal(choices.startingProfileId({ defaultProfileId: 'b' }, profiles), 'b');
+  assert.equal(choices.startingProfileId({ defaultProfileId: '' }, profiles), 'a');
+  assert.equal(choices.startingProfileId({ defaultProfileId: 'gone' }, profiles), 'a');
+  assert.equal(choices.startingProfileId({ defaultProfileId: 'b' }, []), null);
 
-  assert.equal(choices.targetBlocker(choice('single'), profiles, groups), null);
-  assert.equal(choices.targetBlocker(choice('single', null), profiles, groups), 'Please select a profile.');
-  assert.equal(choices.targetBlocker(choice('single', 'x'), profiles, groups), 'Selected profile could not be found.');
-  assert.equal(choices.targetBlocker(choice('several'), profiles, groups), null);
-  assert.equal(choices.targetBlocker(choice('several', 'b', 'g1', []), profiles, groups), 'Please select the profiles to build for.');
-  assert.equal(choices.targetBlocker(choice('several', 'b', 'g1', ['gone']), profiles, groups), 'Selected profiles could not be found.');
-  assert.equal(choices.targetBlocker(choice('all'), [], groups), 'No profiles available for multi-profile generation.');
-  assert.equal(choices.targetBlocker(choice('group', 'b', ''), profiles, groups), 'Please select a group.');
-  assert.equal(choices.targetBlocker(choice('group', 'b', 'empty'), profiles, groups), 'Selected group has no enabled profiles.');
+  // What blocks a run, in the three sentences the pages show.
+  assert.equal(choices.profileBlocker('b', profiles), null);
+  assert.equal(choices.profileBlocker(null, profiles), 'Please select a profile.');
+  assert.equal(choices.profileBlocker('', profiles), 'Please select a profile.');
+  assert.equal(choices.profileBlocker('x', profiles), 'Selected profile could not be found.');
+  assert.equal(choices.profileBlocker('a', []), 'No profile has an enabled resume to build.');
+  assert.equal(choices.profileBlocker(null, []), 'No profile has an enabled resume to build.');
 
-  // Only Single builds for one profile; the kind in effect is Single for an account that cannot build for several.
-  assert.deepEqual(choices.TARGET_KINDS.map(choices.isMultiProfileTarget), [false, true, true, true]);
-  for (const kind of choices.TARGET_KINDS) {
-    assert.equal(choices.targetInEffect(kind, true), kind);
-    assert.equal(choices.targetInEffect(kind, false), 'single');
+  // The mode a page starts on: the administrator's default, Partial for anything unknown.
+  for (const mode of ['suitable', 'partial', 'full']) {
+    assert.equal(choices.startingBuildMode({ defaultBuildMode: mode }), mode);
+  }
+  for (const junk of ['', 'several', 'single', undefined, null, 7]) {
+    assert.equal(choices.startingBuildMode({ defaultBuildMode: junk }), 'partial', String(junk));
+  }
+
+  // The line under the mode cards: all four forms.
+  const jane = { name: 'Jane Doe', enabledResumeCount: 3 };
+  const solo = { name: 'Jane Doe', enabledResumeCount: 1 };
+  assert.equal(
+    choices.buildModeNote('full', jane, 'Backend Engineer'),
+    "Builds Backend Engineer, Jane Doe's default resume, for every job."
+  );
+  assert.equal(choices.buildModeNote('full', jane), "Builds the profile's default resume for every job.");
+  assert.equal(choices.buildModeNote('full', jane, ''), "Builds the profile's default resume for every job.");
+  assert.equal(choices.buildModeNote('full', null, 'Backend Engineer'), "Builds the profile's default resume for every job.");
+  for (const mode of ['suitable', 'partial']) {
+    assert.equal(choices.buildModeNote(mode, solo), 'Jane Doe has one resume, so every job builds it.', mode);
+    assert.equal(
+      choices.buildModeNote(mode, jane),
+      'For each job, the resume whose keywords match the posting best.',
+      mode
+    );
+    assert.equal(choices.buildModeNote(mode, null), 'For each job, the resume whose keywords match the posting best.', mode);
+  }
+  // Fully Tailor builds the default even when the profile has a single resume.
+  assert.equal(choices.buildModeNote('full', solo, 'Only One'), "Builds Only One, Jane Doe's default resume, for every job.");
+});
+
+test("the frontend's build modes are the server's: the modes, their labels, the setting each price is served under, and one card for each", () => {
+  const frontend = loadFrontendModule('lib/buildModes.ts');
+  const backend = require('../dist/config/buildModes');
+
+  assert.deepEqual([...frontend.BUILD_MODES], [...backend.BUILD_MODES]);
+  assert.deepEqual({ ...frontend.BUILD_MODE_LABELS }, { ...backend.BUILD_MODE_LABELS });
+  for (const mode of backend.BUILD_MODES) {
+    assert.equal(frontend.BUILD_MODE_PRICE_SETTINGS[mode], backend.BUILD_MODE_PRICE_FIELDS[mode].setting, mode);
+    assert.equal(frontend.isBuildMode(mode), true, mode);
+  }
+  for (const junk of ['', 'several', 'Partial', undefined, null, 7, {}]) {
+    assert.equal(frontend.isBuildMode(junk), backend.isBuildMode(junk), String(junk));
+    assert.equal(frontend.isBuildMode(junk), false, String(junk));
+  }
+
+  // The cards: one per mode, in the server's order, named as the server names it.
+  assert.deepEqual(
+    frontend.BUILD_MODE_CHOICES.map((choice) => choice.value),
+    [...backend.BUILD_MODES]
+  );
+  for (const choice of frontend.BUILD_MODE_CHOICES) {
+    assert.equal(choice.label, backend.BUILD_MODE_LABELS[choice.value], choice.value);
+    assert.ok(choice.description.length > 0, choice.value);
+    // A card never sells a tier and never says "plan".
+    assert.doesNotMatch(choice.description, /\bpremium\b|\bplans?\b/i, choice.value);
   }
 });
 
-test("a page starts on the administrator's default target, profile and group - Single below Premium - and its files", async () => {
+test("a page's files follow the administrator's builder defaults", () => {
   const choices = loadRunChoices();
-  const { hasSubscription } = require('../dist/middleware/auth');
-  const { MULTI_PROFILE_SUBSCRIPTION } = require('../dist/config/accountSubscriptions');
-  const profiles = [{ id: 'a' }, { id: 'b' }];
-  const groups = [{ id: 'g1', profileIds: ['a'] }];
-  const settings = { defaultResumeSelection: 'group', defaultProfileId: 'b', defaultGroupId: 'g1' };
-
-  assert.deepEqual(choices.startingTarget(settings, profiles, groups, true), { kind: 'group', profileId: 'b', groupId: 'g1' });
-  assert.deepEqual(choices.startingTarget(settings, profiles, groups, false), { kind: 'single', profileId: 'b', groupId: '' });
-  // A default that no longer exists falls to the first profile, and to no group.
-  assert.deepEqual(
-    choices.startingTarget({ ...settings, defaultProfileId: 'gone', defaultGroupId: 'gone' }, profiles, groups, true),
-    { kind: 'group', profileId: 'a', groupId: '' }
-  );
-  assert.deepEqual(choices.startingTarget({ ...settings, defaultResumeSelection: 'all' }, [], groups, true), {
-    kind: 'all',
-    profileId: null,
-    groupId: '',
-  });
-
-  // The lock is the server's: a multi-profile target is exactly what it refuses below Premium.
-  for (const subscription of ['default', 'premium']) {
-    const account = { role: 'user', subscription };
-    const many = hasSubscription(account, MULTI_PROFILE_SUBSCRIPTION);
-    for (const kind of choices.TARGET_KINDS) {
-      const inEffect = choices.targetInEffect(kind, many);
-      assert.equal(choices.isMultiProfileTarget(inEffect) && !many, false, `${subscription}/${kind}`);
-    }
-  }
-
   assert.deepEqual(choices.defaultRunFormat({ defaultResumeDocxEnabled: true, defaultCoverLetterDocxEnabled: false }), {
     format: 'both',
     includeCoverLetterDocx: false,
@@ -318,38 +328,20 @@ test("each seat's card shows that seat's own holds, Gemini's included", () => {
 });
 
 
-// -- the builder's multi-profile previews ----------------------------------- //
+// -- the builder keeps one preview --------------------------------------------- //
 
-test('the ready-preview key changes only when the set of ready previews does', () => {
-  const { readyPreviewKey } = loadFrontendModule('lib/builderPreviews.ts');
-  const previews = [
-    { profileId: 'a', tailoredContent: { summary: 'x' } },
-    { profileId: 'b' },
-    { profileId: 'c', tailoredContent: { summary: 'y' } },
-  ];
-  assert.equal(readyPreviewKey(previews), 'a,c');
-  // A keystroke in the JSON editor makes a new array of new objects with the
-  // same ready set: the key is the same, so the price is not asked for again.
-  const edited = previews.map((preview) => ({ ...preview, draft: `${preview.profileId}!` }));
-  assert.notEqual(edited, previews);
-  assert.equal(readyPreviewKey(edited), readyPreviewKey(previews));
-  // Clearing one preview's content does change it.
-  assert.equal(readyPreviewKey([previews[0], previews[1], { profileId: 'c' }]), 'a');
-  // And the form's reset, a fresh empty array each time, is always the same.
-  assert.equal(readyPreviewKey([]), readyPreviewKey([]));
+test("the builder's several-preview module is gone: a run previews one resume of one profile", () => {
+  // lib/builderPreviews.ts only served the Multiple flow (readyPreviewKey,
+  // keepUnbuiltPreviews); nothing replaces it, and nothing may import it.
+  assert.equal(fs.existsSync(path.join(SRC, 'lib', 'builderPreviews.ts')), false);
+  const page = fs.readFileSync(path.join(SRC, 'app', 'page.tsx'), 'utf8');
+  assert.doesNotMatch(page, /builderPreviews|readyPreviewKey|keepUnbuiltPreviews/);
 });
 
-test('after finalising, only the previews that did not become a resume are left to finalise again', () => {
-  const { keepUnbuiltPreviews } = loadFrontendModule('lib/builderPreviews.ts');
-  const previews = [{ profileId: 'a' }, { profileId: 'b' }, { profileId: 'c' }];
-  assert.deepEqual(keepUnbuiltPreviews(previews, ['b']), [{ profileId: 'b' }]);
-  assert.deepEqual(keepUnbuiltPreviews(previews, []), []);
-});
+// -- the resume form's model choice ----------------------------------------- //
 
-// -- the profile form's model choice ---------------------------------------- //
-
-test('a profile keeps a stored model that is only unavailable for now, through a save of anything else', () => {
-  const { savableModelChoice } = loadFrontendModule('lib/profileModel.ts');
+test('a resume keeps a stored model that is only unavailable for now, through a save of anything else', () => {
+  const { savableModelChoice } = loadFrontendModule('lib/resumeModelChoice.ts');
   const offered = { modelsLoaded: true, offeredIds: ['claude-cli-sonnet'] };
 
   // Stored, and unticked by an administrator since: sent back as it was. The
@@ -363,7 +355,7 @@ test('a profile keeps a stored model that is only unavailable for now, through a
     savableModelChoice({ modelId: 'claude-cli-sonnet' }, { ...offered, storedModelId: 'claude-cli-opus' }),
     { modelId: 'claude-cli-sonnet' }
   );
-  // An unavailable choice that is NOT the stored one - a new profile, an
+  // An unavailable choice that is NOT the stored one - a new resume, an
   // import - would be refused by the server, so it is saved as "inherit".
   assert.deepEqual(savableModelChoice({ modelId: 'claude-cli-opus' }, offered), {});
   assert.deepEqual(
@@ -513,19 +505,19 @@ test("the builder follows its run until the server says it is over: empty attach
   assert.equal(nextAttach(0, { delivered: 5, gone: true }).stop, true);
 });
 
-// -- the Profiles list: which template a profile is drawn with -------------- //
+// -- the Profiles list: which template a resume is drawn with --------------- //
 
-test('the Profiles list names the template a profile is drawn with, as the server picks it', () => {
-  const { drawnTemplate } = loadFrontendModule('lib/profileDraft.ts');
+test('the Profiles list names the template a resume is drawn with, as the server picks it', () => {
+  const { drawnTemplate } = loadFrontendModule('lib/resumeDraft.ts');
   const template = (id) => ({ id, name: id });
   const templates = [template('forest-chips'), template('default'), template('ink-ledger')];
-  const plain = (preferredTemplate) => ({ preferredTemplate, profileSettings: { technicalSkillsLayout: 'flat' } });
-  const grouped = (preferredTemplate) => ({ preferredTemplate, profileSettings: {} });
+  const plain = (preferredTemplate) => ({ preferredTemplate, resumeSettings: { technicalSkillsLayout: 'flat' } });
+  const grouped = (preferredTemplate) => ({ preferredTemplate, resumeSettings: {} });
   const ids = ({ stored, drawn }) => [stored?.id ?? null, drawn?.id ?? null];
 
-  // Every template prints both layouts: a profile is drawn with its own, whatever its layout.
-  for (const profile of [plain('forest-chips'), grouped('forest-chips')]) {
-    assert.deepEqual(ids(drawnTemplate(templates, profile)), ['forest-chips', 'forest-chips']);
+  // Every template prints both layouts: a resume is drawn with its own, whatever its layout.
+  for (const resume of [plain('forest-chips'), grouped('forest-chips')]) {
+    assert.deepEqual(ids(drawnTemplate(templates, resume)), ['forest-chips', 'forest-chips']);
   }
   assert.equal('layout' in drawnTemplate(templates, plain('forest-chips')), false);
   // None named: default, which is "stored" in the sense of what it renders with.

@@ -32,9 +32,9 @@ function taskRow(id, seq, state, extra = {}) {
     state,
     data: {
       queue: 'cli',
-      label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+      label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
       kind: 'resume',
-      payload: { batchId: 'bat_1', profileId: 'p1', jobIndex: 0 },
+      payload: { batchId: 'bat_1', resumeId: 'p1', jobIndex: 0 },
       ...extra,
     },
   };
@@ -56,7 +56,7 @@ test('a batch and its tasks come back as they were written', () => {
     'tasks come back in submitted order'
   );
   assert.equal(loaded.tasks[0].data.kind, 'resume');
-  assert.equal(loaded.tasks[0].data.payload.profileId, 'p1');
+  assert.equal(loaded.tasks[0].data.payload.resumeId, 'p1');
 });
 
 test('a task transition rewrites one small row, not the whole batch', () => {
@@ -122,7 +122,7 @@ function entry(name, seq, state, extra = {}) {
     seq,
     state,
     queue: 'cli',
-    label: { profileId: 'p1', profileName: 'Ada', companyName: name, role: 'SWE' },
+    label: { resumeId: 'p1', resumeName: 'Ada', companyName: name, role: 'SWE' },
     kind: 'test',
     payload: { name },
     ...extra,
@@ -196,7 +196,7 @@ test('a queue with no store still runs', () => {
     queue.submit([
       {
         queue: 'cli',
-        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'test',
         payload: { name: 'a' },
       },
@@ -225,7 +225,7 @@ test('a store that throws warns once and does not fail the queue', () => {
     const batch = queue.submit([
       {
         queue: 'cli',
-        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'test',
         payload: {},
       },
@@ -284,7 +284,7 @@ test('attempts already spent survive a restart, through the real persistence pat
     [
       {
         queue: 'cli',
-        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'restart-attempts',
         payload: { batchId: 'ignored' },
       },
@@ -345,7 +345,7 @@ test('a kind nothing registers fails once, however many attempts are allowed', a
     [
       {
         queue: 'cli',
-        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'a-kind-nothing-registers',
         payload: {},
       },
@@ -384,7 +384,7 @@ test('cancelling a task that is waiting for a RETRY does not claim it never star
     [
       {
         queue: 'cli',
-        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'cancel-between-attempts',
         payload: {},
       },
@@ -426,7 +426,7 @@ test('an unset GENERATION_MAX_ATTEMPTS means three goes, not one', async () => {
     [
       {
         queue: 'cli',
-        label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
+        label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
         kind: 'default-attempts',
         payload: {},
       },
@@ -457,7 +457,7 @@ function storedTaskRow(batchId, id, seq, state, data) {
     seq,
     state,
     data: {
-      label: { profileId: data.payload.profileId, profileName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
+      label: { resumeId: data.payload.resumeId, resumeName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
       kind: 'resume',
       ...data,
     },
@@ -503,7 +503,7 @@ test('one batch that cannot be restored does not cost the others theirs', async 
     store.saveBatchWithTasks(storedBatchRow(id, 1), [
       storedTaskRow(id, `tsk_${id}`, 0, 'queued', {
         queue: 'claude-cli',
-        payload: { batchId: id, profileId: 'p-default', jobIndex: 0, choice: SONNET_CHOICE },
+        payload: { batchId: id, resumeId: 'p-default', jobIndex: 0, choice: SONNET_CHOICE },
       }),
     ]);
   }
@@ -559,12 +559,12 @@ test('Gemini work comes back on the Gemini lane: stored there, or placed there b
       // Mid-build on the Gemini seat when the process died.
       storedTaskRow('bat_gemini', 'tsk_stored', 0, 'running', {
         queue: 'gemini-cli',
-        payload: { batchId: 'bat_gemini', profileId: 'p1', jobIndex: 0, choice },
+        payload: { batchId: 'bat_gemini', resumeId: 'p1', jobIndex: 0, choice },
       }),
       // A provider removed since: placed again in the pool of its type.
       storedTaskRow('bat_gemini', 'tsk_placed', 1, 'queued', {
         queue: 'prv-0badf00d',
-        payload: { batchId: 'bat_gemini', profileId: 'p1', jobIndex: 0, choice },
+        payload: { batchId: 'bat_gemini', resumeId: 'p1', jobIndex: 0, choice },
       }),
     ]);
 

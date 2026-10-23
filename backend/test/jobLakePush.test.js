@@ -191,11 +191,11 @@ function accountSheetClient(options = {}) {
 
 /**
  * An install (the harness's: resume, generation and jobs routes, counting
- * seats, owner@example.com an administrator with one profile) plus the lake's
+ * seats, owner@example.com an administrator with one resume) plus the lake's
  * routes, a second administrator and a user, each with a sheet of their own.
  */
 async function serve(name, options = {}) {
-  const h = await serveInstall(`lake-push-${name}`, { profiles: [['p-claude', 'Ada', 'claude-cli-sonnet']] });
+  const h = await serveInstall(`lake-push-${name}`, { resumes: [['p-claude', 'Ada', 'claude-cli-sonnet']] });
   push.resetLakePushForTests();
   service.setLakeClockForTests();
   const google = fakeBooks();
@@ -596,7 +596,7 @@ async function buildFromTemp(h, rows) {
       mode: 'order',
       format: 'pdf',
       includeCoverLetterDocx: false,
-      profileIds: ['p-claude'],
+      profileId: h.profileOf('p-claude'),
       sheet: { tabName: TEMP },
       jobs,
     });

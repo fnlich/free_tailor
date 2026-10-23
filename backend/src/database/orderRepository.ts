@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import path from 'path';
 import { getDb } from './sqlite';
 import { formatSequenceDate, nextDailyReference } from './dailySequence';
+import { isBuildMode } from '../config/buildModes';
+import type { TaskMatch } from '../services/resumeMatch';
 
 /**
  * Orders and the resumes they delivered.
@@ -92,8 +94,8 @@ export type OrderItem = {
   orderId: string;
   seq: number;
   taskId?: string;
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   role: string;
   sourceRowNumber?: number;
@@ -114,6 +116,19 @@ export type OrderItem = {
    * administrator's to read: routes/orders.ts strips it for everybody else.
    */
   ranOn: string | null;
+  /**
+   * The chosen resume's headline label when the run was placed (v4.2). Null on
+   * an item from before it was recorded.
+   */
+  resumeLabel: string | null;
+  /** The profile's (the person's) name when the run was placed. Null on an older item. */
+  profileLabel: string | null;
+  /**
+   * Why this resume was chosen for this job (services/resumeMatch.ts
+   * `TaskMatch`), read leniently: junk reads null and only the known keys
+   * survive. Null on an older item.
+   */
+  match: TaskMatch | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -151,8 +166,8 @@ type OrderItemRow = {
   order_id: string;
   seq: number;
   task_id: string | null;
-  profile_id: string;
-  profile_name: string;
+  resume_id: string;
+  resume_name: string;
   company_name: string;
   role: string;
   source_row_number: number | null;
@@ -161,6 +176,9 @@ type OrderItemRow = {
   files: string;
   cost_milli: number | null;
   provider_id: string | null;
+  resume_label: string | null;
+  profile_label: string | null;
+  match_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -168,8 +186,9 @@ type OrderItemRow = {
 const ORDER_COLUMNS = `id, number, user_id, batch_id, label, total, state,
   created_at, updated_at, finished_at, expires_at, purged_at, kind, output_root`;
 
-const ITEM_COLUMNS = `id, order_id, seq, task_id, profile_id, profile_name, company_name,
-  role, source_row_number, state, error, files, cost_milli, provider_id, created_at, updated_at`;
+const ITEM_COLUMNS = `id, order_id, seq, task_id, resume_id, resume_name, company_name,
+  role, source_row_number, state, error, files, cost_milli, provider_id,
+  resume_label, profile_label, match_json, created_at, updated_at`;
 
 function now(): string {
   return new Date().toISOString();
@@ -228,14 +247,76 @@ function parseFiles(value: string): OrderFile[] {
   return files;
 }
 
+const MATCH_REASONS: readonly string[] = ['matched', 'tie', 'only', 'default'];
+const MATCH_BASES: readonly string[] = ['analysis', 'text', 'title', 'none'];
+const MATCH_TERMS_KEPT = 50;
+const MATCH_TERM_LENGTH = 200;
+
+/** A count out of a stored match: a non-negative safe integer, else undefined. */
+function matchCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * A stored `match_json` as a `TaskMatch`, or null.
+ *
+ * Read leniently, like `parseFiles`: the column is TEXT that an older build
+ * never wrote and a hand edit may have damaged, so junk (not JSON, not an
+ * object, a version, mode, reason or candidate count this build does not know)
+ * is null rather than an error, and only the known keys survive - a stray key
+ * is dropped, never passed on to a page.
+ */
+function parseMatch(value: string | null): TaskMatch | null {
+  if (typeof value !== 'string' || !value) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const candidates = matchCount(record.candidates);
+  if (record.v !== 1 || !isBuildMode(record.mode) || candidates === undefined) return null;
+  if (typeof record.reason !== 'string' || !MATCH_REASONS.includes(record.reason)) return null;
+
+  const match: TaskMatch = {
+    v: 1,
+    mode: record.mode,
+    reason: record.reason as TaskMatch['reason'],
+    candidates,
+  };
+  if (typeof record.basis === 'string' && MATCH_BASES.includes(record.basis)) {
+    match.basis = record.basis as NonNullable<TaskMatch['basis']>;
+  }
+  if (typeof record.score === 'number' && Number.isFinite(record.score)) match.score = record.score;
+  if (typeof record.titleMatched === 'boolean') match.titleMatched = record.titleMatched;
+  if (Array.isArray(record.matched)) {
+    match.matched = record.matched
+      .filter((term): term is string => typeof term === 'string' && term.length > 0)
+      .slice(0, MATCH_TERMS_KEPT)
+      .map((term) => term.slice(0, MATCH_TERM_LENGTH));
+  }
+  const matchedCount = matchCount(record.matchedCount);
+  if (matchedCount !== undefined) match.matchedCount = matchedCount;
+  const postingTermCount = matchCount(record.postingTermCount);
+  if (postingTermCount !== undefined) match.postingTermCount = postingTermCount;
+  return match;
+}
+
+/** A stored label: non-empty text, else null. */
+function storedLabel(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
 function toItem(row: OrderItemRow): OrderItem {
   return {
     id: row.id,
     orderId: row.order_id,
     seq: row.seq,
     ...(row.task_id ? { taskId: row.task_id } : {}),
-    profileId: row.profile_id ?? '',
-    profileName: row.profile_name ?? '',
+    resumeId: row.resume_id ?? '',
+    resumeName: row.resume_name ?? '',
     companyName: row.company_name ?? '',
     role: row.role ?? '',
     ...(typeof row.source_row_number === 'number' ? { sourceRowNumber: row.source_row_number } : {}),
@@ -247,6 +328,9 @@ function toItem(row: OrderItemRow): OrderItem {
         ? row.cost_milli
         : null,
     ranOn: typeof row.provider_id === 'string' && row.provider_id ? row.provider_id : null,
+    resumeLabel: storedLabel(row.resume_label),
+    profileLabel: storedLabel(row.profile_label),
+    match: parseMatch(row.match_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -266,13 +350,19 @@ function nextOrderNumber(prefix: string, datePart: string): string {
 export type NewOrderItem = {
   seq: number;
   taskId?: string;
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   role: string;
   sourceRowNumber?: number;
   /** What the resume is charged, in thousandths of a dollar: its task's `costMilli`. */
   costMilli?: number;
+  /** The chosen resume's headline label (`resumeLabelOf`). */
+  resumeLabel?: string;
+  /** The profile's (the person's) name at submit. */
+  profileLabel?: string;
+  /** Why this resume was chosen for this job; stored as JSON. */
+  match?: TaskMatch;
 };
 
 export type NewOrder = {
@@ -329,12 +419,14 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
     });
 
     const insertItem = db.prepare(
-      `INSERT INTO order_items (id, order_id, seq, task_id, profile_id, profile_name,
+      `INSERT INTO order_items (id, order_id, seq, task_id, resume_id, resume_name,
                                 company_name, role, source_row_number, state, files,
-                                cost_milli, created_at, updated_at)
-       VALUES (@id, @orderId, @seq, @taskId, @profileId, @profileName,
+                                cost_milli, resume_label, profile_label, match_json,
+                                created_at, updated_at)
+       VALUES (@id, @orderId, @seq, @taskId, @resumeId, @resumeName,
                @companyName, @role, @sourceRowNumber, 'queued', '[]',
-               @costMilli, @createdAt, @createdAt)`
+               @costMilli, @resumeLabel, @profileLabel, @matchJson,
+               @createdAt, @createdAt)`
     );
     for (const item of items) {
       insertItem.run({
@@ -342,8 +434,8 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
         orderId: id,
         seq: item.seq,
         taskId: item.taskId ?? null,
-        profileId: item.profileId ?? '',
-        profileName: item.profileName ?? '',
+        resumeId: item.resumeId ?? '',
+        resumeName: item.resumeName ?? '',
         companyName: item.companyName ?? '',
         role: item.role ?? '',
         sourceRowNumber: typeof item.sourceRowNumber === 'number' ? item.sourceRowNumber : null,
@@ -351,6 +443,9 @@ export function createOrder(order: NewOrder, items: NewOrderItem[], at: Date = n
           typeof item.costMilli === 'number' && Number.isSafeInteger(item.costMilli) && item.costMilli >= 0
             ? item.costMilli
             : null,
+        resumeLabel: storedLabel(item.resumeLabel),
+        profileLabel: storedLabel(item.profileLabel),
+        matchJson: item.match && typeof item.match === 'object' ? JSON.stringify(item.match) : null,
         createdAt: timestamp,
       });
     }
@@ -720,7 +815,7 @@ function ownersByRunFolder(absolute: string): string[] {
  * The question `/api/generated` has to ask: it takes a path, and a path is
  * derivable rather than guessable - every run is filed under the
  * administrator's prefix and its account's own folder path, whose folders are
- * an email, a date, an order number, a profile and a company - and a
+ * an email, a date, an order number, a resume and a company - and a
  * derivable path behind a signed-in-only check would be a directory of
  * everybody's resumes.
  *

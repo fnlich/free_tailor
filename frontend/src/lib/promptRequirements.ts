@@ -74,37 +74,38 @@ export const SINGLE_PROMPT_NOTES: Readonly<Record<string, { about: string; model
   },
   'tailor-resume-full': {
     about:
-      'Fully tailoring has one prompt, the built-in one: every profile set to Fully tailor runs it, whatever ' +
-      'tailoring prompt the profile chose for Partial. It is sent each role\'s title, company and dates only - no ' +
+      'Fully tailoring has one prompt, the built-in one: every Fully Tailor run uses it for the profile\'s default ' +
+      'resume, whatever tailoring prompt that resume chose for Partial Tailor. It is sent each role\'s title, company and dates only - no ' +
       'summary, description or achievements - and writes the experience and the summary for the posting, with ' +
       'modest, plausible figures.',
     model:
-      'Fully tailoring always runs on the model its resume is charged at, as Partial does. There is no model ' +
-      'override for it.',
+      'Fully tailoring always runs on the model chosen for the run, as Partial Tailor does; what the resume costs ' +
+      'is the price of the build mode, whatever the model. There is no model override for it.',
   },
   'revise-resume-coverage': {
     about:
       'The revise pass has one prompt, the built-in one: after a fresh tailoring leaves out of the summary and ' +
-      'bullets checklist terms the profile itself names, or drops a figure the profile states, it runs once to put ' +
-      'them back - after a Fully tailored resume, any checklist term it left out. Otherwise a term the profile ' +
+      'bullets checklist terms the source resume itself names, or drops a figure the source resume states, it runs once to put ' +
+      'them back - after a Fully tailored resume, any checklist term it left out. Otherwise a term the source resume ' +
       'never names is never asked for. It never runs on a tailoring the cache answered or on content sent back ' +
       'from a preview, and TAILOR_REVISE_PASS turns it off.',
     model:
-      'The revise pass always runs on the model its resume is charged at, as the tailoring does. There is no ' +
+      'The revise pass always runs on the model chosen for the run, as the tailoring does. There is no ' +
       'model override for it.',
   },
   'generate-cover-letter': {
     about:
       'A cover letter has one prompt, the built-in one: it writes the letter when the tailoring answer brought ' +
-      'none, which the tailoring prompt\'s own cover letter otherwise is.',
+      'none, which the tailoring prompt\'s own cover letter otherwise is - and it writes the letter of every ' +
+      'Choose Suitable Resume build, which tailors nothing.',
     model:
-      'A cover letter always runs on the model its resume is charged at. There is no model override for it.',
+      'A cover letter always runs on the model chosen for the run. There is no model override for it.',
   },
   'write-entry-bullets': {
     about:
-      'Writing an entry\'s bullets has one prompt, the built-in one: the profile editor\'s Write with AI and ' +
+      'Writing an entry\'s bullets has one prompt, the built-in one: the resume editor\'s Write with AI and ' +
       'Improve with AI run it for one experience, project or volunteering entry, with the note typed beside the ' +
-      'button, and put the answer in the editor - nothing is saved until the profile is. It is free, and open to ' +
+      'button, and put the answer in the editor - nothing is saved until the resume is. It is free, and open to ' +
       'every account that builds resumes.',
     model:
       'Write Entry Bullets always runs on the app default model chosen under Admin > Models, as every call that ' +

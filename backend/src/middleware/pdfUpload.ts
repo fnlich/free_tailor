@@ -4,11 +4,11 @@ import { uploadMaxMb } from '../config/operational';
 import { PublicError } from './publicError';
 
 /**
- * Taking one PDF out of a multipart request: a resume to build a profile from,
- * or a template to extract.
+ * Taking one PDF out of a multipart request: a resume PDF to read into a new
+ * resume, or a template to extract.
  *
  * Both uploads used to configure their own multer with their own `10 * 1024 *
- * 1024`, and the profile one wrote every file to `backend/uploads` only to read
+ * 1024`, and the resume-import one wrote every file to `backend/uploads` only to read
  * it straight back into a buffer and delete it. Now there is one instance, held
  * in memory - the handlers only ever wanted the bytes - and so no upload
  * directory for anybody to configure, fill or clean up.

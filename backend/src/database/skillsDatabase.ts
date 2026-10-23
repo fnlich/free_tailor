@@ -494,7 +494,7 @@ function ensureSeeded(): void {
  * call. Six exported readers call it, and a single resume render calls several
  * of them, so one render was doing tens of millions of them.
  *
- * Measured with a three-skill profile: `prepareResumeRenderData` took 22
+ * Measured with a three-skill resume: `prepareResumeRenderData` took 22
  * seconds before this cache. Every generated resume paid it, and so did every
  * template preview - the templates page renders six.
  *
@@ -550,7 +550,7 @@ function readStore(): SkillsStore {
  * The renderer looks a skill up once per skill it places, and filling a
  * categorized block walks the whole library - each lookup a fresh copy of
  * ~1,500 records and a linear scan, which is what made one categorized render
- * cost about a quarter of a second. The live profile preview renders on every
+ * cost about a quarter of a second. The live resume preview renders on every
  * pause in typing, so that cost is paid over and over.
  *
  * Keyed on the cached store's identity, which changes whenever the cache is

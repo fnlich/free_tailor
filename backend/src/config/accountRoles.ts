@@ -10,9 +10,9 @@ import type { UserRole } from '../types/account';
  *
  * WHY "MAY BUILD" IS THE QUESTION. A `reporter` (owner decisions A3, A4) adds
  * job postings to the shared job lake and is paid per job accepted; they see
- * Report Jobs, Credits, their own job sheet, Settings > Profile / Job Sheet,
+ * Report Jobs, Credits, their own job sheet, Settings > Account / Job Sheet,
  * notifications and Contact admin - and nothing else. Everything else in the
- * app - profiles, templates, the builder, orders, groups, prompts, the Job Filter,
+ * app - resumes, profiles, templates, the builder, orders, prompts, the Job Filter,
  * the Bid Assistant, buying credits - is for an account that builds resumes,
  * so `requireUser` means exactly that (middleware/auth.ts), and a router added
  * later is closed to reporters without anybody remembering to close it.

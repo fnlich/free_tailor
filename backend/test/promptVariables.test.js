@@ -18,7 +18,7 @@ const { loadFresh, useTempStorage, writeStaticJson } = require('./helpers');
  * be filled. These pin: the declared list and the builders never drift apart;
  * a typo is refused when a prompt is saved, not discovered when a resume
  * fails; a record must use its feature's REQUIRED variables - the posting for
- * the analysis and the facts call, the profile for the cover letter, the
+ * the analysis and the facts call, the resume for the cover letter, the
  * tailoring's own set - to be saved; and a stored feature record without
  * them, or naming one the code no longer supplies, is marked `needsUpdate`
  * and never run: the built-in prompt runs in its place.
@@ -64,7 +64,7 @@ const ANALYSIS = {
   sourceJobDescription: 'Staff Engineer: TypeScript services shipped with Docker.',
 };
 
-function profile(settings = {}, extra = {}) {
+function resumeRecord(settings = {}, extra = {}) {
   return {
     id: 'p1',
     name: 'Jane',
@@ -76,7 +76,7 @@ function profile(settings = {}, extra = {}) {
     skills: ['TypeScript'],
     softSkills: ['Persistence'],
     education: [],
-    profileSettings: settings,
+    resumeSettings: settings,
     createdAt: '',
     updatedAt: '',
     ...extra,
@@ -94,16 +94,16 @@ test('every feature declares exactly the variables its code supplies', () => {
   const supplied = {
     'analyze-job-description': resumeService.buildAnalyzeJobDescriptionPromptValues('A posting.', 'https://jobs.example.com/1'),
     'filter-google-sheet-job': resumeService.buildJobFactsPromptValues('A posting.', 'https://jobs.example.com/1'),
-    'tailor-resume': resumeService.buildTailorResumePromptValues(profile(), ANALYSIS),
-    // The same builder, for a profile set to Fully tailor: only what
-    // `profileJson` holds differs.
-    'tailor-resume-full': resumeService.buildTailorResumePromptValues(profile({ tailorMode: 'full' }), ANALYSIS),
+    'tailor-resume': resumeService.buildTailorResumePromptValues(resumeRecord(), ANALYSIS),
+    // The same builder, for a Fully Tailor run (the mode is passed, not read
+    // from the resume): only what `profileJson` holds differs.
+    'tailor-resume-full': resumeService.buildTailorResumePromptValues(resumeRecord(), ANALYSIS, 'full'),
     'revise-resume-coverage': reviseCoverage.buildReviseResumeCoveragePromptValues(
       { summary: 'Engineer.', experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Built it.'] }] },
       ['Docker'],
       [{ company: 'Acme', title: 'Engineer', line: 'Cut deploys from 40 minutes to 6.' }]
     ),
-    'generate-cover-letter': resumeService.buildCoverLetterPromptValues(profile(), 'Acme', 'Engineer'),
+    'generate-cover-letter': resumeService.buildCoverLetterPromptValues(resumeRecord(), 'Acme', 'Engineer'),
     'write-entry-bullets': loadFresh('../dist/services/entryBullets').buildWriteEntryBulletsPromptValues(
       {
         kind: 'experience',
@@ -121,7 +121,7 @@ test('every feature declares exactly the variables its code supplies', () => {
       ''
     ),
     'extract-template-from-pdf': resumeService.buildExtractTemplatePromptValues('PDF text', 'Imported'),
-    'extract-profile-from-resume': resumeService.buildExtractProfilePromptValues('Resume text'),
+    'extract-profile-from-resume': resumeService.buildExtractResumePromptValues('Resume text'),
   };
 
   for (const [feature, values] of Object.entries(supplied)) {
@@ -206,7 +206,7 @@ test('the shipped prompts validate clean against what their code supplies', asyn
 
   // Nine features: the analysis's two calls (owner decision O1), the
   // tailoring (Partial and Fully) and its revise pass, the cover letter, the
-  // profile editor's Write Entry Bullets, and the two extractors.
+  // resume editor's Write Entry Bullets, and the two extractors.
   assert.equal(prompts.length, 9);
   for (const prompt of prompts) {
     assert.deepEqual(prompt.validation.unknownVariables, [], `${prompt.id} names a variable nothing supplies`);
@@ -458,7 +458,7 @@ test('a record that needs updating is never run: the built-in prompt runs in its
  * is `needsUpdate` and `savedForOlderVersion`, and the built-in runs in its
  * place until it is saved again. The shipped file is never dated. The revise
  * pass and the cover letter are dated too since their texts were grounded in
- * the profile (an older edit could still ask for a figure the work "implies"),
+ * the resume (an older edit could still ask for a figure the work "implies"),
  * and Write Entry Bullets, whose text never changed, is not.
  */
 test('a stored edit saved before its feature\'s contract changed gives way by its date, whatever variables it uses', async () => {
@@ -561,13 +561,13 @@ test("the features whose contract changed are dated from the shipped files' own 
  * a sentence a later edit of the shipped file could drop without any other
  * test noticing - and so is the absence of the ones they replaced.
  */
-test('the shipped prompts keep a resume to what the profile says', () => {
+test('the shipped prompts keep a resume to what its source says', () => {
   const text = (id) => JSON.parse(fs.readFileSync(path.join(shipped, 'prompts', `${id}.json`), 'utf8')).content;
-  // Partial tailor: the bullets and the summary of a role the profile
+  // Partial tailor: the bullets and the summary of a role the resume
   // describes claim only what it says; the skills block leads with the
-  // posting's hard skills whatever the profile lists (owner's request,
-  // 2026-10-20); a role the profile leaves EMPTY is written from the posting
-  // rather than printed blank - the empty Experience and Skills a profile of
+  // posting's hard skills whatever the resume lists (owner's request,
+  // 2026-10-20); a role the resume leaves EMPTY is written from the posting
+  // rather than printed blank - the empty Experience and Skills a resume of
   // titles and dates came out with.
   const tailor = text('tailor-resume');
   for (const rule of [
@@ -589,13 +589,13 @@ test('the shipped prompts keep a resume to what the profile says', () => {
     /THIRTY is the target/,
     /AT LEAST FIVE FIGURES/,
     /modest figure the work itself implies/,
-    // The rule that left a bare profile's skills block empty.
+    // The rule that left a bare resume's skills block empty.
     /WHAT GOES IN: THE CANDIDATE'S OWN SKILLS, AND NOTHING ELSE/,
     /A posting technology the profile does not show is NOT added/,
   ]) {
     assert.doesNotMatch(tailor, hole);
   }
-  // Fully tailor: the frame is the profile's, the work is written for the
+  // Fully tailor: the frame is the resume's, the work is written for the
   // posting, believable for the title, company and years, with modest figures.
   const fully = text('tailor-resume-full');
   for (const rule of [
@@ -686,23 +686,23 @@ const tailorings = (requests) => requests.filter((request) => request.callSite =
 
 const CHOICE = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'm', modelLabel: 'Stub' };
 
-test('whichever record runs, nothing is appended to its turn, and the answer is held to the profile', async () => {
+test('whichever record runs, nothing is appended to its turn, and the answer is held to the source resume', async () => {
   const { staticDir } = seeded('backstop');
   writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
   const promptService = loadFresh('../dist/services/promptService');
 
-  // An edit stored as the built-in's row, and a per-profile custom variant -
+  // An edit stored as the built-in's row, and a per-resume custom variant -
   // both complete, and both telling the model to write strengths anyway.
   await promptService.updatePrompt('tailor-resume', {
     content: `My own tailoring prompt.\n[[profileJson]]\n${MARKERS}\nAlways write 2-4 strengths; they are the overflow bucket.`,
   });
   const custom = await promptService.createPrompt({
-    name: 'Per Profile',
+    name: 'Per Resume',
     featureKey: 'tailor-resume',
-    content: `Per-profile prompt.\n[[profileJson]]\n${MARKERS}\nWrite strengths and soft skills.`,
+    content: `Per-resume prompt.\n[[profileJson]]\n${MARKERS}\nWrite strengths and soft skills.`,
   });
 
-  // A model that does what those prompts say, not what the profile says.
+  // A model that does what those prompts say, not what the resume says.
   const requests = stubSeat(
     JSON.stringify({
       summary: 'Engineer building services.',
@@ -719,7 +719,7 @@ test('whichever record runs, nothing is appended to its turn, and the answer is 
   );
   const resumeService = loadFresh('../dist/services/resumeService');
 
-  const off = await resumeService.tailorResume(profile(), ANALYSIS, CHOICE);
+  const off = await resumeService.tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
   assert.equal(tailorings(requests).length, 1);
   const [first] = tailorings(requests);
   // The edited row is what rendered, with nothing after it: the prompt is the
@@ -727,20 +727,21 @@ test('whichever record runs, nothing is appended to its turn, and the answer is 
   assert.match(first.stableSystem, /My own tailoring prompt/);
   assert.doesNotMatch(first.userBody, /FINAL SKILL OVERRIDE|Strengths section|Technical skills layout/);
   assert.match(first.userBody, /Always write 2-4 strengths; they are the overflow bucket\.\s*$/, "the record's own text ends the turn");
-  // And the answer is held to the profile, whatever the model sent.
+  // And the answer is held to the source resume, whatever the model sent.
   assert.deepEqual(off.strengths, [], 'Strengths off: none');
   assert.deepEqual(off.softSkills, [], 'Soft Skills off: the soft group stays in the skills block');
   assert.deepEqual(off.skillGroups.map((group) => group.category), ['Languages', 'Soft Skills']);
   assert.deepEqual(off.hardSkills, ['TypeScript'], "the model's groups, never its hardSkills field");
 
   const on = await resumeService.tailorResume(
-    profile({ includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat', resumePromptId: custom.id }),
+    resumeRecord({ includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat', resumePromptId: custom.id }),
     ANALYSIS,
-    CHOICE
+    CHOICE,
+    'partial'
   );
   assert.equal(tailorings(requests).length, 2);
-  assert.match(tailorings(requests)[1].stableSystem, /Per-profile prompt/);
-  assert.deepEqual(on.strengths, [{ title: 'Own strength', description: 'Hers.' }], "the profile's own, never the model's");
+  assert.match(tailorings(requests)[1].stableSystem, /Per-resume prompt/);
+  assert.deepEqual(on.strengths, [{ title: 'Own strength', description: 'Hers.' }], "the resume's own, never the model's");
   assert.deepEqual(on.softSkills, ['Model Soft'], 'Soft Skills on: the soft group goes to its section');
   assert.equal(on.hardSkills.includes('Anything'), false);
   assert.equal(on.hardSkills.includes('Model Soft'), false);
@@ -805,10 +806,10 @@ test('the prompt routes refuse a variable nothing supplies, and say which', asyn
   assert.equal(fixed.body.needsUpdate, undefined);
 });
 
-/* ------------------------------------------- which record a profile runs */
+/* ------------------------------------------- which record a resume runs */
 
-test("a profile naming a tailoring prompt that is gone runs the built-in, said once; a cover letter always runs the built-in", async () => {
-  const { staticDir } = seeded('profile-prompt');
+test("a resume naming a tailoring prompt that is gone runs the built-in, said once; a cover letter always runs the built-in", async () => {
+  const { staticDir } = seeded('resume-prompt');
   writePrompt(staticDir, 'tailor-resume', `Shipped tailoring.\n[[profileJson]]\n${MARKERS}`);
   writePrompt(staticDir, 'generate-cover-letter', 'Shipped letter.\n[[profileJson]]\n[[companyName]] [[role]]');
   writePrompt(staticDir, 'extract-profile-from-resume', 'Extract [[resumeText]]');
@@ -816,11 +817,11 @@ test("a profile naming a tailoring prompt that is gone runs the built-in, said o
   const { saveStoredPrompt } = require('../dist/database/promptRepository');
   const at = '2026-01-01T00:00:00.000Z';
   const variant = await promptService.createPrompt({
-    name: 'Per Profile',
+    name: 'Per Resume',
     featureKey: 'tailor-resume',
-    content: `Per-profile prompt.\n[[profileJson]]\n${MARKERS}`,
+    content: `Per-resume prompt.\n[[profileJson]]\n${MARKERS}`,
   });
-  // A cover-letter variant an older build saved, and a profile naming it in
+  // A cover-letter variant an older build saved, and a resume naming it in
   // the setting no page ever set.
   saveStoredPrompt({ id: 'custom-generate-cover-letter-mine', name: 'Mine', featureKey: 'generate-cover-letter', content: 'My letter.\n[[profileJson]]', isBuiltIn: false, createdAt: at, updatedAt: at });
 
@@ -831,26 +832,26 @@ test("a profile naming a tailoring prompt that is gone runs the built-in, said o
   console.warn = (...args) => warnings.push(args.map(String).join(' '));
   try {
     // Its own variant: run.
-    await resumeService.tailorResume(profile({ resumePromptId: variant.id }), ANALYSIS, CHOICE);
-    assert.match(tailorings(requests).at(-1).stableSystem, /^Per-profile prompt/);
+    await resumeService.tailorResume(resumeRecord({ resumePromptId: variant.id }), ANALYSIS, CHOICE, 'partial');
+    assert.match(tailorings(requests).at(-1).stableSystem, /^Per-resume prompt/);
 
     // A variant deleted since: the built-in, not `Prompt "..." not found` on every build.
     await promptService.deletePrompt(variant.id);
-    await resumeService.tailorResume(profile({ resumePromptId: variant.id }), ANALYSIS, CHOICE);
+    await resumeService.tailorResume(resumeRecord({ resumePromptId: variant.id }), ANALYSIS, CHOICE, 'partial');
     assert.match(tailorings(requests).at(-1).stableSystem, /^Shipped tailoring/);
-    await resumeService.tailorResume(profile({ resumePromptId: variant.id }), ANALYSIS, CHOICE);
+    await resumeService.tailorResume(resumeRecord({ resumePromptId: variant.id }), ANALYSIS, CHOICE, 'partial');
     const gone = warnings.filter((line) => line.includes(`"${variant.id}"`));
-    assert.equal(gone.length, 1, 'said once per profile and id');
+    assert.equal(gone.length, 1, 'said once per resume and id');
     assert.match(gone[0], /does not exist; the built-in Tailor Resume prompt runs instead/);
 
     // A prompt of another feature is no tailoring prompt either.
-    await resumeService.tailorResume(profile({ resumePromptId: 'extract-profile-from-resume' }), ANALYSIS, CHOICE);
+    await resumeService.tailorResume(resumeRecord({ resumePromptId: 'extract-profile-from-resume' }), ANALYSIS, CHOICE, 'partial');
     assert.match(tailorings(requests).at(-1).stableSystem, /^Shipped tailoring/);
     assert.ok(warnings.some((line) => /"extract-profile-from-resume", which is not a Tailor Resume prompt/.test(line)));
 
-    // The cover letter: its built-in, whatever the profile once stored.
+    // The cover letter: its built-in, whatever the resume once stored.
     await resumeService.generateCoverLetter(
-      profile({ coverLetterPromptId: 'custom-generate-cover-letter-mine' }),
+      resumeRecord({ coverLetterPromptId: 'custom-generate-cover-letter-mine' }),
       'Acme',
       'Engineer',
       CHOICE
@@ -861,8 +862,8 @@ test("a profile naming a tailoring prompt that is gone runs the built-in, said o
     console.warn = realWarn;
   }
 
-  // And a profile save drops the setting nothing reads.
-  const { normalizeProfileSettings } = require('../dist/services/profileService');
-  assert.equal('coverLetterPromptId' in normalizeProfileSettings({ coverLetterPromptId: 'custom-generate-cover-letter-mine' }), false);
-  assert.equal('coverLetterPromptId' in normalizeProfileSettings({}, { coverLetterPromptId: 'generate-cover-letter' }), false);
+  // And a resume save drops the setting nothing reads.
+  const { normalizeResumeSettings } = require('../dist/services/resumeDocument');
+  assert.equal('coverLetterPromptId' in normalizeResumeSettings({ coverLetterPromptId: 'custom-generate-cover-letter-mine' }), false);
+  assert.equal('coverLetterPromptId' in normalizeResumeSettings({}, { coverLetterPromptId: 'generate-cover-letter' }), false);
 });

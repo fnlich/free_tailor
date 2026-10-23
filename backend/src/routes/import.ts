@@ -10,7 +10,7 @@ const router = Router();
  *
  * At the router rather than per route, so a route added later is protected by
  * default. Before v2 these were open, which was defensible with one user on one
- * machine and is not once profiles belong to people.
+ * machine and is not once resumes belong to people.
  */
 router.use(requireUser);
 

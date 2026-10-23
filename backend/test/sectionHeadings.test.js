@@ -5,7 +5,7 @@ const path = require('node:path');
 const express = require('express');
 
 /*
- * Locked before any dist module loads, as test/profilePreview.test.js does: the
+ * Locked before any dist module loads, as test/resumeDraftPreview.test.js does: the
  * preview route answering 200 is then also proof no model was asked.
  */
 process.env.AI_LOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
@@ -40,7 +40,7 @@ const { useAdminEmails, useTempStorage } = require('./helpers');
  *   - a `data-section` element goes whole whatever its heading reads;
  *   - a template the finds would leave uncompilable still renders, with less
  *     found, and says so once;
- *   - the profile editor's preview route and the render a PDF prints from
+ *   - the resume editor's preview route and the render a PDF prints from
  *     agree, and the stored template file is never rewritten
  *     (test/e2e/section-switches.js drives the editor itself).
  */
@@ -65,7 +65,7 @@ function seeded(name) {
   return storage;
 }
 
-function profile(settings = {}, extra = {}) {
+function resumeRecord(settings = {}, extra = {}) {
   return {
     id: 'p1',
     name: 'A Person',
@@ -89,7 +89,7 @@ function profile(settings = {}, extra = {}) {
     education: [],
     certifications: [],
     skills: ['Python', 'Docker'],
-    profileSettings: settings,
+    resumeSettings: settings,
     createdAt: '',
     updatedAt: '',
     ...extra,
@@ -284,7 +284,7 @@ test('every built-in leaves no heading for a section switched off, and nothing e
 
 async function checkBuiltIns(templates, generatePreviewHTML) {
   for (const template of templates) {
-    const render = (settings, extra) => generatePreviewHTML(profile(settings, extra), template);
+    const render = (settings, extra) => generatePreviewHTML(resumeRecord(settings, extra), template);
     const off = seen(await render({}));
     assert.doesNotMatch(off, STRENGTHS_HEADING, `${template.id}: a Strengths heading`);
     assert.doesNotMatch(off, SOFT_SKILLS_HEADING, `${template.id}: a Soft Skills heading`);
@@ -308,7 +308,7 @@ test('an uploaded-style template, marked by neither class nor attribute, loses t
   for (const [name, htmlContent] of Object.entries(UPLOADED_MARKUPS)) {
     const template = { id: `uploaded-style-${name}`, name, htmlContent, cssContent: '.main { color: #111 }' };
     const warnings = await warningsOf(() =>
-      assertSectionsFollowSwitches((settings, extra) => generatePreviewHTML(profile(settings, extra), template), name)
+      assertSectionsFollowSwitches((settings, extra) => generatePreviewHTML(resumeRecord(settings, extra), template), name)
     );
     assert.deepEqual(warnings, [], `${name}: the section finds left markup that does not compile`);
   }
@@ -319,7 +319,7 @@ test('what shares an element with the section - a photo, an icon, a line of text
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   for (const [name, { html: htmlContent, keeps }] of Object.entries(SECTIONS_WITH_NEIGHBOURS)) {
     const template = { id: `uploaded-neighbours-${name}`, name, htmlContent, cssContent: '' };
-    const render = (settings, extra) => generatePreviewHTML(profile(settings, extra), template);
+    const render = (settings, extra) => generatePreviewHTML(resumeRecord(settings, extra), template);
     const warnings = await warningsOf(async () => {
       await assertSectionsFollowSwitches(render, name);
       for (const [mode, settings, extra] of [
@@ -347,10 +347,10 @@ test('what shares an element with the section - a photo, an icon, a line of text
       '<h2>Technical Skills</h2>{{#each skills}}<span>{{this}}</span>{{/each}}',
     cssContent: '',
   };
-  const off = await generatePreviewHTML(profile({}), own);
+  const off = await generatePreviewHTML(resumeRecord({}), own);
   assert.equal(off.includes('strengths-box') || off.includes('soft-box'), false, 'the wrappers go with their sections');
   assert.ok(off.includes('Acme Widgets') && off.includes('Docker'));
-  const on = await generatePreviewHTML(profile(ON), own);
+  const on = await generatePreviewHTML(resumeRecord(ON), own);
   assert.ok(on.includes('strengths-box') && on.includes('soft-box') && on.includes('Persistence, Clear writing'));
 });
 
@@ -360,7 +360,7 @@ test('a template the section finds would stop compiling still renders, and says 
 
   // The marker class is on an element a Handlebars block crosses: cutting the
   // element leaves the block's `{{/if}}` behind. That failed every render
-  // with the switch off - every profile's default.
+  // with the switch off - every resume's default.
   const crossed = {
     id: 'uploaded-crossed',
     name: 'Crossed',
@@ -372,11 +372,11 @@ test('a template the section finds would stop compiling still renders, and says 
   };
   const fallbacks = await warningsOf(async () => {
     for (let n = 0; n < 2; n += 1) {
-      const off = seen(await generatePreviewHTML(profile({}), crossed));
+      const off = seen(await generatePreviewHTML(resumeRecord({}), crossed));
       assert.ok(off.includes('Acme Widgets') && off.includes('Docker'), 'drawn, the rest intact');
       assert.equal(off.includes('Foresight'), false, 'the switched-off list still prints nothing');
     }
-    const on = seen(await generatePreviewHTML(profile(ON), crossed));
+    const on = seen(await generatePreviewHTML(resumeRecord(ON), crossed));
     assert.ok(on.includes('Foresight'), 'switched on, the section draws');
   });
   assert.equal(fallbacks.length, 1, 'logged once');
@@ -391,7 +391,7 @@ test('a template the section finds would stop compiling still renders, and says 
     cssContent: '',
   };
   const blamed = await warningsOf(() =>
-    assert.rejects(() => generatePreviewHTML(profile({}), broken), /Parse error|Expecting/)
+    assert.rejects(() => generatePreviewHTML(resumeRecord({}), broken), /Parse error|Expecting/)
   );
   assert.deepEqual(blamed, []);
 });
@@ -400,7 +400,7 @@ test('markup that only looks like a section is left alone', async () => {
   seeded('lookalikes');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   const render = (htmlContent, settings) =>
-    generatePreviewHTML(profile(settings), { id: 'u', name: 'U', htmlContent, cssContent: '' });
+    generatePreviewHTML(resumeRecord(settings), { id: 'u', name: 'U', htmlContent, cssContent: '' });
 
   // Soft skills drawn inside the Technical Skills block, under its heading:
   // the heading belongs to the skills, so it stays, and only the soft skills go.
@@ -517,7 +517,7 @@ test('an element that holds other data, or a paragraph rather than a heading, is
     const warnings = await warningsOf(async () => {
       for (const technicalSkillsLayout of ['categorized', 'flat']) {
         const render = (settings, extra) =>
-          generatePreviewHTML(profile({ technicalSkillsLayout, ...settings }, extra), template);
+          generatePreviewHTML(resumeRecord({ technicalSkillsLayout, ...settings }, extra), template);
         const label = `${name} (${technicalSkillsLayout})`;
         for (const [mode, settings, extra] of [
           ['switched off', {}],
@@ -564,7 +564,7 @@ test('a section marked by data-section goes whole whatever its heading reads, an
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   for (const [name, htmlContent] of Object.entries(DATA_SECTION_ONLY)) {
     const template = { id: `uploaded-data-section-${name}`, name, htmlContent, cssContent: '' };
-    const render = async (settings, extra) => seen(await generatePreviewHTML(profile(settings, extra), template));
+    const render = async (settings, extra) => seen(await generatePreviewHTML(resumeRecord(settings, extra), template));
     const rest = (page, mode) =>
       assert.ok(
         ['A summary of the work.', 'Acme Widgets', 'Docker'].every((kept) => page.includes(kept)),
@@ -595,7 +595,7 @@ test('a section marked by data-section goes whole whatever its heading reads, an
   }
 });
 
-test('the profile preview route and the render a PDF prints from agree, and the stored file is never rewritten', async () => {
+test('the resume preview route and the render a PDF prints from agree, and the stored file is never rewritten', async () => {
   const { staticDir } = seeded('route');
   useAdminEmails('admin@example.com');
   const { saveStoredTemplate } = require('../dist/database/templateRepository');
@@ -626,18 +626,18 @@ test('the profile preview route and the render a PDF prints from agree, and the 
   const app = express();
   app.use(express.json({ limit: '2mb' }));
   app.use(attachUser);
-  app.use('/api/profiles', require('../dist/routes/profiles').default);
+  app.use('/api/resumes', require('../dist/routes/resumes').default);
   const server = app.listen(0);
   try {
-    const preview = async (profileSettings) => {
-      const { createdAt, updatedAt, id, ...draft } = profile(profileSettings);
+    const preview = async (resumeSettings) => {
+      const { createdAt, updatedAt, id, ...draft } = resumeRecord(resumeSettings);
       void createdAt;
       void updatedAt;
       void id;
-      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/profiles/preview`, {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/resumes/preview`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ profile: draft, templateId: 'uploaded-classic' }),
+        body: JSON.stringify({ resume: draft, templateId: 'uploaded-classic' }),
       });
       assert.equal(response.status, 200);
       const body = await response.json();
@@ -647,7 +647,7 @@ test('the profile preview route and the render a PDF prints from agree, and the 
 
     for (const settings of [{}, ON, { includeStrengths: true }, { includeSoftSkills: true }]) {
       const viaRoute = await preview(settings);
-      const viaRender = seen(await generatePreviewHTML(profile(settings), template));
+      const viaRender = seen(await generatePreviewHTML(resumeRecord(settings), template));
       for (const [label, pattern] of [
         ['Strengths', STRENGTHS_HEADING],
         ['Soft Skills', SOFT_SKILLS_HEADING],

@@ -193,7 +193,7 @@ export default function AmountStep({
 
         <p id={hintId} className="mt-3 text-xs text-subtle">
           A credit is a dollar: you are charged exactly this amount, and all of it is added to your
-          balance. Each resume costs the price set for the model it is built with. Between{' '}
+          balance. Each resume costs the price of the build mode it is built in. Between{' '}
           {formatMoney(target.minAmountMilli)} and {formatMoney(target.maxAmountMilli)} at a time
           {target.custom === 'stepper' ? ', a dollar at a time on the buttons.' : '.'}
         </p>

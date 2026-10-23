@@ -11,7 +11,7 @@ import { canBuildResumes, roleLabel } from '@/lib/roles';
 import { messageWithDetail } from '@/lib/userMessage';
 
 /**
- * Settings > Profile: who you are signed in as, what about that you may change
+ * Settings > Account: who you are signed in as, what about that you may change
  * yourself, and - for an account that builds resumes - where they are filed.
  *
  * Read-mostly on purpose. What a user may change about themselves is their
@@ -20,7 +20,7 @@ import { messageWithDetail } from '@/lib/userMessage';
  * own subscription would be a form that lies. A reporter builds nothing, so
  * Resume files is not drawn for one (the routes refuse them too).
  */
-export default function ProfileSettingsPage() {
+export default function AccountSettingsPage() {
   const { account, adopt, signOut } = useAuth();
 
   const [name, setName] = useState('');
@@ -66,7 +66,7 @@ export default function ProfileSettingsPage() {
 
   return (
     <SettingsPage>
-      <Section title="Profile" description="This information is shown on your account.">
+      <Section title="Account" description="This information is shown on your account.">
         <Field
           label="Email"
           hint="The address you sign in with. It cannot be changed here."

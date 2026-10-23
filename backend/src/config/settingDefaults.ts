@@ -17,9 +17,14 @@ import {
   SUBSCRIPTION_PRICE_FIELDS,
   type PaidSubscriptionId,
 } from './accountSubscriptions';
+import {
+  BUILD_MODES,
+  BUILD_MODE_PRICE_FIELDS,
+  MAX_BUILD_MODE_PRICE_MILLI,
+  type BuildMode,
+} from './buildModes';
 import type { OperationalVariable } from './operational';
 import { MAX_REPORT_RATE_MILLI } from './reportRate';
-import type { TailorMode } from '../types/profile';
 import {
   DEFAULT_GENERATED_RESUMES_DIR,
   DEFAULT_OUTPUT_PATH_PREFIX,
@@ -73,13 +78,12 @@ export type DefaultMode = (typeof DEFAULT_MODES)[number];
 export const THEME_MODES = ['light', 'dark'] as const;
 export type ThemeMode = (typeof THEME_MODES)[number];
 
-export const DEFAULT_RESUME_SELECTIONS = ['single', 'all', 'group'] as const;
-export type DefaultResumeSelection = (typeof DEFAULT_RESUME_SELECTIONS)[number];
-
-/** Partial or Fully tailor (types/profile.ts `TailorMode`), in the order the editor offers them. */
-export const TAILOR_MODES = ['partial', 'full'] as const satisfies readonly TailorMode[];
-/** What a profile that has chosen no tailoring mode gets when `.env` names none either. */
-export const CODE_DEFAULT_TAILOR_MODE: TailorMode = 'partial';
+/**
+ * The mode the builder starts on, and the mode of a run that names none, when
+ * neither an administrator nor `.env` says: Partial Tailor, which is what a
+ * resume with no stored choice was always built with.
+ */
+export const CODE_DEFAULT_BUILD_MODE: BuildMode = 'partial';
 
 /* ===================================================== payment limits */
 
@@ -158,7 +162,16 @@ type PaymentMethodTarget = keyof typeof PAYMENT_LIMIT_VARIABLES;
 export const CODE_SETTING_DEFAULTS = {
   defaultMode: 'preview' as DefaultMode,
   defaultTheme: 'light' as ThemeMode,
-  defaultResumeSelection: 'single' as DefaultResumeSelection,
+  defaultBuildMode: CODE_DEFAULT_BUILD_MODE as BuildMode,
+  /**
+   * What one resume costs in each build mode, in thousandths: 0, free. There is
+   * no default price on purpose - a mode is priced by an administrator, and
+   * Admin -> Settings shows every free mode in red, so "free because nobody
+   * set a price" is visible rather than a silent default.
+   */
+  suitablePriceMilli: 0,
+  partialPriceMilli: 0,
+  fullPriceMilli: 0,
   defaultResumeDocxEnabled: true,
   defaultCoverLetterDocxEnabled: true,
   /** '' is "the app default model": job postings are analysed on whatever builds resumes by default. */
@@ -192,7 +205,13 @@ export const APP_SETTING_ENV_VARIABLES = {
   analysisModelId: ['ANALYSIS_MODEL'],
   defaultMode: ['DEFAULT_MODE'],
   defaultTheme: ['DEFAULT_THEME'],
-  defaultResumeSelection: ['DEFAULT_RESUME_SELECTION'],
+  defaultBuildMode: ['DEFAULT_TAILOR_MODE'],
+  // Saved as `suitablePriceUsd` and its two siblings - a request carries dollars -
+  // and served in thousandths under these names (buildModes.ts
+  // `BUILD_MODE_PRICE_FIELDS`, which a test holds to this table).
+  suitablePriceMilli: [BUILD_MODE_PRICE_FIELDS.suitable.env],
+  partialPriceMilli: [BUILD_MODE_PRICE_FIELDS.partial.env],
+  fullPriceMilli: [BUILD_MODE_PRICE_FIELDS.full.env],
   defaultResumeDocxEnabled: ['DEFAULT_RESUME_DOCX'],
   defaultCoverLetterDocxEnabled: ['DEFAULT_COVER_LETTER_DOCX'],
   outputBaseDir: ['OUTPUT_BASE_DIR'],
@@ -237,29 +256,6 @@ export function envDefaultMode(env: EnvSource = process.env): EnvReading<Default
 export function envDefaultTheme(env: EnvSource = process.env): EnvReading<ThemeMode> {
   const options = { values: THEME_MODES, caseInsensitive: true };
   return readEnvEnum('DEFAULT_THEME', CODE_SETTING_DEFAULTS.defaultTheme, options, env);
-}
-
-/**
- * `single` or `all`. Not `group`: a group is one an administrator made, and
- * `.env` has no way to name it - Build Resumes would open every account on
- * Group with none chosen, and Admin -> Settings could save nothing until a
- * group or another target was stored. So `group` warns once and the default
- * is used; a group is chosen under Admin -> Settings, with the group itself.
- */
-export function envDefaultResumeSelection(env: EnvSource = process.env): EnvReading<DefaultResumeSelection> {
-  const reading = readEnvEnum(
-    'DEFAULT_RESUME_SELECTION',
-    CODE_SETTING_DEFAULTS.defaultResumeSelection,
-    { values: DEFAULT_RESUME_SELECTIONS, caseInsensitive: true },
-    env
-  );
-  if (reading.value !== 'group') return reading;
-  warnEnvOnce(
-    'DEFAULT_RESUME_SELECTION',
-    'DEFAULT_RESUME_SELECTION=group names no group, and .env cannot; using ' +
-      `${CODE_SETTING_DEFAULTS.defaultResumeSelection}. Choose a default group under Admin -> Settings -> General.`
-  );
-  return { value: CODE_SETTING_DEFAULTS.defaultResumeSelection, fromEnv: false };
 }
 
 export function envDefaultResumeDocx(env: EnvSource = process.env): EnvReading<boolean> {
@@ -339,7 +335,7 @@ export function envOutputPathPrefix(env: EnvSource = process.env): EnvReading<st
 
 /**
  * The folder path after the prefix for an account that has not set its own
- * (Settings -> Profile -> Resume files): `validateOutputSuffix`'s tokens,
+ * (Settings -> Account -> Resume files): `validateOutputSuffix`'s tokens,
  * `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and
  * `{{row_number}}`. A per-account default, not an app setting: the source an
  * account sees is 'account' | 'env' | 'default' (services/outputPath.ts).
@@ -349,15 +345,40 @@ export function envOutputPathSuffix(env: EnvSource = process.env): EnvReading<st
 }
 
 /**
- * How a profile that has chosen no tailoring mode is tailored: `partial` (its
- * own descriptions and achievements rewritten for the posting) or `full` (only
- * each role's title, company and dates sent, the experience written for the
- * posting). A per-profile default, like OUTPUT_PATH_SUFFIX's per-account one:
- * a profile's own choice, made in its editor, wins (services/profileService.ts
- * `getProfileTailorMode`). Junk warns once and `partial` is used.
+ * The mode the builder starts on, and the mode of a run that names none, when
+ * Admin -> Settings stores no choice: `.env`'s DEFAULT_TAILOR_MODE, which
+ * takes `suitable`, `partial` or `full` in any case (an install whose
+ * DEFAULT_TAILOR_MODE=full keeps meaning Fully Tailor). Junk warns once and
+ * `partial` is used.
  */
-export function envDefaultTailorMode(env: EnvSource = process.env): EnvReading<TailorMode> {
-  return readEnvEnum('DEFAULT_TAILOR_MODE', CODE_DEFAULT_TAILOR_MODE, { values: TAILOR_MODES, caseInsensitive: true }, env);
+export function envDefaultBuildMode(env: EnvSource = process.env): EnvReading<BuildMode> {
+  return readEnvEnum('DEFAULT_TAILOR_MODE', CODE_DEFAULT_BUILD_MODE, { values: BUILD_MODES, caseInsensitive: true }, env);
+}
+
+/**
+ * A mode's price as `.env` gives it - and whether the variable holds something
+ * that is not a price at all (`unreadable`), which reads $0 like an unset one
+ * but is nobody's decision: Admin -> Settings shows it red, naming the
+ * variable.
+ */
+export type EnvBuildModePrice = EnvReading<number> & { unreadable: boolean };
+
+/**
+ * One mode's price per resume when Admin -> Settings stores none, in
+ * thousandths: `RESUME_<MODE>_PRICE_USD`, in dollars to $0.001, at most $1000
+ * (above it clamps, with a warning). Unset is $0, free. Junk warns once and
+ * reads $0 too, flagged `unreadable`.
+ */
+export function envBuildModePriceMilli(mode: BuildMode, env: EnvSource = process.env): EnvBuildModePrice {
+  const { env: name, setting } = BUILD_MODE_PRICE_FIELDS[mode];
+  const fallback = CODE_SETTING_DEFAULTS[setting];
+  const reading = readEnvDollarsMilli(name, fallback, { maxMilli: MAX_BUILD_MODE_PRICE_MILLI }, env);
+  return {
+    value: reading.value ?? fallback,
+    fromEnv: reading.fromEnv,
+    // Set, and still not read from the environment: the reader refused it.
+    unreadable: !reading.fromEnv && envRaw(name, env) !== null,
+  };
 }
 
 /** One payment bound from `.env`, in whole cents from $0.01 - or the default, with a warning. */
@@ -573,11 +594,11 @@ export const SETTING_DEFAULT_VARIABLES: readonly OperationalVariable[] = [
   entry('ANALYSIS_MODEL', '', SETTINGS_READ_IN, envAnalysisModelText),
   entry('DEFAULT_MODE', CODE_SETTING_DEFAULTS.defaultMode, SETTINGS_READ_IN, (env) => envDefaultMode(env).value),
   entry('DEFAULT_THEME', CODE_SETTING_DEFAULTS.defaultTheme, SETTINGS_READ_IN, (env) => envDefaultTheme(env).value),
-  entry(
-    'DEFAULT_RESUME_SELECTION',
-    CODE_SETTING_DEFAULTS.defaultResumeSelection,
-    SETTINGS_READ_IN,
-    (env) => envDefaultResumeSelection(env).value
+  entry('DEFAULT_TAILOR_MODE', CODE_DEFAULT_BUILD_MODE, SETTINGS_READ_IN, (env) => envDefaultBuildMode(env).value),
+  ...BUILD_MODES.map((mode) =>
+    entry(BUILD_MODE_PRICE_FIELDS[mode].env, '0', SETTINGS_READ_IN, (env) =>
+      dollarsText(envBuildModePriceMilli(mode, env).value)
+    )
   ),
   entry(
     'DEFAULT_RESUME_DOCX',
@@ -603,12 +624,6 @@ export const SETTING_DEFAULT_VARIABLES: readonly OperationalVariable[] = [
     DEFAULT_OUTPUT_PATH_SUFFIX,
     'services/outputPath.ts (for an account that has set no folder path of its own)',
     (env) => envOutputPathSuffix(env).value
-  ),
-  entry(
-    'DEFAULT_TAILOR_MODE',
-    CODE_DEFAULT_TAILOR_MODE,
-    'services/profileService.ts (for a profile that has chosen no tailoring mode of its own)',
-    (env) => envDefaultTailorMode(env).value
   ),
   paymentEntry('card', 'min'),
   paymentEntry('card', 'max'),

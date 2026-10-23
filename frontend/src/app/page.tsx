@@ -4,20 +4,20 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
   ApiResponseError,
+  resumesApi,
   profilesApi,
-  groupsApi,
   resumeApi,
   DEFAULT_USER_APP_SETTINGS,
   UserAppSettings,
   AiPreferences,
   isInsufficientCredits,
-  isSubscriptionTooLow,
   normalizeAiPreferences,
   toAiRequestOverrides,
-  Profile,
-  Group,
+  Resume,
   type AnalyzedJob,
   type HeldTailoredContent,
+  type ProfileSummary,
+  type TaskMatch,
 } from '@/lib/api';
 import { dropsHeldAnalysis, heldAnalysisFor, holdAnalysis, type HeldAnalysis } from '@/lib/jobAnalysis';
 import { readTailoredDraft, TAILORED_DRAFT_NOTE, tailoredDraftOf } from '@/lib/tailoredDraft';
@@ -40,10 +40,9 @@ import ResumePreview from '@/components/ResumePreview';
 import ImmediateRunFiles from '@/components/ImmediateRunFiles';
 import SheetsSourcePanel, { type SheetRunKind, type SheetRunSource } from '@/components/SheetsSourcePanel';
 import CostLine, { type CreditShortfall } from '@/components/builder/CostLine';
-import ProfileTargets from '@/components/builder/ProfileTargets';
+import BuildModeChoice from '@/components/builder/BuildModeChoice';
 import OrderReceipt, { placedOrderFrom, type PlacedOrder } from '@/components/orders/OrderReceipt';
 import { useSpendConfirm } from '@/components/SpendConfirm';
-import { ChoiceCard, useLockedFeature } from '@/components/subscription/LockedFeature';
 import { useAuth } from '@/contexts/AuthContext';
 import { sheetApi, type AccountSheet } from '@/lib/sheet';
 import type { SheetJob } from '@/lib/sheetRows';
@@ -51,17 +50,16 @@ import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { Card, ErrorNotice, Notice, Page, PageHeader, Pill, Spinner } from '@/components/ui/kit';
 import { userMessage } from '@/lib/userMessage';
 import { formatMoney } from '@/lib/format';
-import { keepUnbuiltPreviews, readyPreviewKey } from '@/lib/builderPreviews';
 import { nextAttach, reattachTarget } from '@/lib/batchFollow';
-import { canBuildForManyProfiles, describeLock, describeTooLowRefusal } from '@/lib/subscriptions';
+import { BUILD_MODE_PRICE_SETTINGS, type BuildMode } from '@/lib/buildModes';
+import { describeChoice } from '@/lib/orders';
+import { resumeLabel } from '@/lib/profileDashboard';
 import {
+  buildModeNote,
   defaultRunFormat,
-  startingTarget,
-  targetBlocker,
-  targetInEffect,
-  targetProfiles as profilesOfTarget,
-  type TargetChoice,
-  type TargetKind,
+  profileBlocker,
+  startingBuildMode,
+  startingProfileId,
 } from '@/lib/runChoices';
 import {
   describeRunEnd,
@@ -80,7 +78,6 @@ import {
 import { IconBuild, IconChevronRight, IconTemplates } from '@/components/icons';
 import styles from '@/components/builder.module.css';
 
-type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
 
 /**
@@ -98,26 +95,23 @@ const NONE_DOWNLOADED: ReadonlySet<string> = new Set();
 const LEAVE_CONFIRM =
   'Leave Build Resumes? Your Generate Immediately run stops when you leave this page: resumes not started yet are refunded, and ones not finished are not downloaded.';
 
-type MultiplePreview = {
-  profileId: string;
-  profileName: string;
-  html: string;
-  /** The server's answer, or - after an edit in Manual Edits - the person's edit of it (lib/tailoredDraft.ts). */
-  tailoredContent?: HeldTailoredContent;
-  /**
-   * The server's word for which model wrote `tailoredContent`. Sent back when
-   * finalising, so the resume is charged at the model that did the work rather
-   * than whatever the menu says by then. Kept through manual edits and
-   * re-renders: they are still that model's work.
-   */
-  previewToken?: string;
-  draft: string;
-  error: string;
+/**
+ * Which resume the preview on screen drew, and why: the server's answer to
+ * the preview request. `resumeId` is what finalising sends back as
+ * `previewedResumeId` (the run checks it would build that very resume), and
+ * what Update Preview names; `match` is the matcher's explanation, kept
+ * through re-renders of edited content (the server answers none for those).
+ */
+type PreviewChoice = {
+  resumeId: string;
+  resumeLabel: string;
+  match: TaskMatch | null;
+  mode: BuildMode;
 };
 
 type GenerationFailure = {
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   error: string;
 };
@@ -136,8 +130,8 @@ function getAnalysisJobTitle(analysis?: AnalyzedJob): string {
 /**
  * The job a quote is priced against.
  *
- * A placeholder, because what a resume costs depends on the profile and the
- * model it resolves to and never on the job - and the quote is wanted before
+ * A placeholder, because what a resume costs is the price of its build mode
+ * and never depends on the job - and the quote is wanted before
  * anybody has typed a company name. The server still validates a quote's jobs
  * the way it validates a real submission's, so this one is complete.
  */
@@ -164,36 +158,46 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+/** What the resume a preview drew was, by the mode that chose it: the success notice's "the ... for this job". */
+function previewChoiceWords(mode: BuildMode): string {
+  if (mode === 'suitable') return 'suitable resume';
+  if (mode === 'full') return 'default resume';
+  return 'resume Partial Tailor chose';
+}
+
 /**
- * What a quote is asked about before a run spends credit: the profiles it
- * builds for, as many placeholder jobs as it has postings, the model chosen
- * for this run, and - when finalising previews - what the submission will
- * carry of them: each one's content, and the token naming the model that
- * wrote it. Both, because the server prices them together: a valid token is
- * charged its model, while content whose token has expired (a day on) or was
- * never given is charged at least the profile's own model. Quoted with the
- * tokens alone, such a run showed the cheaper model the page names, and was
- * charged more than the alert said.
+ * What a quote is asked about before a run spends credit: the profile it
+ * builds for, the build mode (a resume costs the price of its mode, whatever
+ * model runs it), as many placeholder jobs as it has postings, the model
+ * chosen for this run, and - when finalising a preview - what the submission
+ * will carry of it: the previewed content, and the token naming the mode that
+ * wrote it. Both, because the server prices them together: content whose token
+ * is valid for this resume and mode is charged that mode's price, while
+ * content whose token has expired (a day on) or was never given is charged at
+ * least the dearer tailoring mode. Quoted with the tokens alone, such a run
+ * showed the cheaper price and was charged more than the alert said.
  */
 function quoteBody(
   overrides: Pick<SubmitBatchRequest, 'model'>,
-  profileIds: string[],
+  profileId: string,
+  buildMode: BuildMode,
   jobCount = 1,
-  previews: Pick<SubmitBatchRequest, 'tailoredContentByProfileId' | 'previewTokenByProfileId'> = {}
+  previews: Pick<SubmitBatchRequest, 'tailoredContentByResumeId' | 'previewTokenByResumeId'> = {}
 ): SubmitBatchRequest {
-  const { tailoredContentByProfileId = {}, previewTokenByProfileId = {} } = previews;
+  const { tailoredContentByResumeId = {}, previewTokenByResumeId = {} } = previews;
   return {
     ...overrides,
-    profileIds,
+    profileId,
+    buildMode,
     jobs: Array.from({ length: Math.max(1, jobCount) }, () => QUOTE_JOBS[0]),
-    ...(Object.keys(tailoredContentByProfileId).length > 0 ? { tailoredContentByProfileId } : {}),
-    ...(Object.keys(previewTokenByProfileId).length > 0 ? { previewTokenByProfileId } : {}),
+    ...(Object.keys(tailoredContentByResumeId).length > 0 ? { tailoredContentByResumeId } : {}),
+    ...(Object.keys(previewTokenByResumeId).length > 0 ? { previewTokenByResumeId } : {}),
   };
 }
 
 /**
  * A Generate Immediately run's progress, with the way to stop it - in either
- * mode, and inside the multi-profile preview, which covers the page.
+ * builder mode.
  */
 function RunProgress({
   progress,
@@ -232,39 +236,24 @@ export default function Home() {
   // `refresh` re-reads the account after a run, so the balance in the top bar
   // moves when credits are spent or refunded rather than on the next reload.
   const { account, refresh: refreshAccount } = useAuth();
-  /**
-   * Whether this account may build for more than one profile at once:
-   * Premium and up, or an administrator (owner decisions B1, B3). Below that,
-   * Multiple, All profiles, Specific group and Select Group are shown locked,
-   * and the target in effect is always the single profile - derived rather
-   * than corrected in an effect, so a subscription that changes under an open
-   * page cannot leave a locked choice selected.
-   */
-  const manyProfiles = canBuildForManyProfiles(account);
-  /** What a locked choice says - and the dialog that says it. */
-  const manyLock = describeLock('many-profiles', account);
-  const locked = useLockedFeature();
   /** What is asked before a run spends credit (Generate Immediately always, Order when it costs). */
   const spend = useSpendConfirm();
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
+  /** The resumes the account can build (enabled ones): the default resume's label and model come from here. */
+  const [resumes, setResumes] = useState<Resume[]>([]);
+  /** The profiles a run can build for: those with an enabled resume, newest edit first. */
+  const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [builderMode, setBuilderMode] = useState<BuilderMode>(null);
+  /** The ONE profile a run builds (a person, every tier), for both ways of building. */
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  /** How the run builds it: the mode is the run's, and so is its price. */
+  const [buildModeChoice, setBuildModeChoice] = useState<BuildMode>('partial');
   /**
    * The model for THIS run only.
    *
-   * Empty means every field falls through to the selected profile's own
+   * Empty means every field falls through to the chosen resume's own
    * setting, and then to the app default - nothing here is persisted.
    */
   const [aiOverrides, setAiOverrides] = useState<AiPreferences>({});
-  const [generateModeChoice, setGenerateMode] = useState<GenerateMode>('single');
-  const generateMode: GenerateMode = manyProfiles ? generateModeChoice : 'single';
-  const [multipleTarget, setMultipleTarget] = useState<'all' | 'group'>('group');
-  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
-  const [sheetsTargetChoice, setSheetsTargetMode] = useState<TargetKind>('single');
-  const sheetsTargetMode = targetInEffect(sheetsTargetChoice, manyProfiles);
-  const [selectedSheetsProfileId, setSelectedSheetsProfileId] = useState<string | null>(null);
-  const [selectedSheetsGroupId, setSelectedSheetsGroupId] = useState<string>('');
   const [accountSheet, setAccountSheet] = useState<AccountSheet | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [role, setRole] = useState('');
@@ -284,7 +273,7 @@ export default function Home() {
   /**
    * The posting's one analysis, held with the description it was made for
    * (lib/jobAnalysis.ts). Not reset with the other outputs: the company, the
-   * role, the profile and the model are not the posting, and a change of any
+   * role, the resume and the model are not the posting, and a change of any
    * of them builds on the same analysis - sent by its `analysisId`, never
    * asked for again. Editing the description is another posting, which
    * `heldAnalysisFor` sees for itself.
@@ -294,14 +283,19 @@ export default function Home() {
   const [previewHtml, setPreviewHtml] = useState('');
   const [previewTailored, setPreviewTailored] = useState(false);
   const [isSinglePreviewOpen, setIsSinglePreviewOpen] = useState(false);
+  /** The preview's content: the server's answer, or - after an edit in Manual Edits - the person's edit of it (lib/tailoredDraft.ts). */
   const [tailoredContent, setTailoredContent] = useState<HeldTailoredContent | null>(null);
-  /** The single preview's token - see MultiplePreview.previewToken. */
+  /**
+   * The server's word for which mode wrote `tailoredContent`. Sent back when
+   * finalising, so the resume is charged at the mode that did the work rather
+   * than whatever the cards say by then. Kept through manual edits and
+   * re-renders: they are still that mode's work.
+   */
   const [previewToken, setPreviewToken] = useState<string | null>(null);
+  /** The resume the preview drew and why it was chosen; null with no preview open. */
+  const [previewChoice, setPreviewChoice] = useState<PreviewChoice | null>(null);
   const [tailoredContentDraft, setTailoredContentDraft] = useState('');
   const [tailoredContentError, setTailoredContentError] = useState('');
-  const [multiplePreviews, setMultiplePreviews] = useState<MultiplePreview[]>([]);
-  const [multiplePreviewTailored, setMultiplePreviewTailored] = useState(false);
-  const [multiplePreviewIndex, setMultiplePreviewIndex] = useState(0);
   const [autoGenerate, setAutoGenerate] = useState(false);
   /** How many jobs the sheet panel's loaded rows hold; null until rows are loaded. */
   const [sheetJobCount, setSheetJobCount] = useState<number | null>(null);
@@ -349,7 +343,7 @@ export default function Home() {
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
   /**
    * What went wrong: one of the page's own sentences ("Please select a
-   * profile"), or the failure itself, which <ErrorNotice> words for the reader
+   * resume"), or the failure itself, which <ErrorNotice> words for the reader
    * and - for an administrator - follows with the server's detail.
    */
   const [error, setError] = useState<unknown>('');
@@ -357,7 +351,7 @@ export default function Home() {
   /**
    * How this tab's Generate Immediately run ended. Its own state, not
    * `successMessage`: the reset that clears the outputs whenever an input
-   * changes also runs when the first load picks the profile - and a run
+   * changes also runs when the first load picks the resume - and a run
    * picked back up on that load said how it ended just before, and was wiped.
    * Replaced by the next run; cleared when a new build starts.
    */
@@ -379,17 +373,14 @@ export default function Home() {
 
   useEffect(() => {
     loadInitialData();
-    // Once, on mount. It reads `manyProfiles` to pick the starting target, and
-    // that is settled by then: AuthGate renders this page only once the
-    // account has loaded. A subscription that changes later is covered by
-    // `generateMode` and `sheetsTargetMode` being derived from it, without
-    // reloading every list on the page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Once, on mount: the profiles, resumes, models and sheet are read here,
+    // and a run re-reads only what it moves (the balance).
   }, []);
 
   const resetTailoredEditor = useCallback(() => {
     setTailoredContent(null);
     setPreviewToken(null);
+    setPreviewChoice(null);
     setTailoredContentDraft('');
     setTailoredContentError('');
   }, []);
@@ -404,35 +395,55 @@ export default function Home() {
     setIsSinglePreviewOpen(false);
     resetTailoredEditor();
     setSuccessMessage('');
-    setMultiplePreviews([]);
-    setMultiplePreviewTailored(false);
-    setMultiplePreviewIndex(0);
+    // A refusal for want of credit was about THAT run (its profile, mode and model): the figure in it
+    // is not the next one's.
+    setShortfall(null);
   }, [resetTailoredEditor]);
 
-  // The model too: a preview is that model's work, and the cost line, the
-  // picker and the finalise must all be about the same one. Leaving a preview
-  // up across a change of model priced it at the new one.
+  // The mode and the model too: a preview is that mode's work, written by that
+  // model, and the cost line, the cards and the finalise must all be about the
+  // same one. Leaving a preview up across a change of either priced it at the
+  // new one.
   useEffect(() => {
     resetGenerationOutputs();
-  }, [builderMode, companyName, role, jobDescription, selectedProfileId, generateMode, aiOverrides.modelId, resetGenerationOutputs]);
+  }, [builderMode, companyName, role, jobDescription, selectedProfileId, buildModeChoice, aiOverrides.modelId, resetGenerationOutputs]);
 
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  /** The chosen profile's default resume: what Fully Tailor builds, and where its model and label come from. */
+  const defaultResume = resumes.find((resume) => resume.id === selectedProfile?.defaultResumeId) ?? null;
+  const defaultResumeLabel = defaultResume ? resumeLabel(defaultResume) : null;
   const aiRequestOverrides = toAiRequestOverrides(aiOverrides);
   const hasAiOverrides = Object.keys(aiRequestOverrides).length > 0;
   /**
+   * What a resume costs in each mode, once the models answer (the prices come
+   * with them): the cards say it, and say nothing before then.
+   */
+  const modePrices = useMemo<Record<BuildMode, number> | null>(
+    () =>
+      modelsLoaded
+        ? {
+            suitable: modelSettings[BUILD_MODE_PRICE_SETTINGS.suitable],
+            partial: modelSettings[BUILD_MODE_PRICE_SETTINGS.partial],
+            full: modelSettings[BUILD_MODE_PRICE_SETTINGS.full],
+          }
+        : null,
+    [modelSettings, modelsLoaded]
+  );
+  /**
    * What the override selects fall back to.
    *
-   * In single mode that is the chosen profile's own setting, which is the
-   * layer directly beneath this one; with no profile in scope - multiple mode,
-   * or nothing selected yet - it is the app default.
+   * Fully Tailor builds the profile's default resume, so the layer directly
+   * beneath this one is that resume's own setting. The other modes choose a
+   * resume per job and each runs on its own model, so what is left to name is
+   * the app default.
    */
-  const profilePreferences = normalizeAiPreferences(selectedProfile?.profileSettings?.ai);
-  const inheritsFromProfile = generateMode === 'single' && Boolean(selectedProfile);
-  // The profile's own model, but only while it is one that can still run: a
-  // profile pointing at a model this installation has since locked falls back
+  const inheritsFromResume = buildModeChoice === 'full' && Boolean(defaultResume);
+  const resumePreferences = normalizeAiPreferences(inheritsFromResume ? defaultResume?.resumeSettings?.ai : undefined);
+  // The resume's own model, but only while it is one that can still run: a
+  // resume pointing at a model this installation has since locked falls back
   // to the app default, and this label has to name what will really be used.
   const inheritedModel =
-    modelSettings.models.find((model) => model.id === profilePreferences.modelId) ??
+    modelSettings.models.find((model) => model.id === resumePreferences.modelId) ??
     modelSettings.models.find((model) => model.id === modelSettings.defaultModelId);
   const inheritedChoice = {
     modelLabel: inheritedModel?.name || 'the first enabled model',
@@ -440,20 +451,24 @@ export default function Home() {
 
   const loadInitialData = async () => {
     try {
-      const [profilesData, groupsData, loadedModels, ownSheet] = await Promise.all([
-        profilesApi.getAll({ includeDisabled: true }),
-        groupsApi.getAll().catch(() => []),
+      const [resumesData, profilesData, loadedModels, ownSheet] = await Promise.all([
+        resumesApi.getAll({ includeDisabled: true }),
+        // Open to every builder on every subscription: a failure is a failure to load.
+        profilesApi.getAll(),
         resumeApi.getModels().catch(() => null),
         // Never fatal to this page: the import dialog is one feature of it, and
         // a Google outage must not stop the builder from loading.
         sheetApi.get().catch(() => null),
       ]);
-      const enabledProfiles = profilesData.filter((p) => !p.disabled);
+      const enabledResumes = resumesData.filter((resume) => !resume.disabled);
+      // Only a profile with an enabled resume can be built (the run refuses
+      // one without), in the order the server lists them: newest edit first.
+      const buildableProfiles = profilesData.filter((profile) => profile.enabledResumeCount > 0);
       // A failed models request is not "no models": the picker must not tell
       // the reader AI generation is unavailable because one request dropped.
       const modelData = loadedModels ?? DEFAULT_USER_APP_SETTINGS;
-      setProfiles(enabledProfiles);
-      setGroups(groupsData);
+      setResumes(enabledResumes);
+      setProfiles(buildableProfiles);
       setModelSettings(modelData);
       setModelsLoaded(loadedModels !== null);
       setAccountSheet(ownSheet);
@@ -464,19 +479,11 @@ export default function Home() {
         applyTheme(modelData.defaultTheme);
       }
 
-      // The administrator's default target, profile and group - except that an
-      // account that supports one profile starts on Single, whatever the
-      // default target says (lib/runChoices.ts).
-      const start = startingTarget(modelData, enabledProfiles, groupsData, manyProfiles);
-      if (start.profileId) {
-        setSelectedProfileId(start.profileId);
-        setSelectedSheetsProfileId(start.profileId);
-      }
-      setGenerateMode(start.kind === 'single' ? 'single' : 'multiple');
-      setMultipleTarget(start.kind === 'all' ? 'all' : 'group');
-      setSelectedGroupId(start.groupId);
-      setSheetsTargetMode(start.kind);
-      setSelectedSheetsGroupId(start.groupId);
+      // The administrator's default profile (the first one while it is not
+      // one of this account's) and default build mode (lib/runChoices.ts).
+      const startProfileId = startingProfileId(modelData, buildableProfiles);
+      if (startProfileId) setSelectedProfileId(startProfileId);
+      setBuildModeChoice(startingBuildMode(modelData));
     } catch (err) {
       setError(err ?? 'Failed to load data.');
     } finally {
@@ -494,78 +501,29 @@ export default function Home() {
   const ownSpreadsheetId = accountSheet?.configured && accountSheet.spreadsheetId ? accountSheet.spreadsheetId : null;
 
   /**
-   * The profiles a manual run will build for, exactly as the run picks them:
-   * the selected one, every enabled profile, or the chosen group's enabled
-   * members. What the "Generate All" count and the quote both read, so neither
-   * counts a profile the run would skip.
-   */
-  const manualTarget = useMemo<TargetChoice>(
-    () => ({
-      kind: generateMode === 'single' ? 'single' : multipleTarget,
-      profileId: selectedProfileId,
-      groupId: selectedGroupId,
-    }),
-    [generateMode, multipleTarget, selectedGroupId, selectedProfileId]
-  );
-  const manualRunProfiles = useMemo<Profile[]>(
-    () => profilesOfTarget(manualTarget, profiles, groups),
-    [groups, manualTarget, profiles]
-  );
-
-  /** The same for a sheet import's target. */
-  const sheetsTarget = useMemo<TargetChoice>(
-    () => ({ kind: sheetsTargetMode, profileId: selectedSheetsProfileId, groupId: selectedSheetsGroupId }),
-    [selectedSheetsGroupId, selectedSheetsProfileId, sheetsTargetMode]
-  );
-  const sheetsRunProfiles = useMemo<Profile[]>(
-    () => profilesOfTarget(sheetsTarget, profiles, groups),
-    [groups, profiles, sheetsTarget]
-  );
-
-  // The ready set as a string, so editing a preview's JSON or resetting the
-  // form - each a new array - does not re-ask for the same price.
-  const readyPreviewIds = useMemo(() => readyPreviewKey(multiplePreviews), [multiplePreviews]);
-  const hasPreviews = multiplePreviews.length > 0;
-  /**
    * What to price: the run the page is set up for, as the request that would
-   * start it. Finalising multiple previews builds only the profiles that have
-   * preview content, so those are what it prices.
+   * start it - the chosen profile in the chosen mode, as exact as the charge
+   * (jobs x the mode's price), so the line never says "up to". Once a sheet's
+   * rows are loaded the price is the run's, every loaded job; before, it is
+   * what one row costs.
    */
   const quoteRequest = useMemo(() => {
-    let target: Profile[] = [];
+    if (builderMode === null || !selectedProfile) return null;
     let jobs = QUOTE_JOBS;
-    if (builderMode === 'sheets') {
-      target = sheetsRunProfiles;
-      // Once rows are loaded the price is the run's: every loaded job for
-      // every profile. Before, it is what one row costs.
-      if (sheetJobCount) jobs = Array.from({ length: sheetJobCount }, () => QUOTE_JOBS[0]);
-    } else if (builderMode === 'manual') {
-      target = manualRunProfiles;
-      if (generateMode === 'multiple' && !autoGenerate && hasPreviews) {
-        const ready = new Set(readyPreviewIds.split(','));
-        target = target.filter((profile) => ready.has(profile.id));
-      }
+    if (builderMode === 'sheets' && sheetJobCount) {
+      jobs = Array.from({ length: sheetJobCount }, () => QUOTE_JOBS[0]);
     }
-    if (target.length === 0) return null;
-    const profileIds = target.map((profile) => profile.id);
     const body: SubmitBatchRequest = {
       ...(aiOverrides.modelId ? { model: aiOverrides.modelId } : {}),
-      profileIds,
+      profileId: selectedProfile.id,
+      buildMode: buildModeChoice,
       jobs,
     };
-    return { key: `${profileIds.join(',')}|${jobs.length}|${aiOverrides.modelId ?? ''}|${runRevision}`, body };
-  }, [
-    aiOverrides.modelId,
-    autoGenerate,
-    builderMode,
-    generateMode,
-    hasPreviews,
-    manualRunProfiles,
-    readyPreviewIds,
-    runRevision,
-    sheetJobCount,
-    sheetsRunProfiles,
-  ]);
+    return {
+      key: `${selectedProfile.id}|${buildModeChoice}|${jobs.length}|${aiOverrides.modelId ?? ''}|${runRevision}`,
+      body,
+    };
+  }, [aiOverrides.modelId, buildModeChoice, builderMode, runRevision, selectedProfile, sheetJobCount]);
 
   useEffect(() => {
     if (!quoteRequest) return;
@@ -594,18 +552,20 @@ export default function Home() {
   }, [refreshAccount, runRevision]);
 
   /**
-   * A failed run, as the page reports it. A 402 and a 403 for the
-   * subscription are the failures with a remedy the person can take
-   * themselves: the first gets the numbers and a way to buy credits, the
-   * second the lock - the subscription changed under this page - with the way
-   * to the Subscription page, and the account re-read so the choices lock too.
-   * That lock is worded from the refusal, not from this page's session, which
-   * still has the tier the server no longer does (`describeTooLowRefusal`).
+   * A failed run, as the page reports it. A 402 is the failure with a remedy
+   * the person can take themselves: it gets the numbers and a way to buy
+   * credits. A 409 `preview-changed` says, in the server's sentence, that the
+   * profile's resumes (or the posting's analysis) changed since the preview
+   * was drawn, so the run would build a resume the person did not see: the
+   * preview is dropped, and the next one is built afresh.
    */
   const reportRunFailure = (err: unknown, fallback: string) => {
-    if (isSubscriptionTooLow(err)) {
-      locked.open(describeTooLowRefusal());
-      void refreshAccount();
+    if (err instanceof ApiResponseError && err.code === 'preview-changed') {
+      setPreviewHtml('');
+      setPreviewTailored(false);
+      setIsSinglePreviewOpen(false);
+      resetTailoredEditor();
+      setError(err);
       return;
     }
     if (isInsufficientCredits(err)) {
@@ -780,13 +740,6 @@ export default function Home() {
     };
   }, [activeRun]);
 
-  /** The profiles a sheet run builds for, or the sentence saying why it cannot run yet. */
-  const getSelectedProfilesForSheetsBuilder = () => {
-    const blocker = targetBlocker(sheetsTarget, profiles, groups);
-    if (blocker) throw new Error(blocker);
-    return sheetsRunProfiles;
-  };
-
   const clearGenerationProgress = () => {
     setGenerationProgress(null);
   };
@@ -804,7 +757,7 @@ export default function Home() {
     total: number,
     completed: number,
     phase: string,
-    currentProfileName?: string,
+    currentResumeName?: string,
     currentCompanyName?: string,
     currentJobTitle?: string,
     currentJobNumber?: number,
@@ -814,7 +767,7 @@ export default function Home() {
       total,
       completed,
       phase,
-      currentProfileName,
+      currentResumeName,
       currentCompanyName,
       currentJobTitle,
       currentJobNumber,
@@ -822,48 +775,41 @@ export default function Home() {
     });
   };
 
-  /** The profiles a manual run builds for, or the sentence saying why it cannot run yet. */
-  const getSelectedProfilesForManualBuilder = (): Profile[] => {
-    const blocker = targetBlocker(manualTarget, profiles, groups);
-    if (blocker) throw new Error(blocker);
-    return manualRunProfiles;
-  };
-
   /**
-   * The request for the manual form's job: one posting, for these profiles,
-   * on the analysis the page already has - named by its `analysisId`, which
-   * every profile's resume is built on - and, when finalising previews, each
-   * profile's previewed content with the token naming the model that wrote it,
-   * so it is charged at that model.
+   * The request for the manual form's job: one posting, for the chosen
+   * profile in the chosen mode, on the analysis the page already has - named
+   * by its `analysisId`. Finalising a preview adds `previewedResumeId` (the
+   * resume the preview drew, which the run must build too, else 409
+   * `preview-changed`) and - Partial and Fully only - its content, keyed by
+   * that resume's id, with the token naming the mode that wrote it, so it is
+   * charged at that mode. Choose Suitable Resume sends no content at all (the
+   * server refuses it): the resume is built as written.
    *
-   * No template: the server draws each resume with its profile's own
+   * No template: the server draws the chosen resume with the template it names
    * (services/templateChoice.ts). A role left empty is the posting's title.
    */
   const manualRunRequest = ({
-    targetProfiles,
+    profileId,
     analysis,
-    tailoredContentByProfileId,
-    previewTokenByProfileId,
+    previewedResumeId,
+    previewedContent,
+    previewedToken,
   }: {
-    targetProfiles: Profile[];
+    profileId: string;
     analysis: HeldAnalysis<AnalyzedJob>;
-    tailoredContentByProfileId?: Map<string, HeldTailoredContent | undefined>;
-    previewTokenByProfileId?: Map<string, string | undefined>;
+    previewedResumeId?: string;
+    previewedContent?: HeldTailoredContent | null;
+    previewedToken?: string | null;
   }): SubmitBatchRequest => {
-    const tailoredByProfileId: Record<string, unknown> = {};
-    const tokensByProfileId: Record<string, string> = {};
-    for (const profile of targetProfiles) {
-      const tailored = tailoredContentByProfileId?.get(profile.id);
-      if (tailored) tailoredByProfileId[profile.id] = tailored;
-      const token = previewTokenByProfileId?.get(profile.id);
-      if (tailored && token) tokensByProfileId[profile.id] = token;
-    }
+    const holdsContent = buildModeChoice !== 'suitable' && Boolean(previewedResumeId) && Boolean(previewedContent);
     const targetCompanyName = companyName.trim();
 
     return {
       ...aiRequestOverrides,
       label: targetCompanyName,
-      profileIds: targetProfiles.map((profile) => profile.id),
+      buildMode: buildModeChoice,
+      profileId,
+      ...(previewedResumeId ? { previewedResumeId } : {}),
       jobs: [
         {
           companyName: targetCompanyName,
@@ -872,8 +818,8 @@ export default function Home() {
           analysisId: analysis.analysisId,
         },
       ],
-      ...(Object.keys(tailoredByProfileId).length > 0 ? { tailoredContentByProfileId: tailoredByProfileId } : {}),
-      ...(Object.keys(tokensByProfileId).length > 0 ? { previewTokenByProfileId: tokensByProfileId } : {}),
+      ...(holdsContent ? { tailoredContentByResumeId: { [previewedResumeId!]: previewedContent } } : {}),
+      ...(holdsContent && previewedToken ? { previewTokenByResumeId: { [previewedResumeId!]: previewedToken } } : {}),
       ...defaultRunFormat(modelSettings),
     };
   };
@@ -964,7 +910,7 @@ export default function Home() {
       if (signal?.aborted) return;
       setDownloadIssue(
         `Could not download the resume for ${item.companyName || 'this job'}` +
-          `${item.profileName ? ` (${item.profileName})` : ''}: ${userMessage(err)}`
+          `${item.resumeName ? ` (${item.resumeName}${item.resumeLabel ? ` · ${item.resumeLabel}` : ''})` : ''}: ${userMessage(err)}`
       );
     }
   };
@@ -981,7 +927,7 @@ export default function Home() {
       if (signal?.aborted) return;
       setDownloadIssue(
         `Could not download the resume for ${item.companyName || 'this job'}` +
-          `${item.profileName ? ` (${item.profileName})` : ''}: ${userMessage(err)}`
+          `${item.resumeName ? ` (${item.resumeName}${item.resumeLabel ? ` · ${item.resumeLabel}` : ''})` : ''}: ${userMessage(err)}`
       );
     } finally {
       setRedownloading((current) => (current === key ? '' : current));
@@ -1039,7 +985,7 @@ export default function Home() {
    */
   const placeOrder = async (request: SubmitBatchRequest, skippedNote = '') => {
     const submitted = await generationApi.submit({ ...request, mode: 'order' });
-    const receipt = placedOrderFrom(submitted, skippedNote);
+    const receipt = placedOrderFrom(submitted, skippedNote, selectedProfile?.name);
     if (receipt) {
       setPlacedOrder(receipt);
     } else {
@@ -1065,7 +1011,7 @@ export default function Home() {
 
   /**
    * Every run asks before it spends credit (components/SpendConfirm): what it
-   * takes, from the server's quote for these profiles, and the balance after.
+   * takes, from the server's quote for these resumes, and the balance after.
    * Generate Immediately asks always - closing the tab stops it (owner
    * decision B4) - and an Order only when it costs something; each until "Do
    * not show again" for that kind in this browser. `body` is what the quote
@@ -1129,7 +1075,7 @@ export default function Home() {
         running: snapshot.running,
         queued: snapshot.queued,
         phase: snapshot.running > 0 ? 'Building resumes' : describe.phase,
-        currentProfileName: current?.profileName,
+        currentResumeName: current ? `${current.resumeName}${current.resumeLabel ? ` · ${current.resumeLabel}` : ''}` : undefined,
         currentCompanyName: current?.companyName,
         currentJobTitle: current?.role,
         ...(describe.jobCount !== undefined ? { importedJobCount: describe.jobCount } : {}),
@@ -1202,16 +1148,15 @@ export default function Home() {
   /**
    * A finished run, in the shape the page reports: what was built, and the
    * resumes that FAILED. A resume the run stopped before it was built is not a
-   * failure to report - it was refunded - but it is still one the previews
-   * keep (`unbuiltProfileIds`), so finalising again builds only those.
+   * failure to report - it was refunded.
    */
   const summarizeBatch = (snapshot: BatchSnapshot | null, fallbackCompany: string) => {
     const tasks = snapshot?.tasks ?? [];
     const failures: GenerationFailure[] = tasks
       .filter((task) => task.state === 'failed')
       .map((task) => ({
-        profileId: task.profileId,
-        profileName: task.profileName,
+        resumeId: task.resumeId,
+        resumeName: task.resumeName,
         companyName: task.companyName || fallbackCompany,
         error: task.error || 'This resume could not be built.',
       }));
@@ -1219,7 +1164,6 @@ export default function Home() {
       generated: snapshot?.completed ?? 0,
       failed: failures.length,
       failures,
-      unbuiltProfileIds: tasks.filter((task) => task.state !== 'done').map((task) => task.profileId),
       failedCompanies: [...new Set(failures.map((failure) => failure.companyName))],
     };
   };
@@ -1232,7 +1176,7 @@ export default function Home() {
       setError(
         `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || fallbackCompany}. ${res.failures
           .slice(0, 3)
-          .map((failure) => `${failure.profileName}: ${failure.error}`)
+          .map((failure) => `${failure.resumeName}: ${failure.error}`)
           .join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
       );
     }
@@ -1243,14 +1187,7 @@ export default function Home() {
   const manualFormProblem = (): string | null => {
     if (!companyName.trim()) return 'Please enter a company name';
     if (jobDescription.trim().length < 50) return 'Please provide a job description (minimum 50 characters)';
-    if (generateMode === 'single' && !selectedProfileId) return 'Please select a profile';
-    if (generateMode === 'multiple' && profiles.length === 0) return 'No profiles available';
-    if (generateMode === 'multiple' && multipleTarget === 'group') {
-      const selectedGroup = groups.find((group) => group.id === selectedGroupId);
-      if (!selectedGroup) return 'Please select a group';
-      if (!selectedGroup.profileIds.length) return 'Selected group has no members';
-    }
-    return null;
+    return profileBlocker(selectedProfileId, profiles);
   };
 
   /**
@@ -1300,15 +1237,13 @@ export default function Home() {
     setPreviewTailored(false);
     setIsSinglePreviewOpen(false);
     resetTailoredEditor();
-    setMultiplePreviews([]);
-    setMultiplePreviewTailored(false);
-    setMultiplePreviewIndex(0);
   };
 
   /**
    * Builds the manual form's job straight away (Auto-generate on): analysed,
-   * then one run for the target profiles - Generate Immediately, followed and
-   * downloaded here, or an Order (Multiple only), collected on Orders.
+   * then one run for the chosen profile in the chosen mode - Generate
+   * Immediately, followed and downloaded here, or an Order, collected on
+   * Orders.
    */
   const runManual = async (kind: SheetRunKind) => {
     setIsGenerating(true);
@@ -1319,19 +1254,15 @@ export default function Home() {
       clearGenerationProgress();
       const analysis = await ensureAnalysis();
 
-      const targetProfiles =
-        generateMode === 'single'
-          ? profiles.filter((profile) => profile.id === selectedProfileId)
-          : getSelectedProfilesForManualBuilder();
-      if (targetProfiles.length === 0) throw new Error('Please select a profile');
-      const request = manualRunRequest({ targetProfiles, analysis });
+      if (!selectedProfileId) throw new Error('Please select a profile');
+      const request = manualRunRequest({ profileId: selectedProfileId, analysis });
 
       if (kind === 'order') {
         await placeOrder(request);
         return;
       }
 
-      updateGenerationProgress(targetProfiles.length, 0, 'Queueing resumes', undefined, targetCompanyName);
+      updateGenerationProgress(1, 0, 'Queueing resumes', undefined, targetCompanyName);
       const snapshot = await runImmediate(request, { phase: 'Building resumes' });
       reportImmediateEnd(snapshot, targetCompanyName);
     } catch (err) {
@@ -1346,14 +1277,14 @@ export default function Home() {
   };
 
   /**
-   * A sheet's loaded rows, built for the Build target: as an Order, or - once
-   * confirmed - Generate Immediately in this tab.
+   * A sheet's loaded rows, built for the Build target (one profile, one mode):
+   * as an Order, or - once confirmed - Generate Immediately in this tab.
    *
-   * ONE request carrying every resume, not one per resume: the server queues
-   * the lot and hands them out as seats come free. It names the sheet and tab
+   * ONE request carrying every row: the server chooses a resume per job (the
+   * mode's rule), queues the lot and hands them out as seats come free. It names the sheet and tab
    * the rows came from, so the server reads their Analysis cells itself - a
    * row that holds its analysis is built on it and never analysed - and each
-   * other posting is analysed once, by its first task, for every profile that
+   * other posting is analysed once, by its first task, for every resume that
    * needs it. No analysis goes from this page. A row without a Job Title goes
    * without one - the server names the role from the posting's analysis
    * rather than from a guess typed on this page.
@@ -1363,17 +1294,16 @@ export default function Home() {
     jobs: SheetJob[],
     meta: { skippedRows: number; sheet: SheetRunSource }
   ) => {
-    let selectedProfiles: Profile[];
-    try {
-      selectedProfiles = getSelectedProfilesForSheetsBuilder();
-    } catch (err) {
-      setError(err ?? 'Please choose who to build for.');
+    const blocker = profileBlocker(selectedProfileId, profiles);
+    if (blocker || !selectedProfileId) {
+      setError(blocker ?? 'Please choose who to build for.');
       return;
     }
     const request: SubmitBatchRequest = {
       ...aiRequestOverrides,
       label: `Google Sheet (${plural(jobs.length, 'job')})`,
-      profileIds: selectedProfiles.map((profile) => profile.id),
+      buildMode: buildModeChoice,
+      profileId: selectedProfileId,
       jobs: jobs.map((job) => ({
         companyName: job.companyName,
         role: job.jobTitle,
@@ -1389,7 +1319,7 @@ export default function Home() {
       : '';
     confirmSpend(
       kind,
-      quoteBody(aiRequestOverrides, request.profileIds ?? [], jobs.length),
+      quoteBody(aiRequestOverrides, selectedProfileId, buildModeChoice, jobs.length),
       () => void runSheet(kind, request, skippedNote, jobs.length)
     );
   };
@@ -1408,7 +1338,7 @@ export default function Home() {
         await placeOrder(request, skippedNote);
         return;
       }
-      updateGenerationProgress((request.profileIds?.length ?? 0) * jobCount, 0, 'Queueing resumes', undefined, undefined, undefined, undefined, jobCount);
+      updateGenerationProgress(jobCount, 0, 'Queueing resumes', undefined, undefined, undefined, undefined, jobCount);
       const snapshot = await runImmediate(request, { phase: 'Building resumes', jobCount });
       reportImmediateEnd(snapshot, '', skippedNote);
     } catch (err) {
@@ -1426,14 +1356,14 @@ export default function Home() {
   /** The manual header's primary: Analyze & Preview, or - Auto-generate on - Generate Immediately. */
   const handleGenerate = async () => {
     const problem = manualFormProblem();
-    if (problem) {
-      setError(problem);
+    if (problem || !selectedProfileId) {
+      setError(problem ?? 'Please select a profile.');
       return;
     }
     if (autoGenerate) {
       confirmSpend(
         'immediate',
-        quoteBody(aiRequestOverrides, manualRunProfiles.map((profile) => profile.id)),
+        quoteBody(aiRequestOverrides, selectedProfileId, buildModeChoice),
         () => void runManual('immediate')
       );
       return;
@@ -1446,57 +1376,39 @@ export default function Home() {
       clearGenerationProgress();
       const analysis = await ensureAnalysis();
 
-      if (generateMode === 'single') {
-        setGenerationStep('Building preview...');
-        const profile = profiles.find((p) => p.id === selectedProfileId);
-        const templateId = profile?.preferredTemplate || 'default';
-        const preview = await resumeApi.preview({
-          ...aiRequestOverrides,
-          profileId: selectedProfileId!,
-          templateId,
-          jobDescription,
-          analysisId: analysis.analysisId,
-        });
-        setPreviewHtml(preview.html);
-        setPreviewTailored(preview.tailored);
-        setIsSinglePreviewOpen(true);
-        setPreviewToken(preview.previewToken ?? null);
-        if (preview.tailoredContent) {
-          setTailoredContent(preview.tailoredContent);
-          setTailoredContentDraft(tailoredDraftOf(preview.tailoredContent));
-          setTailoredContentError('');
-        }
-        setSuccessMessage('Preview generated. Review, edit manually if needed, then click Generate Immediately to build it.');
-        return;
-      }
-
-      const profileIds =
-        multipleTarget === 'group' ? groups.find((group) => group.id === selectedGroupId)?.profileIds : undefined;
-      if (multipleTarget === 'group' && !profileIds) {
-        setError('Please select a group');
-        return;
-      }
-
-      setGenerationStep('Building previews...');
-      // The model the run names, as the finalise and its quote will:
-      // previewing on each profile's own while charging the menu's was
-      // the mismatch this used to have.
-      const res = await resumeApi.previewAll({
+      setGenerationStep('Building preview...');
+      // The server chooses the resume as a run would for this posting (the
+      // matcher's pick, or - Fully Tailor - the profile's default) and draws it
+      // with its own template; Choose Suitable Resume draws it as written, with
+      // no model call, and the other two tailor it. The company and role help
+      // the matcher read the posting's title.
+      const targetRole = (shouldShowRoleInput && role.trim()) || getAnalysisJobTitle(analysis.analysis);
+      const preview = await resumeApi.preview({
         ...aiRequestOverrides,
+        profileId: selectedProfileId,
+        buildMode: buildModeChoice,
         jobDescription,
         analysisId: analysis.analysisId,
-        profileIds,
+        companyName: companyName.trim(),
+        ...(targetRole ? { role: targetRole } : {}),
       });
-      const previewsWithDrafts = res.previews.map((preview) => ({
-        ...preview,
-        draft: tailoredDraftOf(preview.tailoredContent),
-        error: '',
-      }));
-      setMultiplePreviews(previewsWithDrafts);
-      setMultiplePreviewTailored(res.tailored);
-      setMultiplePreviewIndex(0);
+      setPreviewHtml(preview.html);
+      setPreviewTailored(preview.tailored);
+      setIsSinglePreviewOpen(true);
+      setPreviewToken(preview.previewToken ?? null);
+      setPreviewChoice({
+        resumeId: preview.resumeId,
+        resumeLabel: preview.resumeLabel,
+        match: preview.match,
+        mode: preview.buildMode,
+      });
+      if (preview.tailoredContent) {
+        setTailoredContent(preview.tailoredContent);
+        setTailoredContentDraft(tailoredDraftOf(preview.tailoredContent));
+        setTailoredContentError('');
+      }
       setSuccessMessage(
-        `Preview generated for ${res.previews.length} profile(s). Review, then Generate Immediately or Order to build them.`
+        `Preview built with ${preview.resumeLabel}, the ${previewChoiceWords(preview.buildMode)} for this job. Review, then click Generate Immediately to build it.`
       );
     } catch (err) {
       forgetAnalysisOn(err);
@@ -1508,16 +1420,16 @@ export default function Home() {
     }
   };
 
-  /** Order beside Generate Immediately, on manual Multiple with Auto-generate on. */
+  /** Order beside Generate Immediately, on manual with Auto-generate on. */
   const handleOrderManual = () => {
     const problem = manualFormProblem();
-    if (problem) {
-      setError(problem);
+    if (problem || !selectedProfileId) {
+      setError(problem ?? 'Please select a profile.');
       return;
     }
     confirmSpend(
       'order',
-      quoteBody(aiRequestOverrides, manualRunProfiles.map((profile) => profile.id)),
+      quoteBody(aiRequestOverrides, selectedProfileId, buildModeChoice),
       () => void runManual('order')
     );
   };
@@ -1525,7 +1437,7 @@ export default function Home() {
   /**
    * The single preview's Manual Edits: what an edit sends back is the box's
    * editable part (lib/tailoredDraft.ts), which the server finishes against
-   * the profile. A blank box sends nothing, and the server tailors afresh.
+   * the resume. A blank box sends nothing, and the server tailors afresh.
    */
   const handleTailoredContentChange = (value: string) => {
     setTailoredContentDraft(value);
@@ -1535,7 +1447,7 @@ export default function Home() {
   };
 
   const handleUpdatePreview = async () => {
-    if (!selectedProfileId) {
+    if (!previewChoice) {
       setError('Please select a profile');
       return;
     }
@@ -1554,12 +1466,11 @@ export default function Home() {
 
     try {
       setGenerationStep('Updating preview...');
-      const profile = profiles.find((p) => p.id === selectedProfileId);
-      const templateId = profile?.preferredTemplate || 'default';
+      // The resume the preview drew, not whatever the matcher would choose
+      // now: the edits are to that resume's tailoring. No model call, no token.
       const preview = await resumeApi.preview({
         ...aiRequestOverrides,
-        profileId: selectedProfileId!,
-        templateId,
+        resumeId: previewChoice.resumeId,
         ...postingFields(),
         tailoredContent,
       });
@@ -1577,13 +1488,15 @@ export default function Home() {
   };
 
   /**
-   * The single preview's Generate Immediately: the previewed content, built as
-   * a one-resume run in this tab - queued like any other, so it downloads,
-   * stops and refunds the way every Generate Immediately does - and charged at
-   * the model that wrote it (its preview token).
+   * The preview's Generate Immediately: the previewed resume, built as a
+   * one-resume run in this tab - queued like any other, so it downloads, stops
+   * and refunds the way every Generate Immediately does. Partial and Fully
+   * Tailor send the previewed content and are charged at the mode that wrote
+   * it (its preview token); Choose Suitable Resume sends the resume's id alone
+   * (the run builds it as written).
    */
   const handleFinalizeGenerate = () => {
-    if (!companyName.trim() || jobDescription.trim().length < 50 || !selectedProfileId) {
+    if (!companyName.trim() || jobDescription.trim().length < 50 || !selectedProfileId || !previewChoice) {
       setError('Please complete the required fields before generating.');
       return;
     }
@@ -1591,14 +1504,19 @@ export default function Home() {
       setError('Fix manual edits before generating.');
       return;
     }
-    // Priced as the run will be charged: the previewed content, at the model that wrote it (its token).
-    const previews = tailoredContent
-      ? {
-          tailoredContentByProfileId: { [selectedProfileId]: tailoredContent },
-          previewTokenByProfileId: previewToken ? { [selectedProfileId]: previewToken } : {},
-        }
-      : {};
-    confirmSpend('immediate', quoteBody(aiRequestOverrides, [selectedProfileId], 1, previews), () => void finalizeSingle());
+    // Priced as the run will be charged: the previewed content, at the mode that wrote it (its token).
+    const previews =
+      buildModeChoice !== 'suitable' && tailoredContent
+        ? {
+            tailoredContentByResumeId: { [previewChoice.resumeId]: tailoredContent },
+            previewTokenByResumeId: previewToken ? { [previewChoice.resumeId]: previewToken } : {},
+          }
+        : {};
+    confirmSpend(
+      'immediate',
+      quoteBody(aiRequestOverrides, selectedProfileId, buildModeChoice, 1, previews),
+      () => void finalizeSingle()
+    );
   };
 
   const finalizeSingle = async () => {
@@ -1612,18 +1530,18 @@ export default function Home() {
     const targetCompanyName = companyName.trim();
     try {
       const analysis = await ensureAnalysis();
-      const profile = profiles.find((p) => p.id === selectedProfileId);
-      if (!profile) throw new Error('Please select a profile');
+      if (!selectedProfileId || !previewChoice) throw new Error('Please select a profile');
       // The progress and its Stop are on the page, under the dialog: close it.
       // "Open Preview" brings it back if the run is stopped.
       setIsSinglePreviewOpen(false);
-      updateGenerationProgress(1, 0, 'Building resume', profile.name, targetCompanyName);
+      updateGenerationProgress(1, 0, 'Building resume', previewChoice.resumeLabel, targetCompanyName);
       const snapshot = await runImmediate(
         manualRunRequest({
-          targetProfiles: [profile],
+          profileId: selectedProfileId,
           analysis,
-          tailoredContentByProfileId: new Map([[profile.id, tailoredContent ?? undefined]]),
-          previewTokenByProfileId: new Map([[profile.id, previewToken ?? undefined]]),
+          previewedResumeId: previewChoice.resumeId,
+          previewedContent: tailoredContent,
+          previewedToken: previewToken,
         }),
         { phase: 'Building resume' }
       );
@@ -1638,185 +1556,6 @@ export default function Home() {
       afterRun();
     }
   };
-
-  /** A multi-profile preview's Manual Edits, read as the single preview's are (lib/tailoredDraft.ts). */
-  const handleMultipleDraftChange = (profileId: string, value: string) => {
-    setMultiplePreviews((prev) =>
-      prev.map((preview) => {
-        if (preview.profileId != profileId) return preview;
-        const read = readTailoredDraft(value);
-        return {
-          ...preview,
-          draft: value,
-          error: read.error,
-          tailoredContent: read.error ? preview.tailoredContent : read.content ?? undefined,
-        };
-      })
-    );
-  };
-
-  const handleUpdateMultiplePreview = async (profileId: string) => {
-    const preview = multiplePreviews.find((item) => item.profileId === profileId);
-    if (!preview) return;
-    if (preview.error) {
-      setError('Fix manual edits before updating preview.');
-      return;
-    }
-    if (!preview.tailoredContent) {
-      setError('No tailored content to preview.');
-      return;
-    }
-
-    setIsGenerating(true);
-    setError('');
-    setSuccessMessage('');
-
-    try {
-      setGenerationStep(`Updating preview for ${preview.profileName}...`);
-      const profile = profiles.find((p) => p.id === profileId);
-      const templateId = profile?.preferredTemplate || 'default';
-      const updated = await resumeApi.preview({
-        ...aiRequestOverrides,
-        profileId,
-        templateId,
-        ...postingFields(),
-        tailoredContent: preview.tailoredContent,
-      });
-      const nextPreviews = multiplePreviews.map((item) => {
-        if (item.profileId !== profileId) return item;
-        const nextTailored = updated.tailoredContent;
-        return {
-          ...item,
-          html: updated.html,
-          tailoredContent: nextTailored,
-          draft: tailoredDraftOf(nextTailored),
-          error: '',
-        };
-      });
-      setMultiplePreviews(nextPreviews);
-      setSuccessMessage(`Preview updated for ${preview.profileName}.`);
-    } catch (err) {
-      forgetAnalysisOn(err);
-      setError(err ?? 'Failed to update preview.');
-    } finally {
-      setIsGenerating(false);
-      setGenerationStep('');
-    }
-  };
-
-  /**
-   * The multi-profile preview's two ways to build: Generate Immediately in
-   * this tab (asked first), or Order.
-   */
-  const handleFinalizeGenerateMultiple = (kind: SheetRunKind) => {
-    if (!companyName.trim() || jobDescription.trim().length < 50) {
-      setError('Please complete the required fields before generating.');
-      return;
-    }
-    if (multipleTarget === 'group') {
-      const selectedGroup = groups.find((group) => group.id === selectedGroupId);
-      if (!selectedGroup) {
-        setError('Please select a group');
-        return;
-      }
-      if (!selectedGroup.profileIds.length) {
-        setError('Selected group has no members');
-        return;
-      }
-    }
-    // What the finalise builds: the profiles with preview content, each at the model that wrote it.
-    const previews = new Map(multiplePreviews.map((preview) => [preview.profileId, preview]));
-    const ready = manualRunProfiles.filter((profile) => previews.get(profile.id)?.tailoredContent);
-    if (ready.length === 0) {
-      // Nothing to spend on: the finalise says so in its own words.
-      void finalizeMultiple(kind);
-      return;
-    }
-    const content: Record<string, unknown> = {};
-    const tokens: Record<string, string> = {};
-    for (const profile of ready) {
-      const preview = previews.get(profile.id);
-      content[profile.id] = preview?.tailoredContent;
-      if (preview?.previewToken) tokens[profile.id] = preview.previewToken;
-    }
-    confirmSpend(
-      kind,
-      quoteBody(aiRequestOverrides, ready.map((profile) => profile.id), 1, {
-        tailoredContentByProfileId: content,
-        previewTokenByProfileId: tokens,
-      }),
-      () => void finalizeMultiple(kind)
-    );
-  };
-
-  const finalizeMultiple = async (kind: SheetRunKind) => {
-    setIsGenerating(true);
-    setError('');
-    setShortfall(null);
-    setSuccessMessage('');
-    setRunNotice('');
-    setPlacedOrder(null);
-
-    const targetCompanyName = companyName.trim();
-    try {
-      const analysis = await ensureAnalysis();
-
-      const previewMap = new Map(multiplePreviews.map((p) => [p.profileId, p]));
-      const profilesToGenerate = manualRunProfiles.filter((profile) => previewMap.get(profile.id)?.tailoredContent);
-      if (!profilesToGenerate.length) {
-        throw new Error('No preview content available to generate.');
-      }
-
-      /*
-       * ONE batch for every previewed profile, not one /generate each.
-       *
-       * The loop charged each resume as its own request, so a balance that
-       * ran out part way built and charged the first few, reported one
-       * resume's price as what "this run" needed, and left those first few
-       * in the list for a retry to build - and charge - again. As a batch
-       * the whole run is reserved at once, priced as the quote line says, and
-       * a 402 names that total before anything is built.
-       */
-      const request = manualRunRequest({
-        targetProfiles: profilesToGenerate,
-        analysis,
-        tailoredContentByProfileId: new Map(
-          profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.tailoredContent])
-        ),
-        previewTokenByProfileId: new Map(
-          profilesToGenerate.map((profile) => [profile.id, previewMap.get(profile.id)?.previewToken])
-        ),
-      });
-
-      if (kind === 'order') {
-        await placeOrder(request);
-        // Placed: every previewed resume is on its way, so none is left to finalise.
-        setMultiplePreviews([]);
-        setMultiplePreviewIndex(0);
-        setMultiplePreviewTailored(false);
-        return;
-      }
-
-      updateGenerationProgress(profilesToGenerate.length, 0, 'Queueing resumes', undefined, targetCompanyName);
-      const snapshot = await runImmediate(request, { phase: 'Building resumes' });
-      const res = reportImmediateEnd(snapshot, targetCompanyName);
-      // Only the previews that did NOT become a resume stay, so finalising
-      // again builds - and charges for - just those.
-      const remaining = keepUnbuiltPreviews(multiplePreviews, res.unbuiltProfileIds);
-      setMultiplePreviews(remaining);
-      setMultiplePreviewIndex(0);
-      if (remaining.length === 0) setMultiplePreviewTailored(false);
-    } catch (err) {
-      reportRunFailure(err, kind === 'order' ? 'Could not place that order.' : 'Failed to generate resume');
-    } finally {
-      setIsGenerating(false);
-      setGenerationStep('');
-      clearGenerationProgress();
-      afterRun();
-    }
-  };
-
-  const activeMultiplePreview = multiplePreviews[multiplePreviewIndex];
 
   if (isLoadingData) {
     return (
@@ -1833,14 +1572,14 @@ export default function Home() {
         {/*
           The page's primary action lives in the title row, where it always was
           in spirit - it sat above the fields, not under them - when building by
-          hand: Analyze & Preview, or Generate Immediately (and, for several
-          profiles, Order beside it). A sheet's two actions sit under the rows
+          hand: Analyze & Preview, or Generate Immediately (and Order beside it
+          once Auto-generate is on). A sheet's two actions sit under the rows
           they build, in the sheet panel. Back, Open Preview once a preview has
           been closed, and Stop while a run goes, are the quiet ones beside it.
         */}
         <PageHeader
           title="Build Resumes"
-          description="Tailor a resume to a job description, for one profile, a group, or every row of a Google Sheet."
+          description="Build a resume for a job description from one profile, or for every row of a Google Sheet."
           actions={
             builderMode !== null && (
               <>
@@ -1864,7 +1603,7 @@ export default function Home() {
                 >
                   Back
                 </button>
-                {builderMode === 'manual' && generateMode === 'single' && previewHtml && !isSinglePreviewOpen && (
+                {builderMode === 'manual' && previewHtml && !isSinglePreviewOpen && (
                   <button
                     type="button"
                     onClick={() => setIsSinglePreviewOpen(true)}
@@ -1874,7 +1613,7 @@ export default function Home() {
                     Open Preview
                   </button>
                 )}
-                {builderMode === 'manual' && generateMode === 'multiple' && autoGenerate && !isGenerating && (
+                {builderMode === 'manual' && autoGenerate && !isGenerating && (
                   <button
                     type="button"
                     onClick={handleOrderManual}
@@ -1882,7 +1621,7 @@ export default function Home() {
                     className={`tl-button-quiet ${styles.pill}`}
                     title="Built on the server whether or not this page stays open; collect the files on Orders"
                   >
-                    Order ({plural(manualRunProfiles.length, 'profile')})
+                    Order
                   </button>
                 )}
                 {builderMode === 'manual' && (
@@ -1899,10 +1638,8 @@ export default function Home() {
                       </>
                     ) : !autoGenerate ? (
                       'Analyze & Preview'
-                    ) : generateMode === 'single' ? (
-                      'Generate Immediately'
                     ) : (
-                      `Generate Immediately (${plural(manualRunProfiles.length, 'profile')})`
+                      'Generate Immediately'
                     )}
                   </button>
                 )}
@@ -1922,7 +1659,7 @@ export default function Home() {
                 <Link href="/credits" className="font-semibold underline underline-offset-2">
                   Credits page
                 </Link>
-                , or choose a model that costs less.
+                .
               </span>
               <button
                 onClick={() => setShortfall(null)}
@@ -1989,7 +1726,7 @@ export default function Home() {
             <span className="min-w-0">
               <span className="block text-lg font-semibold text-ink">Building Automatically from Google Sheet</span>
               <span className="mt-2 block text-sm text-muted">
-                Pick a tab and rows of your Google Sheet, then build every selected profile against every row - right away, or as an order.
+                Pick a tab and rows of your Google Sheet, then build resumes for one of your profiles from every row - right away, or as an order.
               </span>
             </span>
           </button>
@@ -2048,7 +1785,7 @@ export default function Home() {
                   <p className="mt-2 text-sm text-subtle">{jobDescription.length} characters</p>
                   {/*
                     What the posting's one analysis read, once there is one:
-                    every profile and model built on this description uses it,
+                    every resume and model built on this description uses it,
                     and editing the text makes it another posting.
                   */}
                   {currentAnalysis && (
@@ -2064,97 +1801,29 @@ export default function Home() {
             <Card title="Build options" padded={false}>
               <div className="divide-y divide-[var(--line-subtle)]">
                 <div className="space-y-5 p-5">
+                  <ProfileSelector
+                    id="manual-profile"
+                    profiles={profiles}
+                    selectedId={selectedProfileId}
+                    onChange={setSelectedProfileId}
+                    isLoading={false}
+                    disabled={isGenerating}
+                  />
+
                   <div>
-                    <label className="tl-label">
-                      Generate mode
-                    </label>
-                    <div className="mt-2 grid gap-2">
-                      <ChoiceCard
-                        name="generateMode"
-                        value="single"
-                        checked={generateMode === 'single'}
-                        onSelect={() => setGenerateMode('single')}
+                    <div>
+                      <BuildModeChoice
+                        name="manualBuildMode"
+                        value={buildModeChoice}
+                        onChange={setBuildModeChoice}
+                        prices={modePrices}
                         disabled={isGenerating}
-                        onLocked={locked.open}
-                      >
-                        Single (one profile)
-                      </ChoiceCard>
-                      {/* Locked below Premium: the lock says what it needs, and leads to the Subscription page. */}
-                      <ChoiceCard
-                        name="generateMode"
-                        value="multiple"
-                        checked={generateMode === 'multiple'}
-                        onSelect={() => setGenerateMode('multiple')}
-                        disabled={isGenerating}
-                        lock={manyProfiles ? null : manyLock}
-                        onLocked={locked.open}
-                      >
-                        Multiple (all profiles)
-                      </ChoiceCard>
+                      />
                     </div>
+                    <p className="mt-2 text-sm text-subtle" data-build-mode-note>
+                      {buildModeNote(buildModeChoice, selectedProfile, defaultResumeLabel)}
+                    </p>
                   </div>
-
-                  {generateMode === 'single' && (
-                    <ProfileSelector
-                      profiles={profiles}
-                      selectedId={selectedProfileId}
-                      onChange={setSelectedProfileId}
-                      isLoading={false}
-                    />
-                  )}
-
-                  {generateMode === 'multiple' && (
-                    <div className="space-y-5">
-                      <div>
-                        <label className="tl-label">Target</label>
-                        <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
-                          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-                            <input
-                              type="radio"
-                              name="multipleTarget"
-                              value="all"
-                              checked={multipleTarget === 'all'}
-                              onChange={() => setMultipleTarget('all')}
-                              disabled={isGenerating}
-                              className="tl-check"
-                            />
-                            <span>All profiles</span>
-                          </label>
-                          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink">
-                            <input
-                              type="radio"
-                              name="multipleTarget"
-                              value="group"
-                              checked={multipleTarget === 'group'}
-                              onChange={() => setMultipleTarget('group')}
-                              disabled={isGenerating}
-                              className="tl-check"
-                            />
-                            <span>Specific group</span>
-                          </label>
-                        </div>
-                      </div>
-
-                      {multipleTarget === 'group' && (
-                        <div>
-                          <label className="tl-label">Select Group</label>
-                          <select
-                            value={selectedGroupId}
-                            onChange={(e) => setSelectedGroupId(e.target.value)}
-                            disabled={isGenerating}
-                            className="tl-input mt-2"
-                          >
-                            <option value="">Choose a group...</option>
-                            {groups.map((group) => (
-                              <option key={group.id} value={group.id}>
-                                {group.name} ({group.profileIds.length})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
 
                 <details className={`${styles.disclosure} p-5`}>
@@ -2174,19 +1843,19 @@ export default function Home() {
                       onChange={setAiOverrides}
                       models={modelSettings.models}
                       modelsLoaded={modelsLoaded}
-                      inheritedFrom={inheritsFromProfile ? "profile's setting" : 'app default'}
+                      inheritedFrom={inheritsFromResume ? "resume's setting" : 'app default'}
                       inherited={inheritedChoice}
                       disabled={isGenerating}
                     />
                     <p className="text-sm text-subtle">
-                      It tailors each resume and writes its cover letter. The job description itself is
-                      analysed once, the same way for every profile and every model.
+                      It tailors the resume (not in Choose Suitable Resume) and writes its cover letter. The job
+                      description itself is analysed once, the same way for every profile and every model.
                     </p>
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm text-subtle">
-                        {inheritsFromProfile
-                          ? `Defaults come from ${selectedProfile?.name}. Anything set here applies to this run only.`
-                          : 'Each profile uses its own default; anything set here applies to this run only.'}
+                        {inheritsFromResume
+                          ? `Defaults come from ${defaultResumeLabel}, the profile's default resume.`
+                          : 'Each resume uses its own model; one chosen here applies to this run only.'}
                       </p>
                       {hasAiOverrides && (
                         <button
@@ -2243,8 +1912,8 @@ export default function Home() {
             */}
             <div className="space-y-3 xl:col-start-2 xl:row-start-1">
               <Notice tone="info">
-                Each row of the tab is one job. Load the rows to check them, then build every selected
-                profile against every row: <strong>Generate Immediately</strong> builds them while this
+                Each row of the tab is one job. Load the rows to check them, then build resumes for the
+                chosen profile from every row: <strong>Generate Immediately</strong> builds them while this
                 page stays open and downloads each resume as it is ready; <strong>Order</strong> builds
                 them on the server, to collect on the Orders page.
               </Notice>
@@ -2258,22 +1927,30 @@ export default function Home() {
 
             <div className="space-y-6 xl:col-start-1 xl:row-start-1">
               <Card title="Build target">
-                <ProfileTargets
-                  name="sheetsTargetMode"
-                  idPrefix="sheets"
-                  value={sheetsTargetMode}
-                  onChange={setSheetsTargetMode}
-                  manyProfiles={manyProfiles}
-                  lock={manyLock}
-                  onLocked={locked.open}
-                  profiles={profiles}
-                  selectedProfileId={selectedSheetsProfileId}
-                  onProfileChange={setSelectedSheetsProfileId}
-                  groups={groups}
-                  selectedGroupId={selectedSheetsGroupId}
-                  onGroupChange={setSelectedSheetsGroupId}
-                  disabled={isGenerating}
-                />
+                <div className="space-y-5">
+                  <ProfileSelector
+                    id="sheets-profile"
+                    profiles={profiles}
+                    selectedId={selectedProfileId}
+                    onChange={setSelectedProfileId}
+                    isLoading={false}
+                    disabled={isGenerating}
+                  />
+                  <div>
+                    <div>
+                      <BuildModeChoice
+                        name="sheetsBuildMode"
+                        value={buildModeChoice}
+                        onChange={setBuildModeChoice}
+                        prices={modePrices}
+                        disabled={isGenerating}
+                      />
+                    </div>
+                    <p className="mt-2 text-sm text-subtle" data-build-mode-note>
+                      {buildModeNote(buildModeChoice, selectedProfile, defaultResumeLabel)}
+                    </p>
+                  </div>
+                </div>
               </Card>
 
               <SheetsSourcePanel
@@ -2294,133 +1971,7 @@ export default function Home() {
           </div>
         ))}
 
-        {builderMode === 'manual' && generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0 && activeMultiplePreview && (
-          <div className="tl-backdrop">
-            <div className={`tl-dialog ${styles.sheet}`}>
-              <div className="tl-card-header">
-                <div className="flex min-w-0 flex-wrap items-center gap-3">
-                  <h3 className="text-lg font-semibold text-ink">Resume Preview</h3>
-                  <Pill>
-                    {multiplePreviewIndex + 1} / {multiplePreviews.length}
-                  </Pill>
-                  {multiplePreviewTailored && (
-                    <Pill tone="green">
-                      ATS OPTIMIZATION
-                    </Pill>
-                  )}
-                  <span className="min-w-0 truncate text-sm text-muted">{activeMultiplePreview.profileName}</span>
-                  <AnalysisFacts analysis={currentAnalysis?.analysis} />
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setMultiplePreviewIndex((i) => Math.max(0, i - 1))}
-                    disabled={multiplePreviewIndex === 0 || isGenerating}
-                    className="tl-button-quiet"
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMultiplePreviewIndex((i) => Math.min(multiplePreviews.length - 1, i + 1))}
-                    disabled={multiplePreviewIndex >= multiplePreviews.length - 1 || isGenerating}
-                    className="tl-button-quiet"
-                  >
-                    Next
-                  </button>
-                  <CostLine quote={quote} shortfall={shortfall} />
-                  <button
-                    type="button"
-                    onClick={() => handleFinalizeGenerateMultiple('order')}
-                    disabled={runBusy}
-                    className="tl-button-quiet"
-                    title="Built on the server whether or not this page stays open; collect the files on Orders"
-                  >
-                    Order
-                  </button>
-                  <button
-                    onClick={() => handleFinalizeGenerateMultiple('immediate')}
-                    disabled={runBusy}
-                    className={`tl-button ${styles.wrap}`}
-                  >
-                    {runBusy ? runStep || 'Generating...' : 'Generate Immediately'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMultiplePreviews([]);
-                      setMultiplePreviewIndex(0);
-                    }}
-                    disabled={runBusy}
-                    className="tl-button-quiet"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-2 lg:overflow-hidden">
-                <div className="bg-surface-muted p-4 sm:p-6 lg:h-full lg:overflow-y-auto">
-                  {isGenerating && generationProgress && (
-                    activeRun ? (
-                      <RunProgress
-                        progress={generationProgress}
-                        stopping={stopping}
-                        onStop={() => void stopRun()}
-                        className="mb-4"
-                      />
-                    ) : (
-                      <GenerationProgress progress={generationProgress} className="mb-4" />
-                    )
-                  )}
-                  <div className={`resume-paper-shell ${styles.paper} mx-auto max-w-[816px]`}>
-                    <iframe
-                      srcDoc={activeMultiplePreview.html}
-                      sandbox=""
-                      className="w-full h-[1056px] border-0"
-                      title={`Resume Preview - ${activeMultiplePreview.profileName}`}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-6 p-4 sm:p-6 lg:h-full lg:overflow-y-auto">
-                  <div className="tl-card">
-                    <div className="tl-card-header">
-                      <div className="text-sm font-semibold text-ink">Manual Edits (JSON)</div>
-                    </div>
-                    <div className="p-4">
-                      <textarea
-                        value={activeMultiplePreview.draft}
-                        onChange={(e) => handleMultipleDraftChange(activeMultiplePreview.profileId, e.target.value)}
-                        rows={8}
-                        className={`tl-input ${styles.code}`}
-                        placeholder="Edit tailored content JSON here."
-                      />
-                      <p className="mt-2 text-xs text-subtle">{TAILORED_DRAFT_NOTE}</p>
-                      {activeMultiplePreview.error && (
-                        <p className="tl-status mt-2" data-tone="error">{activeMultiplePreview.error}</p>
-                      )}
-                      <div className="mt-3 flex flex-wrap items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateMultiplePreview(activeMultiplePreview.profileId)}
-                          disabled={isGenerating || !!activeMultiplePreview.error}
-                          className="tl-button-quiet"
-                          data-size="sm"
-                        >
-                          Update Preview
-                        </button>
-                        <span className="text-xs text-subtle">
-                          Apply edits to preview before final generate.
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {builderMode === 'manual' && generateMode === 'single' && previewHtml && (
+        {builderMode === 'manual' && previewHtml && (
           <ResumePreview
             html={previewHtml}
             onGenerate={handleFinalizeGenerate}
@@ -2431,8 +1982,23 @@ export default function Home() {
             onClose={() => setIsSinglePreviewOpen(false)}
             generationStep={runStep}
             costNote={<CostLine quote={quote} shortfall={shortfall} />}
-            titleNote={<AnalysisFacts analysis={currentAnalysis?.analysis} />}
+            titleNote={
+              <>
+                <AnalysisFacts analysis={currentAnalysis?.analysis} />
+                {previewChoice && (
+                  <span className="min-w-0 text-sm text-muted" data-preview-choice>
+                    {previewChoice.resumeLabel}
+                    {describeChoice(previewChoice.match) ? ` · ${describeChoice(previewChoice.match)}` : ''}
+                  </span>
+                )}
+              </>
+            }
+            /*
+              Only a TAILORED preview has anything to edit: Choose Suitable Resume
+              shows the resume as written, with no ATS pill and no Manual Edits.
+            */
             sidebar={
+              !previewTailored ? undefined : (
               <>
                 <div className="tl-card">
                   <div className="tl-card-header">
@@ -2467,6 +2033,7 @@ export default function Home() {
                   </div>
                 </div>
               </>
+              )
             }
           />
         )}
@@ -2474,7 +2041,6 @@ export default function Home() {
       </Page>
 
       {spend.dialog}
-      {locked.dialog}
 
       {/* Footer */}
       <footer className="mt-auto py-6 text-center text-sm text-subtle">

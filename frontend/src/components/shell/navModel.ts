@@ -49,7 +49,12 @@ export type NavItem = {
    */
   needs?: NavNeeds;
   /** What a locked entry's dialog says it is (lib/subscriptions.ts `describeLock`). Set with `needs`. */
-  feature?: Exclude<LockedFeatureId, 'more-profiles'>;
+  feature?: LockedFeatureId;
+  /**
+   * Other paths that light this entry: Profiles stays lit in the resume
+   * editor and the template chooser, which live under /admin/resumes.
+   */
+  alsoActiveOn?: readonly string[];
 };
 
 /**
@@ -58,9 +63,9 @@ export type NavItem = {
  *
  * Find Jobs (/jobs) searches the Job Data Lake, exports the jobs picked into
  * the account's own sheet and orders resumes for them; "Go to my sheet" on
- * that page opens the sheet itself. It sits after Profiles and Groups because
- * it is the next thing in the day's loop: profiles first, then the jobs those
- * profiles are for, then the resumes built for them.
+ * that page opens the sheet itself. It sits after Profiles because
+ * it is the next thing in the day's loop: the stored profiles first, then the jobs those
+ * resumes are for, then the resumes built for those jobs.
  */
 export const SIDEBAR_MAIN: NavItem[] = [
   /*
@@ -69,12 +74,12 @@ export const SIDEBAR_MAIN: NavItem[] = [
    * page, but it is not theirs to do every day.
    */
   { href: REPORTER_HOME, label: 'Report Jobs', icon: 'report', roles: ['reporter'] },
-  // "Profiles" here is the resume profiles - the career data a resume is built
-  // from. The account you are signed in as lives under Settings instead.
-  { href: '/admin/profiles', label: 'Profiles', icon: 'profile' },
-  // Sets of profiles built for together. Premium and up (the backend's
-  // `requireSubscription(MULTI_PROFILE_SUBSCRIPTION)`): drawn locked below it.
-  { href: '/admin/groups', label: 'Groups', icon: 'groups', needs: 'premium', feature: 'groups' },
+  // The people the account builds resumes for, and each person's resumes - the
+  // career data a built resume starts from. Open to every builder on every
+  // subscription (a tier only caps how many profiles are kept). The resume
+  // editor and the template chooser live under /admin/resumes and light it
+  // too. The account you are signed in as lives under Settings instead.
+  { href: '/admin/profiles', label: 'Profiles', icon: 'resume', alsoActiveOn: ['/admin/resumes'] },
   { href: '/jobs', label: 'Find Jobs', icon: 'search' },
   { href: '/', label: 'Build Resumes', icon: 'build' },
   { href: '/orders', label: 'Orders', icon: 'orders' },
@@ -111,7 +116,7 @@ export type SettingsTab = { href: string; label: string; roles?: Roles };
  * subscription are a builder's.
  */
 export const SETTINGS_ACCOUNT_TABS: SettingsTab[] = [
-  { href: '/settings', label: 'Profile', roles: EVERYBODY },
+  { href: '/settings', label: 'Account', roles: EVERYBODY },
   { href: '/settings/job-sheet', label: 'Job Sheet', roles: EVERYBODY },
   { href: '/settings/payment-methods', label: 'Payment Methods' },
   { href: '/settings/subscription', label: 'Subscription' },
@@ -187,11 +192,22 @@ function matches(pathname: string, href: string): boolean {
  * Resolving across the whole set and keeping the longest match fixes it once
  * rather than per call site.
  */
-export function activeHref(pathname: string, items: readonly { href: string }[]): string | null {
+export function activeHref(
+  pathname: string,
+  items: readonly { href: string; alsoActiveOn?: readonly string[] }[]
+): string | null {
   let best: string | null = null;
-  for (const { href } of items) {
-    if (!matches(pathname, href)) continue;
-    if (best === null || href.length > best.length) best = href;
+  let bestLength = -1;
+  for (const { href, alsoActiveOn } of items) {
+    // An entry answers for its own path and for the ones it also lights on; the
+    // longest path that matches decides, and the answer is always the entry's href.
+    for (const path of [href, ...(alsoActiveOn ?? [])]) {
+      if (!matches(pathname, path)) continue;
+      if (best === null || path.length > bestLength) {
+        best = href;
+        bestLength = path.length;
+      }
+    }
   }
   return best;
 }

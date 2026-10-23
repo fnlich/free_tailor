@@ -2,15 +2,15 @@ import { resolveRequestedAIModel } from '../config/aiModelConfig';
 import { PublicError } from '../middleware/publicError';
 import { extractJSON } from '../utils/json';
 import { createPromptCompletionResult } from './ai';
-import { normalizeSkillsInput } from './profileService';
+import { normalizeSkillsInput } from './resumeDocument';
 import { cleanBullets } from './resumeService';
 
 /**
- * Write Entry Bullets: the profile editor's "Write with AI" / "Improve with
+ * Write Entry Bullets: the resume editor's "Write with AI" / "Improve with
  * AI" on one entry - a role, a project or a volunteering entry.
  *
  * Open to every builder and FREE (owner decision): no credit is reserved, as
- * for /resume/analyze and /profiles/upload. It runs the one built-in prompt
+ * for /resume/analyze and /resumes/upload. It runs the one built-in prompt
  * (`write-entry-bullets`, a single-prompt feature - no variants, no model
  * override) on the app default model, the way the Bid Assistant does, one
  * call per account at a time. The answer is held to the rule a tailoring's
@@ -33,7 +33,7 @@ export const ENTRY_BULLETS_KINDS: readonly EntryBulletsKind[] = ['experience', '
 export const MAX_ENTRY_BULLETS = 8;
 export const MAX_ENTRY_BULLET_LENGTH = 300;
 export const MAX_BULLET_INSTRUCTIONS_LENGTH = 500;
-const MAX_PROFILE_SUMMARY_LENGTH = 2000;
+const MAX_RESUME_SUMMARY_LENGTH = 2000;
 const MAX_FIELD_LENGTH = 500;
 
 /** The entry as the prompt reads it, whatever kind it is: a title and the organisation it was for. */
@@ -49,7 +49,7 @@ export type EntryForBullets = {
   skills: string[];
 };
 
-export type ProfileForBullets = {
+export type ResumeForBullets = {
   name: string;
   title: string;
   totalYearsExperience?: number;
@@ -91,7 +91,7 @@ export function readEntryForBullets(kind: unknown, entry: unknown): EntryForBull
     startDate: text(source.startDate, 40),
     endDate: text(source.endDate, 40),
     location: text(source.location),
-    description: text(source.description, MAX_PROFILE_SUMMARY_LENGTH),
+    description: text(source.description, MAX_RESUME_SUMMARY_LENGTH),
     bullets: list(source.achievements ?? source.bullets),
     skills: list(source.skills),
   });
@@ -119,15 +119,15 @@ export function readEntryForBullets(kind: unknown, entry: unknown): EntryForBull
 }
 
 /** Who the entry belongs to, in five fields: never contact details, never the other entries. */
-export function readProfileForBullets(profile: unknown): ProfileForBullets {
-  const source = record(profile);
+export function readResumeForBullets(resume: unknown): ResumeForBullets {
+  const source = record(resume);
   const years = source.totalYearsExperience;
   const parsedYears = typeof years === 'number' ? years : typeof years === 'string' ? Number(years) : NaN;
   return {
     name: text(source.name),
     title: text(source.title),
     ...(Number.isFinite(parsedYears) && parsedYears >= 0 ? { totalYearsExperience: parsedYears } : {}),
-    summary: text(source.summary, MAX_PROFILE_SUMMARY_LENGTH),
+    summary: text(source.summary, MAX_RESUME_SUMMARY_LENGTH),
     skills: normalizeSkillsInput(source.skills).skills.slice(0, 60),
   };
 }
@@ -171,13 +171,13 @@ export function readBulletInstructions(value: unknown): string {
  */
 export function buildWriteEntryBulletsPromptValues(
   entry: EntryForBullets,
-  profile: ProfileForBullets,
+  resume: ResumeForBullets,
   task: EntryBulletsTask,
   instructions: string
 ): Record<string, string> {
   return {
     entryJson: JSON.stringify(entry),
-    profileJson: JSON.stringify(profile),
+    profileJson: JSON.stringify(resume),
     task: taskSentence(task, entry),
     instructions,
   };
@@ -209,7 +209,7 @@ export type WriteEntryBulletsInput = {
   accountId: string;
   kind: unknown;
   entry: unknown;
-  profile: unknown;
+  resume: unknown;
   task: unknown;
   instructions: unknown;
   signal?: AbortSignal;
@@ -218,7 +218,7 @@ export type WriteEntryBulletsInput = {
 export async function writeEntryBullets(input: WriteEntryBulletsInput): Promise<string[]> {
   const entry = readEntryForBullets(input.kind, input.entry);
   const task = readBulletsTask(input.task, entry);
-  const profile = readProfileForBullets(input.profile);
+  const resume = readResumeForBullets(input.resume);
   const instructions = readBulletInstructions(input.instructions);
 
   if (inFlight.has(input.accountId)) {
@@ -235,7 +235,7 @@ export async function writeEntryBullets(input: WriteEntryBulletsInput): Promise<
     const result = await createPromptCompletionResult({
       promptId: ENTRY_BULLETS_PROMPT_ID,
       callSite: ENTRY_BULLETS_PROMPT_ID,
-      promptValues: buildWriteEntryBulletsPromptValues(entry, profile, task, instructions),
+      promptValues: buildWriteEntryBulletsPromptValues(entry, resume, task, instructions),
       fallbackProvider: model.provider,
       fallbackModelName: model.modelName,
       maxTokens: 1200,

@@ -2,15 +2,17 @@
 
 import { usePathname } from 'next/navigation';
 
+import { isProfilesDeskRoute } from '@/lib/profileDashboard';
+
 /**
- * The Profiles pages - the list (/admin/profiles), the template chooser and
- * new profile (/admin/profiles/new) and the editor (/admin/profiles/<id>) -
- * draw their own full-width canvas: the warm desk their cards and pages sit
- * on, edge to edge under the top bar, the way the FlowCV pages they follow
- * do. Those routes get a bare <main> and lay themselves out; every other
- * admin page keeps the centred column.
+ * The Profiles pages - the dashboard (/admin/profiles), one profile's page
+ * (/admin/profiles/<id>), the template chooser and new resume
+ * (/admin/resumes/new) and the editor (/admin/resumes/<id>) - draw their own
+ * full-width canvas: the warm desk their cards and pages sit on, edge to
+ * edge under the top bar, the way the FlowCV pages they follow do. Those
+ * routes (`isProfilesDeskRoute`) get a bare <main> and lay themselves out;
+ * every other admin page keeps the centred column.
  */
-const FULL_WIDTH = /^\/admin\/profiles(\/[^/]+)?\/?$/;
 
 export default function AdminLayout({
   children,
@@ -18,7 +20,7 @@ export default function AdminLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname() ?? '';
-  if (FULL_WIDTH.test(pathname)) {
+  if (isProfilesDeskRoute(pathname)) {
     return <main className="tl-fill">{children}</main>;
   }
   return (

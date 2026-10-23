@@ -577,6 +577,14 @@ test("the editor reads the text as typed exactly as the server does, and refuses
     assert.ok(note.about && note.model, featureKey);
   }
   assert.match(notes.SINGLE_PROMPT_NOTES['analyze-job-description'].about, /^Job analysis has one prompt/);
+  // The notes follow the builder modes (owner decision D19): Fully names the profile's default resume, the cover
+  // letter names the Choose Suitable Resume builds, and none says a model sets what a resume costs.
+  assert.match(notes.SINGLE_PROMPT_NOTES['tailor-resume-full'].about, /^Fully tailoring has one prompt/);
+  assert.match(notes.SINGLE_PROMPT_NOTES['tailor-resume-full'].about, /Fully Tailor run uses it for the profile's default resume/);
+  assert.match(notes.SINGLE_PROMPT_NOTES['generate-cover-letter'].about, /Choose Suitable Resume/);
+  for (const [featureKey, note] of Object.entries(notes.SINGLE_PROMPT_NOTES)) {
+    assert.doesNotMatch(`${note.about} ${note.model}`, /model's price|price of (the|a) model|\bplan\b|Premium/i, featureKey);
+  }
 
   // A variable the prompt is not given is read off the text as the server reads it...
   const named = [

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { IconClose } from '@/components/icons';
@@ -82,7 +82,7 @@ export default function Dialog({
   onClose: () => void;
   /**
    * Added to the panel, for a page that draws its dialogs in its own look -
-   * the profile editor's Add content. The panel is portalled to <body>, so a
+   * the resume editor's Add content. The panel is portalled to <body>, so a
    * class on the page around it never reaches it.
    */
   className?: string;
@@ -90,6 +90,14 @@ export default function Dialog({
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
   const restoreFocusTo = useRef<HTMLElement | null>(null);
+  // Who had focus when this Dialog was MOUNTED open, read while rendering - before the commit in which a
+  // field marked autoFocus takes focus, so before the effect below can only see that field. A dialog the
+  // page mounts only while it is open (the Profiles pages') would otherwise record its own input as the
+  // place to go back to, and the input is gone when it closes.
+  const [openerAtMount] = useState<HTMLElement | null>(() =>
+    open && typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+  );
+  const firstOpen = useRef(true);
   // Read through a ref, so a parent passing a fresh arrow each render does not
   // re-run the effect - which would steal focus back to the panel from the
   // field somebody is typing in, on every keystroke.
@@ -101,7 +109,10 @@ export default function Dialog({
   useEffect(() => {
     if (!open) return;
 
-    restoreFocusTo.current = document.activeElement as HTMLElement | null;
+    const useMountOpener =
+      firstOpen.current && openerAtMount !== null && openerAtMount !== document.body && openerAtMount.isConnected;
+    firstOpen.current = false;
+    restoreFocusTo.current = useMountOpener ? openerAtMount : (document.activeElement as HTMLElement | null);
     // A field marked autoFocus has already taken focus; only an empty start
     // moves it to the panel itself.
     if (!panel.current?.contains(document.activeElement)) panel.current?.focus();
@@ -110,7 +121,7 @@ export default function Dialog({
       // Back where they were, so the keyboard does not start from the top.
       restoreFocusTo.current?.focus?.();
     };
-  }, [open]);
+  }, [open, openerAtMount]);
 
   // The page behind must not scroll under the dialog - and this is now the
   // dialog Escape belongs to, until another opens over it.

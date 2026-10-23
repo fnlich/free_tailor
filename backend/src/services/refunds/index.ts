@@ -310,7 +310,7 @@ function resumeRefundable(input: {
 
 function orderItemLabel(order: Order, item: OrderItem): string {
   const role = item.role ? ` (${item.role})` : '';
-  return `${order.number} - ${item.profileName} / ${item.companyName}${role}`;
+  return `${order.number} - ${item.resumeName} / ${item.companyName}${role}`;
 }
 
 function resolveOrderItem(found: { order: Order; item: OrderItem }, ownerId: string | null): RefundItem {

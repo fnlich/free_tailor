@@ -17,7 +17,7 @@ export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile_name}}_cover_l
  * the same for every account. It may use only `{{user_email}}`,
  * `{{order_number}}` and `{{date}}`, and it must hold `{{order_number}}`
  * exactly once, as a folder of its own: an order number is unique across the
- * install - account, date, profile and company all repeat, and the email is
+ * install - account, date, resume and company all repeat, and the email is
  * sanitized for the file system, so `john.smith@` and `john-smith@` are one
  * folder - which makes every run's prefix a folder nobody else's files are
  * in. That folder, rendered under the output folder, is the run's
@@ -25,7 +25,7 @@ export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile_name}}_cover_l
  * download one (database/orderRepository.ts `ownersOfGeneratedFile`), however
  * the prefix is changed afterwards.
  *
- * The SUFFIX is each account's own (Settings -> Profile -> Resume files,
+ * The SUFFIX is each account's own (Settings -> Account -> Resume files,
  * `users.output_path_suffix`, else `OUTPUT_PATH_SUFFIX`, else this default):
  * `{{date}}`, `{{profile_name}}`, `{{company_name}}`, `{{role}}` and
  * `{{row_number}}`, with literal text around them in a folder
@@ -37,8 +37,8 @@ export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile_name}}_cover_l
  * THEN sanitized as a whole (`sanitizePathSegment`), so no value - a company
  * called "../etc", a role with a slash - is ever more than one folder.
  *
- * The per-profile file NAME templates below read these spellings too, and the
- * older spaced ones (`{{profile name}}`) profiles may have stored.
+ * The per-resume file NAME templates below read these spellings too, and the
+ * older spaced ones (`{{profile name}}`) resumes may have stored.
  */
 export const OUTPUT_PATH_TOKENS = [
   'user_email',
@@ -302,18 +302,18 @@ export function outputDateText(at: Date = new Date()): string {
 /**
  * The values a preview renders with, so a person sees their own folder: their
  * email (the account folder), a sample order number and today's date, their
- * first profile's name, and a made-up job. Both previews - an account's folder
+ * first resume's name, and a made-up job. Both previews - an account's folder
  * path and the administrator's prefix - use these, and only previews do.
  */
 export function sampleOutputPathValues(
-  options: { email?: string | null; profileName?: string | null; at?: Date } = {}
+  options: { email?: string | null; resumeName?: string | null; at?: Date } = {}
 ): OutputPathValues {
   const date = outputDateText(options.at);
   return {
     user_email: options.email?.trim() || 'jane.doe@example.com',
     order_number: `FT-${date.split('-').join('')}-0001`,
     date,
-    profile_name: options.profileName?.trim() || 'Sample Profile',
+    profile_name: options.resumeName?.trim() || 'Sample Profile',
     company_name: 'Acme',
     role: 'Software Engineer',
     row_number: '2',
@@ -322,9 +322,9 @@ export function sampleOutputPathValues(
 
 /**
  * What a valid suffix is worth knowing before it is saved, never a refusal.
- * One run builds every job for every profile chosen; with no
- * `{{company_name}}` in the folders, one profile's resumes for two companies
- * share a folder. Nothing is overwritten - a resume whose file name another
+ * One run builds every job for every resume chosen; with no
+ * `{{company_name}}` in the folders, the resumes built from one source resume
+ * for two companies share a folder. Nothing is overwritten - a resume whose file name another
  * of the run already has gets a number (services/queue/runFiles.ts) - but
  * `Ada.pdf` and `Ada_2.pdf` do not say which company each is for.
  */
@@ -334,7 +334,7 @@ export function outputSuffixNotes(suffix: string): string[] {
   const notes: string[] = [];
   if (!/\{\{company_name\}\}/.test(check.value)) {
     notes.push(
-      'Without {{company_name}}, the resumes one profile builds for different companies in one run share a ' +
+      'Without {{company_name}}, the resumes built from one resume for different companies in one run share a ' +
         'folder, told apart only by a number after the file name unless the file names name the company.'
     );
   }
@@ -343,7 +343,7 @@ export function outputSuffixNotes(suffix: string): string[] {
 
 export type FileNameVariables = {
   date: string;
-  profileName: string;
+  resumeName: string;
   companyName: string;
   rowNumber?: string;
   jobTitle: string;
@@ -354,10 +354,10 @@ export type FileNameVariables = {
 };
 
 /**
- * The per-profile file NAME templates' tokens: the folder tokens' own
+ * The per-resume file NAME templates' tokens: the folder tokens' own
  * spellings (`{{profile_name}}`, `{{company_name}}`, `{{row_number}}`,
  * `{{role}}`, `{{date}}`, `{{user_email}}`, `{{order_number}}`), which the
- * profile editor offers, and the spellings profiles have always stored them in,
+ * resume editor offers, and the spellings resumes have always stored them in,
  * which still read. Not the folder rules above: a name is one file in the
  * folder the prefix and suffix chose.
  */
@@ -365,7 +365,7 @@ const FILE_NAME_TOKEN_ALIASES: Record<string, keyof FileNameVariables> = {
   date: 'date',
   user_email: 'accountName',
   order_number: 'orderNumber',
-  profile_name: 'profileName',
+  profile_name: 'resumeName',
   company_name: 'companyName',
   row_number: 'rowNumber',
   job_title: 'jobTitle',
@@ -373,8 +373,8 @@ const FILE_NAME_TOKEN_ALIASES: Record<string, keyof FileNameVariables> = {
   'account name': 'accountName',
   order: 'orderNumber',
   'order number': 'orderNumber',
-  profile: 'profileName',
-  'profile name': 'profileName',
+  profile: 'resumeName',
+  'profile name': 'resumeName',
   company: 'companyName',
   'company name': 'companyName',
   row: 'rowNumber',
@@ -390,7 +390,7 @@ const FILE_NAME_TOKEN_ALIASES: Record<string, keyof FileNameVariables> = {
  * with any extension: `CON`, `nul.pdf` and `foo/AUX/bar` are all rejected by
  * the filesystem with EINVAL rather than created.
  *
- * A profile called "Aux" or a company called "Con" is rare but entirely legal,
+ * A resume called "Aux" or a company called "Con" is rare but entirely legal,
  * and without this the failure surfaces as an unexplained write error deep in
  * generation. Applied on every platform, not just Windows, so a tree generated
  * on Linux stays portable when it is synced to a Windows machine and so both
@@ -465,7 +465,7 @@ export async function ensureWritableOutputDir(value: string): Promise<string> {
 }
 
 /*
- * The file name templates are a profile's own fields, typed by its owner, so a
+ * The file name templates are a resume's own fields, typed by its owner, so a
  * refusal of one is public: it quotes only what they wrote.
  */
 function assertSupportedFileNameTokens(template: string): void {
@@ -497,7 +497,7 @@ export function validateOutputFileNameTemplate(value: unknown, fallback: string)
 
   const sample = renderOutputFileNameTemplate(normalized, {
     date: '2026-04-10',
-    profileName: 'Jane Doe',
+    resumeName: 'Jane Doe',
     companyName: 'Acme Inc',
     rowNumber: '12',
     jobTitle: 'Senior Engineer',

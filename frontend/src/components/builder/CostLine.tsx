@@ -14,7 +14,7 @@ export type CreditShortfall = { message: string };
 /**
  * What a run will cost, beside the button that starts it: "This run: 7
  * resumes × $0.023 = $0.161 · balance $3.977", from POST /generation/quote,
- * which reserves nothing. A balance short of it turns it red with Buy
+ * which reserves nothing - the price is the build mode's, per resume. A balance short of it turns it red with Buy
  * credits; an administrator is told they are not charged.
  *
  * A refused run's shortfall takes its place, with the way to fix it - inside

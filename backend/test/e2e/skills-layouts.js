@@ -18,9 +18,11 @@
  *      run-on paragraph.
  *   2. An uploaded-style three-column grid saved through the admin upload,
  *      checked the same way in Plain, and deleted again.
- *   3. The template chooser: a template's details, "Plain" in its Technical
- *      skills switch, the page frame asking for `layout=flat`, and Use this
- *      template opening the editor with `&layout=flat` and Plain ticked. On
+ *   3. The template chooser (a new resume is for a profile, so it is opened as
+ *      /admin/resumes/new?profile=<id> for a profile the script makes and
+ *      removes): a template's details, "Plain" in its Technical skills switch,
+ *      the page frame asking for `layout=flat`, and Use this template opening
+ *      the editor with `&layout=flat` - and the profile - and Plain ticked. On
  *      the way: Plain, Grouped and Plain again, each page loaded first, add
  *      nothing to the browser's history (a loaded frame sent to another
  *      address did, one entry a press, and Back then turned the page back
@@ -42,7 +44,8 @@
  * because the session is seeded straight into it. Step 2 saves a template
  * into the backend's templates directory and removes it at the end - run it
  * against a backend whose TAILOR_STATIC_DIR is a copy, as the README says.
- * Nothing else is written: the editor step 3 opens is never saved.
+ * Nothing else is written but that profile (deleted again at the end): the
+ * editor step 3 opens is never saved.
  *
  * Usage, from backend/:
  *   TAILOR_STATIC_DIR=/path/to/static-copy DB_DIR=/path/to/db PORT=3001 \
@@ -257,7 +260,7 @@ async function pressBackAndForth(page, scope, label) {
 /**
  * The arrow keys on the details' switch: they step through the templates from
  * anywhere in the details but there, where a step moved focus to the next
- * template's Use this template and the next Space started a profile on it.
+ * template's Use this template and the next Space started a resume on it.
  */
 async function checkArrowsOnSwitch(page, scope, label) {
   const shown = () => page.evaluate((selector) => document.querySelector(selector).getAttribute('aria-labelledby'), scope);
@@ -276,13 +279,17 @@ async function checkArrowsOnSwitch(page, scope, label) {
 }
 
 /** The chooser's details: Plain, the frame, Use this template, the editor. */
-async function checkChooser(page, viewport) {
+async function checkChooser(page, viewport, profileId) {
   const label = `${viewport.width}x${viewport.height}`;
   await page.setViewport(viewport);
-  await page.goto(`${APP}/admin/profiles/new`, { waitUntil: 'networkidle2' });
-  await page.waitForSelector('[data-used="false"] [data-template-card]', { timeout: 20_000 });
+  // For a profile: a new resume is filed under one, and both steps keep it in their addresses.
+  await page.goto(`${APP}/admin/resumes/new${profileId ? `?profile=${encodeURIComponent(profileId)}` : ''}`, {
+    waitUntil: 'networkidle2',
+  });
+  // Any resume may use any template: every card opens, none is "used" by another resume.
+  await page.waitForSelector('[data-template-card]', { timeout: 20_000 });
   const templateId = await page.evaluate(() => {
-    const card = document.querySelector('[data-used="false"] [data-template-card]');
+    const card = document.querySelector('[data-template-card]');
     card.click();
     return card.getAttribute('data-template-card');
   });
@@ -328,12 +335,16 @@ async function checkChooser(page, viewport) {
   }, DETAILS);
   await waitFor(
     page,
-    (id) => location.pathname === '/admin/profiles/new' && new URLSearchParams(location.search).get('template') === id && new URLSearchParams(location.search).get('layout') === 'flat',
+    (id) => location.pathname === '/admin/resumes/new' && new URLSearchParams(location.search).get('template') === id && new URLSearchParams(location.search).get('layout') === 'flat',
     templateId,
     `${label}: the editor's address to carry &layout=flat`
   );
-  await page.waitForSelector('#profile-layout-flat', { timeout: 15_000 });
-  const ticked = await page.evaluate(() => document.getElementById('profile-layout-flat').checked);
+  if (profileId) {
+    const named = await page.evaluate(() => new URLSearchParams(location.search).get('profile'));
+    if (named !== profileId) throw new Error(`${label}: the editor's address lost the profile: ?profile=${named}`);
+  }
+  await page.waitForSelector('#resume-layout-flat', { timeout: 15_000 });
+  const ticked = await page.evaluate(() => document.getElementById('resume-layout-flat').checked);
   if (!ticked) throw new Error(`${label}: the editor opened with Plain unticked`);
   return templateId;
 }
@@ -420,6 +431,7 @@ async function main() {
   };
 
   let uploadedId = '';
+  let profileId = '';
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   try {
     const page = await browser.newPage();
@@ -454,11 +466,16 @@ async function main() {
     await api(token, 'DELETE', `/templates/${encodeURIComponent(uploadedId)}`);
     uploadedId = '';
 
-    // 3 and 4, wide and on a phone.
+    // 3 and 4, wide and on a phone. The chooser is opened for a profile of its own.
+    try {
+      profileId = JSON.parse(await api(token, 'POST', '/profiles', { name: 'E2E Skills Layouts' })).id || '';
+    } catch (error) {
+      console.warn(`Could not make a profile; the chooser is opened without one: ${error.message}`);
+    }
     await signIn(page, token);
     for (const viewport of [WIDE, PHONE]) {
       try {
-        const id = await checkChooser(page, viewport);
+        const id = await checkChooser(page, viewport, profileId);
         report(true, `the chooser's details switch to Plain, add no history, keep the arrows off the switch, and start ${id} Plain (${viewport.width}px)`);
       } catch (error) {
         report(false, `the chooser's Grouped / Plain switch (${viewport.width}px)`, error.message);
@@ -474,6 +491,9 @@ async function main() {
     await browser.close();
     if (uploadedId) {
       await api(token, 'DELETE', `/templates/${encodeURIComponent(uploadedId)}`).catch((error) => console.warn(error.message));
+    }
+    if (profileId) {
+      await api(token, 'DELETE', `/profiles/${encodeURIComponent(profileId)}`).catch((error) => console.warn(error.message));
     }
   }
 

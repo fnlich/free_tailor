@@ -71,11 +71,12 @@ test('every AI call in the resume route can be cancelled by the caller going awa
 });
 
 test('the signal is one controller per response, not one per call', () => {
-  // Several of these call sites sit in a loop over profiles. A helper that made
+  // Several of these call sites sit in a loop over resumes. A helper that made
   // a fresh controller each time would attach a listener per iteration and trip
   // Node's max-listeners warning, and - worse - only the last one would ever be
   // aborted. The helper lives in middleware/requestSignal.ts, shared with the
-  // profile editor's Write with AI route, and the resume route imports it.
+  // resume editor's Write with AI route (routes/resumes.ts), and this route
+  // (routes/resume.ts) imports it.
   const route = fs.readFileSync(ROUTE, 'utf8');
   assert.match(route, /import \{ requestSignal \} from '\.\.\/middleware\/requestSignal'/);
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'middleware', 'requestSignal.ts'), 'utf8');

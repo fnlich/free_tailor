@@ -93,7 +93,7 @@ const MOUNTS = [
     why: 'Report Jobs: a reporter adds jobs from their own sheet and is paid for them; an administrator may open it (A3, J7)',
   },
   { mount: '/api/admin/job-lake', module: 'jobLake', access: 'admin', why: 'the lake, its merge, settings and admin sheet (J6, J9)' },
-  { mount: '/api/profiles', module: 'profiles', access: 'builder' },
+  { mount: '/api/resumes', module: 'resumes', access: 'builder' },
   {
     mount: '/api/templates',
     module: 'templates',
@@ -137,7 +137,7 @@ const MOUNTS = [
     access: 'admin',
     why: 'guarded per route, so every route is listed by this check',
   },
-  { mount: '/api/groups', module: 'groups', access: 'builder' },
+  { mount: '/api/profiles', module: 'profiles', access: 'builder' },
   { mount: '/api/import', module: 'import', access: 'builder' },
   {
     mount: '/api/prompts',
@@ -483,7 +483,7 @@ test('a user and an administrator are refused none of the builder by role', asyn
   try {
     for (const role of ['user', 'admin']) {
       for (const url of [
-        '/api/profiles',
+        '/api/resumes',
         '/api/templates',
         '/api/resume/models',
         '/api/resume/skills',
@@ -493,7 +493,7 @@ test('a user and an administrator are refused none of the builder by role', asyn
         '/api/prompts',
         '/api/prompts/categories',
         '/api/bid-assistant/jobs',
-        '/api/groups',
+        '/api/profiles',
         '/api/credits',
         '/api/sheet',
         // Find Jobs: the lake, searched, and the companies in it.
@@ -505,14 +505,21 @@ test('a user and an administrator are refused none of the builder by role', asyn
         const answer = await server.call(role, 'GET', url);
         const where = `${role} GET ${url}: ${answer.status} ${JSON.stringify(answer.body)}`;
         assert.notEqual(answer.status, 401, where);
+        // Not "not found" either: a path that answers 404 matches no route at
+        // all, and would pass every check below for the wrong reason (a
+        // mount renamed in index.ts, a probe left on the old address).
+        assert.notEqual(answer.status, 404, where);
         assert.notEqual(answer.body?.code, 'role-not-allowed', where);
         assert.notEqual(answer.body?.code, 'not-an-admin', where);
       }
     }
-    // Groups is a tier as well as a role: a Default user is refused by
-    // subscription, an administrator is exempt.
-    assert.equal((await server.call('user', 'GET', '/api/groups')).body.code, 'subscription-too-low');
-    assert.equal((await server.call('admin', 'GET', '/api/groups')).status, 200);
+    // Profiles are a role and nothing else: a Default user reads them as an
+    // administrator does (the subscription's cap is on how many one may make,
+    // not on using them). The move route (POST /:id/move) has no row of its own:
+    // it is the router's builder row, which "every route of every router carries
+    // the guard its row decides" checks.
+    assert.equal((await server.call('user', 'GET', '/api/profiles')).status, 200);
+    assert.equal((await server.call('admin', 'GET', '/api/profiles')).status, 200);
 
     // The Subscription page reads for both: a user's to buy from, an administrator's to look at.
     const mine = await server.call('user', 'GET', '/api/subscription');

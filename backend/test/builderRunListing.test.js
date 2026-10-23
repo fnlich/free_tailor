@@ -3,7 +3,7 @@ const test = require('node:test');
 
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';
 
-const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
+const { loadFresh, seedProfileWithResumes, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * `GET /api/generation/batches?active=1` - the question the builder asks when
@@ -18,7 +18,7 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  * The unfiltered list is unchanged: an administrator still sees every run.
  */
 
-const PROFILE = {
+const RESUME_RECORD = {
   name: 'Ada',
   title: 'Engineer',
   skills: ['C#'],
@@ -42,14 +42,13 @@ test('the active list is the caller\'s own runs, never an order - administrators
   useAdminEmails('admin@example.com');
   const express = require('express');
   const users = loadFresh('../dist/database/userRepository');
-  const { saveProfile } = loadFresh('../dist/database/profileRepository');
-  const { buildNewProfile } = loadFresh('../dist/services/profileService');
   const credits = loadFresh('../dist/services/credits');
 
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
-  saveProfile({ ...buildNewProfile(PROFILE, 'p-admin'), ownerId: admin.id });
-  saveProfile({ ...buildNewProfile(PROFILE, 'p-alice'), ownerId: alice.id });
+  // A run builds one profile (a person), so each account is seeded with one.
+  const adminProfile = seedProfileWithResumes(admin, 'Ada', [{ ...RESUME_RECORD, id: 'p-admin' }]).profileId;
+  const aliceProfile = seedProfileWithResumes(alice, 'Ada', [{ ...RESUME_RECORD, id: 'p-alice' }]).profileId;
   credits.setBalance(alice.id, 50, admin.id);
   const tokens = { admin: users.createSession(admin.id), alice: users.createSession(alice.id) };
 
@@ -87,11 +86,11 @@ test('the active list is the caller\'s own runs, never an order - administrators
   const ids = (listing) => listing.batches.map((batch) => batch.batchId).sort();
 
   try {
-    const alicesRun = (await call('alice', '/batches', { jobs: jobs(1), profileIds: ['p-alice'] })).batchId;
-    const alicesOrder = (await call('alice', '/batches', { jobs: jobs(1), profileIds: ['p-alice'], mode: 'order' }))
+    const alicesRun = (await call('alice', '/batches', { jobs: jobs(1), profileId: aliceProfile })).batchId;
+    const alicesOrder = (await call('alice', '/batches', { jobs: jobs(1), profileId: aliceProfile, mode: 'order' }))
       .batchId;
-    const adminsRun = (await call('admin', '/batches', { jobs: jobs(1), profileIds: ['p-admin'] })).batchId;
-    const adminsOrder = (await call('admin', '/batches', { jobs: jobs(1), profileIds: ['p-admin'], mode: 'order' }))
+    const adminsRun = (await call('admin', '/batches', { jobs: jobs(1), profileId: adminProfile })).batchId;
+    const adminsOrder = (await call('admin', '/batches', { jobs: jobs(1), profileId: adminProfile, mode: 'order' }))
       .batchId;
     assert.ok(alicesRun && alicesOrder && adminsRun && adminsOrder);
 

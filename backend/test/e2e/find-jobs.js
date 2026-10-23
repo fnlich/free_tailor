@@ -28,18 +28,28 @@
  *   - Export into Sheet appends the picked jobs to the stub's All, each row's
  *     Analysis cell naming its job's stored analysis; the same jobs again are
  *     "in All already"
- *   - Order Immediately: Several profiles, All profiles and Specific group
- *     are drawn locked for a Default account and open the subscription
- *     alert; the cost line prices the order; Place order asks first (the
- *     spend alert, "Do not show again") and ends in the receipt, "You
- *     ordered successfully: Order number - ...", linking to its order, which
- *     /api/orders holds with an item per resume, and which takes the focus;
- *     the selection is let go
+ *   - Order Immediately builds ONE profile in ONE build mode, on every tier:
+ *     the dialog has a single profile select (#order-profile, "Una Finder (2
+ *     resumes)") and the three mode cards (input[name=orderBuildMode]), none
+ *     locked for a Default account, and no Several / All / group target; the
+ *     cost line prices the order at the mode's price (Partial Tailor,
+ *     PUT /api/admin/settings { partialPriceUsd }); Place order asks first
+ *     (the spend alert, "Do not show again") and ends in the receipt, "You
+ *     ordered successfully: Order number - ..." and "3 resumes for 3 jobs are
+ *     being built: Partial Tailor for Una Finder.", linking to its order,
+ *     which /api/orders holds with an item per resume, each naming the
+ *     profile, the resume the matcher chose and why, and which takes the
+ *     focus; the selection is let go
+ *   - an order in Choose Suitable Resume is free (a free order asks nothing
+ *     first), builds the matcher's pick as written - the stub seat is asked
+ *     for its cover letter alone - and its order page says which resume and
+ *     why: "Suitable resume: matched TypeScript"
  *   - an administrator's form has Requested by, the table its column and
  *     Details its line, and filtering by a reporter finds theirs alone; their
- *     order dialog's Several profiles says, where the cost line stands, that
- *     no profile is chosen, prices the two once chosen, and Cancel gives the
- *     focus back to Order Immediately
+ *     order dialog offers both of their profiles, says, where the cost line
+ *     stands, that none is chosen ("Please select a profile."), notes which
+ *     resume each mode builds, prices the order once one is chosen, and
+ *     Cancel gives the focus back to Order Immediately
  *   - a reporter is sent to Report Jobs
  *   - at 390px no horizontal scrollbar, and the chips wrap inside their box;
  *     a press on a checkbox half cut off at the box's left edge ticks it, and
@@ -70,8 +80,6 @@ const users = require(path.join(DIST, 'database', 'userRepository'));
 const analyses = require(path.join(DIST, 'database', 'jobAnalysisRepository'));
 const identity = require(path.join(DIST, 'services', 'jobAnalysis', 'identity'));
 const lakeService = require(path.join(DIST, 'services', 'jobLake', 'index'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -442,53 +450,73 @@ async function main() {
   users.updateUser(admin.id, { role: 'admin' });
   const reporter = users.createUser({ email: `e2e-find-reporter-${stamp}@example.com`, name: 'Rita Finder', role: 'reporter' });
   const user = users.createUser({ email: `e2e-find-user-${stamp}@example.com`, name: 'Una Finder' });
-  /** A profile of `name`, owned by `ownerId`. */
-  const profileFor = (name, id, ownerId) =>
-    saveProfile({
-      ...buildNewProfile(
-        {
-          name,
-          title: 'Senior Engineer',
-          contact: { email: 'una@example.com', phone: '1', location: 'Remote' },
-          summary: 'Engineer who ships.',
-          experience: [
-            {
-              title: 'Engineer',
-              company: 'Acme',
-              startDate: '01/2020',
-              endDate: 'Present',
-              location: 'Remote',
-              description: 'Built product services.',
-              achievements: ['Cut build time by 37%.'],
-              skills: [],
-            },
-          ],
-          skills: ['TypeScript', 'Docker'],
-          education: [],
-        },
-        id
-      ),
-      ownerId,
-    });
-  // One profile: the Default subscription's limit, and what an order builds for.
-  profileFor('Una Finder', `p-find-${stamp}`, user.id);
-  // Two for the administrator, whose order dialog chooses several.
-  profileFor('Ada One', `p-find-a1-${stamp}`, admin.id);
-  profileFor('Ada Two', `p-find-a2-${stamp}`, admin.id);
   const tokens = { admin: users.createSession(admin.id), reporter: users.createSession(reporter.id), user: users.createSession(user.id) };
   const asAdmin = apiAs(tokens.admin);
   const asUser = apiAs(tokens.user);
+  /** A resume of the person `name` with the headline `title`, its experience and curated `skills`. */
+  const resumeBody = (name, title, jobTitle, skills) => ({
+    name,
+    title,
+    contact: { email: 'una@example.com', phone: '1', location: 'Remote' },
+    summary: 'Engineer who ships.',
+    experience: [
+      {
+        title: jobTitle,
+        company: 'Acme',
+        startDate: '01/2020',
+        endDate: 'Present',
+        location: 'Remote',
+        description: 'Built product services.',
+        achievements: ['Cut build time by 37%.'],
+        skills: [],
+      },
+    ],
+    skills,
+    education: [],
+  });
+  /**
+   * Makes the resume through the API, as a builder does: the server files it
+   * under a profile of its person (made by the first resume of a name). A seed
+   * that fails ends the script - nothing below means anything without it.
+   */
+  const seedResume = async (as, body) => {
+    const made = await as('/resumes', { method: 'POST', body: JSON.stringify(body) });
+    if (made.status !== 201 || !made.body?.profileId) {
+      throw new Error(`setup: the resume of ${body.name} was not made: ${made.status} ${JSON.stringify(made.body)}`);
+    }
+    return made.body;
+  };
+  // ONE profile (a person) for the user - the Default subscription's limit, and
+  // what an order builds - holding TWO resumes, so the matcher has a choice:
+  // the engineer lists TypeScript (the lake's postings ask for it), the analyst
+  // Go and Python. The second is filed under the first's profile by the name.
+  const engineer = await seedResume(asUser, resumeBody('Una Finder', 'Senior Engineer', 'Engineer', ['TypeScript', 'Docker']));
+  await seedResume(asUser, resumeBody('Una Finder', 'Data Analyst', 'Analyst', ['Go', 'Python']));
+  // Two people for the administrator, whose order dialog chooses between them.
+  const adaOne = await seedResume(asAdmin, resumeBody('Ada One', 'Senior Engineer', 'Engineer', ['TypeScript', 'Docker']));
+  const adaTwo = await seedResume(asAdmin, resumeBody('Ada Two', 'Senior Engineer', 'Engineer', ['TypeScript', 'Docker']));
+  const userProfiles = await asUser('/profiles');
+  const adminProfiles = await asAdmin('/profiles');
+  check(
+    "setup: the user's two resumes are one profile, Una Finder; the administrator's are two, Ada One and Ada Two",
+    userProfiles.status === 200 &&
+      userProfiles.body?.length === 1 &&
+      userProfiles.body[0].id === engineer.profileId &&
+      userProfiles.body[0].resumeCount === 2 &&
+      adminProfiles.status === 200 &&
+      adminProfiles.body?.length === 2 &&
+      adaOne.profileId !== adaTwo.profileId,
+    JSON.stringify({ user: userProfiles.body, admin: adminProfiles.body })
+  );
 
   const jobs = seedLake({ reporterId: reporter.id, adminId: admin.id });
   check('setup: the lake gets its thirty jobs', jobs.every((job) => job.status === 'added'), JSON.stringify(jobs.map((job) => job.status)));
 
-  // A priced default model, and credit to spend on it.
-  const settings = (await asAdmin('/admin/settings')).body;
-  const model = settings?.aiModels?.find((entry) => entry.id === settings.defaultModelId) ?? settings?.aiModels?.[0];
-  const priced = model
-    ? await asAdmin(`/admin/models/${encodeURIComponent(model.id)}`, { method: 'PUT', body: JSON.stringify({ pricePerResumeUsd: '0.023' }) })
-    : { status: 0 };
-  check('setup: the default model costs $0.023 a resume', priced.status === 200, JSON.stringify(priced.body ?? model));
+  // A priced build mode, and credit to spend on it. What a resume costs is the
+  // price of the mode it is built in (a model has no price): Partial Tailor is
+  // set here, Choose Suitable Resume and Fully Tailor stay unpriced, which is free.
+  const priced = await asAdmin('/admin/settings', { method: 'PUT', body: JSON.stringify({ partialPriceUsd: '0.023' }) });
+  check('setup: Partial Tailor costs $0.023 a resume', priced.status === 200 && priced.body?.partialPriceMilli === 23, JSON.stringify(priced.body));
   const granted = await asAdmin(`/admin/accounts/${user.id}/credits`, { method: 'POST', body: JSON.stringify({ amountUsd: '5' }) });
   check('setup: the user has $5 of credit', granted.status === 200, JSON.stringify(granted.body));
 
@@ -698,29 +726,48 @@ async function main() {
 
     /* --------------------------------------------- Order Immediately */
     check('Order Immediately is pressed', await pressButton(page, 'Order Immediately'));
-    await until(page, () => Boolean(document.querySelector('input[name="orderTargetMode"]')));
-    const targets = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('input[name="orderTargetMode"]')).map((input) => ({
+    // The dialog reads the profiles and the prices first: wait until its select has a profile chosen.
+    await until(page, () => Boolean(document.getElementById('order-profile')?.value) && Boolean(document.querySelector('input[name="orderBuildMode"]')));
+    const orderForm = await page.evaluate(() => ({
+      profile: document.getElementById('order-profile')?.value ?? null,
+      options: Array.from(document.querySelectorAll('#order-profile option')).map((option) => option.textContent.trim()),
+      modes: Array.from(document.querySelectorAll('input[name="orderBuildMode"]')).map((input) => ({
         value: input.value,
         disabled: input.disabled,
         locked: Boolean(input.closest('[data-locked-choice]')),
-      }))
+      })),
+      // The retired targets: Single / Several / All profiles / a list of resumes, their box and their locks.
+      targetKinds: Boolean(
+        document.querySelector('[role="dialog"]')?.querySelector('input[name="orderTargetMode"], #order-profiles, [data-locked-choice], [data-locked-feature]')
+      ),
+    }));
+    check(
+      'the order builds ONE profile in ONE mode: a select of the user\'s profile and three mode cards, none locked for a Default account, and no Several, All or list target',
+      orderForm.profile === engineer.profileId &&
+        orderForm.options.join(' | ') === 'Choose a profile... | Una Finder (2 resumes)' &&
+        JSON.stringify(orderForm.modes) ===
+          JSON.stringify([
+            { value: 'suitable', disabled: false, locked: false },
+            { value: 'partial', disabled: false, locked: false },
+            { value: 'full', disabled: false, locked: false },
+          ]) &&
+        !orderForm.targetKinds,
+      JSON.stringify(orderForm)
+    );
+    // Partial Tailor is what the settings start on; pick it anyway, so the claims below do not depend on the default.
+    await page.evaluate(() => document.querySelector('input[name="orderBuildMode"][value="partial"]')?.click());
+    const modeNote = await until(
+      page,
+      () =>
+        /For each job, the resume whose keywords match the posting best\./.test(document.querySelector('[data-build-mode-note]')?.textContent ?? '') &&
+        /\$0\.023 a resume/.test(document.querySelector('input[name="orderBuildMode"][value="partial"]')?.closest('label')?.textContent ?? ''),
+      10_000
     );
     check(
-      'Several profiles, All profiles and Specific group are drawn locked for a Default account',
-      JSON.stringify(targets) ===
-        JSON.stringify([
-          { value: 'single', disabled: false, locked: false },
-          { value: 'several', disabled: true, locked: true },
-          { value: 'all', disabled: true, locked: true },
-          { value: 'group', disabled: true, locked: true },
-        ]),
-      JSON.stringify(targets)
+      'Partial Tailor\'s card says what it costs a resume, $0.023, and the note says the resumes are chosen among by keywords',
+      modeNote,
+      await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText.slice(0, 800) ?? '')
     );
-    await page.click('[data-locked-choice="all"] button[data-locked-feature]');
-    const lock = await until(page, () => /Locked: Building for several profiles/.test(document.body.innerText) && Boolean(document.querySelector('[data-locked-go]')));
-    check('its lock opens the subscription alert, with Go to subscription', lock);
-    await pressButton(page, 'Close', true);
     const costLine = await until(page, () => /This order: 3 resumes × \$0\.023 = \$0\.069/.test(document.body.innerText));
     check('the cost line prices the order: 3 resumes × $0.023', costLine, await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? ''));
     await page.screenshot({ path: `${SHOTS}/find-jobs-4-order.png`, fullPage: true });
@@ -738,6 +785,12 @@ async function main() {
       Array.from(document.querySelectorAll('.tl-notice a')).find((a) => /Order status/.test(a.textContent))?.getAttribute('href')
     );
     check('the receipt says so, and links to its order', receipt && /^\/orders\/[^/]+$/.test(receiptLink ?? ''), String(receiptLink));
+    const receiptSentence = await page.evaluate(() => document.querySelector('[data-order-result]')?.innerText.replace(/\s+/g, ' ') ?? document.body.innerText.replace(/\s+/g, ' '));
+    check(
+      'the receipt says what is built: the resumes, the jobs, the mode and the profile - and no "across N profiles"',
+      /3 resumes for 3 jobs are being built: Partial Tailor for Una Finder\./.test(receiptSentence) && !/across \d+ profiles?/.test(receiptSentence),
+      receiptSentence.slice(0, 400)
+    );
     const receiptFocused = await until(page, () => Boolean(document.activeElement?.closest('[data-order-result]')), 5000);
     check(
       'the receipt takes the focus, so a keyboard goes on from it rather than from the top',
@@ -748,12 +801,90 @@ async function main() {
     const orders = await asUser('/orders');
     const order = (orders.body?.orders ?? []).find((entry) => receiptLink?.endsWith(entry.id));
     const detail = order ? await asUser(`/orders/${order.id}`) : null;
+    const partialItems = detail?.body?.order?.items ?? detail?.body?.items ?? [];
     check(
       '/api/orders holds the order, a resume for each job picked',
-      Boolean(order) && (detail?.body?.order?.items ?? detail?.body?.items ?? []).length === 3,
+      Boolean(order) && partialItems.length === 3,
       JSON.stringify({ orders: orders.body, detail: detail?.body && Object.keys(detail.body) })
     );
+    // The matcher chose among the profile's two resumes for each job: the engineer lists TypeScript, which every posting asks for.
+    check(
+      'each item names the profile and the resume the matcher chose, and why: Una Finder, Senior Engineer, Partial Tailor, matched TypeScript',
+      partialItems.length === 3 &&
+        partialItems.every(
+          (item) =>
+            item.profileLabel === 'Una Finder' &&
+            item.resumeLabel === 'Senior Engineer' &&
+            item.match?.mode === 'partial' &&
+            item.match?.reason === 'matched' &&
+            item.match?.candidates === 2 &&
+            (item.match?.matched ?? []).includes('TypeScript')
+        ),
+      JSON.stringify(partialItems.map((item) => [item.profileLabel, item.resumeLabel, item.match]))
+    );
     await page.screenshot({ path: `${SHOTS}/find-jobs-5-receipt.png`, fullPage: true });
+
+    /* ------------------------------------ the same page, Choose Suitable Resume */
+    // One job, in the mode that tailors nothing: free (nothing to ask first),
+    // the matcher's pick built as written, and the order page says which
+    // resume and why. The stub seat is asked for the cover letter alone.
+    await page.click('tbody input[type="checkbox"]');
+    check('one job is picked for an order in Choose Suitable Resume', /\b1 jobs? selected/.test(await toolbar(page)), await toolbar(page));
+    check('Order Immediately is pressed again', await pressButton(page, 'Order Immediately'));
+    await until(page, () => Boolean(document.getElementById('order-profile')?.value) && Boolean(document.querySelector('input[name="orderBuildMode"]')));
+    await page.evaluate(() => document.querySelector('input[name="orderBuildMode"][value="suitable"]')?.click());
+    const freeLine = await until(page, () => /This order: 1 resume × \$0 = \$0/.test(document.body.innerText));
+    const suitableCard = await page.evaluate(() => document.querySelector('input[name="orderBuildMode"][value="suitable"]')?.closest('label')?.textContent ?? '');
+    check(
+      'Choose Suitable Resume prices the order at nothing: 1 resume × $0, and its card says Free',
+      freeLine && /Free\./.test(suitableCard),
+      await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? '')
+    );
+    check('Place order is pressed for it', await pressButton(page, 'Place order', true));
+    // A free order is not asked about; were it asked, Proceed answers.
+    let suitableReceipt = false;
+    for (let attempt = 0; attempt < 2 && !suitableReceipt; attempt += 1) {
+      suitableReceipt = await until(
+        page,
+        () => /1 resume for 1 job is being built: Choose Suitable Resume for Una Finder\./.test(document.body.innerText.replace(/\s+/g, ' ')),
+        attempt === 0 ? 6000 : 15_000
+      );
+      if (!suitableReceipt && (await page.evaluate(() => Boolean(document.querySelector('[data-spend-kind="order"]'))))) {
+        await pressButton(page, 'Proceed', true);
+      }
+    }
+    const suitableLink = await page.evaluate(() => {
+      const links = Array.from(document.querySelectorAll('.tl-notice a')).filter((a) => /Order status/.test(a.textContent));
+      return links[links.length - 1]?.getAttribute('href') ?? null;
+    });
+    check(
+      'a free order is placed without a spend alert, and its receipt says: 1 resume for 1 job is being built: Choose Suitable Resume for Una Finder',
+      suitableReceipt && /^\/orders\/[^/]+$/.test(suitableLink ?? ''),
+      String(suitableLink)
+    );
+    const suitableId = (suitableLink ?? '').split('/').pop();
+    const suitableDetail = suitableId ? await asUser(`/orders/${suitableId}`) : null;
+    const suitableItems = suitableDetail?.body?.order?.items ?? suitableDetail?.body?.items ?? [];
+    check(
+      'its item names Una Finder and the Senior Engineer resume, chosen in Choose Suitable Resume because it matched TypeScript',
+      suitableItems.length === 1 &&
+        suitableItems[0].profileLabel === 'Una Finder' &&
+        suitableItems[0].resumeLabel === 'Senior Engineer' &&
+        suitableItems[0].match?.mode === 'suitable' &&
+        suitableItems[0].match?.reason === 'matched' &&
+        (suitableItems[0].match?.matched ?? []).includes('TypeScript') &&
+        Number(suitableItems[0].costMilli ?? 0) === 0,
+      JSON.stringify(suitableItems.map((item) => [item.profileLabel, item.resumeLabel, item.match, item.costMilli]))
+    );
+    await page.goto(`${APP}/orders/${suitableId}`, { waitUntil: 'networkidle2' });
+    const choiceLine = await until(page, () => /Suitable resume: matched TypeScript/.test(document.querySelector('[data-order-choice]')?.textContent ?? ''), 15_000);
+    const itemCell = await page.evaluate(() => document.querySelector('tbody tr td:nth-child(2)')?.innerText.replace(/\s+/g, ' ') ?? '');
+    check(
+      "the order page prints the item as 'Una Finder · Senior Engineer' with 'Suitable resume: matched TypeScript' under it",
+      choiceLine && /Una Finder · Senior Engineer/.test(itemCell),
+      itemCell
+    );
+    await page.screenshot({ path: `${SHOTS}/find-jobs-5-suitable-order.png`, fullPage: true });
 
     /* --------------------------------------------- an administrator's view */
     const adminPage = await browser.newPage();
@@ -795,37 +926,61 @@ async function main() {
     await pressButton(adminPage, 'Close', true);
     await until(adminPage, () => !document.querySelector('[role="dialog"]'), 5000);
 
-    // Several profiles, open to an administrator: the profiles chosen in a box of their own.
+    // An administrator's order is one profile in one mode too: the select offers
+    // both of their people, and "none chosen" is said in the footer, where the cost line stands.
     await adminPage.click('tbody input[type="checkbox"]');
     // Pressed for real, so it has the focus to be given back.
     const orderButton = await adminPage.evaluateHandle(() =>
       Array.from(document.querySelectorAll('[data-find-jobs-toolbar] button')).find((button) => button.textContent.trim() === 'Order Immediately')
     );
     await orderButton.asElement()?.click();
-    await until(adminPage, () => Boolean(document.querySelector('input[name="orderTargetMode"][value="several"]')));
-    await adminPage.evaluate(() => document.querySelector('input[name="orderTargetMode"][value="several"]')?.click());
+    await until(adminPage, () => document.querySelectorAll('#order-profile option').length === 3 && Boolean(document.getElementById('order-profile')?.value));
+    // Chosen as a person does: the select driven to its option, which fires the change React listens to.
+    await adminPage.select('#order-profile', '');
     const noneChosen = await until(
       adminPage,
-      () => (document.querySelector('[data-order-blocker]')?.textContent ?? '').trim() === 'Please select the profiles to build for.',
+      () => (document.querySelector('[data-order-blocker]')?.textContent ?? '').trim() === 'Please select a profile.',
       5000
     );
     const placeOff = await adminPage.evaluate(() => document.querySelector('[data-order-place]')?.disabled === true);
     check(
-      'Several profiles with none chosen says so where the cost line stands - not only in a tooltip - and Place order waits',
+      'no profile chosen says so where the cost line stands - not only in a tooltip - and Place order waits',
       noneChosen && placeOff,
       await adminPage.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? '')
     );
-    check('Ada One is chosen under Select Profiles', await pick(adminPage, 'order-profiles', 'Ada One'));
-    check('and Ada Two', await pick(adminPage, 'order-profiles', 'Ada Two'));
-    const pricedForTwo = await until(
+    await adminPage.select('#order-profile', adaOne.profileId);
+    const adaOneChosen = await until(
+      adminPage,
+      () =>
+        (document.querySelector('[data-order-blocker]')?.textContent ?? '').trim() === '' &&
+        /Ada One has one resume, so every job builds it\./.test(document.querySelector('[data-build-mode-note]')?.textContent ?? ''),
+      5000
+    );
+    check(
+      'Ada One is chosen under Select Profile: the reason goes, and the note says its one resume builds every job',
+      adaOneChosen,
+      await adminPage.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? '')
+    );
+    await adminPage.evaluate(() => document.querySelector('input[name="orderBuildMode"][value="full"]')?.click());
+    const fullNote = await until(
+      adminPage,
+      () => /Builds Senior Engineer, Ada One's default resume, for every job\./.test(document.querySelector('[data-build-mode-note]')?.textContent ?? ''),
+      5000
+    );
+    check(
+      "and Fully Tailor, open to an administrator as to everyone, says it builds Ada One's default resume",
+      fullNote,
+      await adminPage.evaluate(() => document.querySelector('[data-build-mode-note]')?.textContent ?? '')
+    );
+    const pricedForAda = await until(
       adminPage,
       () =>
         (document.querySelector('[data-order-blocker]')?.textContent ?? '').trim() === '' &&
         /Administrators are not charged/.test(document.querySelector('[role="dialog"]')?.innerText ?? ''),
       10_000
     );
-    check('both chosen: the reason goes and the order is priced', pricedForTwo, await adminPage.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? ''));
-    await adminPage.screenshot({ path: `${SHOTS}/find-jobs-6-admin-several.png`, fullPage: true });
+    check('the order is priced: an administrator is not charged', pricedForAda, await adminPage.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? ''));
+    await adminPage.screenshot({ path: `${SHOTS}/find-jobs-6-admin-order.png`, fullPage: true });
     check('Cancel is pressed', await pressButton(adminPage, 'Cancel', true));
     const focusBack = await until(
       adminPage,
@@ -898,11 +1053,9 @@ async function main() {
     await page.screenshot({ path: `${SHOTS}/find-jobs-8-dark.png`, fullPage: true });
   } finally {
     await browser.close();
-    if (model && priced.status === 200) {
-      await asAdmin(`/admin/models/${encodeURIComponent(model.id)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ pricePerResumeUsd: String((model.pricePerResumeMilli ?? 0) / 1000) }),
-      });
+    // Reset to default: the price this script set is taken off the stored row, so .env's (else $0) is in effect again.
+    if (priced.status === 200) {
+      await asAdmin('/admin/settings', { method: 'PUT', body: JSON.stringify({ partialPriceUsd: null }) });
     }
   }
 

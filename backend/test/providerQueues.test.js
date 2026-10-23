@@ -62,7 +62,7 @@ function harness(lanes, options = {}) {
   });
   const task = (label, pool = 'claude-cli', model) => ({
     queue: pool,
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: 'SWE' },
     kind,
     payload: model === undefined ? { label } : { label, model },
   });
@@ -241,7 +241,7 @@ test('urgent work keeps its place per lane when a type is pooled', async () => {
   await queue.refreshCapacity();
   const make = (label) => ({
     queue: 'claude-cli',
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: '' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: '' },
     kind,
     payload: { label },
   });
@@ -494,9 +494,9 @@ test('a restored task naming a removed provider moves to a provider of its type;
     state: 'queued',
     data: {
       queue,
-      label: { profileId: 'p1', profileName: 'Ada', companyName: `Co ${seq}`, role: '' },
+      label: { resumeId: 'p1', resumeName: 'Ada', companyName: `Co ${seq}`, role: '' },
       kind: 'resume',
-      payload: { batchId: 'bat_providers', profileId: 'p1', jobIndex: 0, choice, costMilli: 0 },
+      payload: { batchId: 'bat_providers', resumeId: 'p1', jobIndex: 0, choice, costMilli: 0 },
       ranOn: queue,
     },
   });
@@ -540,7 +540,7 @@ test('the provider a task ran on is recorded on its order item, for an administr
   const orders = require('../dist/database/orderRepository');
   const order = orders.createOrder(
     { userId: 'u1', batchId: 'bat_ran', label: 'Order', retentionDays: 7 },
-    [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: '' }]
+    [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: '' }]
   );
   orders.markItemRunning('bat_ran', 0, 'prv-12345678');
   assert.equal(orders.listOrderItems(order.id)[0].ranOn, 'prv-12345678');
@@ -566,7 +566,7 @@ test('GET /api/orders/:id names the provider for an administrator, and says noth
   const placed = {};
   for (const [who, account] of [['admin', admin], ['user', user]]) {
     placed[who] = orders.createOrder({ userId: account.id, batchId: `bat_${who}`, label: 'Order', retentionDays: 7 }, [
-      { seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: '' },
+      { seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: '' },
     ]);
     orders.markItemRunning(`bat_${who}`, 0, 'claude-cli');
   }
@@ -635,7 +635,7 @@ test("the real queue reads a provider's hold on a task's model: Opus work goes t
     });
     const task = (label, modelName) => ({
       queue: 'claude-cli',
-      label: { profileId: label, profileName: label, companyName: 'Acme', role: '' },
+      label: { resumeId: label, resumeName: label, companyName: 'Acme', role: '' },
       kind: queueModule.RESUME_TASK_KIND,
       payload: { label, choice: { provider: 'claude-cli', modelName, modelId: `m-${modelName}`, modelLabel: modelName }, costMilli: 0 },
     });
@@ -698,7 +698,7 @@ function heldRunner(queueModule, kind) {
   );
   const task = (label, pool = 'claude-cli') => ({
     queue: pool,
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: '' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: '' },
     kind,
     payload: { label },
   });
@@ -825,7 +825,7 @@ test("a queued resume's model calls go to the provider whose lane it holds, not 
     mode: 'order',
     format: 'pdf',
     includeCoverLetterDocx: false,
-    profileIds: ['p-claude'],
+    profileId: h.profileOf('p-claude'),
     jobs: [
       { companyName: 'Acme', role: 'Engineer', jobDescription: posting(61) },
       { companyName: 'Globex', role: 'Engineer', jobDescription: posting(62) },
@@ -906,7 +906,7 @@ test('a restored FINISHED task keeps the provider it ran on, read back from its 
   const { provider } = await config.createAIProvider({ type: 'codex-cli', label: 'Codex two', homeDir: home, concurrency_max_requests: 1 });
   const store = require('../dist/database/generationRepository');
   const choice = { provider: 'codex-cli', modelName: 'default', modelId: 'codex-cli-default', modelLabel: 'Codex' };
-  const label = (company) => ({ profileId: 'p1', profileName: 'Ada', companyName: company, role: '' });
+  const label = (company) => ({ resumeId: 'p1', resumeName: 'Ada', companyName: company, role: '' });
   store.saveBatchWithTasks(
     { id: 'bat_done', state: 'running', data: { label: 'Before', jobCount: 2, shared: { jobs: [] }, createdAt: Date.now() } },
     [
@@ -946,7 +946,7 @@ test('a task the real queue starts writes the provider to its stored row and to 
   const store = require('../dist/database/generationRepository');
   const order = orders.createOrder(
     { userId: 'u1', batchId: 'bat_ran_wiring', label: 'Order', retentionDays: 7 },
-    [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: '' }]
+    [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: '' }]
   );
   const queue = queueModule.getGenerationQueue();
   let release;
@@ -966,7 +966,7 @@ test('a task the real queue starts writes the provider to its stored row and to 
   queue.submit(
     [{
       queue: 'claude-cli',
-      label: { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: '' },
+      label: { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: '' },
       kind: queueModule.RESUME_TASK_KIND,
       payload: { batchId: 'bat_ran_wiring', choice, costMilli: 0 },
     }],

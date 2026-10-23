@@ -47,8 +47,8 @@ const puppeteer = require('puppeteer');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
+const { saveResume } = require(path.join(DIST, 'database', 'resumeRepository'));
+const { buildNewResume } = require(path.join(DIST, 'services', 'resumeDocument'));
 
 const API = process.env.E2E_API || 'http://localhost:3001/api';
 const APP = process.env.E2E_APP || 'http://localhost:3000';
@@ -156,9 +156,9 @@ async function openAnotherTab(browser, route) {
 async function main() {
   const stamp = Date.now().toString(36);
   const user = users.createUser({ email: `e2e-reload-${stamp}@example.com`, name: 'Reload User' });
-  const profileId = `p-reload-${stamp}`;
-  saveProfile({
-    ...buildNewProfile(
+  const resumeId = `p-reload-${stamp}`;
+  saveResume({
+    ...buildNewResume(
       {
         name: 'Ada Reload',
         title: 'Senior Engineer',
@@ -179,7 +179,7 @@ async function main() {
         skills: ['TypeScript', 'Docker'],
         education: [],
       },
-      profileId
+      resumeId
     ),
     ownerId: user.id,
   });

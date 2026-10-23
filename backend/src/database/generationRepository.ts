@@ -4,7 +4,7 @@ import { getDb } from './sqlite';
  * Generation batches on disk, so a run survives the server restarting.
  *
  * Not `DocumentTable`, which stores one JSON blob per row and rewrites it whole
- * on every save. That is right for a profile, which changes when a person edits
+ * on every save. That is right for a resume, which changes when a person edits
  * it, and wrong here: a task changes state four times and a batch holds every
  * job description in the run, so saving the batch per transition would rewrite
  * about a megabyte a hundred and twenty times for one sheet import.

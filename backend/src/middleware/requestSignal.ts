@@ -6,8 +6,8 @@ import type { Request, Response } from 'express';
  * Threaded down to the AI transport so a user who closes the tab mid-batch
  * kills the model calls (and, on the CLI provider, the child processes) rather
  * than leaving them to run out the clock against the subscription seat. Lived
- * in routes/resume.ts until the profile editor's Write with AI needed it too
- * (routes/profiles.ts); one copy, so the two routers cannot drift.
+ * in routes/resume.ts until the resume editor's Write with AI needed it too
+ * (routes/resumes.ts); one copy, so the two routers cannot drift.
  *
  * Keyed on `res` rather than `req`: `req` emits 'close' on normal completion
  * too, so listening there would abort work that had already succeeded.

@@ -120,7 +120,7 @@ export function sessionTtlMs(env: EnvSource = process.env): number {
 /**
  * The largest JSON body any /api route accepts, in MB.
  *
- * Batch requests and profile imports are the large ones, and how large depends
+ * Batch requests and resume imports are the large ones, and how large depends
  * on the operator's batches, not on the code. Read once, where the parser is
  * built. Not the template JSON import, which is a multipart file upload with a
  * fixed 2 MB of its own (routes/templates.ts), nor the payment webhooks' 1 MB.
@@ -494,7 +494,7 @@ export function jobLakeExportMaxRows(env: EnvSource = process.env): number {
 /**
  * How long a tailored resume or cover letter is kept for reuse, in days
  * (owner decision P6, services/tailorCache.ts): generating again for the same
- * unchanged profile, posting, model and prompt reuses the stored answer with no
+ * unchanged resume, posting, model and prompt reuses the stored answer with no
  * model call - charged as usual. Older rows are pruned at boot and once a day.
  * 30 by default. Read at every prune.
  */

@@ -433,7 +433,7 @@ function AccountsTable() {
     if (
       !window.confirm(
         `Delete the account for ${row.email}?\n\n` +
-          'Their profiles are NOT deleted - they stay in the database, visible to administrators, ' +
+          'Their profiles and the resumes in them are NOT deleted - they stay in the database, visible to administrators, ' +
           'until you reassign or delete them.'
       )
     ) {
@@ -744,7 +744,7 @@ function AccountsTable() {
                           // subscription never deletes what it already has.
                           <span
                             className="ml-2"
-                            title="Over the subscription's limit; they keep these but cannot add more."
+                            title="Over the subscription's profile limit; this account keeps these profiles, and all their resumes, but cannot add another profile."
                           >
                             <Pill tone="amber">over</Pill>
                           </span>

@@ -6,13 +6,13 @@ import {
   SECTION_KIND_IDS,
   type ClassicSectionKind,
   type SectionKind,
-} from '../config/profileSections';
+} from '../config/sectionCatalogue';
 import { EXTRA_SECTIONS_MACRO, inferNativeSectionOrder, templateNamesField } from '../generators/sectionLocator';
 
 /**
  * Reading an uploaded template file.
  *
- * The same shape of problem as `profileImport`, and solved the same way, for
+ * The same shape of problem as `resumeImport`, and solved the same way, for
  * the same reason: the JSON the export button produces should go back in
  * without being edited first. Three things stopped that.
  *
@@ -127,7 +127,7 @@ export function inferTemplateCapabilities(html: string): {
 }
 
 /**
- * Which section kinds a template prints (config/profileSections.ts ids, plus
+ * Which section kinds a template prints (config/sectionCatalogue.ts ids, plus
  * 'custom' for the custom sections): a classic kind when the markup names its
  * field (skills: any of its three), Soft Skills and Strengths exactly as
  * `inferTemplateCapabilities` says, and every other kind when the markup

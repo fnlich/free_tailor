@@ -19,7 +19,7 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  *   - the frontend's copy of the role catalog is the backend's;
  *   - AuthGate's reporter allowlist is an allowlist: of every page the App
  *     Router has, a reporter opens exactly Report Jobs, Credits and Settings ->
- *     Profile / Job Sheet, and is sent to Report Jobs from every other one;
+ *     Account / Job Sheet, and is sent to Report Jobs from every other one;
  *   - the rail and the Settings tabs offer a reporter exactly those, and
  *     nothing the allowlist would bounce them from;
  *   - the rate box and the Record payout form say what the server would, in
@@ -103,7 +103,12 @@ test('a reporter opens exactly their own pages, and is sent to Report Jobs from 
   const routes = appRoutes();
 
   // The walk is reading the app: the pages this phase is about are all there.
-  for (const page of [...REPORTER_PAGES, '/', '/admin/profiles', '/admin/accounts', '/credits/invoice', '/orders/x123']) {
+  // (The dashboard keeps its address, a profile has a page of its own under it, and the chooser and the
+  // editor live under /admin/resumes.)
+  for (const page of [
+    ...REPORTER_PAGES, '/', '/admin/profiles', '/admin/profiles/x123', '/admin/resumes/new', '/admin/resumes/x123',
+    '/admin/accounts', '/credits/invoice', '/orders/x123',
+  ]) {
     assert.ok(routes.includes(page), `${page} is a page (found ${routes.length})`);
   }
 
@@ -117,9 +122,9 @@ test('a reporter opens exactly their own pages, and is sent to Report Jobs from 
     for (const role of ['user', 'admin']) assert.equal(roles.redirectFor(role, route), null, `${role} ${route}`);
   }
 
-  // /admin/* is NOT a reporter's, though it holds everybody's profiles - and a
+  // /admin/* is NOT a reporter's, though it holds everybody's resumes - and a
   // purchase's pages under /credits are not theirs either.
-  for (const refused of ['/admin', '/admin/profiles', '/admin/profiles/new', '/credits/invoice', '/credits/return',
+  for (const refused of ['/admin', '/admin/profiles', '/admin/profiles/x123', '/admin/resumes/new', '/admin/resumes/x123', '/credits/invoice', '/credits/return',
     '/settings/subscription', '/settings/payment-methods', '/reports', '/creditsx', '/account']) {
     assert.equal(roles.reporterMayOpen(refused), false, refused);
   }
@@ -145,9 +150,9 @@ test("the rail and the Settings tabs offer a reporter exactly their pages, and e
   const offered = (role) => rail.filter((item) => nav.canSee(item, role)).map((item) => item.label);
 
   assert.deepEqual(offered('reporter'), ['Report Jobs', 'Credits', 'Settings']);
-  // Groups is a builder's on every subscription - drawn locked below Premium, never hidden.
+  // One Profiles entry (the people and their resumes), and no row is locked.
   const builders = [
-    'Profiles', 'Groups', 'Find Jobs', 'Build Resumes', 'Orders', 'Credits',
+    'Profiles', 'Find Jobs', 'Build Resumes', 'Orders', 'Credits',
     'Job Filter', 'Bid Assistant', 'Calendar', 'Templates', 'Settings',
   ];
   assert.deepEqual(offered('user'), builders);
@@ -167,9 +172,9 @@ test("the rail and the Settings tabs offer a reporter exactly their pages, and e
     assert.equal(roles.reporterMayOpen(item.href), true, item.label);
   }
 
-  assert.deepEqual(nav.settingsTabsFor('reporter').map((tab) => tab.label), ['Profile', 'Job Sheet']);
+  assert.deepEqual(nav.settingsTabsFor('reporter').map((tab) => tab.label), ['Account', 'Job Sheet']);
   for (const tab of nav.settingsTabsFor('reporter')) assert.equal(roles.reporterMayOpen(tab.href), true, tab.href);
-  const all = ['Profile', 'Job Sheet', 'Payment Methods', 'Subscription'];
+  const all = ['Account', 'Job Sheet', 'Payment Methods', 'Subscription'];
   assert.deepEqual(nav.settingsTabsFor('user').map((tab) => tab.label), all);
   assert.deepEqual(nav.settingsTabsFor('admin').map((tab) => tab.label), all);
   assert.deepEqual(nav.settingsTabsFor('owner'), []);
@@ -193,20 +198,26 @@ test("the rail and the Settings tabs offer a reporter exactly their pages, and e
   assert.equal(nav.isNavLocked({ needs: 'premium' }, 'reporter', 'default'), false);
   assert.equal(nav.isNavLocked({ roles: ['reporter'], needs: 'premium' }, 'reporter', 'default'), true);
 
-  // Groups, by name: locked for a Default user, open from Premium and for an administrator,
-  // whose dialog is the Groups lock - and the backend's gate is the same tier.
-  const groups = rail.find((item) => item.label === 'Groups');
-  const { MULTI_PROFILE_SUBSCRIPTION } = require('../dist/config/accountSubscriptions');
-  assert.equal(groups.href, '/admin/groups');
-  assert.equal(groups.needs, MULTI_PROFILE_SUBSCRIPTION);
-  assert.equal(groups.feature, 'groups');
-  assert.deepEqual(
-    ['default', 'premium', 'premium-plus', 'premium-max'].map((tier) => nav.isNavLocked(groups, 'user', tier)),
-    [true, false, false, false]
-  );
-  assert.equal(nav.isNavLocked(groups, 'admin', 'default'), false);
-  // Every entry that needs a tier says which lock it is.
+  // No rail entry needs a tier any more (profiles are open to every builder; a
+  // run builds one profile everywhere), so no row is drawn locked. The
+  // mechanism stays for a future tiered entry, and one that has a tier says
+  // which lock it is.
+  assert.equal(rail.some((item) => 'needs' in item), false, 'no entry needs a subscription');
+  for (const tier of ['default', 'premium', 'premium-plus', 'premium-max']) {
+    for (const item of rail) assert.equal(nav.isNavLocked(item, 'user', tier), false, `${item.label} ${tier}`);
+  }
   for (const item of rail.filter((entry) => entry.needs)) assert.ok(item.feature, item.label);
+
+  // The Profiles entry is lit for its dashboard, a profile's page and the resume
+  // pages under /admin/resumes (the chooser and the editor are its desk too).
+  const profiles = rail.find((item) => item.label === 'Profiles');
+  assert.equal(profiles.href, '/admin/profiles');
+  for (const pathname of ['/admin/profiles', '/admin/profiles/x123', '/admin/resumes/new', '/admin/resumes/x', '/admin/resumes/x123']) {
+    assert.equal(nav.activeHref(pathname, rail), '/admin/profiles', pathname);
+  }
+  // ...and no other entry is lit by them, nor Profiles by a neighbour's page.
+  assert.notEqual(nav.activeHref('/admin/templates', rail), '/admin/profiles');
+  assert.notEqual(nav.activeHref('/jobs', rail), '/admin/profiles');
 });
 
 test("a reporter's sheet link is the shell's, else the session's, and only ever an https address", () => {
@@ -395,7 +406,26 @@ test("a reporter's pages mount nothing that asks a route a reporter is refused",
   // and runs, behind requireReporter - never /api/import, which is a builder's.
   const report = codeOnly(fs.readFileSync(path.join(SRC, 'app/report/page.tsx'), 'utf8'));
   assert.match(report, /reportApi\.overview\(\)/);
-  for (const builderOnly of ['importApi', "'/import", 'generationApi', 'profilesApi', 'adminJobLakeApi', 'accountsApi']) {
+  // Every needle is first shown to be a real thing, because "the page does not
+  // mention X" holds for ever once X is gone: the check for the resume client
+  // went on passing, trivially, the day that client was renamed and its old
+  // name was nowhere. The clients are `export const` of some lib/*.ts; the
+  // path is a literal of the import client, checked on its own.
+  const libDir = path.join(SRC, 'lib');
+  const libCode = fs
+    .readdirSync(libDir)
+    .filter((name) => /\.ts$/.test(name))
+    .map((name) => codeOnly(fs.readFileSync(path.join(libDir, name), 'utf8')))
+    .join('\n');
+  const builderClients = ['importApi', 'generationApi', 'resumesApi', 'profilesApi', 'adminJobLakeApi', 'accountsApi'];
+  for (const client of builderClients) {
+    assert.match(libCode, new RegExp(`export const ${client}\\b`), `${client} is a client exported from frontend/src/lib`);
+  }
+  assert.ok(
+    codeOnly(fs.readFileSync(path.join(libDir, 'api.ts'), 'utf8')).includes("'/import"),
+    "the import client asks '/import', the path Report Jobs must not"
+  );
+  for (const builderOnly of [...builderClients, "'/import"]) {
     assert.equal(report.includes(builderOnly), false, `Report Jobs uses ${builderOnly}`);
   }
   assert.match(report, /<ReporterOnly>/);
@@ -575,4 +605,152 @@ test('a 403 role-not-allowed re-reads the account, and is not a sign-out', () =>
   assert.match(gate, /redirectFor\(role, pathname\)/);
   assert.match(gate, /router\.replace\(sendTo\)/);
   assert.match(gate, /if \(sendTo\) \{\s*return \(\s*<Centered>/);
+});
+
+/*
+ * Every literal app link resolves to a page.
+ *
+ * Moving a page changes its address, and a link to the old one is a string no
+ * type-checker reads: when the resume chooser and editor moved to
+ * /admin/resumes/..., a back link, a router.push or a notice's `link` left on
+ * their old address would have been a 404 nobody finds until they click it.
+ * So every address the code writes out as a link must be
+ * a page of the App Router (the `appRoutes()` walk above):
+ *   - an `href` (JSX, or an object's as navModel's, or location.href = ...);
+ *   - router.push / replace / prefetch, location.assign / replace, redirect;
+ *   - a `*_PATH` / `*_PAGE` / `*_HREF` constant, and a function named
+ *     ...Href / ...Path that returns one;
+ *   - on the server, the `link` of a notice and the same constants.
+ * A `${...}` stands for a dynamic segment, a query or a hash is not part of
+ * the address, and an outside address (`https://...`, `//cdn...`) is not a link
+ * of the app.
+ */
+
+/** Source with its comments blanked and every line kept, so a hit keeps its real line number. */
+function blankComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, (all, lead) => lead + ' '.repeat(all.length - lead.length));
+}
+
+const APP_PATH = String.raw`(['"\x60])(\/(?!\/)[^'"\x60]*)\1`;
+const LINK_SHAPES = [
+  // href="/x", href={'/x'}, href: '/x', location.href = '/x'
+  new RegExp(String.raw`\bhref\s*[=:]\s*\{?\s*` + APP_PATH, 'g'),
+  // router.push('/x'), router.replace(`/x/${id}`), router.prefetch('/x')
+  new RegExp(String.raw`\b(?:router|Router)\s*\.\s*(?:push|replace|prefetch)\(\s*` + APP_PATH, 'g'),
+  // location.assign('/x'), location.replace('/x'), redirect('/x')
+  new RegExp(String.raw`\blocation\s*\.\s*(?:assign|replace)\(\s*` + APP_PATH, 'g'),
+  new RegExp(String.raw`\b(?:permanentRedirect|redirect)\(\s*` + APP_PATH, 'g'),
+  // const NEW_RESUME_PATH = '/x'
+  new RegExp(String.raw`\b[A-Z][A-Z0-9_]*_(?:PATH|PAGE|HREF)\b\s*(?::[^=;]+)?=\s*` + APP_PATH, 'g'),
+  // function resumeEditorHref(resume) { return `/x/${resume.id}`; }
+  new RegExp(String.raw`\bfunction\s+\w*(?:Href|Path)\w*\s*\([^)]*\)[^{]*\{[^}]*?\breturn\s+` + APP_PATH, 'g'),
+];
+
+/** The address a link literal stands for: `${...}` a dynamic segment, no query, no hash, no trailing slash. */
+function addressOf(literal) {
+  const address = literal.replace(/\$\{[^}]*\}/g, 'x123').split(/[?#]/)[0];
+  return address.length > 1 ? address.replace(/\/+$/, '') : address;
+}
+
+function literalAppLinks(source, shapes = LINK_SHAPES) {
+  const code = blankComments(source);
+  const links = [];
+  for (const shape of shapes) {
+    for (const match of code.matchAll(shape)) {
+      links.push({
+        raw: match[2],
+        link: addressOf(match[2]),
+        line: code.slice(0, match.index).split('\n').length,
+      });
+    }
+  }
+  return links;
+}
+
+function sourceFilesUnder(dir, extensions) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : sourceFilesUnder(full, extensions);
+    return extensions.test(entry.name) ? [full] : [];
+  });
+}
+
+test('the link scan reads every shape a link is written in, and resolves only real pages', () => {
+  // Pinned on its own because a scan that misses a shape passes silently.
+  const read = (source) => literalAppLinks(source).map((entry) => entry.link);
+  assert.deepEqual(read('<Link href="/orders">Orders</Link>'), ['/orders']);
+  assert.deepEqual(read("{ href: '/admin/accounts', label: 'Accounts' }"), ['/admin/accounts']);
+  assert.deepEqual(read('router.push(`/admin/resumes/${encodeURIComponent(resume.id)}`);'), ['/admin/resumes/x123']);
+  assert.deepEqual(read("router.replace('/credits?tab=refunds');"), ['/credits']);
+  assert.deepEqual(read("window.location.href = '/settings#top';"), ['/settings']);
+  assert.deepEqual(read("redirect('/');"), ['/']);
+  assert.deepEqual(read("export const NEW_RESUME_PATH = '/admin/resumes/new';"), ['/admin/resumes/new']);
+  assert.deepEqual(
+    read("export function resumeEditorHref(resume: Pick<Resume, 'id'>): string {\n  return `/admin/resumes/${resume.id}`;\n}"),
+    ['/admin/resumes/x123']
+  );
+  // Not links: a comment, an outside address, a string method, a protocol-relative address.
+  assert.deepEqual(read('// <a href="/orders">\n/* router.push(\'/x\') */'), []);
+  assert.deepEqual(read('<a href="https://example.com/x">x</a>'), []);
+  assert.deepEqual(read("const next = path.replace('/admin', '');"), []);
+  assert.deepEqual(read('<script src="x" href="//cdn.example.com/x">'), []);
+  // The line is the real one, comments above it or not.
+  assert.equal(literalAppLinks('/* one\n two */\n<a href="/orders">')[0].line, 3);
+
+  const routes = new Set(appRoutes());
+  for (const real of ['/', '/orders', '/orders/x123', '/admin/profiles', '/admin/profiles/x123', '/admin/resumes/new', '/admin/resumes/x123']) {
+    assert.ok(routes.has(real), `${real} is a page`);
+  }
+  // And what is not: a deeper address than the page has, a folder with no page of its own
+  // (there is no /admin/resumes index), and the addresses that were removed outright.
+  for (const missing of [
+    '/orders/x123/receipt', '/admin/nowhere', '/admin/resumes', '/admin/profiles/x123/y', '/account', '/settings/plan',
+  ]) {
+    assert.equal(routes.has(missing), false, `${missing} is not a page`);
+  }
+});
+
+test('every literal link in the frontend resolves to a page of the App Router', () => {
+  const routes = new Set(appRoutes());
+  const unresolved = [];
+  let seen = 0;
+  for (const file of sourceFilesUnder(SRC, /\.(?:tsx?|jsx?|mjs)$/)) {
+    for (const { raw, link, line } of literalAppLinks(fs.readFileSync(file, 'utf8'))) {
+      // An address under /api is the backend's (a template's preview page, drawn in a
+      // frame), not a page of the App Router: routeAccess.test.js owns those.
+      if (link.startsWith('/api/')) continue;
+      seen += 1;
+      if (!routes.has(link)) unresolved.push(`${path.relative(SRC, file)}:${line}: ${raw}`);
+    }
+  }
+  // The scan is reading the app: the rail alone has thirty addresses.
+  assert.ok(seen >= 40, `found ${seen} links`);
+  assert.deepEqual(unresolved, [], 'a link to an address no page answers');
+});
+
+test('every link the server hands out resolves to a page too', () => {
+  const routes = new Set(appRoutes());
+  const appSegments = new Set([...routes].map((route) => route.split('/')[1]).filter(Boolean));
+  const backendSrc = path.join(__dirname, '..', 'src');
+  // A notice's `link` is an app path by definition; a constant named ..._PATH is one only when it
+  // starts with a segment the app has (an output folder template is a path of another kind).
+  const noticeLink = new RegExp(String.raw`\blink\s*:\s*` + APP_PATH, 'g');
+  const constants = LINK_SHAPES[4];
+  const unresolved = [];
+  let seen = 0;
+  for (const file of sourceFilesUnder(backendSrc, /\.ts$/)) {
+    const source = fs.readFileSync(file, 'utf8');
+    const links = [
+      ...literalAppLinks(source, [noticeLink]),
+      ...literalAppLinks(source, [constants]).filter((entry) => appSegments.has(entry.link.split('/')[1])),
+    ];
+    for (const { raw, link, line } of links) {
+      seen += 1;
+      if (!routes.has(link)) unresolved.push(`${path.relative(backendSrc, file)}:${line}: ${raw}`);
+    }
+  }
+  assert.ok(seen >= 4, `found ${seen} server links`);
+  assert.deepEqual(unresolved, [], 'a notice or a constant linking to an address no page answers');
 });

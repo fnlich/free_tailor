@@ -16,7 +16,7 @@ export type GenerationProgressState = {
   /** How many are still waiting for a free slot. */
   queued?: number;
   phase: string;
-  currentProfileName?: string;
+  currentResumeName?: string;
   currentCompanyName?: string;
   currentJobTitle?: string;
   currentJobNumber?: number;
@@ -40,7 +40,7 @@ function pluralizeJob(count: number): string {
 }
 
 export default function GenerationProgress({ progress, className = '' }: GenerationProgressProps) {
-  const activeIndex = progress.currentProfileName || progress.currentCompanyName
+  const activeIndex = progress.currentResumeName || progress.currentCompanyName
     ? Math.min(progress.completed + 1, progress.total)
     : Math.min(progress.completed, progress.total);
   const displayedPercent = progress.total > 0
@@ -100,8 +100,8 @@ export default function GenerationProgress({ progress, className = '' }: Generat
             </div>
             {!isSheetsImport && (
               <div className="mt-1 text-sm text-muted">
-                {progress.currentProfileName
-                  ? `Building ${progress.currentProfileName}${progress.currentCompanyName ? ` for ${progress.currentCompanyName}` : ''}`
+                {progress.currentResumeName
+                  ? `Building ${progress.currentResumeName}${progress.currentCompanyName ? ` for ${progress.currentCompanyName}` : ''}`
                   : 'Preparing generation queue'}
               </div>
             )}

@@ -1,4 +1,4 @@
-import { apiFetch, getPreferredApiBase } from './api';
+import { apiFetch, getPreferredApiBase, type TaskMatch } from './api';
 import type { CancelOutcome } from './orderCancel';
 
 /**
@@ -67,8 +67,8 @@ export type OrderItem = {
   id: string;
   orderId: string;
   seq: number;
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   role: string;
   sourceRowNumber?: number;
@@ -83,6 +83,15 @@ export type OrderItem = {
    * item placed before items carried it, and 0 for one never charged.
    */
   costMilli: number | null;
+  /**
+   * What the run chose for this item (v4.2): the chosen resume's headline
+   * label, the profile's name when it was submitted, and the matcher's
+   * explanation. All null on an item an older build wrote - the page then
+   * prints it as it always did (`resumeName` alone).
+   */
+  resumeLabel: string | null;
+  profileLabel: string | null;
+  match: TaskMatch | null;
   /**
    * Which provider built it - its id, the name it has now and its type - or
    * null before it started. Sent to an ADMINISTRATOR only: which sign-in, at
@@ -132,6 +141,50 @@ export function isOrderLive(order: { counts: OrderCounts; state: OrderState }): 
  * (lib/orderCancel.ts, which the backend suite runs).
  */
 export { cancelOrderQuestion, describeCancelOutcome, type CancelOutcome } from './orderCancel';
+
+/** What a build mode is called in the sentence that says how a resume was chosen. */
+const CHOICE_MODE_WORDS = {
+  suitable: 'Suitable resume',
+  partial: 'Partial Tailor',
+  full: 'Fully Tailor',
+} as const;
+
+/** How many matched terms the sentence names before it counts the rest. */
+const CHOICE_TERMS_SHOWN = 8;
+
+/**
+ * How a run came to build the resume it built, in one sentence - the order
+ * page's second line, the receipt's rows and the builder's preview note all
+ * say it this way. Null when there is nothing to say (an item placed before
+ * v4.2 carries no match).
+ */
+export function describeChoice(match: TaskMatch | null | undefined): string | null {
+  if (!match || typeof match !== 'object') return null;
+  const word = CHOICE_MODE_WORDS[match.mode];
+  if (!word) return null;
+  switch (match.reason) {
+    case 'matched': {
+      const terms = Array.isArray(match.matched)
+        ? match.matched.filter((term): term is string => typeof term === 'string' && term.length > 0)
+        : [];
+      if (terms.length > 0) {
+        const shown = terms.slice(0, CHOICE_TERMS_SHOWN);
+        const total = typeof match.matchedCount === 'number' ? match.matchedCount : terms.length;
+        const more = total - shown.length;
+        return `${word}: matched ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`;
+      }
+      return match.titleMatched ? `${word}: its title matches the posting's` : null;
+    }
+    case 'tie':
+      return `${word}: no other resume matched better, so the profile's default`;
+    case 'only':
+      return `${word}: the profile's only enabled resume`;
+    case 'default':
+      return "Fully Tailor: the profile's default resume";
+    default:
+      return null;
+  }
+}
 
 export const ordersApi = {
   list: () => apiFetch<{ orders: Order[] }>('/orders'),

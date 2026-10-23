@@ -7,16 +7,16 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  * Accounts, subscriptions and the profile cap.
  *
  * The claims worth pinning are the ones a mistake would make silently wrong:
- * that the two sign-in paths land on ONE account, that a profile belongs to
+ * that the two sign-in paths land on ONE account, that a resume belongs to
  * whoever made it and is invisible to everybody else, that the subscription's limit is
- * enforced on every door into the profiles table, and that an admin cannot
+ * enforced on every door into the resumes table, and that an admin cannot
  * leave the installation with nobody who can administer it.
  */
 
-function profile(id, name, ownerId) {
-  const { buildNewProfile } = require('../dist/services/profileService');
+function resumeRecord(id, name, ownerId) {
+  const { buildNewResume } = require('../dist/services/resumeDocument');
   return {
-    ...buildNewProfile(
+    ...buildNewResume(
       {
         name,
         title: 'Engineer',
@@ -130,108 +130,119 @@ test('the two sign-in paths land on one account', () => {
   assert.equal(code.account.picture, 'https://example.com/p.png');
 });
 
-test('a profile belongs to whoever made it, and nobody else can see it', () => {
+test('a resume belongs to whoever made it, and nobody else can see it', () => {
   useTempStorage('accounts-scoping');
   useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
-  const profiles = loadFresh('../dist/database/profileRepository');
+  const resumes = loadFresh('../dist/database/resumeRepository');
 
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
   const bob = users.createUser({ email: 'bob@example.com' });
 
-  profiles.saveProfile(profile('p-alice', 'Alice CV', alice.id));
-  profiles.saveProfile(profile('p-bob', 'Bob CV', bob.id));
+  resumes.saveResume(resumeRecord('p-alice', 'Alice CV', alice.id));
+  resumes.saveResume(resumeRecord('p-bob', 'Bob CV', bob.id));
 
-  assert.deepEqual(profiles.listProfilesFor(alice).map((p) => p.id), ['p-alice']);
-  assert.deepEqual(profiles.listProfilesFor(bob).map((p) => p.id), ['p-bob']);
+  assert.deepEqual(resumes.listResumesFor(alice).map((p) => p.id), ['p-alice']);
+  assert.deepEqual(resumes.listResumesFor(bob).map((p) => p.id), ['p-bob']);
 
   // Reaching for it by id is the same answer, not a different one: a route
   // that trusted `get` alone would otherwise hand it over.
-  assert.equal(profiles.getProfileFor(alice, 'p-bob'), null);
-  assert.equal(profiles.getProfileFor(bob, 'p-alice'), null);
+  assert.equal(resumes.getResumeFor(alice, 'p-bob'), null);
+  assert.equal(resumes.getResumeFor(bob, 'p-alice'), null);
 
   // An admin is an ordinary user by default - the builder showing them
-  // everybody's profiles would be unusable - and sees all only when asked.
-  assert.deepEqual(profiles.listProfilesFor(admin).map((p) => p.id), []);
+  // everybody's resumes would be unusable - and sees all only when asked.
+  assert.deepEqual(resumes.listResumesFor(admin).map((p) => p.id), []);
   assert.deepEqual(
-    profiles.listProfilesFor(admin, { allOwners: true }).map((p) => p.id).sort(),
+    resumes.listResumesFor(admin, { allOwners: true }).map((p) => p.id).sort(),
     ['p-alice', 'p-bob']
   );
-  assert.equal(profiles.getProfileFor(admin, 'p-alice')?.id, 'p-alice');
+  assert.equal(resumes.getResumeFor(admin, 'p-alice')?.id, 'p-alice');
 });
 
 test('a row from before accounts existed is admin-only until it is adopted', () => {
   useTempStorage('accounts-unowned');
   useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
-  const profiles = loadFresh('../dist/database/profileRepository');
+  const resumes = loadFresh('../dist/database/resumeRepository');
 
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
-  profiles.saveProfile(profile('p-old', 'Legacy CV', undefined));
+  resumes.saveResume(resumeRecord('p-old', 'Legacy CV', undefined));
 
   // The safe direction. An unowned row shown to everybody would be a leak;
   // shown to nobody it is merely invisible until an admin hands it on.
-  assert.deepEqual(profiles.listProfilesFor(alice).map((p) => p.id), []);
-  assert.deepEqual(profiles.listProfilesFor(admin, { allOwners: true }).map((p) => p.id), ['p-old']);
+  assert.deepEqual(resumes.listResumesFor(alice).map((p) => p.id), []);
+  assert.deepEqual(resumes.listResumesFor(admin, { allOwners: true }).map((p) => p.id), ['p-old']);
 });
 
-test('the subscription caps how many profiles an account may keep', () => {
+test('the subscription caps how many profiles - people - an account may keep; resumes are never counted', () => {
   useTempStorage('accounts-subscription-cap');
   useAdminEmails('admin@example.com');
   const users = loadFresh('../dist/database/userRepository');
-  const profiles = loadFresh('../dist/database/profileRepository');
+  const resumes = loadFresh('../dist/database/resumeRepository');
+  const profileLimit = loadFresh('../dist/database/profileLimit');
+  const { getDb } = require('../dist/database/sqlite');
 
   const admin = users.createUser({ email: 'admin@example.com' });
   let alice = users.createUser({ email: 'alice@example.com' });
 
   // Default: one profile.
-  assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
-  profiles.saveProfile(profile('a1', 'One', alice.id));
-  assert.throws(() => profiles.assertCanAddProfile(alice), /Default subscription allows 1 profile/);
+  assert.doesNotThrow(() => profileLimit.assertCanAddProfile(alice));
+  resumes.saveResume(resumeRecord('a1', 'One', alice.id));
+  assert.equal(profileLimit.countProfilesForOwner(alice.id), 1, 'a resume files its person under a profile');
+  assert.throws(() => profileLimit.assertCanAddProfile(alice), /Default subscription allows 1 profile/);
   // Says where to move up: the account's own Subscription page, bought from its credit.
   assert.throws(
-    () => profiles.assertCanAddProfile(alice),
+    () => profileLimit.assertCanAddProfile(alice),
     (error) => error.subscriptionLabel === 'Default' && /higher subscription on the Subscription page\.$/.test(error.message)
   );
 
-  // A DISABLED profile still occupies its slot. Not counting it would make the
-  // limit meaningless the moment somebody worked out that disabling is free.
-  profiles.saveProfile({ ...profile('a1', 'One', alice.id), disabled: true });
-  assert.throws(() => profiles.assertCanAddProfile(alice), /allows 1 profile/);
+  // More resumes of the same person are no more profiles: the cap counts people.
+  resumes.saveResume(resumeRecord('a2', 'One', alice.id));
+  resumes.saveResume(resumeRecord('a3', 'one', alice.id));
+  assert.equal(resumes.countResumesForOwner(alice.id), 3);
+  assert.equal(profileLimit.countProfilesForOwner(alice.id), 1);
+
+  // A profile whose resumes are all DISABLED still occupies its slot. Not
+  // counting it would make the limit meaningless the moment somebody worked out
+  // that disabling is free.
+  for (const id of ['a1', 'a2', 'a3']) resumes.saveResume({ ...resumeRecord(id, 'One', alice.id), disabled: true });
+  assert.throws(() => profileLimit.assertCanAddProfile(alice), /allows 1 profile/);
 
   alice = users.updateUser(alice.id, { subscription: 'premium' });
-  assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
-  // An import is counted whole, so six into a subscription with room for four refuses
-  // all six rather than landing four and failing.
-  assert.throws(() => profiles.assertCanAddProfile(alice, 6), /allows 5 profiles/);
-  assert.doesNotThrow(() => profiles.assertCanAddProfile(alice, 4));
+  assert.doesNotThrow(() => profileLimit.assertCanAddProfile(alice));
+  // Profiles made together are counted whole, so six into a subscription with room for four
+  // refuses all six rather than landing four and failing.
+  assert.throws(() => profileLimit.assertCanAddProfile(alice, getDb(), 6), /allows 5 profiles/);
+  assert.doesNotThrow(() => profileLimit.assertCanAddProfile(alice, getDb(), 4));
 
   alice = users.updateUser(alice.id, { subscription: 'premium-max' });
-  assert.doesNotThrow(() => profiles.assertCanAddProfile(alice, 1000), 'Premium Max is unlimited');
+  assert.doesNotThrow(() => profileLimit.assertCanAddProfile(alice, getDb(), 1000), 'Premium Max is unlimited');
 
   // Admins are exempt: they can already change any account's subscription, so a limit
   // on them only gets in the way of fixing somebody else's.
-  assert.doesNotThrow(() => profiles.assertCanAddProfile(admin, 1000));
+  assert.doesNotThrow(() => profileLimit.assertCanAddProfile(admin, getDb(), 1000));
 });
 
-test('moving an account down a subscription does not take away the profiles it has', () => {
+test('moving an account down a subscription does not take away the resumes it has', () => {
   useTempStorage('accounts-downgrade');
   const users = loadFresh('../dist/database/userRepository');
-  const profiles = loadFresh('../dist/database/profileRepository');
+  const resumes = loadFresh('../dist/database/resumeRepository');
+  const profileLimit = loadFresh('../dist/database/profileLimit');
 
   users.createUser({ email: 'admin@example.com' });
   let alice = users.createUser({ email: 'alice@example.com' });
   alice = users.updateUser(alice.id, { subscription: 'premium' });
-  for (const id of ['a1', 'a2', 'a3']) profiles.saveProfile(profile(id, id, alice.id));
+  for (const id of ['a1', 'a2', 'a3']) resumes.saveResume(resumeRecord(id, id, alice.id));
 
   alice = users.updateUser(alice.id, { subscription: 'default' });
 
   // They keep what they made - losing work because an admin changed a dropdown
   // would be the wrong way round. What they lose is the ability to add.
-  assert.equal(profiles.listProfilesFor(alice).length, 3);
-  assert.throws(() => profiles.assertCanAddProfile(alice), /allows 1 profile/);
+  assert.equal(resumes.listResumesFor(alice).length, 3);
+  assert.throws(() => profileLimit.assertCanAddProfile(alice), /allows 1 profile/);
 });
 
 test('a subscription this build does not know reads as the smallest one', () => {
@@ -331,14 +342,14 @@ test('the rate box takes dollars to the thousandth, empty clears it, and nothing
 test('credits start at zero and block nothing', () => {
   useTempStorage('accounts-credits');
   const users = loadFresh('../dist/database/userRepository');
-  const profiles = loadFresh('../dist/database/profileRepository');
+  const profileLimit = loadFresh('../dist/database/profileLimit');
 
   users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
 
   assert.equal(alice.balanceMilli, 0);
   // Nothing in this release spends them, so a brand-new account can still work.
-  assert.doesNotThrow(() => profiles.assertCanAddProfile(alice));
+  assert.doesNotThrow(() => profileLimit.assertCanAddProfile(alice));
 
   // Balances move through the credit service now, never through updateUser -
   // its absolute SET lost concurrent debits, so the branch was removed.

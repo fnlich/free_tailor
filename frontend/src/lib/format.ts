@@ -239,11 +239,11 @@ function countOf(count: number, noun: string): string {
  * What a run costs, as the builder's cost line says it:
  * `7 resumes × $0.023 = $0.161`.
  *
- * The server's quote names a single price only when every resume in the run
- * costs the same - profiles in a group can resolve to different models - and
- * then the line shows the multiplication, so the total can be checked by eye.
- * A mixed run says the total alone (`7 resumes = $0.161`) rather than an
- * average that no model actually costs.
+ * A resume costs the price of the run's build mode, so every resume of a run
+ * costs the same and the server's quote names that one price; the line then
+ * shows the multiplication, so the total can be checked by eye. A quote with
+ * no single price (nothing to price) says the total alone
+ * (`0 resumes = $0`).
  */
 export function describeRunCost(quote: {
   resumes: number;

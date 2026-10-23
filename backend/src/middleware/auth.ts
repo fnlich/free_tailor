@@ -5,7 +5,6 @@ import type { UserAccount } from '../types/account';
 
 import { canBuildResumes, canReportJobs } from '../config/accountRoles';
 import {
-  MULTI_PROFILE_SUBSCRIPTION,
   SUBSCRIPTIONS,
   subscriptionAtLeast,
   type AccountSubscriptionId,
@@ -142,8 +141,8 @@ export function requireAccount(req: Request, res: Response, next: NextFunction):
  *
  * It used to mean "signed in", and every router in the app uses it, which is
  * exactly why it changed meaning instead of a new guard being added beside
- * it: a third role, `reporter`, has no business with the builder, profiles,
- * orders, groups, templates, the Job Filter or payments, and making THIS the narrow
+ * it: a third role, `reporter`, has no business with the builder, resumes,
+ * orders, profiles, templates, the Job Filter or payments, and making THIS the narrow
  * check closes every one of those routers - and every router written later -
  * without anybody visiting it. The few places a reporter belongs ask for
  * `requireAccount` instead. A refusal is 403 `role-not-allowed`, never 401:
@@ -208,12 +207,18 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
  * Administrators are exempt (owner decision B1), as they already are from
  * credits and the profile cap. It used to be the other way: a subscription was
  * read as an entitlement quite separate from the admin ROLE, so an
- * administrator who had not moved themselves off Default was refused Groups,
- * and would have been refused every multi-profile build below. An
+ * administrator who had not moved themselves off Default was refused the
+ * profiles pages, and would have been refused any tiered route. An
  * administrator runs the installation and can change their own subscription in
  * a click, so the refusal protected nothing and cost them a trip to Admin ->
  * Accounts. The entitlement and the role are still two checks; this is the one
  * place they meet.
+ *
+ * Kept although no production route asks it any more (owner decision 10: a
+ * run builds one profile on every tier): the frontend's copy
+ * (lib/subscriptions.ts `hasSubscription`) is drift-tested against THIS one
+ * (frontendHelpers.test.js, frontendRoles.test.js), so it goes when the
+ * frontend copy does (F4), not before.
  */
 export function hasSubscription(account: Pick<UserAccount, 'role' | 'subscription'> | null | undefined, minimum: AccountSubscriptionId): boolean {
   if (!account) return false;
@@ -247,6 +252,12 @@ export class SubscriptionTooLowError extends PublicError {
  * is a tier of the resume builder, so a role that may not build is refused
  * first, by the same 403 `role-not-allowed` as `requireUser`, whatever tier
  * the account happens to hold: a reporter moved off Premium keeps the column.
+ *
+ * No router uses it: profiles are open on every subscription (the profile
+ * limit is a count checked when one is made, not a guard on a route), and a
+ * run builds exactly one profile on every tier, so there is no run gate any
+ * more either. Kept as the guard a future tiered route would use, with the
+ * tests that run it (test/auth.test.js, test/routeAccess.test.js).
  */
 export function requireSubscription(minimum: AccountSubscriptionId) {
   return function subscriptionGuard(req: Request, res: Response, next: NextFunction): void {
@@ -265,36 +276,6 @@ export function requireSubscription(minimum: AccountSubscriptionId) {
     }
     next();
   };
-}
-
-/**
- * Refuses a run that would build for more than one profile, unless the
- * account's subscription includes that (owner decisions B1-B3).
- *
- * The real lock behind the builder's disabled Multiple / All profiles /
- * Specific group / Select Group: a Default subscription supports ONE profile,
- * so anything that targets more than one is refused - in manual mode and in
- * sheet mode, as Generate Immediately and as an Order alike. Ordering itself
- * is not locked; a single-profile run of either kind is accepted on every
- * subscription.
- *
- * A run is multi-profile when it RESOLVES to more than one profile, or when it
- * names none at all: an omitted `profileIds` means "all profiles", which is
- * one of the locked choices whatever the account happens to hold today. Read
- * after the profiles are resolved and before anything is charged or asked of
- * a model, so a refusal costs nothing.
- */
-export function assertProfileScopeAllowed(
-  account: Pick<UserAccount, 'role' | 'subscription'> | null | undefined,
-  scope: { profileIds: unknown; resolvedCount: number }
-): void {
-  const multiple = !Array.isArray(scope.profileIds) || scope.resolvedCount > 1;
-  if (!multiple || hasSubscription(account, MULTI_PROFILE_SUBSCRIPTION)) return;
-  throw new SubscriptionTooLowError(
-    MULTI_PROFILE_SUBSCRIPTION,
-    `Building for more than one profile needs a ${SUBSCRIPTIONS[MULTI_PROFILE_SUBSCRIPTION].label} ` +
-      'subscription or higher. Choose a single profile, or move up on the Subscription page.'
-  );
 }
 
 export function isAdmin(req: Request): boolean {

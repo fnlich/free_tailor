@@ -167,17 +167,17 @@ test('a request that names no provider reroutes off the locked one', async () =>
   assert.equal(config.getDefaultEnabledProvider(settings), 'codex-cli');
 });
 
-test('a profile that had picked the locked model keeps working', async () => {
+test('a resume that had picked the locked model keeps working', async () => {
   useTempStorage('lock-stored-preference');
   lockSeat();
   const config = loadFresh('../dist/config/aiModelConfig');
   const preferences = loadFresh('../dist/config/aiPreferences');
 
-  // Stored on the profile before the lock existed. Falling back is the whole
+  // Stored on the resume before the lock existed. Falling back is the whole
   // point: the alternative is that locking a provider silently breaks every
-  // generate for every profile that had chosen it.
+  // generate for every resume that had chosen it.
   const stored = await preferences.resolveAiChoice(undefined, {
-    profileSettings: { ai: { modelId: 'claude-cli-sonnet' } },
+    resumeSettings: { ai: { modelId: 'claude-cli-sonnet' } },
   });
   // It lands on the app default, which with the Claude seat locked is the next seat's.
   assert.equal(stored.provider, 'codex-cli');
@@ -198,7 +198,7 @@ test('a profile that had picked the locked model keeps working', async () => {
   withLock();
   await config.updateAppSettings({ providersEnabled: { 'claude-cli': true, 'codex-cli': false } });
   const offSeat = await preferences.resolveAiChoice(undefined, {
-    profileSettings: { ai: { modelId: 'codex-cli-default' } },
+    resumeSettings: { ai: { modelId: 'codex-cli-default' } },
   });
   assert.equal(offSeat.modelId, 'claude-cli-sonnet');
 });

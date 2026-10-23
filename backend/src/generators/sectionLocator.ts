@@ -3,19 +3,19 @@ import {
   EXTRA_SECTION_KINDS,
   SECTION_KIND_IDS,
   type SectionKind,
-} from '../config/profileSections';
+} from '../config/sectionCatalogue';
 
 /**
  * Where a template's sections are, in its markup.
  *
  * The compile step (generators/pdfGenerator.ts) strips a Soft Skills or
- * Strengths section a profile switched off, guards one it switched on, and
- * moves every section into the order the profile stores; the template read
+ * Strengths section a resume switched off, guards one it switched on, and
+ * moves every section into the order the resume stores; the template read
  * (services/templateImport.ts) derives from the same markup which kinds a
  * template prints and in what order. All of them need the one answer to
  * "where is this section", so it lives here, a leaf with no Handlebars, no
  * database and no import but the catalogue - pdfGenerator imports
- * profileService, which imports templateImport, so the locator could not
+ * resumeDocument, which imports templateImport, so the locator could not
  * stay in pdfGenerator without a cycle.
  *
  * A section is found by, in order: the marker class every built-in and the
@@ -296,7 +296,7 @@ export function visibleText(fragment: string): string {
  * it - `<div>{{#if strengths.length}}<h3>..</h3>{{#each}}..</div>{{/if}}`,
  * valid Handlebars around mis-nested HTML. Counting openers and deleting as
  * many `{{/if}}` once took the div with its opener and left the `{{/if}}`
- * outside it dangling, and the template stopped compiling for every profile
+ * outside it dangling, and the template stopped compiling for every resume
  * with the switch off.
  */
 function besidesTheLoop(fragment: string, loop: MarkupSpan, offset: number, field: string): string | null {
@@ -604,7 +604,7 @@ export function parentKeyOf(html: string, span: MarkupSpan): number {
  * located in document order, first occurrence each, and - where the markup
  * carries the extra-sections macro - the kinds the macro will generate, in
  * canonical order, at the first macro's position. Custom sections are never
- * in it (nothing fixed marks one). What the editor shows a profile with no
+ * in it (nothing fixed marks one). What the editor shows a resume with no
  * stored order in, and what `printsSections` is read beside.
  */
 export function inferNativeSectionOrder(html: string): string[] {

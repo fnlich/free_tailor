@@ -49,39 +49,12 @@
   background: var(--surface-strong);
 }
 
-.lockButton:focus-visible,
-.lockedInput:focus-visible {
+.lockButton:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* The locked Select Group: a button drawn as the select it stands for. */
-.lockedInput {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  text-align: left;
-  color: var(--text-subtle);
-  background: var(--surface-muted);
-  cursor: pointer;
-}
-
-.lockedInput > svg {
-  flex: none;
-  color: var(--accent-ink);
-}
-
-/* The inline panel standing in for a page, or a part of one. */
-.panel {
-  display: flex;
-  align-items: flex-start;
-  gap: 1rem;
-  padding: 1.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 0.75rem;
-  background: var(--surface-secondary);
-}
-
+/* The lock icon's round badge, in the lock dialog. */
 .panelIcon {
   display: inline-flex;
   flex: none;

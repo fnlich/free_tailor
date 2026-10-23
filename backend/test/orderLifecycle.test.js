@@ -3,7 +3,7 @@ const test = require('node:test');
 
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';
 
-const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
+const { loadFresh, seedProfileWithResumes, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * A sheet import becoming an order, and the order filling itself in.
@@ -29,24 +29,20 @@ async function serve() {
   const account = users.createUser({ email: 'orderer@example.com' });
   const token = users.createSession(account.id);
 
-  const { saveProfile } = loadFresh('../dist/database/profileRepository');
-  const { buildNewProfile } = loadFresh('../dist/services/profileService');
-  saveProfile({
-    ...buildNewProfile(
-      {
-        name: 'Ada',
-        title: 'Engineer',
-        skills: ['C#'],
-        contact: { email: 'a@b.c', phone: '1', location: 'X' },
-        summary: 's',
-        experience: [],
-        strengths: [],
-        education: [],
-      },
-      'p1'
-    ),
-    ownerId: account.id,
-  });
+  // A run builds ONE profile (a person), named by `profileId` (F2 contract 0.1).
+  const { profileId } = seedProfileWithResumes(account, 'Ada', [
+    {
+      id: 'p1',
+      name: 'Ada',
+      title: 'Engineer',
+      skills: ['C#'],
+      contact: { email: 'a@b.c', phone: '1', location: 'X' },
+      summary: 's',
+      experience: [],
+      strengths: [],
+      education: [],
+    },
+  ]);
 
   const orders = loadFresh('../dist/database/orderRepository');
   const queue = loadFresh('../dist/services/queue/index');
@@ -66,6 +62,7 @@ async function serve() {
 
   return {
     dbDir,
+    profileId,
     orders,
     queue,
     account,
@@ -92,12 +89,12 @@ function jobsFor(count) {
 test('a submission with mode order comes back with an order number, and one without does not', async () => {
   const server = await serve();
   try {
-    const plain = await (await server.post('/api/generation/batches', { jobs: jobsFor(2) })).json();
+    const plain = await (await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(2) })).json();
     assert.equal(plain.orderNumber, undefined, 'manual building is not an order');
     assert.equal(plain.orderId, undefined);
 
     const ordered = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(3), mode: 'order' })
+      await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(3), mode: 'order' })
     ).json();
     assert.match(ordered.orderNumber, /^FT-\d{8}-\d{4}$/, ordered.orderNumber);
     assert.ok(ordered.orderId.startsWith('ord_'));
@@ -111,7 +108,7 @@ test('the items exist before any task can finish, one per resume, in submitted o
   const server = await serve();
   try {
     const { orderId } = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(4), mode: 'order' })
+      await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(4), mode: 'order' })
     ).json();
 
     // Read straight after submit: `submit` dispatches immediately, so an order
@@ -124,7 +121,14 @@ test('the items exist before any task can finish, one per resume, in submitted o
     );
     assert.deepEqual(items.map((item) => item.seq), [0, 1, 2, 3]);
     assert.deepEqual(items.map((item) => item.sourceRowNumber), [2, 3, 4, 5]);
-    assert.equal(items[0].profileName, 'Ada');
+    assert.equal(items[0].resumeName, 'Ada');
+    // What the run chose for each job is recorded on its item (F2 contract 2.7):
+    // the profile, the resume's label, and why (one enabled resume: 'only').
+    assert.ok(items.every((item) => item.profileLabel === 'Ada'), 'each item names the profile it was built for');
+    assert.ok(items.every((item) => typeof item.resumeLabel === 'string' && item.resumeLabel), 'and the resume it chose');
+    assert.ok(items.every((item) => item.match && item.match.v === 1 && item.match.reason === 'only' && item.match.candidates === 1));
+    // The order's label reads "{jobs} job(s) for {profile}, {mode}" (contract 0.4).
+    assert.match(server.orders.getOrder(orderId).label, /^4 job\(s\) for Ada, (Choose Suitable Resume|Partial Tailor|Fully Tailor)$/);
   } finally {
     server.close();
   }
@@ -143,9 +147,9 @@ test('an order and a Generate Immediately run are both filed under their own fol
     const { outputBaseDir } = await config.getAdminAppSettings();
 
     const ordered = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })
+      await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(1), mode: 'order' })
     ).json();
-    const immediate = await (await server.post('/api/generation/batches', { jobs: jobsFor(1) })).json();
+    const immediate = await (await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(1) })).json();
 
     const readPayload = (batchId) => {
       const rows = require('better-sqlite3')(`${server.dbDir}/free_tailor.db`)
@@ -189,7 +193,7 @@ test('an order and a Generate Immediately run are both filed under their own fol
     await config.updateAppSettings({ outputPathPrefix: '/runs/{{order_number}}' });
     users.setOutputPathSuffix(server.account.id, null);
     assert.equal(readPayload(ordered.batchId).output.prefix, orderedPayload.output.prefix);
-    const later = await (await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })).json();
+    const later = await (await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(1), mode: 'order' })).json();
     const laterPayload = readPayload(later.batchId);
     assert.equal(laterPayload.output.prefix, `runs/${sanitizePathSegment(later.orderNumber)}`);
     assert.equal(laterPayload.output.suffix, '/{{date}}/{{profile_name}}/{{company_name}}/{{role}}', 'the default again');
@@ -212,8 +216,8 @@ function syntheticOrder(server, count, batchId) {
     { userId: server.account.id, batchId, label: 'Sheets import', retentionDays: 5 },
     Array.from({ length: count }, (_, seq) => ({
       seq,
-      profileId: 'p1',
-      profileName: 'Ada',
+      resumeId: 'p1',
+      resumeName: 'Ada',
       companyName: `Company ${seq}`,
       role: 'Engineer',
       sourceRowNumber: seq + 2,
@@ -225,15 +229,15 @@ test('two orders for the same job on the same day write to different paths', asy
   const server = await serve();
   try {
     // The same sheet imported twice in one afternoon - a partial failure, a
-    // tweak, a double-clicked button. Account, date, profile and company all
+    // tweak, a double-clicked button. Account, date, resume and company all
     // match, so without a discriminator the second run would overwrite the
     // first: the first order would then list files holding the second's
     // contents, and its earlier expiry would delete files the second offers.
     const first = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })
+      await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(1), mode: 'order' })
     ).json();
     const second = await (
-      await server.post('/api/generation/batches', { jobs: jobsFor(1), mode: 'order' })
+      await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(1), mode: 'order' })
     ).json();
 
     const placeFor = (batchId) => {
@@ -404,7 +408,7 @@ test('an order reports correctly with no batch behind it at all', async () => {
 test('a batch that is not an order records nothing, and that is not an error', async () => {
   const server = await serve();
   try {
-    const { batchId } = await (await server.post('/api/generation/batches', { jobs: jobsFor(1) })).json();
+    const { batchId } = await (await server.post('/api/generation/batches', { profileId: server.profileId, jobs: jobsFor(1) })).json();
     const tracking = loadFresh('../dist/services/orders/orderTracking');
 
     // Most batches are manual builds. The hook must be a quiet no-op for them.

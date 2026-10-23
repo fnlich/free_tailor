@@ -80,22 +80,22 @@ const FEATURE_ORDER: PromptFeatureKey[] = [
   'extract-profile-from-resume',
 ];
 
-const PROFILE_SCOPED_FEATURES = new Set<PromptFeatureKey>([
+const RESUME_SCOPED_FEATURES = new Set<PromptFeatureKey>([
   'tailor-resume',
 ]);
 
-function isProfileScopedFeature(featureKey?: PromptFeatureKey | null): boolean {
-  return Boolean(featureKey && PROFILE_SCOPED_FEATURES.has(featureKey));
+function isResumeScopedFeature(featureKey?: PromptFeatureKey | null): boolean {
+  return Boolean(featureKey && RESUME_SCOPED_FEATURES.has(featureKey));
 }
 
 /*
  * Six features have ONE prompt each, the built-in one, edited in place
  * (lib/promptRequirements.ts `SINGLE_PROMPT_FEATURES`, the server's own list):
  * the job analysis's two calls - a posting is analysed once, ever, for every
- * profile and model, so a second prompt could only disagree with the first -
- * Tailor Resume (Fully), which every profile set to Fully tailor runs, the
- * revise pass and the cover letter, which every profile runs, and Write
- * Entry Bullets, the profile editor's Write with AI on one entry. Each
+ * resume and model, so a second prompt could only disagree with the first -
+ * Tailor Resume (Fully), which every Fully Tailor run uses, the
+ * revise pass and the cover letter, which every resume runs, and Write
+ * Entry Bullets, the resume editor's Write with AI on one entry. Each
  * runs by its exact id on a model the server chooses, so the server refuses a
  * new variant, refuses to make an older one live, and ignores an override:
  * the page offers none of them, and says why in the feature's own words
@@ -249,7 +249,7 @@ function PromptsPageBody() {
       const existing = groups.get(prompt.featureKey);
       if (existing) {
         existing.prompts.push(prompt);
-        if (prompt.isActiveForFeature && !isProfileScopedFeature(prompt.featureKey)) {
+        if (prompt.isActiveForFeature && !isResumeScopedFeature(prompt.featureKey)) {
           existing.activePrompt = prompt;
         }
         continue;
@@ -261,7 +261,7 @@ function PromptsPageBody() {
         category: prompt.category,
         prompts: [prompt],
         activePrompt:
-          prompt.isActiveForFeature && !isProfileScopedFeature(prompt.featureKey)
+          prompt.isActiveForFeature && !isResumeScopedFeature(prompt.featureKey)
             ? prompt
             : null,
       });
@@ -272,7 +272,7 @@ function PromptsPageBody() {
         ...group,
         prompts: [...group.prompts].sort((left, right) => {
           if (
-            !isProfileScopedFeature(group.key) &&
+            !isResumeScopedFeature(group.key) &&
             (left.isActiveForFeature ? 0 : 1) !== (right.isActiveForFeature ? 0 : 1)
           ) {
             return (left.isActiveForFeature ? 0 : 1) - (right.isActiveForFeature ? 0 : 1);
@@ -366,7 +366,7 @@ function PromptsPageBody() {
       }
 
       const promptsForFeature = data.filter((prompt) => prompt.featureKey === nextFeatureKey);
-      const activePrompt = isProfileScopedFeature(nextFeatureKey)
+      const activePrompt = isResumeScopedFeature(nextFeatureKey)
         ? promptsForFeature[0] ?? null
         : promptsForFeature.find((prompt) => prompt.isActiveForFeature) ?? promptsForFeature[0] ?? null;
       const nextPromptId =
@@ -437,7 +437,7 @@ function PromptsPageBody() {
     setStatus('');
     setError('');
 
-    const activePrompt = isProfileScopedFeature(featureKey)
+    const activePrompt = isResumeScopedFeature(featureKey)
       ? group?.prompts[0] ?? null
       : group?.activePrompt ?? group?.prompts[0] ?? null;
     setActiveCandidateId(activePrompt?.id ?? '');
@@ -579,7 +579,7 @@ function PromptsPageBody() {
 
   const handleSaveSelectedPrompt = async () => {
     if (!selectedFeatureGroup || !activeCandidateId) return;
-    if (isProfileScopedFeature(selectedFeatureGroup.key)) return;
+    if (isResumeScopedFeature(selectedFeatureGroup.key)) return;
     setError('');
     setStatus('');
     try {
@@ -674,7 +674,7 @@ function PromptsPageBody() {
 
   const selectedFeatureHasPendingChange =
     !!selectedFeatureGroup &&
-    !isProfileScopedFeature(selectedFeatureGroup.key) &&
+    !isResumeScopedFeature(selectedFeatureGroup.key) &&
     !!selectedFeatureGroup.activePrompt &&
     selectedFeatureGroup.activePrompt.id !== activeCandidateId;
 
@@ -758,7 +758,7 @@ function PromptsPageBody() {
                   >
                     Reload
                   </button>
-                  {!isProfileScopedFeature(selectedFeatureGroup.key) && !isSinglePromptFeature(selectedFeatureGroup.key) && (
+                  {!isResumeScopedFeature(selectedFeatureGroup.key) && !isSinglePromptFeature(selectedFeatureGroup.key) && (
                     <button
                       type="button"
                       onClick={() => void handleSaveSelectedPrompt()}
@@ -796,7 +796,7 @@ function PromptsPageBody() {
                         <Pill tone={prompt.isBuiltIn ? 'sky' : 'grey'}>
                           {prompt.isBuiltIn ? 'Built-in' : 'Custom'}
                         </Pill>
-                        {prompt.isActiveForFeature && !isProfileScopedFeature(prompt.featureKey) && (
+                        {prompt.isActiveForFeature && !isResumeScopedFeature(prompt.featureKey) && (
                           <Pill tone="green">Live</Pill>
                         )}
                         {prompt.needsUpdate && <Pill tone="amber">Needs update</Pill>}
@@ -834,7 +834,7 @@ function PromptsPageBody() {
                         {draft.isBuiltIn ? 'Built-in' : 'Custom'}
                       </Pill>
                       <Pill tone="violet">{draft.responseFormat.toUpperCase()}</Pill>
-                      {draft.isActiveForFeature && !isProfileScopedFeature(draft.featureKey) && (
+                      {draft.isActiveForFeature && !isResumeScopedFeature(draft.featureKey) && (
                         <Pill tone="green">Live</Pill>
                       )}
                       {isDirty && <Pill tone="amber">Unsaved</Pill>}
@@ -939,7 +939,7 @@ function PromptsPageBody() {
                   )}
 
                   {/*
-                    Said here because nothing else would: a resume is charged at
+                    Said here because nothing else would: a resume is built on
                     the model its run chose, so its tailoring, the revise pass
                     after it and its cover letter always run on that one,
                     override or not - and the analysis is the posting's, both
@@ -951,8 +951,8 @@ function PromptsPageBody() {
                     <p className="text-sm text-muted">
                       An override decides the model for the Bid Assistant and the extractors. A resume&apos;s
                       tailoring - and the revise pass and the cover letter that may follow it - always run on the
-                      model chosen for the run, the one it is charged at, so an override never changes what a
-                      resume costs or runs on. A posting&apos;s analysis - Analyze Job Description and Job Facts
+                      model chosen for the run, so an override never changes which model builds a resume or
+                      what it costs: that is the price of the build mode. A posting&apos;s analysis - Analyze Job Description and Job Facts
                       (Filter) - runs once, on the analysis model.
                     </p>
                   )}

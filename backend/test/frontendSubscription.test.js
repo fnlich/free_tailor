@@ -391,7 +391,10 @@ test("a refusal reaches the page as the page reads it: the new figure on charge-
       assert.equal(short.status, 402);
       assert.equal(short.number('neededMilli'), 9_990);
       assert.equal(short.number('balanceMilli'), 1_000);
-      assert.equal(api.isSubscriptionTooLow(short), false);
+      // No route is gated on a tier any more (a run builds one profile on every subscription): the client has no
+      // reader of a tier refusal, and a short balance is only ever an insufficient-credits one.
+      assert.equal('isSubscriptionTooLow' in api, false);
+      assert.equal(short.code, 'insufficient-credits');
       // Nothing moved.
       assert.equal(display.statusSummary(await billing.subscriptionApi.get()).headline, 'Default');
     });

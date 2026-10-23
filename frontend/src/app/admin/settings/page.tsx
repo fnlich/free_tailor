@@ -12,27 +12,27 @@ import {
   AdminAppSettingsUpdate,
   AIProvider,
   DefaultMode,
-  DefaultResumeSelection,
   getAIProviderLabel,
-  Group,
-  groupsApi,
+  ProfileSummary,
+  profilesApi,
   isProviderLocked,
   isProviderOffered,
   LOCK_ICON,
-  Profile,
-  profilesApi,
   ProviderHealthReport,
   ThemeMode,
 } from '@/lib/api';
 import { applyTheme, getStoredTheme, setStoredDefaultTheme } from '@/lib/theme';
 import { OUTPUT_PREFIX_TOKEN_CHIPS } from '@/lib/outputPath';
+import { BUILD_MODE_LABELS, BUILD_MODES, isBuildMode, type BuildMode } from '@/lib/buildModes';
 import { formatMoney } from '@/lib/format';
 import {
+  APP_SETTING_ENV_VARIABLES,
   appSettingResetBody,
   appSettingSourceLabel,
   canReset,
   changedSettings,
   type AppSettingKey,
+  type ModePriceKey,
   type SubscriptionPriceKey,
 } from '@/lib/settingSources';
 import { ApiResponseError } from '@/lib/api';
@@ -46,7 +46,19 @@ import {
   toPriceDrafts,
   type PriceDrafts,
 } from './subscriptionPriceDraft';
-import { Card, ErrorNotice, Field, Notice, Pill, Section, Spinner } from '@/components/ui/kit';
+import {
+  MODE_PRICE_KEYS,
+  MODE_PRICE_LABELS,
+  isModePriceKey,
+  modePriceChanges,
+  modePriceDraftOf,
+  modeOfPriceKey,
+  modePriceKeyOfField,
+  modePriceProblems,
+  toModePriceDrafts,
+  type ModePriceDrafts,
+} from './modePriceDraft';
+import { Card, ErrorNotice, Field, Notice, Pill, Section, Spinner, Status } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';
 import { seatHolds } from '@/lib/seatHolds';
 import {
@@ -62,8 +74,7 @@ type SettingsFormState = {
   providersEnabled: Record<AIProvider, boolean>;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
-  defaultResumeSelection: DefaultResumeSelection;
-  defaultGroupId: string;
+  defaultBuildMode: BuildMode;
   defaultProfileId: string;
   defaultModelId: string;
   defaultResumeDocxEnabled: boolean;
@@ -72,13 +83,13 @@ type SettingsFormState = {
   outputPathPrefix: string;
 };
 
-type SaveSection = 'output' | 'providers' | 'defaults' | 'prices' | 'reset';
+type SaveSection = 'output' | 'providers' | 'defaults' | 'prices' | 'modePrices' | 'reset';
 
 /** The Builder Defaults fields that have a `.env` default: each shows where it came from, and saves only when changed. */
 const BUILDER_SETTING_KEYS = [
   'defaultMode',
   'defaultTheme',
-  'defaultResumeSelection',
+  'defaultBuildMode',
   'defaultModelId',
   'defaultResumeDocxEnabled',
   'defaultCoverLetterDocxEnabled',
@@ -249,8 +260,7 @@ function toFormState(settings: AdminAppSettings): SettingsFormState {
     providersEnabled: { ...settings.providersEnabled },
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
-    defaultResumeSelection: settings.defaultResumeSelection,
-    defaultGroupId: settings.defaultGroupId,
+    defaultBuildMode: settings.defaultBuildMode,
     defaultProfileId: settings.defaultProfileId,
     defaultModelId: settings.defaultModelId,
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
@@ -265,7 +275,7 @@ function pickResetField(updated: AdminAppSettings, key: AppSettingKey): Partial<
   switch (key) {
     case 'defaultMode':
     case 'defaultTheme':
-    case 'defaultResumeSelection':
+    case 'defaultBuildMode':
     case 'defaultModelId':
     case 'defaultResumeDocxEnabled':
     case 'defaultCoverLetterDocxEnabled':
@@ -302,8 +312,7 @@ function mergeSavedSection(
       ...current,
       defaultMode: updated.defaultMode,
       defaultTheme: updated.defaultTheme,
-      defaultResumeSelection: updated.defaultResumeSelection,
-      defaultGroupId: updated.defaultGroupId,
+      defaultBuildMode: updated.defaultBuildMode,
       defaultProfileId: updated.defaultProfileId,
       defaultModelId: updated.defaultModelId,
       defaultResumeDocxEnabled: updated.defaultResumeDocxEnabled,
@@ -318,8 +327,10 @@ function mergeSavedSection(
 
 function AdminSettingsPageBody() {
   const [settings, setSettings] = useState<AdminAppSettings | null>(null);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  /** The administrator's own profiles (people), for Default profile. */
+  const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
+  /** True when the administrator's profiles could not be read: the Default profile box then says so, not "none". */
+  const [profilesFailed, setProfilesFailed] = useState(false);
   const [form, setForm] = useState<SettingsFormState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [savingSection, setSavingSection] = useState<SaveSection | null>(null);
@@ -330,6 +341,9 @@ function AdminSettingsPageBody() {
   /** The three subscription prices as typed (subscriptionPriceDraft.ts), and each box's refusal. */
   const [priceDrafts, setPriceDrafts] = useState<PriceDrafts | null>(null);
   const [priceRefusals, setPriceRefusals] = useState<Partial<Record<SubscriptionPriceKey, string>>>({});
+  /** The three prices per resume as typed (modePriceDraft.ts), and each box's refusal. */
+  const [modeDrafts, setModeDrafts] = useState<ModePriceDrafts | null>(null);
+  const [modeRefusals, setModeRefusals] = useState<Partial<Record<ModePriceKey, string>>>({});
   /**
    * Why the settings could not be read, kept whole rather than as text, so the
    * notice can show the server's sentence, its reference and - this page being
@@ -363,17 +377,22 @@ function AdminSettingsPageBody() {
       setIsLoading(true);
       setError('');
       setLoadError(null);
-      const [settingsData, groupsData, profilesData] = await Promise.all([
+      let failedProfiles = false;
+      const [settingsData, profilesData] = await Promise.all([
         adminApi.getSettings(),
-        groupsApi.getAll().catch(() => []),
-        profilesApi.getAll({ includeDisabled: true }).catch(() => []),
+        profilesApi.getAll().catch(() => {
+          failedProfiles = true;
+          return [] as ProfileSummary[];
+        }),
       ]);
       setSettings(settingsData);
-      setGroups(groupsData);
-      setProfiles(profilesData.filter((profile) => !profile.disabled));
+      setProfiles(profilesData);
+      setProfilesFailed(failedProfiles);
       setForm(toFormState(settingsData));
       setPriceDrafts(toPriceDrafts(settingsData));
       setPriceRefusals({});
+      setModeDrafts(toModePriceDrafts(settingsData));
+      setModeRefusals({});
     } catch (err) {
       setLoadError(err);
     } finally {
@@ -409,6 +428,7 @@ function AdminSettingsPageBody() {
       // Only the prices' own save puts their boxes back to what is in effect:
       // another section's save must not wipe a price being typed.
       if (section === 'prices') setPriceDrafts(toPriceDrafts(updated));
+      if (section === 'modePrices') setModeDrafts(toModePriceDrafts(updated));
       if ('defaultTheme' in payload) {
         applySavedThemeDefault(updated.defaultTheme);
       }
@@ -417,10 +437,13 @@ function AdminSettingsPageBody() {
     } catch (err) {
       // The server names the box when it refuses one: the sentence goes under it.
       const priceKey = err instanceof ApiResponseError ? priceKeyOfField(err.body?.field) : null;
+      const modeKey = err instanceof ApiResponseError ? modePriceKeyOfField(err.body?.field) : null;
       if (err instanceof ApiResponseError && err.body?.field === 'outputPathPrefix') {
         setPrefixRefusal(err.message);
       } else if (priceKey) {
         setPriceRefusals((current) => ({ ...current, [priceKey]: err instanceof Error ? err.message : '' }));
+      } else if (modeKey) {
+        setModeRefusals((current) => ({ ...current, [modeKey]: err instanceof Error ? err.message : '' }));
       } else {
         setError(messageWithDetail(err, 'Failed to update settings'));
       }
@@ -458,7 +481,7 @@ function AdminSettingsPageBody() {
       setSavingSection('reset');
       setError('');
       setSuccessMessage('');
-      // A price resets under the field it is saved by (`premiumPriceUsd`...), every other setting under its own.
+      // A price resets under the field it is saved by (`premiumPriceUsd`, `partialPriceUsd`...), every other setting under its own.
       const updated = await adminApi.updateSettings(appSettingResetBody(key));
       setSettings(updated);
       setForm((current) => (current ? { ...current, ...pickResetField(updated, key) } : toFormState(updated)));
@@ -466,6 +489,10 @@ function AdminSettingsPageBody() {
       if (priceKey) {
         setPriceDrafts((current) => (current ? { ...current, [priceKey]: priceDraftOf(updated[priceKey]) } : current));
         setPriceRefusals((current) => ({ ...current, [priceKey]: undefined }));
+      }
+      if (isModePriceKey(key)) {
+        setModeDrafts((current) => (current ? { ...current, [key]: modePriceDraftOf(updated[key]) } : current));
+        setModeRefusals((current) => ({ ...current, [key]: undefined }));
       }
       if (key === 'outputPathPrefix') setPrefixRefusal('');
       if (key === 'defaultTheme') applySavedThemeDefault(updated.defaultTheme);
@@ -513,25 +540,14 @@ function AdminSettingsPageBody() {
   };
 
   const handleSaveDefaults = async () => {
-    if (!form) return;
-    if (form.defaultResumeSelection === 'group' && !form.defaultGroupId) {
-      setError('Select a default group or switch the default resume target.');
-      return;
-    }
-
-    if (!settings) return;
-    const intended = {
-      ...form,
-      defaultGroupId: form.defaultResumeSelection === 'group' ? form.defaultGroupId : '',
-      defaultProfileId: form.defaultResumeSelection === 'single' ? form.defaultProfileId : '',
-    };
+    if (!form || !settings) return;
     /*
      * Only what changed. The six with a .env default are stored only once an
      * administrator sets them, so sending one unchanged would freeze the
-     * value .env gives today; the group and profile have no .env default and
-     * go with them when they changed.
+     * value .env gives today; the profile has no .env default and goes
+     * with them when it changed.
      */
-    const changes = changedSettings(intended, settings, [...BUILDER_SETTING_KEYS, 'defaultGroupId', 'defaultProfileId']);
+    const changes = changedSettings(form, settings, [...BUILDER_SETTING_KEYS, 'defaultProfileId']);
     if (Object.keys(changes).length === 0) {
       setSuccessMessage('Nothing to save: the builder defaults are as they were.');
       return;
@@ -555,6 +571,24 @@ function AdminSettingsPageBody() {
       return;
     }
     await saveSection('prices', changes, 'Subscription prices saved.');
+  };
+
+  /**
+   * The prices per resume that changed, each as typed. A box the server would
+   * refuse - an empty one included - is said under it first, in the server's
+   * own sentence, and nothing is sent.
+   */
+  const handleSaveModePrices = async () => {
+    if (!settings || !modeDrafts) return;
+    const problems = modePriceProblems(modeDrafts);
+    setModeRefusals(problems);
+    if (Object.keys(problems).length > 0) return;
+    const changes = modePriceChanges(modeDrafts, settings);
+    if (Object.keys(changes).length === 0) {
+      setSuccessMessage('Nothing to save: the prices per resume are as they were.');
+      return;
+    }
+    await saveSection('modePrices', changes, 'Prices per resume saved.');
   };
 
   if (isLoading) {
@@ -606,7 +640,8 @@ function AdminSettingsPageBody() {
   const modelName = (id: string) => settings.aiModels.find((model) => model.id === id)?.name || id || 'no model';
   const onOff = (value: boolean) => (value ? 'on' : 'off');
   const MODE_LABELS = { preview: 'Preview first', generate: 'Generate directly' } as const;
-  const TARGET_LABELS = { single: 'Single profile', all: 'All profiles', group: 'Specific group' } as const;
+  const selectedProfileMissing =
+    form.defaultProfileId !== '' && !profilesFailed && !profiles.some((profile) => profile.id === form.defaultProfileId);
   /* One card per PROVIDER of every type this installation could run - two
      Claude sign-ins are two cards. Keyed on the LOCK, not on the enabled
      tick: a seat an admin has unticked is exactly the one whose readiness
@@ -650,7 +685,7 @@ function AdminSettingsPageBody() {
           <>
             Every resume is filed under the output folder, then the prefix below, then the folder path of the account
             that ordered it - <code className={styles.code}>{'<output folder>/<prefix>/<folder path>/<file>'}</code>.
-            Each account sets its own folder path under Settings, Profile, Resume files.
+            Each account sets its own folder path under Settings, Account, Resume files.
           </>
         }
       >
@@ -867,93 +902,71 @@ function AdminSettingsPageBody() {
         </Field>
 
         <div className="space-y-4">
-          <Field label="Default resume target">
-            <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-ink">
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  className="tl-check"
-                  checked={form.defaultResumeSelection === 'single'}
-                  onChange={() => setField('defaultResumeSelection', 'single')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Single profile</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  className="tl-check"
-                  checked={form.defaultResumeSelection === 'all'}
-                  onChange={() => setField('defaultResumeSelection', 'all')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>All profiles</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  className="tl-check"
-                  checked={form.defaultResumeSelection === 'group'}
-                  onChange={() => setField('defaultResumeSelection', 'group')}
-                  disabled={savingSection === 'defaults'}
-                />
-                <span>Specific group</span>
-              </label>
+          {/* One profile per run: the builder starts on this person. It has no
+              .env default, so no source line - it is stored whole when changed. */}
+          <Field
+            label="Default profile"
+            htmlFor="default-profile"
+            hint="The profile (a person) the Resume Builder starts on. Anyone without it among their own profiles starts on their first."
+          >
+            <div className="max-w-md">
+              <select
+                id="default-profile"
+                value={form.defaultProfileId}
+                onChange={(e) => setField('defaultProfileId', e.target.value)}
+                disabled={savingSection === 'defaults' || profilesFailed}
+                className="tl-input"
+              >
+                <option value="">Choose automatically</option>
+                {profilesFailed && form.defaultProfileId !== '' && (
+                  <option value={form.defaultProfileId}>The profile chosen now</option>
+                )}
+                {selectedProfileMissing && (
+                  <option value={form.defaultProfileId}>A profile that is no longer yours</option>
+                )}
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name} ({profile.enabledResumeCount} {profile.enabledResumeCount === 1 ? 'resume' : 'resumes'})
+                  </option>
+                ))}
+              </select>
             </div>
-            {sourceOf('defaultResumeSelection', 'Default resume target', TARGET_LABELS[defaults.defaultResumeSelection])}
+            {profilesFailed && (
+              <Notice tone="warn" className="mt-3">
+                Could not load your profiles, so the choice cannot be changed here just now. Reload the page to try again.
+              </Notice>
+            )}
+            {!profilesFailed && profiles.length === 0 && (
+              <Notice tone="warn" className="mt-3">
+                You have no profiles yet. Add one under Profiles before choosing a default.
+              </Notice>
+            )}
           </Field>
 
-          {form.defaultResumeSelection === 'single' && (
-            <Field label="Default profile" htmlFor="default-profile">
-              <div className="max-w-md">
-                <select
-                  id="default-profile"
-                  value={form.defaultProfileId}
-                  onChange={(e) => setField('defaultProfileId', e.target.value)}
-                  disabled={savingSection === 'defaults'}
-                  className="tl-input"
-                >
-                  <option value="">Choose automatically</option>
-                  {profiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {profiles.length === 0 && (
-                <Notice tone="warn" className="mt-3">
-                  No enabled profiles exist yet. Create one in Admin &gt; Profiles before setting a default.
-                </Notice>
-              )}
-            </Field>
-          )}
-
-          {form.defaultResumeSelection === 'group' && (
-            <Field label="Default group" htmlFor="default-group">
-              <div className="max-w-md">
-                <select
-                  id="default-group"
-                  value={form.defaultGroupId}
-                  onChange={(e) => setField('defaultGroupId', e.target.value)}
-                  disabled={savingSection === 'defaults'}
-                  className="tl-input"
-                >
-                  <option value="">Choose a group...</option>
-                  {groups.map((group) => (
-                    <option key={group.id} value={group.id}>
-                      {group.name} ({group.profileIds.length})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {groups.length === 0 && (
-                <Notice tone="warn" className="mt-3">
-                  No groups exist yet. Create one in Admin &gt; Groups before using this default.
-                </Notice>
-              )}
-            </Field>
-          )}
+          <Field
+            label="Default builder mode"
+            htmlFor="default-build-mode"
+            hint="The mode the Resume Builder starts on, and the mode a run that names none is built in."
+          >
+            <div className="max-w-md">
+              <select
+                id="default-build-mode"
+                value={form.defaultBuildMode}
+                onChange={(e) => {
+                  if (isBuildMode(e.target.value)) setField('defaultBuildMode', e.target.value);
+                }}
+                disabled={savingSection === 'defaults'}
+                className="tl-input"
+              >
+                {BUILD_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {BUILD_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {sourceOf('defaultBuildMode', 'Default builder mode', BUILD_MODE_LABELS[defaults.defaultBuildMode])}
+          </Field>
         </div>
 
         <Field label="Default AI model" htmlFor="default-model">
@@ -1037,6 +1050,76 @@ function AdminSettingsPageBody() {
           </button>
         </div>
       </Section>
+
+      {modeDrafts && (
+        <Section
+          title="Price per resume"
+          description="What one resume costs in each builder mode, taken from the account's credit balance when a run is submitted. It is the price of the mode, whatever model builds the resume."
+        >
+          <div className="grid gap-6 sm:grid-cols-3">
+            {MODE_PRICE_KEYS.map((key) => {
+              const label = MODE_PRICE_LABELS[key];
+              const id = `mode-price-${key}`;
+              const refusal = modeRefusals[key];
+              const variable = APP_SETTING_ENV_VARIABLES[key][0];
+              return (
+                <Field key={key} label={label} htmlFor={id}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted" aria-hidden>
+                      $
+                    </span>
+                    <input
+                      id={id}
+                      type="text"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={modeDrafts[key]}
+                      placeholder="0.023"
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setModeDrafts((current) => (current ? { ...current, [key]: value } : current));
+                        setModeRefusals((current) => ({ ...current, [key]: undefined }));
+                      }}
+                      disabled={savingSection === 'modePrices'}
+                      aria-invalid={refusal ? true : undefined}
+                      aria-describedby={refusal ? `${id}-refusal` : undefined}
+                      className="tl-input tabular-nums"
+                    />
+                  </div>
+                  {refusal && (
+                    <p id={`${id}-refusal`} className="tl-status mt-2" data-tone="error" role="alert">
+                      {refusal}
+                    </p>
+                  )}
+                  {/* Red while the price in effect is $0: free is allowed, but never without somebody having seen it. */}
+                  {settings[key] === 0 && <Status tone="error">Free: nobody is charged for {label}.</Status>}
+                  {settings.unreadableModePrices.includes(modeOfPriceKey(key)) && (
+                    <Status tone="error">
+                      {variable} in .env is not an amount, so {label} is free until it is corrected or a price is set
+                      here.
+                    </Status>
+                  )}
+                  {sourceOf(key, `${label} price`, formatMoney(defaults[key]))}
+                </Field>
+              );
+            })}
+          </div>
+          <p className="text-sm text-subtle">
+            In dollars, to $0.001, up to $1,000. A run costs this per resume - jobs x the mode&apos;s price - whatever
+            model it runs on. A change reaches the next run; queued runs keep what they were charged.
+          </p>
+          <div>
+            <button
+              type="button"
+              onClick={() => void handleSaveModePrices()}
+              disabled={savingSection !== null && savingSection !== 'modePrices'}
+              className="tl-button"
+            >
+              {savingSection === 'modePrices' ? 'Saving...' : 'Save Prices'}
+            </button>
+          </div>
+        </Section>
+      )}
 
       {priceDrafts && (
         <Section

@@ -4,7 +4,7 @@ const fs = require('fs/promises');
 const Papa = require('papaparse');
 const { randomUUID } = require('crypto');
 const { google } = require('googleapis');
-const profileRepository = require('../database/profileRepository');
+const resumeRepository = require('../database/resumeRepository');
 const { isAdmin, requireAdmin, requireUser } = require('../middleware/auth');
 const { isPublicError, PublicError, sendPublicError } = require('../middleware/publicError');
 const {
@@ -12,7 +12,7 @@ const {
   SheetAccessError,
 } = require('../services/sheets/accountSheet');
 const { getAccessToken, SHEETS_SCOPE } = require('../integrations/googleSheets');
-const profileService = require('../services/profileService');
+const resumeDocument = require('../services/resumeDocument');
 
 /*
  * No .env loading, CORS or body parser of its own here, and each used to be.
@@ -144,7 +144,7 @@ class ProfileNotFoundError extends PublicError {
 
 // Reads one profile record, scoped to whoever is asking.
 function readProfile(profileId, viewer) {
-  const profile = profileRepository.getProfileFor(viewer ?? null, profileId);
+  const profile = resumeRepository.getResumeFor(viewer ?? null, profileId);
   if (!profile) {
     throw new ProfileNotFoundError();
   }
@@ -153,8 +153,8 @@ function readProfile(profileId, viewer) {
 
 // Reads the requester's profile records.
 function readAllProfiles(viewer) {
-  return profileRepository
-    .listProfilesFor(viewer ?? null, { includeDisabled: true })
+  return resumeRepository
+    .listResumesFor(viewer ?? null, { includeDisabled: true })
     .sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)));
 }
 
@@ -174,8 +174,8 @@ function assertProfilePayload(payload) {
 function updateProfile(profileId, nextProfile, viewer) {
   assertProfilePayload(nextProfile);
   const currentProfile = readProfile(profileId, viewer);
-  return profileRepository.saveProfile({
-    ...profileService.buildUpdatedProfile(currentProfile, nextProfile),
+  return resumeRepository.saveResume({
+    ...resumeDocument.buildUpdatedResume(currentProfile, nextProfile),
     // Kept, so an edit through this page does not orphan the profile.
     ownerId: currentProfile.ownerId,
   });
@@ -188,29 +188,26 @@ function createProfile(profile, viewer) {
   const nextId = requestedId || randomUUID();
   validateProfileId(nextId);
 
-  if (profileRepository.hasProfile(nextId)) {
+  if (resumeRepository.hasResume(nextId)) {
     throw new PublicError('A profile with this id already exists.', { status: 409 });
   }
 
-  // The subscription's cap applies here as much as on the profiles page: this is a
+  // The same create as the resumes page's: placed under the person's profile
+  // (the account's oldest one named for them, else a new one), and the
+  // subscription's cap counted only when that makes a new profile. This is a
   // second door into the same table, and a limit only one door honours is not
   // a limit.
-  profileRepository.assertCanAddProfile(viewer);
-
-  return profileRepository.saveProfile({
-    ...profileService.buildNewProfile(profile, nextId),
-    ownerId: viewer.id,
-  });
+  return resumeRepository.createResumes(viewer, [resumeDocument.buildNewResume(profile, nextId)])[0];
 }
 
 // Deletes one profile record.
 function deleteProfile(profileId, viewer) {
   validateProfileId(profileId);
   // Resolved through the viewer first, so this cannot delete somebody else's.
-  if (!profileRepository.getProfileFor(viewer ?? null, profileId)) {
+  if (!resumeRepository.getResumeFor(viewer ?? null, profileId)) {
     throw new ProfileNotFoundError();
   }
-  if (!profileRepository.deleteProfile(profileId)) {
+  if (!resumeRepository.deleteResume(profileId)) {
     throw new ProfileNotFoundError();
   }
 }

@@ -7,12 +7,12 @@ import {
   storeTailorCache,
   type TailorCacheKind,
 } from '../database/tailorCacheRepository';
-import type { Profile } from '../types/profile';
+import type { Resume } from '../types/resume';
 
 /**
  * Tailored content, kept and reused (owner decision P6).
  *
- * Generating again for the same unchanged profile, posting and model asks the
+ * Generating again for the same unchanged resume, posting and model asks the
  * model the same question, and its answer costs a seat's time and quota. So
  * the answer to a tailoring call - and, separately, to a cover-letter call - is
  * stored under a key made of EVERYTHING it was made from, and a later call
@@ -25,19 +25,20 @@ import type { Profile } from '../types/profile';
  *
  * The key (`tailorCacheKey`) is the SHA-256 of:
  *
- *   - the profile as the call sees it (`profileForTemplate`) - its whole
+ *   - the resume as the call sees it (`resumeForTemplate`) - its whole
  *     content minus the two timestamps a save moves without changing a word,
- *     minus its settings and minus its section order (`profileFingerprint`) -
+ *     minus its settings and minus its section order (`resumeFingerprint`) -
  *     so one character changed anywhere is another key. The settings and the
  *     order are not what a model is told: the layout, the Soft Skills switch
  *     and the order the sections print in decide how the answer is DRAWN,
  *     which the parse and the render work out again on a hit; the Strengths
- *     switch decides whether the profile's strengths are in `profileJson`,
- *     which the values below carry; the prompt and the model a profile chose
- *     are keyed on their own - and so is its tailoring mode, with no field of
- *     its own: Partial and Fully tailor run different prompts (`tailor-resume`
- *     or its variant, `tailor-resume-full`) with a different `profileJson`, so
- *     switching a profile's mode is a miss, and switching it back a hit;
+ *     switch decides whether the resume's strengths are in `profileJson`,
+ *     which the values below carry; the prompt and the model a resume chose
+ *     are keyed on their own - and so is the run's tailoring mode, with no
+ *     field of its own: Partial and Fully tailor run different prompts
+ *     (`tailor-resume` or its variant, `tailor-resume-full`) with a different
+ *     `profileJson`, so building the same resume in the other mode is a miss,
+ *     and building it in the first again a hit;
  *   - the template it is drawn with;
  *   - the posting's stored analysis (`job_analyses.id`, which is never
  *     rewritten - services/jobAnalysis/gate.ts);
@@ -62,7 +63,7 @@ import type { Profile } from '../types/profile';
  * tailoring call's answer, or - when the revise pass changed it - the draft
  * with the revised summary and bullets folded in. So a hit makes no tailoring
  * call AND no revise call. Every step after the answer - the parse, the
- * section switches, the skills - runs again on a hit, against the profile as
+ * section switches, the skills - runs again on a hit, against the resume as
  * it is, exactly as on a fresh answer; it is idempotent on its own output. A
  * stored answer that no longer parses is a miss, never a failure. Only an
  * answer the asked-for model wrote is stored: one the seat says a FALLBACK
@@ -82,12 +83,12 @@ import type { Profile } from '../types/profile';
  * values are part of the key.
  *
  * 2: the model writes the skills block (`skillGroups`), the role facts come
- * from the profile, bullets are capped at eight, and a resume's stored answer
- * may be its revised one.
+ * from the source resume, bullets are capped at eight, and a tailored
+ * resume's stored answer may be its revised one.
  */
 export const TAILOR_CACHE_VERSION = 2;
 
-/** What a caller knows about the generation beyond the profile and the model. */
+/** What a caller knows about the generation beyond the resume and the model. */
 export type TailorCacheContext = {
   /** The posting's stored analysis; no cache without one for a tailoring. */
   analysisId: string | null;
@@ -115,36 +116,49 @@ function sha256(text: string): string {
 }
 
 /**
- * The profile's part of a key: everything in it but `createdAt` and
+ * The resume's part of a key: everything in it but `createdAt` and
  * `updatedAt`, which a save moves without changing what a model is told,
- * `profileSettings` - how the answer is drawn, which prompt and model run it,
+ * `resumeSettings` - how the answer is drawn, which prompt and model run it,
  * and whether strengths are sent, each of which reaches the key another way
  * (see the module note) - and `sectionOrder`, which only says where each
  * section prints. A Grouped/Plain flip, a Soft Skills switch or a dragged
  * section is the same question: a hit, drawn the new way. The nine section
  * lists beyond the classic six are content, and a new entry is a new key,
  * though none of them is in `profileJson` yet.
+ *
+ * And `profileId`: which profile (person) a resume is filed under is the
+ * server's bookkeeping, not a word of what the model is told. It is written to
+ * a resume when old ones are filed lazily and when one is moved, and a key
+ * that moved with it would make every cached tailoring miss once.
+ *
+ * And `matchKeywords`: the derived keywords GET /api/resumes serves with a
+ * resume (services/resumeKeywords.ts, computed and never stored). They are
+ * made FROM the resume, so they say nothing it does not, and a resume read
+ * from that route and passed on must be the same question as the stored one.
  */
-export function profileFingerprint(profile: Profile): string {
+export function resumeFingerprint(resume: Resume): string {
   // The section order goes with the settings: it only decides how the answer
   // is DRAWN (where each section prints), never what the model is asked, so
   // dragging a section is a hit, as flipping the layout is.
   const {
     createdAt: _created,
     updatedAt: _updated,
-    profileSettings: _settings,
+    resumeSettings: _settings,
     sectionOrder: _order,
+    profileId: _filed,
+    matchKeywords: _keywords,
     ...content
-  } = profile as Profile & {
+  } = resume as Resume & {
     createdAt?: unknown;
     updatedAt?: unknown;
+    matchKeywords?: unknown;
   };
   return sha256(canonicalJson(content));
 }
 
 export function tailorCacheKey(input: {
   kind: TailorCacheKind;
-  profile: Profile;
+  resume: Resume;
   context: TailorCacheContext;
   choice: { provider: string; modelId: string; modelName: string };
   promptId: string;
@@ -152,7 +166,7 @@ export function tailorCacheKey(input: {
   /**
    * The values the prompt is rendered with, as the call is about to send them,
    * and any text appended to its user turn. Most of what they say is in the
-   * key already (the profile, the analysis); what is not is whatever code
+   * key already (the resume, the analysis); what is not is whatever code
    * builds them, which may change without anybody remembering
    * TAILOR_CACHE_VERSION.
    */
@@ -165,7 +179,9 @@ export function tailorCacheKey(input: {
     canonicalJson({
       v: TAILOR_CACHE_VERSION,
       kind: input.kind,
-      profile: profileFingerprint(input.profile),
+      // This key's spelling is hashed into every stored answer's cache key (D8):
+      // it keeps the name v4.1 gave it, so every cached tailoring stays a hit.
+      profile: resumeFingerprint(input.resume),
       template: input.context.templateId ?? '',
       analysis: input.context.analysisId ?? '',
       provider: input.choice.provider,
@@ -206,7 +222,7 @@ export function writeTailorCache(entry: {
   content: string;
   modelId: string;
   analysisId: string | null;
-  profileId: string | null;
+  resumeId: string | null;
 }): void {
   try {
     storeTailorCache({
@@ -215,7 +231,7 @@ export function writeTailorCache(entry: {
       content: entry.content,
       modelId: entry.modelId,
       analysisId: entry.analysisId,
-      profileId: entry.profileId,
+      resumeId: entry.resumeId,
     });
   } catch (error) {
     warnUnavailable(error);

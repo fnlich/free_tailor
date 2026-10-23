@@ -14,7 +14,7 @@ const { countingSeats, freshInstall, posting, until } = require('./analysisHarne
  * Generate twice, would all miss it and all call. The gate's in-flight map is
  * process-wide and keyed on the POSTING - its link and its text - so the
  * second caller waits for the first one's call (PLAN check 1, row 8). It used
- * to live inside the queue only, keyed on the model too, so two profiles on
+ * to live inside the queue only, keyed on the model too, so two resumes on
  * two models analysed one posting twice; both are gone.
  */
 
@@ -67,7 +67,7 @@ test('the same posting by its link, reworded, joins the call already in flight',
   assert.equal(a.id, b.id);
 });
 
-test('three profiles on three models share one call, made on the analysis model', async () => {
+test('three resumes on three models share one call, made on the analysis model', async () => {
   // The model is no part of a posting's identity (PLAN check 1, row 2), and
   // one administrator-chosen model reads every posting (J1).
   const seats = setUp('models');

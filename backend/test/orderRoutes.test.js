@@ -81,8 +81,8 @@ function seedOrder(server, { userId = server.alice.id, batchId = 'bat_seed' } = 
   const order = server.orders.createOrder(
     { userId, batchId, label: 'Sheets import (2 jobs)', retentionDays: 5 },
     [
-      { seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE', sourceRowNumber: 2 },
-      { seq: 1, profileId: 'p1', profileName: 'Ada', companyName: 'Globex', role: 'SWE', sourceRowNumber: 3 },
+      { seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE', sourceRowNumber: 2 },
+      { seq: 1, resumeId: 'p1', resumeName: 'Ada', companyName: 'Globex', role: 'SWE', sourceRowNumber: 3 },
     ]
   );
 
@@ -177,8 +177,8 @@ test('the list carries the counts a progress bar needs, in one shape', async () 
       { userId: server.alice.id, batchId: 'bat_counts', retentionDays: 5 },
       Array.from({ length: 5 }, (_, seq) => ({
         seq,
-        profileId: 'p1',
-        profileName: 'Ada',
+        resumeId: 'p1',
+        resumeName: 'Ada',
         companyName: `Co${seq}`,
         role: 'SWE',
       }))
@@ -301,7 +301,7 @@ test('an order with nothing built says so rather than sending an empty archive',
   try {
     const order = server.orders.createOrder(
       { userId: server.alice.id, batchId: 'bat_empty', retentionDays: 5 },
-      [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }]
+      [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' }]
     );
 
     const response = await server.request(server.aliceToken, `/${order.id}/zip`);

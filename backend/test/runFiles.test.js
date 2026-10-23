@@ -32,7 +32,7 @@ const ANALYSIS = {
   softSkills: [],
 };
 
-const PROFILE = {
+const RESUME_RECORD = {
   id: 'p1',
   name: 'Bob Smith',
   title: 'Engineer',
@@ -44,7 +44,7 @@ const PROFILE = {
   education: [],
   createdAt: '',
   updatedAt: '',
-  profileSettings: {},
+  resumeSettings: {},
 };
 
 function setUp(name) {
@@ -73,7 +73,7 @@ test('two resumes of one run at one company with one role land on two files, and
   // Only the model calls and the Chrome-drawn cover letter are stubbed: the
   // path, the claim and the DOCX writers are the real ones.
   gate.loadAnalysis = (id) => ({ id, analysis: { ...ANALYSIS, _marker: id } });
-  resumeService.tailorResume = async (_profile, analysis) => ({
+  resumeService.tailorResume = async (_resume, analysis) => ({
     title: 'Software Engineer',
     summary: `SUMMARY FOR ${analysis._marker}`,
     experience: [],
@@ -84,7 +84,7 @@ test('two resumes of one run at one company with one role land on two files, and
   const bob = users.createUser({ email: 'bob@acme.com' });
   const plan = await planRunOutput(bob);
   const batchId = 'bat_two_rows';
-  const item = { profileId: 'p1', profileName: 'Bob Smith', companyName: 'Amazon', role: 'Software Engineer' };
+  const item = { resumeId: 'p1', resumeName: 'Bob Smith', companyName: 'Amazon', role: 'Software Engineer' };
   const order = orders.createOrder(
     { userId: bob.id, batchId, retentionDays: 5, kind: 'order', outputRootFor: plan.rootFor },
     [{ seq: 0, ...item }, { seq: 1, ...item }]
@@ -93,7 +93,7 @@ test('two resumes of one run at one company with one role land on two files, and
   const build = (seq, row) =>
     runResumeTask(
       {
-        profile: PROFILE,
+        resume: RESUME_RECORD,
         job: { companyName: 'Amazon', role: 'Software Engineer', jobDescription: `posting at row ${row}`, sourceRowNumber: row },
         format: 'docx',
         includeCoverLetterDocx: true,
@@ -137,7 +137,7 @@ test('two resumes of one run at one company with one role land on two files, and
   );
   const elsewhere = await runResumeTask(
     {
-      profile: PROFILE,
+      resume: RESUME_RECORD,
       job: { companyName: 'Amazon', role: 'Software Engineer', jobDescription: 'posting', sourceRowNumber: 5 },
       format: 'docx',
       includeCoverLetterDocx: false,
@@ -164,7 +164,7 @@ test('a run is found in the output folder it was placed in after the folder chan
   const plan = await planRunOutput(ada);
   const order = orders.createOrder(
     { userId: ada.id, batchId: 'bat_moved', retentionDays: 5, kind: 'order', outputRootFor: plan.rootFor },
-    [{ seq: 0, profileId: 'p1', profileName: 'Bob Smith', companyName: 'Acme', role: 'Engineer' }]
+    [{ seq: 0, resumeId: 'p1', resumeName: 'Bob Smith', companyName: 'Acme', role: 'Engineer' }]
   );
   const place = plan.placeFor(order.number);
 
@@ -173,7 +173,7 @@ test('a run is found in the output folder it was placed in after the folder chan
   await config.updateAppSettings({ outputBaseDir: moved });
 
   // ...and the run goes on writing where it began.
-  const info = await getGeneratedOutputPath(PROFILE, 'Acme', 'Engineer', { output: place });
+  const info = await getGeneratedOutputPath(RESUME_RECORD, 'Acme', 'Engineer', { output: place });
   assert.ok(info.absoluteDir.startsWith(out + path.sep), info.absoluteDir);
   fs.mkdirSync(info.absoluteDir, { recursive: true });
   const recorded = `${info.storagePathBase}/Bob_Smith.pdf`;

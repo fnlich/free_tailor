@@ -3,7 +3,7 @@ import type { AccountSubscriptionId } from '../config/accountSubscriptions';
 /**
  * Who an account is to the installation (config/accountRoles.ts).
  *
- * - `user` builds resumes from their own profiles - every new sign-in;
+ * - `user` builds tailored resumes from their own saved resumes - every new sign-in;
  * - `reporter` adds job postings to the shared job lake and is paid per job
  *   accepted (owner decisions A3, A4). No resume builder, no Job Filter: the
  *   routes for those answer a reporter 403 `role-not-allowed`;

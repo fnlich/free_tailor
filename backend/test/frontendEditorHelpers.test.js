@@ -8,7 +8,7 @@ const ts = require('typescript');
 const { useTempStorage } = require('./helpers');
 
 /**
- * The profile editor's and the builder's decisions that need no browser:
+ * The resume editor's and the builder's decisions that need no browser:
  * the preview's scale width (the shake), what an unticked section keeps, the
  * sample-text notice and placeholders, which running batch the builder picks
  * back up, and - against the server's own copy - the section catalogue, the
@@ -91,7 +91,7 @@ function simulateWindow(widthFor, { gutterStable, frames = 12, bar = 15 }) {
   return widths;
 }
 
-/** What ProfilePreview did before: the well's inside as it stands. */
+/** What ResumeDraftPreview did before: the well's inside as it stands. */
 const insideAsItStands = (box) => box.clientWidth - box.paddingX;
 
 function stableWidthFor() {
@@ -175,7 +175,7 @@ test('stablePaneWidth: which strip it allows for, and what it ignores', () => {
 // -- an unticked Soft Skills or Strengths box ------------------------------- //
 
 test('an unticked section says how many entries it keeps, and counts only real ones', () => {
-  const { keptCount, keptNote } = loadFrontendModule('lib/profileDraft.ts');
+  const { keptCount, keptNote } = loadFrontendModule('lib/resumeDraft.ts');
   const draft = {
     softSkills: ['Mentoring', 'Clear writing', 'Calm under pressure'],
     strengths: [
@@ -189,16 +189,16 @@ test('an unticked section says how many entries it keeps, and counts only real o
   assert.equal(keptCount(draft, 'strengths'), 2);
   assert.equal(
     keptNote(3, 'softSkills'),
-    '3 soft skills kept with the profile. Tick the box to print and edit them.'
+    '3 soft skills kept with the resume. Tick the box to print and edit them.'
   );
-  assert.equal(keptNote(1, 'strengths'), '1 strength kept with the profile. Tick the box to print and edit it.');
+  assert.equal(keptNote(1, 'strengths'), '1 strength kept with the resume. Tick the box to print and edit it.');
   assert.equal(keptNote(0, 'strengths'), null);
 });
 
 // -- the preview's sample text ---------------------------------------------- //
 
 test('the sample-text notice names what the server filled, in the form\'s order', () => {
-  const { sampledNotice } = loadFrontendModule('lib/profileDraft.ts');
+  const { sampledNotice } = loadFrontendModule('lib/resumeDraft.ts');
   assert.equal(sampledNotice(undefined), null);
   assert.equal(sampledNotice(null), null);
   assert.equal(sampledNotice([]), null);
@@ -215,8 +215,8 @@ test('the sample-text notice names what the server filled, in the form\'s order'
 });
 
 test("the notice has a word for every field the server's sample can fill", () => {
-  const { SAMPLED_FIELD_WORDS, sampledNotice } = loadFrontendModule('lib/profileDraft.ts');
-  const { SAMPLE_FIELDS } = require('../dist/services/sampleProfile');
+  const { SAMPLED_FIELD_WORDS, sampledNotice } = loadFrontendModule('lib/resumeDraft.ts');
+  const { SAMPLE_FIELDS } = require('../dist/services/sampleResume');
   const known = new Set(SAMPLED_FIELD_WORDS.map(([key]) => key));
   // Every key the server can send has its own word here - the camelCase
   // fallback is for a newer server, not for this one.
@@ -227,21 +227,21 @@ test("the notice has a word for every field the server's sample can fill", () =>
 });
 
 test("the form's placeholders are the server's sample text, field for field", () => {
-  const { SAMPLE_PLACEHOLDERS } = loadFrontendModule('lib/profileDraft.ts');
-  const { SAMPLE_PROFILE } = require('../dist/services/sampleProfile');
-  assert.equal(SAMPLE_PLACEHOLDERS.name, SAMPLE_PROFILE.name);
-  assert.equal(SAMPLE_PLACEHOLDERS.title, SAMPLE_PROFILE.title);
-  assert.equal(SAMPLE_PLACEHOLDERS.email, SAMPLE_PROFILE.contact.email);
-  assert.equal(SAMPLE_PLACEHOLDERS.phone, SAMPLE_PROFILE.contact.phone);
-  assert.equal(SAMPLE_PLACEHOLDERS.location, SAMPLE_PROFILE.contact.location);
-  assert.equal(SAMPLE_PLACEHOLDERS.linkedin, SAMPLE_PROFILE.contact.linkedin);
+  const { SAMPLE_PLACEHOLDERS } = loadFrontendModule('lib/resumeDraft.ts');
+  const { SAMPLE_RESUME } = require('../dist/services/sampleResume');
+  assert.equal(SAMPLE_PLACEHOLDERS.name, SAMPLE_RESUME.name);
+  assert.equal(SAMPLE_PLACEHOLDERS.title, SAMPLE_RESUME.title);
+  assert.equal(SAMPLE_PLACEHOLDERS.email, SAMPLE_RESUME.contact.email);
+  assert.equal(SAMPLE_PLACEHOLDERS.phone, SAMPLE_RESUME.contact.phone);
+  assert.equal(SAMPLE_PLACEHOLDERS.location, SAMPLE_RESUME.contact.location);
+  assert.equal(SAMPLE_PLACEHOLDERS.linkedin, SAMPLE_RESUME.contact.linkedin);
   // The summary placeholder is the sample's opening, cut where it says so.
   assert.ok(SAMPLE_PLACEHOLDERS.summary.endsWith('...'));
-  assert.ok(SAMPLE_PROFILE.summary.startsWith(SAMPLE_PLACEHOLDERS.summary.slice(0, -3)), SAMPLE_PLACEHOLDERS.summary);
-  assert.equal(SAMPLE_PLACEHOLDERS.experienceTitle, SAMPLE_PROFILE.experience[0].title);
-  assert.equal(SAMPLE_PLACEHOLDERS.experienceCompany, SAMPLE_PROFILE.experience[0].company);
-  assert.equal(SAMPLE_PLACEHOLDERS.educationDegree, SAMPLE_PROFILE.education[0].degree);
-  assert.equal(SAMPLE_PLACEHOLDERS.educationInstitution, SAMPLE_PROFILE.education[0].institution);
+  assert.ok(SAMPLE_RESUME.summary.startsWith(SAMPLE_PLACEHOLDERS.summary.slice(0, -3)), SAMPLE_PLACEHOLDERS.summary);
+  assert.equal(SAMPLE_PLACEHOLDERS.experienceTitle, SAMPLE_RESUME.experience[0].title);
+  assert.equal(SAMPLE_PLACEHOLDERS.experienceCompany, SAMPLE_RESUME.experience[0].company);
+  assert.equal(SAMPLE_PLACEHOLDERS.educationDegree, SAMPLE_RESUME.education[0].degree);
+  assert.equal(SAMPLE_PLACEHOLDERS.educationInstitution, SAMPLE_RESUME.education[0].institution);
 });
 
 // -- which running batch the builder picks back up --------------------------- //
@@ -283,13 +283,13 @@ test("the builder picks back up only this tab's own Generate Immediately run, ne
 // -- the section catalogue, against the server's ---------------------------- //
 
 /*
- * The editor keeps a copy of config/profileSections.ts: the kinds, their
+ * The editor keeps a copy of config/sectionCatalogue.ts: the kinds, their
  * shared fields and the order's semantics. Both copies are run over the same
  * inputs here, so a change to either fails until it is made to both.
  */
 
-const sections = loadFrontendModule('lib/profileSections.ts');
-const server = require('../dist/config/profileSections');
+const sections = loadFrontendModule('lib/sectionCatalogue.ts');
+const server = require('../dist/config/sectionCatalogue');
 
 test("the catalogue is the server's: the same ids in the same order, with the same heading, field, shape, bullets and classic flag", () => {
   assert.deepEqual([...sections.SECTION_KIND_IDS], [...server.SECTION_KIND_IDS]);
@@ -310,9 +310,9 @@ test("the catalogue is the server's: the same ids in the same order, with the sa
   }
   assert.equal(sections.CUSTOM_REF_PREFIX, server.CUSTOM_REF_PREFIX);
   assert.equal(String(sections.CUSTOM_KEY_PATTERN), String(server.CUSTOM_KEY_PATTERN));
-  assert.equal(sections.MAX_PROFILE_CUSTOM_SECTIONS, server.MAX_PROFILE_CUSTOM_SECTIONS);
-  assert.equal(sections.MAX_PROFILE_SECTION_ENTRIES, server.MAX_PROFILE_SECTION_ENTRIES);
-  assert.equal(sections.MAX_PROFILE_INTERESTS, server.MAX_PROFILE_INTERESTS);
+  assert.equal(sections.MAX_RESUME_CUSTOM_SECTIONS, server.MAX_RESUME_CUSTOM_SECTIONS);
+  assert.equal(sections.MAX_RESUME_SECTION_ENTRIES, server.MAX_RESUME_SECTION_ENTRIES);
+  assert.equal(sections.MAX_RESUME_INTERESTS, server.MAX_RESUME_INTERESTS);
   assert.equal(sections.MAX_INTEREST_LENGTH, server.MAX_INTEREST_LENGTH);
   // The custom section's spec has the shape of a bullet kind.
   assert.equal(sections.CUSTOM_SECTION_SPEC.shape, 'entries');
@@ -353,7 +353,7 @@ const NATIVE_DEFAULT = ['summary', 'experience', 'strengths', 'skills', 'softSki
 const NATIVE_SIDEBAR = ['skills', 'summary', 'experience', 'education', ...server.EXTRA_SECTION_KINDS];
 const NATIVE_BARE = ['summary', 'experience', 'education', 'skills'];
 
-/** Drafts and profiles as `presenceOf` reads them - the fields by name, whatever else is on the object. */
+/** Drafts and resumes as `presenceOf` reads them - the fields by name, whatever else is on the object. */
 const SOURCES = [
   {},
   { summary: '   ', skills: [], certifications: [] },
@@ -490,8 +490,8 @@ test('moveSection and insertRelative: the arrangement a Move button or a drop ma
 
 // -- the draft's round trip ------------------------------------------------- //
 
-/** A stored profile with one entry of every kind, as the server would hand it over. */
-function storedProfile() {
+/** A stored resume with one entry of every kind, as the server would hand it over. */
+function storedResume() {
   return {
     id: 'p1',
     name: 'Sam Chen',
@@ -519,7 +519,7 @@ function storedProfile() {
     references: [{ name: 'Ann Lee', title: 'CTO', company: 'Acme', email: 'ann@acme.com', phone: '1' }],
     customSections: [{ key: 'cs-1a2b3c4d', title: 'Patents', entries: [{ heading: 'US123', subheading: '', startDate: '', endDate: '', location: '', description: '', achievements: ['Granted'] }] }],
     sectionOrder: ['custom:cs-1a2b3c4d', 'projects', 'summary'],
-    profileSettings: { technicalSkillsLayout: 'categorized', includeSoftSkills: true, includeStrengths: true },
+    resumeSettings: { technicalSkillsLayout: 'categorized', includeSoftSkills: true, includeStrengths: true },
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -527,10 +527,10 @@ function storedProfile() {
 
 const LISTS = ['experience', 'strengths', 'education', 'certifications', 'projects', 'languages', 'awards', 'publications', 'volunteering', 'courses', 'references'];
 
-test('a stored profile round-trips through the draft: every row keyed in, every key out, bullets as text and back, every list named, blank rows dropped, the order kept', () => {
-  const draft = loadFrontendModule('lib/profileDraft.ts');
-  const stored = storedProfile();
-  const asDraft = draft.draftFromProfile(stored);
+test('a stored resume round-trips through the draft: every row keyed in, every key out, bullets as text and back, every list named, blank rows dropped, the order kept', () => {
+  const draft = loadFrontendModule('lib/resumeDraft.ts');
+  const stored = storedResume();
+  const asDraft = draft.draftFromResume(stored);
 
   for (const list of LISTS) {
     assert.equal(asDraft[list].length, stored[list].length, list);
@@ -541,11 +541,11 @@ test('a stored profile round-trips through the draft: every row keyed in, every 
   assert.equal(asDraft.volunteering[0].achievementsText, 'Taught 30 kids');
   assert.deepEqual(asDraft.interests, ['Chess', 'Hiking']);
   assert.deepEqual(asDraft.customSections.map((section) => [section.key, section.title, section.entries[0].achievementsText]), [['cs-1a2b3c4d', 'Patents', 'Granted']]);
-  // The order as stored; null for a profile that stores none.
+  // The order as stored; null for a resume that stores none.
   assert.deepEqual(asDraft.sectionOrder, ['custom:cs-1a2b3c4d', 'projects', 'summary']);
-  assert.equal(draft.draftFromProfile({ ...stored, sectionOrder: [] }).sectionOrder, null);
-  assert.equal(draft.draftFromProfile({ ...stored, sectionOrder: undefined }).sectionOrder, null);
-  assert.equal(draft.draftFromProfile(null).sectionOrder, null);
+  assert.equal(draft.draftFromResume({ ...stored, sectionOrder: [] }).sectionOrder, null);
+  assert.equal(draft.draftFromResume({ ...stored, sectionOrder: undefined }).sectionOrder, null);
+  assert.equal(draft.draftFromResume(null).sectionOrder, null);
 
   // Rows opened and left blank, in a list of every kind and in a custom section.
   const withBlanks = {
@@ -585,22 +585,22 @@ test('a stored profile round-trips through the draft: every row keyed in, every 
   // A draft following its template sends [] - what clears a stored order.
   assert.deepEqual(draft.draftToPayload({ ...asDraft, sectionOrder: null }, {}, []).sectionOrder, []);
   // Every list is named even when empty.
-  const empty = draft.draftToPayload(draft.draftFromProfile(null), {}, []);
+  const empty = draft.draftToPayload(draft.draftFromResume(null), {}, []);
   for (const list of [...LISTS, 'interests', 'customSections']) assert.deepEqual(empty[list], [], list);
 
   // And the server keeps what was arranged: the order and the custom keys.
-  const { normalizeProfilePayload } = require('../dist/services/profileService');
-  const saved = normalizeProfilePayload(payload);
+  const { normalizeResumePayload } = require('../dist/services/resumeDocument');
+  const saved = normalizeResumePayload(payload);
   assert.deepEqual(saved.sectionOrder, ['custom:cs-1a2b3c4d', 'projects', 'summary']);
   assert.deepEqual(saved.customSections.map((section) => section.key), ['cs-1a2b3c4d']);
   assert.deepEqual(saved.projects, stored.projects);
   assert.deepEqual(saved.interests, ['Chess', 'Hiking']);
-  assert.equal('sectionOrder' in normalizeProfilePayload(empty), false, '[] clears to absent');
+  assert.equal('sectionOrder' in normalizeResumePayload(empty), false, '[] clears to absent');
 });
 
 test('the draft helpers: find, change, remove and add a row, count a section, add and remove a section', () => {
-  const draft = loadFrontendModule('lib/profileDraft.ts');
-  const asDraft = draft.draftFromProfile(storedProfile());
+  const draft = loadFrontendModule('lib/resumeDraft.ts');
+  const asDraft = draft.draftFromResume(storedResume());
   const roleKey = asDraft.experience[0].key;
   const customKey = asDraft.customSections[0].entries[0].key;
 
@@ -659,7 +659,7 @@ test('the draft helpers: find, change, remove and add a row, count a section, ad
 
 test("the editor's Write with AI helpers: the task, the route's own refusal, a request the route reads, the answer, the count line", () => {
   useTempStorage('frontend-editor-helpers-bullets');
-  const draft = loadFrontendModule('lib/profileDraft.ts');
+  const draft = loadFrontendModule('lib/resumeDraft.ts');
   const bullets = require('../dist/services/entryBullets');
 
   assert.equal(draft.MAX_TAILORED_BULLETS, bullets.MAX_ENTRY_BULLETS);
@@ -727,7 +727,7 @@ test("the editor's Write with AI helpers: the task, the route's own refusal, a r
       achievements: ['Shipped it', 'Kept it up'],
       skills: ['Go'],
     },
-    profile: { name: 'Sam Chen', title: 'Engineer', totalYearsExperience: 7, summary: 'Builds things.', skills: ['Go', 'AWS'] },
+    resume: { name: 'Sam Chen', title: 'Engineer', totalYearsExperience: 7, summary: 'Builds things.', skills: ['Go', 'AWS'] },
     task: 'improve',
     instructions: 'Lead with the numbers',
   });
@@ -737,12 +737,12 @@ test("the editor's Write with AI helpers: the task, the route's own refusal, a r
   assert.equal(read.organization, 'Acme');
   assert.deepEqual(read.bullets, ['Shipped it', 'Kept it up']);
   assert.equal(bullets.readBulletsTask(request.task, read), 'improve');
-  assert.deepEqual(bullets.readProfileForBullets(request.profile), request.profile);
+  assert.deepEqual(bullets.readResumeForBullets(request.resume), request.resume);
 
   const project = draft.bulletsRequestFor('project', { key: 'r', name: 'Lakehouse', role: 'Lead', achievementsText: '' }, { ...person, totalYearsExperience: '' }, 'write', '');
   assert.deepEqual(project.entry, { name: 'Lakehouse', role: 'Lead', startDate: '', endDate: '', location: '', description: '', achievements: [], skills: [] });
   assert.equal('instructions' in project, false, 'no note, no field');
-  assert.equal('totalYearsExperience' in project.profile, false);
+  assert.equal('totalYearsExperience' in project.resume, false);
   assert.equal(bullets.readEntryForBullets('project', project.entry).organization, 'Lead');
   const volunteering = draft.bulletsRequestFor('volunteering', { role: 'Mentor', organization: 'Code Club', achievementsText: '' }, person, 'write', '');
   assert.deepEqual([volunteering.entry.role, volunteering.entry.organization], ['Mentor', 'Code Club']);
@@ -764,13 +764,13 @@ test("the editor's Write with AI helpers: the task, the route's own refusal, a r
 // -- the Profiles pages: the template chooser and the cards ------------------ //
 
 /*
- * lib/profileGallery.ts: the chooser's filters (a copy of the server's
+ * lib/resumeGallery.ts: the chooser's filters (a copy of the server's
  * categories), what a template's details say, the link from the chooser to
  * the editor and back, a card's "Edited ... ago", and what Duplicate and
  * Download hand the server - each run against the server's own code.
  */
 
-const gallery = loadFrontendModule('lib/profileGallery.ts');
+const gallery = loadFrontendModule('lib/resumeGallery.ts');
 const SHIPPED_TEMPLATES = path.join(__dirname, '..', 'static', 'templates');
 
 /** The built-in template files as shipped - not the saved ones an administrator may have beside them. */
@@ -801,7 +801,7 @@ test("the chooser's categories are the server's, and its pills show only the one
 });
 
 test('the details say only what the template does, and every template prints both layouts', async () => {
-  assert.equal('startingLayout' in gallery, false, 'no template starts a profile on a layout of its own');
+  assert.equal('startingLayout' in gallery, false, 'no template starts a resume on a layout of its own');
 
   assert.deepEqual(
     gallery.templateFeatures({
@@ -853,8 +853,8 @@ test('the details say only what the template does, and every template prints bot
   }
 
   // The layouts the editor and the viewers offer are the server's own.
-  const { isTechnicalSkillsLayout } = require('../dist/services/profileService');
-  const draft = loadFrontendModule('lib/profileDraft.ts');
+  const { isTechnicalSkillsLayout } = require('../dist/services/resumeDocument');
+  const draft = loadFrontendModule('lib/resumeDraft.ts');
   assert.deepEqual([...draft.ALL_SKILLS_LAYOUTS], ['categorized', 'flat']);
   assert.ok(draft.ALL_SKILLS_LAYOUTS.every((layout) => isTechnicalSkillsLayout(layout)));
   assert.equal(isTechnicalSkillsLayout('sideways'), false);
@@ -869,7 +869,7 @@ test("a template's gallery page is asked for in either layout, by one path both 
   // The chooser's details and Admin -> Templates' View both draw the switch
   // and frame the page through it; neither builds the address by hand, and
   // Use this template carries the layout shown.
-  const chooser = fs.readFileSync(path.join(SRC, 'components', 'profile', 'TemplateChooser.tsx'), 'utf8');
+  const chooser = fs.readFileSync(path.join(SRC, 'components', 'resume', 'TemplateChooser.tsx'), 'utf8');
   const viewer = fs.readFileSync(path.join(SRC, 'app', 'admin', 'templates', 'page.tsx'), 'utf8');
   for (const [name, source] of [['TemplateChooser.tsx', chooser], ['admin/templates/page.tsx', viewer]]) {
     assert.ok(source.includes('templatePreviewPath('), `${name} frames the page through templatePreviewPath`);
@@ -887,7 +887,7 @@ test("a template's gallery page is asked for in either layout, by one path both 
   // Each layout in a frame of its own: a loaded frame sent to another address
   // adds a browser-history entry per press, and Back then turned the page back
   // under the switch (test/e2e/skills-layouts.js presses it and counts).
-  const thumb = fs.readFileSync(path.join(SRC, 'components', 'profile', 'PageThumb.tsx'), 'utf8');
+  const thumb = fs.readFileSync(path.join(SRC, 'components', 'resume', 'PageThumb.tsx'), 'utf8');
   assert.match(thumb, /<iframe\s+key=\{src\b/, "the details' page frame is keyed by its address");
   assert.match(viewer, /<iframe\s+key=\{previewUrl\}/, "the viewer's frame is keyed by its address");
   // A dialog like the details: Escape for the top one and the one scroll lock.
@@ -898,49 +898,69 @@ test("the chooser's link to the editor reads back as the same choice, and a temp
   const offered = [{ id: 'classic-serif' }, { id: 'navy-rule' }];
   const read = (href) => {
     const url = new URL(href, 'http://localhost');
-    assert.equal(url.pathname, gallery.NEW_PROFILE_PATH);
+    assert.equal(url.pathname, gallery.NEW_RESUME_PATH);
     return gallery.readStartChoice({ template: url.searchParams.get('template'), layout: url.searchParams.get('layout') }, offered);
   };
 
-  assert.equal(gallery.startProfileHref('classic-serif'), '/admin/profiles/new?template=classic-serif');
-  assert.equal(gallery.startProfileHref('navy-rule', 'flat'), '/admin/profiles/new?template=navy-rule&layout=flat');
+  assert.equal(gallery.startResumeHref('classic-serif'), '/admin/resumes/new?template=classic-serif');
+  assert.equal(gallery.startResumeHref('navy-rule', 'flat'), '/admin/resumes/new?template=navy-rule&layout=flat');
   for (const [id, layout] of [['classic-serif', 'categorized'], ['classic-serif', 'flat'], ['navy-rule', 'categorized'], ['navy-rule', 'flat']]) {
-    assert.deepEqual(read(gallery.startProfileHref(id, layout)), { templateId: id, layout });
+    assert.deepEqual(read(gallery.startResumeHref(id, layout)), { templateId: id, layout });
   }
   // Every template prints both layouts: the one asked for is the one it starts with.
-  assert.deepEqual(read('/admin/profiles/new?template=navy-rule&layout=flat'), { templateId: 'navy-rule', layout: 'flat' });
-  assert.deepEqual(read('/admin/profiles/new?template=navy-rule'), { templateId: 'navy-rule', layout: 'categorized' });
-  assert.deepEqual(read('/admin/profiles/new?template=classic-serif&layout=sideways'), { templateId: 'classic-serif', layout: 'categorized' });
+  assert.deepEqual(read('/admin/resumes/new?template=navy-rule&layout=flat'), { templateId: 'navy-rule', layout: 'flat' });
+  assert.deepEqual(read('/admin/resumes/new?template=navy-rule'), { templateId: 'navy-rule', layout: 'categorized' });
+  assert.deepEqual(read('/admin/resumes/new?template=classic-serif&layout=sideways'), { templateId: 'classic-serif', layout: 'categorized' });
   // No template, or one not offered (disabled or deleted since): the chooser.
-  assert.equal(read('/admin/profiles/new'), null);
-  assert.equal(read('/admin/profiles/new?template=gone'), null);
-  assert.equal(read('/admin/profiles/new?template=gone&layout=flat'), null);
-  assert.equal(read('/admin/profiles/new?template=Classic-Serif'), null, 'an id is matched as its file carries it');
+  assert.equal(read('/admin/resumes/new'), null);
+  assert.equal(read('/admin/resumes/new?template=gone'), null);
+  assert.equal(read('/admin/resumes/new?template=gone&layout=flat'), null);
+  assert.equal(read('/admin/resumes/new?template=Classic-Serif'), null, 'an id is matched as its file carries it');
   // `template=` alone starts with none, in the layout asked for.
   assert.deepEqual(read(gallery.START_WITHOUT_TEMPLATE_HREF), { templateId: '', layout: 'categorized' });
-  assert.deepEqual(read('/admin/profiles/new?template=&layout=flat'), { templateId: '', layout: 'flat' });
-  assert.deepEqual(read('/admin/profiles/new?template=%20%20'), { templateId: '', layout: 'categorized' });
+  assert.deepEqual(read('/admin/resumes/new?template=&layout=flat'), { templateId: '', layout: 'flat' });
+  assert.deepEqual(read('/admin/resumes/new?template=%20%20'), { templateId: '', layout: 'categorized' });
+
+  // The profile a new resume is for rides last (&profile=), in either chooser link, encoded, and does not change the choice.
+  const { readProfileParam } = loadFrontendModule('lib/profileDashboard.ts');
+  assert.equal(gallery.startResumeHref('classic-serif', undefined, 'p1'), '/admin/resumes/new?template=classic-serif&profile=p1');
+  assert.equal(gallery.startResumeHref('navy-rule', 'flat', 'p1'), '/admin/resumes/new?template=navy-rule&layout=flat&profile=p1');
+  assert.equal(gallery.startResumeHref('navy-rule', 'flat', null), gallery.startResumeHref('navy-rule', 'flat'));
+  assert.equal(gallery.startWithoutTemplateHref(), gallery.START_WITHOUT_TEMPLATE_HREF);
+  assert.equal(gallery.startWithoutTemplateHref(null), gallery.START_WITHOUT_TEMPLATE_HREF);
+  assert.equal(gallery.startWithoutTemplateHref('p1'), '/admin/resumes/new?template=&profile=p1');
+  for (const id of ['p1', 'a/b&c=d', 'Zoë 1']) {
+    for (const href of [gallery.startResumeHref('navy-rule', 'flat', id), gallery.startWithoutTemplateHref(id)]) {
+      const url = new URL(href, 'http://localhost');
+      assert.equal(readProfileParam(url.searchParams.get('profile')), id, `${id} reads back out of ${href}`);
+      assert.deepEqual(read(href), read(href.replace(/&profile=[^&]*$/, '')), 'the profile is no part of the choice of template and layout');
+    }
+  }
+  assert.equal(readProfileParam('  p1 '), 'p1');
+  for (const none of [null, undefined, '', '   ']) assert.equal(readProfileParam(none), null);
 
   // The editor's first draft is a blank one on that template and layout, and its save sends them.
-  const draft = loadFrontendModule('lib/profileDraft.ts');
-  const started = draft.draftForNewProfile({ templateId: 'navy-rule', layout: 'flat' });
+  const draft = loadFrontendModule('lib/resumeDraft.ts');
+  // Any resume may use any template: the picker offers every template, so the rule's helpers are gone.
+  for (const retired of ['templateOptions', 'templatesUsedByOthers']) assert.equal(retired in draft, false, `${retired} is gone`);
+  const started = draft.draftForNewResume({ templateId: 'navy-rule', layout: 'flat' });
   assert.equal(started.preferredTemplate, 'navy-rule');
   assert.equal(started.settings.technicalSkillsLayout, 'flat');
   assert.deepEqual(
     { ...started, preferredTemplate: '', settings: { ...started.settings, technicalSkillsLayout: 'categorized' } },
-    draft.draftFromProfile(null),
-    'nothing else differs from a blank profile'
+    draft.draftFromResume(null),
+    'nothing else differs from a blank resume'
   );
-  assert.equal(draft.draftForNewProfile({ templateId: '', layout: 'categorized' }).preferredTemplate, '');
+  assert.equal(draft.draftForNewResume({ templateId: '', layout: 'categorized' }).preferredTemplate, '');
 
   useTempStorage('frontend-editor-helpers-start');
-  const { normalizeProfilePayload } = require('../dist/services/profileService');
-  const saved = normalizeProfilePayload(draft.draftToPayload(started, {}, []));
+  const { normalizeResumePayload } = require('../dist/services/resumeDocument');
+  const saved = normalizeResumePayload(draft.draftToPayload(started, {}, []));
   assert.equal(saved.preferredTemplate, 'navy-rule');
-  assert.equal(saved.profileSettings.technicalSkillsLayout, 'flat');
+  assert.equal(saved.resumeSettings.technicalSkillsLayout, 'flat');
 });
 
-test('a card says when its profile was edited the way FlowCV does, and leaves an older date to the page', () => {
+test('a card says when its resume was edited the way FlowCV does, and leaves an older date to the page', () => {
   const now = Date.parse('2026-10-19T12:00:00.000Z');
   const at = (ms) => new Date(now - ms).toISOString();
   const MINUTE = 60_000;
@@ -959,46 +979,61 @@ test('a card says when its profile was edited the way FlowCV does, and leaves an
   for (const unreadable of ['', undefined, 'not a time']) assert.equal(gallery.editedAgo(unreadable, now), null);
 });
 
-test("Duplicate sends a profile's whole content as a new one, without its id, template or switch; Download is a file Import JSON takes back", () => {
+test("Duplicate sends a resume's whole content as a new one on the same template, without its id, switch, profile or keywords; Download is a file Import JSON takes back", () => {
   useTempStorage('frontend-editor-helpers-duplicate');
-  const { normalizeProfilePayload } = require('../dist/services/profileService');
-  const { buildImportedProfiles } = require('../dist/services/profileImport');
-  const original = storedProfile();
+  const { normalizeResumePayload } = require('../dist/services/resumeDocument');
+  const { buildImportedResumes } = require('../dist/services/resumeImport');
+  const original = storedResume();
   const stored = {
     ...original,
+    // Any resume may use any template (D16): the copy is drawn with its original's.
+    preferredTemplate: 'navy-rule',
     disabled: true,
-    profileSettings: { ...original.profileSettings, resumeFileNameTemplate: '{{profile_name}}_cv', ai: { modelId: 'gone' } },
+    // What the server adds to a resume it serves: the person it is filed under and its derived keywords.
+    profileId: 'profile-1',
+    matchKeywords: { version: 3, vocabulary: 'v', basedOn: 'b', headline: ['engineer'], roleTitles: ['engineer'], terms: ['Go', 'AWS'] },
+    resumeSettings: { ...original.resumeSettings, resumeFileNameTemplate: '{{profile_name}}_cv', ai: { modelId: 'gone' } },
   };
 
-  const body = gallery.duplicateProfileBody(stored, {});
-  for (const key of ['id', 'createdAt', 'updatedAt', 'preferredTemplate', 'disabled']) assert.equal(key in body, false, key);
-  assert.deepEqual(body.profileSettings.ai, {}, 'the model choice as it may be saved');
-  assert.equal(body.profileSettings.resumeFileNameTemplate, '{{profile_name}}_cv');
-  assert.deepEqual(stored.profileSettings.ai, { modelId: 'gone' }, 'the profile itself is not changed');
+  const body = gallery.duplicateResumeBody(stored, {});
+  for (const key of ['id', 'createdAt', 'updatedAt', 'disabled', 'profileId', 'matchKeywords']) assert.equal(key in body, false, key);
+  assert.equal(body.preferredTemplate, 'navy-rule', 'the template is kept');
+  assert.deepEqual(body.resumeSettings.ai, {}, 'the model choice as it may be saved');
+  assert.equal(body.resumeSettings.resumeFileNameTemplate, '{{profile_name}}_cv');
+  assert.deepEqual(stored.resumeSettings.ai, { modelId: 'gone' }, 'the resume itself is not changed');
+  assert.equal(stored.profileId, 'profile-1');
+  assert.ok(stored.matchKeywords, 'and keeps what the server served');
 
-  const copy = normalizeProfilePayload(body);
+  const copy = normalizeResumePayload(body);
   for (const key of ['name', 'title', 'summary', 'skills', 'softSkills', 'projects', 'languages', 'interests', 'customSections', 'sectionOrder']) {
     assert.deepEqual(copy[key], stored[key], key);
   }
   assert.deepEqual(copy.experience[0].achievements, stored.experience[0].achievements);
-  assert.equal(copy.preferredTemplate, '', 'drawn with default until one is chosen');
+  assert.equal(copy.preferredTemplate, 'navy-rule', 'drawn with its original\'s template');
+  assert.equal('profileId' in copy, false, 'the server files the copy; a body never places it');
   assert.equal(copy.disabled, false);
-  assert.equal(copy.profileSettings.includeStrengths, true);
-  assert.equal(copy.profileSettings.resumeFileNameTemplate, '{{profile_name}}_cv');
+  assert.equal(copy.resumeSettings.includeStrengths, true);
+  assert.equal(copy.resumeSettings.resumeFileNameTemplate, '{{profile_name}}_cv');
 
-  assert.equal(gallery.profileFileName({ name: 'Sam Chen' }), 'sam-chen.json');
-  assert.equal(gallery.profileFileName({ name: '  José  Núñez / PM ' }), 'josé-núñez-pm.json');
-  assert.equal(gallery.profileFileName({ name: '李雷' }), '李雷.json');
-  assert.equal(gallery.profileFileName({ name: '' }), 'profile.json');
-  assert.equal(gallery.profileFileName({ name: '???' }), 'profile.json');
-  assert.ok(gallery.profileFileName({ name: 'x'.repeat(200) }).length <= 65);
+  assert.equal(gallery.resumeExportFileName({ name: 'Sam Chen' }), 'sam-chen.json');
+  assert.equal(gallery.resumeExportFileName({ name: '  José  Núñez / PM ' }), 'josé-núñez-pm.json');
+  assert.equal(gallery.resumeExportFileName({ name: '李雷' }), '李雷.json');
+  assert.equal(gallery.resumeExportFileName({ name: '' }), 'resume.json');
+  assert.equal(gallery.resumeExportFileName({ name: '???' }), 'resume.json');
+  assert.ok(gallery.resumeExportFileName({ name: 'x'.repeat(200) }).length <= 65);
 
-  const text = gallery.profileFileText(stored);
+  const text = gallery.resumeExportText(stored);
   assert.ok(text.endsWith('\n'));
-  const [imported] = buildImportedProfiles(JSON.parse(text), { idExists: () => false, newId: () => 'fresh' });
-  assert.equal(imported.profile.id, stored.id, 'the id is kept while it is free');
-  assert.deepEqual(imported.profile.projects, stored.projects);
-  assert.deepEqual(imported.profile.sectionOrder, stored.sectionOrder);
-  const [again] = buildImportedProfiles(JSON.parse(text), { idExists: () => true, newId: () => 'fresh' });
-  assert.equal(again.profile.id, 'fresh', 'and never overwrites one');
+  // The file is the resume less the server's bookkeeping: the profile it is filed under and its keywords (an import stores none).
+  const { profileId, matchKeywords, ...document } = stored;
+  assert.ok(profileId && matchKeywords);
+  assert.deepEqual(JSON.parse(text), JSON.parse(JSON.stringify(document)));
+  assert.equal('profileId' in JSON.parse(text), false);
+  assert.equal('matchKeywords' in JSON.parse(text), false);
+  const [imported] = buildImportedResumes(JSON.parse(text), { idExists: () => false, newId: () => 'fresh' });
+  assert.equal(imported.resume.id, stored.id, 'the id is kept while it is free');
+  assert.deepEqual(imported.resume.projects, stored.projects);
+  assert.deepEqual(imported.resume.sectionOrder, stored.sectionOrder);
+  const [again] = buildImportedResumes(JSON.parse(text), { idExists: () => true, newId: () => 'fresh' });
+  assert.equal(again.resume.id, 'fresh', 'and never overwrites one');
 });

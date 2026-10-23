@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 
 import { conceptRowsFor, termPattern } from '../config/conceptTools';
-import type { Experience } from '../types/profile';
+import type { Experience } from '../types/resume';
 import type { JobAnalysis, TailoredExperience } from '../types/template';
 import { contentHash } from './jobAnalysis/identity';
 import { SOFT_SKILL_GROUP_HEADINGS } from './skillGroups';
@@ -60,6 +60,33 @@ function occurrences(text: string, term: string): { count: number; first: number
     count += 1;
   }
   return { count, first };
+}
+
+/**
+ * Whether a sentence of a role's description is about the COMPANY rather than
+ * the person ("Acme is a fintech platform built on Kafka."): it opens with the
+ * company's name and a verb of being or offering, or names the company within
+ * eighty characters of a word that marks a corporate description. Moved here
+ * from resumeService.ts, unchanged: the tailoring prompt's `companyContext`
+ * and the resume's keywords (services/resumeKeywords.ts) both leave such a
+ * sentence out, and both must agree on which ones they are.
+ */
+export function isCompanyDescriptionLike(value: string, company?: string): boolean {
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  const companyName = company?.trim();
+  if (!normalized || !companyName) return false;
+
+  const escapedCompany = companyName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const companyLeadPattern = new RegExp(
+    `^(?:category:\\s*)?${escapedCompany}\\b\\s+(?:is|are|was|were|builds|provides|offers|serves|uses|aims|helps|connects|creates|develops|delivers)\\b`,
+    'i'
+  );
+  const marketingContextPattern = new RegExp(
+    `\\b${escapedCompany}\\b.{0,80}\\b(?:founded|headquartered|acquired|serves|customers|platform|company|nonprofit|non-profit)\\b`,
+    'i'
+  );
+
+  return companyLeadPattern.test(normalized) || marketingContextPattern.test(normalized);
 }
 
 /* ====================================================== banned vocabulary */
@@ -298,7 +325,7 @@ function sha256(value: string): string {
 }
 
 /**
- * The seed of every draw for one resume: the profile and the posting.
+ * The seed of every draw for one tailored resume: the source resume and the posting.
  *
  * The prompt says the soft-skill heading is "drawn for this resume", the
  * concept tools' order "is shuffled for each request" and the title shape is
@@ -306,11 +333,11 @@ function sha256(value: string): string {
  * would be a tailoring-cache miss (the key covers what the prompt is sent),
  * and the parse - which runs again on a cache hit and on a preview sent back -
  * could not know which heading names the soft-skill group or which shape the
- * title took. Seeded per profile and posting instead: the same resume asked
+ * title took. Seeded per source resume and posting instead: the same resume asked
  * again draws the same, and two candidates on one posting draw differently.
  */
-export function tailorSeed(profileId: string | null | undefined, analysis: Pick<JobAnalysis, 'sourceJobDescription'>): string {
-  return sha256(`${profileId ?? ''}\0${contentHash(analysis?.sourceJobDescription ?? '')}`);
+export function tailorSeed(resumeId: string | null | undefined, analysis: Pick<JobAnalysis, 'sourceJobDescription'>): string {
+  return sha256(`${resumeId ?? ''}\0${contentHash(analysis?.sourceJobDescription ?? '')}`);
 }
 
 /** A small seeded generator (mulberry32): numbers in [0, 1), the same sequence for the same seed. */
@@ -353,6 +380,29 @@ export function shuffled<T>(items: readonly T[], random: () => number): T[] {
 
 /* =================================================== the prompt's lists */
 
+/**
+ * The posting's term lists a resume is measured against, in the posting's own
+ * spelling: the skills (technical, tools, technologies, protocols), the
+ * concepts (architecture patterns, methodologies, buzzwords - less any that is
+ * also a skill) and the five it leans on (`pickTopSkills`). The part of
+ * `buildTailorLists` that needs nothing else: the tailoring prompt reads it
+ * through that function, and the matcher (services/resumeMatch.ts) reads it
+ * directly, because the rest of `buildTailorLists` - the concept tools above
+ * all - compiles thousands of patterns per call and a choice among resumes
+ * asks once per job.
+ */
+export function postingTermLists(
+  analysis: JobAnalysis,
+  lists: PostingLists = readPostingLists(analysis)
+): { posting: PostingLists; skills: string[]; concepts: string[]; topSkills: string[] } {
+  const skills = uniqueTerms([...lists.technical, ...lists.tools, ...lists.technologies, ...lists.protocols]);
+  const concepts = without(
+    uniqueTerms([...lists.architecturePatterns, ...lists.methodologies, ...lists.buzzwords]),
+    skills
+  );
+  return { posting: lists, skills, concepts, topSkills: pickTopSkills(analysis, lists) };
+}
+
 export type TailorLists = {
   posting: PostingLists;
   /** `[[targetRoleTitle]]` and `[[jobTitle]]`: the posting's own title. */
@@ -388,15 +438,9 @@ export type TailorLists = {
  * CHARACTER": two forms of one thing are two terms a scanner matches.
  */
 export function buildTailorLists(analysis: JobAnalysis, seed: string): TailorLists {
-  const posting = readPostingLists(analysis);
-  const skills = uniqueTerms([...posting.technical, ...posting.tools, ...posting.technologies, ...posting.protocols]);
-  const concepts = without(
-    uniqueTerms([...posting.architecturePatterns, ...posting.methodologies, ...posting.buzzwords]),
-    skills
-  );
+  const { posting, skills, concepts, topSkills } = postingTermLists(analysis);
   const verbs = posting.actionVerbs.filter((verb) => isPastTense(verb) && !containsBannedVocabulary(verb));
   const keywords = without(uniqueTerms([...posting.soft, ...posting.mustInclude, ...verbs]), skills, concepts);
-  const topSkills = pickTopSkills(analysis, posting);
 
   const random = drawSequence(seed, 'concept-tools');
   const conceptTools = conceptRowsFor([
@@ -466,7 +510,23 @@ export function roleKind(postingTitle: string): string {
     .trim();
 }
 
-function words(value: string): string[] {
+/**
+ * What `roleKind` cuts off: the segments of a title after its first " - ", " | ",
+ * comma, colon or bracket, trimmed ("Software Engineer, Backend (Payments)" has
+ * "Backend" and "Payments)"). The matcher reads them as qualifiers of the
+ * kind - "Backend" is what says what a "Software Engineer, Backend" does -
+ * while the composed headline still leaves them out.
+ */
+export function roleTail(postingTitle: string): string[] {
+  return postingTitle
+    .split(TAIL)
+    .slice(1)
+    .map((segment) => segment.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+/** The words of a text: letters, digits, `+` and `#` runs (so `C++` and `C#` are one word each). */
+export function words(value: string): string[] {
   return value.split(/[^\p{L}\p{N}+#]+/u).filter(Boolean);
 }
 
@@ -498,10 +558,10 @@ export const TITLE_SHAPES: ReadonlyArray<(title: string, kind: string) => string
  * return "the candidate's existing headline", and promises the application
  * "appends the KIND of role this application is for ... in one of six shapes
  * drawn per resume, and it leaves the line alone when the candidate's own
- * title already says it". The base is the profile's own title when it has
+ * title already says it". The base is the source resume's own title when it has
  * one - it is the candidate's - else what the model wrote, else the title of
  * their latest role (the caller's chain, the one the render falls back on).
- * Recomputed from the profile and the seed on every parse, so a re-parse
+ * Recomputed from the source and the seed on every parse, so a re-parse
  * never appends twice.
  */
 export function composeTailoredTitle(base: string, postingTitle: string, seed: string): string {
@@ -509,7 +569,7 @@ export function composeTailoredTitle(base: string, postingTitle: string, seed: s
   // No headline to compose onto prints none: the kind alone is the posting's
   // title, which the prompt says the headline never is ("the headline says
   // who this person is"), and an empty one is the render's to fill from the
-  // profile (pdfGenerator's getResumeTitle).
+  // source resume (pdfGenerator's getResumeTitle).
   if (!title) return '';
   const kind = roleKind(postingTitle);
   if (!kind) return title;
@@ -630,12 +690,12 @@ function dateAgreement(answered: unknown, own: unknown): number {
 }
 
 /**
- * Which of several profile roles at one company under one title an answered
- * role is - a person back at an old employer in the same job. The answer
- * carries the dates the model was given, so the stint whose start and end
- * dates agree best is it; with no date agreeing, the first in profile order.
- * Without this the n-th answered stint took the n-th profile stint, and an
- * answer listing them newest first - as the prompt asks - over a profile
+ * Which of several roles of the source resume at one company under one title
+ * an answered role is - a person back at an old employer in the same job. The
+ * answer carries the dates the model was given, so the stint whose start and
+ * end dates agree best is it; with no date agreeing, the first in source order.
+ * Without this the n-th answered stint took the n-th source stint, and an
+ * answer listing them newest first - as the prompt asks - over a source
  * typed oldest first printed each stint's work under the other's dates.
  */
 function closestStint(entry: Record<string, unknown>, candidates: readonly number[], roles: readonly Experience[]): number {
@@ -653,33 +713,34 @@ function closestStint(entry: Record<string, unknown>, candidates: readonly numbe
 }
 
 /**
- * The roles a tailored resume prints, against the profile's own.
+ * The roles a tailored resume prints, against the source resume's own.
  *
  * The prompt says "Preserve title, company, startDate, endDate and location
  * exactly as given" and "never invent a company, a title, a date" - so the
- * code holds it to that. Each returned role is matched to a profile role by
+ * code holds it to that. Each returned role is matched to a source role by
  * company and title (normalised) - among several stints with the same pair,
  * the one whose dates agree with the answer's (`closestStint`) - else by
- * company alone when only one of the profile's roles is at that company; its
- * five facts are put back from the profile. The MODEL'S order is kept ("Most
- * recent company first, always" is the model's to do; a profile typed
- * oldest-first must not undo it). A role the profile does not have is
- * dropped, and so is a second answer for one profile role. A profile role the answer left out is put back, with the
- * profile's own bullets, after the nearest role before it in the profile.
+ * company alone when only one of the source's roles is at that company; its
+ * five facts are put back from the source. The MODEL'S order is kept ("Most
+ * recent company first, always" is the model's to do; a source typed
+ * oldest-first must not undo it). A role the source does not have is
+ * dropped, and so is a second answer for one source role. A source role the
+ * answer left out is put back, with its own bullets, after the nearest role
+ * before it in the source.
  * Every role's description is '': the prompt says it is discarded before the
  * resume is printed, and nothing is written in its place.
  *
  * `finish(answered, own)` makes a role's bullets from what the answer said
- * (nothing, for a role put back) and the profile's own bullets for it.
+ * (nothing, for a role put back) and the source's own bullets for it.
  */
 export function restoreRoles(
   answered: unknown,
-  profileRoles: readonly Experience[],
+  resumeRoles: readonly Experience[],
   finish: (answered: unknown, own: readonly string[]) => string[]
 ): TailoredExperience[] {
-  const roles = Array.isArray(profileRoles) ? profileRoles : [];
+  const roles = Array.isArray(resumeRoles) ? resumeRoles : [];
   const claimed = new Set<number>();
-  const placed: Array<{ profileIndex: number; achievements: unknown }> = [];
+  const placed: Array<{ resumeIndex: number; achievements: unknown }> = [];
 
   for (const entry of Array.isArray(answered) ? answered : []) {
     if (!isRecord(entry)) continue;
@@ -697,20 +758,20 @@ export function restoreRoles(
     }
     if (match === -1) continue;
     claimed.add(match);
-    placed.push({ profileIndex: match, achievements: entry.achievements });
+    placed.push({ resumeIndex: match, achievements: entry.achievements });
   }
 
   roles.forEach((_role, index) => {
     if (claimed.has(index)) return;
     let after = -1;
     placed.forEach((entry, position) => {
-      if (entry.profileIndex < index && (after === -1 || entry.profileIndex > placed[after].profileIndex)) after = position;
+      if (entry.resumeIndex < index && (after === -1 || entry.resumeIndex > placed[after].resumeIndex)) after = position;
     });
-    placed.splice(after + 1, 0, { profileIndex: index, achievements: undefined });
+    placed.splice(after + 1, 0, { resumeIndex: index, achievements: undefined });
   });
 
-  return placed.map(({ profileIndex, achievements }) => {
-    const role = roles[profileIndex];
+  return placed.map(({ resumeIndex, achievements }) => {
+    const role = roles[resumeIndex];
     const own = (Array.isArray(role?.achievements) ? (role.achievements as unknown[]) : []).filter(
       (item): item is string => typeof item === 'string'
     );

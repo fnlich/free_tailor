@@ -9,7 +9,7 @@ import os from 'os';
 import { getDatabasePath } from './database/sqlite';
 import { describeTemplatesDirectory } from './database/templateFiles';
 
-import profileRoutes from './routes/profiles';
+import resumesRoutes from './routes/resumes';
 import templateRoutes from './routes/templates';
 import resumeRoutes from './routes/resume';
 import generationRoutes from './routes/generation';
@@ -37,7 +37,7 @@ import { reconcileCredits, warnIfNoAdmin } from './services/credits/reconcile';
 import { describeAdminIdentity } from './config/adminIdentity';
 import { applyConfiguredAdmins, describeSignInGap } from './services/auth/authService';
 import { attachUser, isAdmin, requireUser } from './middleware/auth';
-import groupRoutes from './routes/groups';
+import profileRoutes from './routes/profiles';
 import importRoutes from './routes/import';
 import promptRoutes from './routes/prompts';
 import jobRoutes from './routes/jobs';
@@ -208,7 +208,7 @@ app.use(attachUser);
  * (`requireUser`: a user or an administrator, never a reporter), and a file
  * that is the asker's and nobody else's - routes/generatedFiles.ts.
  *
- * The path is derived from the email, the order number, the date, the profile
+ * The path is derived from the email, the order number, the date, the resume
  * and the company, so it is guessable enough that "you would have to know the
  * URL" is not a control.
  */
@@ -232,7 +232,7 @@ app.use('/api/sheet', sheetRoutes);
 // and the administrators' lake, merge, settings and admin sheet.
 app.use('/api/report', reportRoutes);
 app.use('/api/admin/job-lake', jobLakeRoutes);
-app.use('/api/profiles', profileRoutes);
+app.use('/api/resumes', resumesRoutes);
 app.use('/api/templates', templateRoutes);
 app.use('/api/resume', resumeRoutes);
 app.use('/api/generation', generationRoutes);
@@ -243,7 +243,7 @@ app.use('/api/admin/notifications', adminNotificationsRouter);
 app.use('/api/refund-requests', refundRequestRoutes);
 app.use('/api/admin/refund-requests', adminRefundRequestsRouter);
 app.use('/api/admin', adminRoutes);
-app.use('/api/groups', groupRoutes);
+app.use('/api/profiles', profileRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/prompts', promptRoutes);
 app.use('/api/jobs', jobRoutes);

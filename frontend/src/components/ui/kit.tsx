@@ -52,7 +52,7 @@ export function Page({
 
 /**
  * The title row: what this page is, one sentence on what it is for, and the
- * page's main action on the right - Purchase Credits, New Profile.
+ * page's main action on the right - Purchase Credits, New Resume.
  */
 export function PageHeader({
   title,

@@ -226,7 +226,7 @@ test('every movement is explainable, and the reserve does not claim to be a deli
   users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
   credits.setBalance(alice.id, 9_000, 'admin-1', 'opening');
-  credits.reserveCredits(users.getUserById(alice.id), 2_000, { kind: 'batch', id: 'bat_1', label: '1 job x 2 profiles' });
+  credits.reserveCredits(users.getUserById(alice.id), 2_000, { kind: 'batch', id: 'bat_1', label: '1 job x 2 resumes' });
   credits.refundTaskUnit('bat_1', 'tsk_1', 1_000, 'Ada / Acme: failed');
 
   const reasons = credits.getLedger(alice.id).map((entry) => entry.reason);
@@ -235,7 +235,7 @@ test('every movement is explainable, and the reserve does not claim to be a deli
   const reserve = credits.getLedger(alice.id).find((e) => e.reason === 'generation-reserve');
   // It claims a reservation, not a delivery. The row is written before a single
   // resume exists, so anything else would be a lie in the audit trail.
-  assert.equal(reserve.note, '1 job x 2 profiles');
+  assert.equal(reserve.note, '1 job x 2 resumes');
 
   const refund = credits.getLedger(alice.id).find((e) => e.reason === 'generation-refund');
   assert.match(refund.note, /Ada \/ Acme/);
@@ -427,17 +427,25 @@ test('nothing floors: a fraction of a thousandth is refused, never rounded into 
   assert.equal(users.getUserById(alice.id).balanceMilli, 978);
 });
 
-test('a charge line names each model and the total in dollars', () => {
+test('a charge line names each build mode and the total in dollars', () => {
   const { credits } = setup('credits-describe');
   assert.equal(
     credits.describeCharge([
-      { modelLabel: 'Claude Sonnet', costMilli: 23 },
-      { modelLabel: 'Claude Sonnet', costMilli: 23 },
-      { modelLabel: 'Codex', costMilli: 10 },
+      { label: 'Fully Tailor', costMilli: 23 },
+      { label: 'Fully Tailor', costMilli: 23 },
+      { label: 'Partial Tailor', costMilli: 10 },
     ]),
-    '3 resumes: 2 x Claude Sonnet @ $0.023, 1 x Codex @ $0.01 = $0.056'
+    '3 resumes: 2 x Fully Tailor @ $0.023, 1 x Partial Tailor @ $0.01 = $0.056'
   );
-  assert.equal(credits.describeCharge([{ modelLabel: 'Free', costMilli: 0 }]), '1 resume: 1 x Free @ $0 = $0');
+  assert.equal(
+    credits.describeCharge([
+      { label: 'Partial Tailor', costMilli: 20 },
+      { label: 'Partial Tailor', costMilli: 20 },
+      { label: 'Partial Tailor', costMilli: 20 },
+    ]),
+    '3 resumes: 3 x Partial Tailor @ $0.02 = $0.06'
+  );
+  assert.equal(credits.describeCharge([{ label: 'Choose Suitable Resume', costMilli: 0 }]), '1 resume: 1 x Choose Suitable Resume @ $0 = $0');
 });
 
 test('CREDIT_SIGNUP_GRANT is dollars to $0.001, and junk grants nothing rather than a guess', () => {

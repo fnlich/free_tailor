@@ -22,9 +22,10 @@
  *   - a credit is a dollar and a purchase credits exactly what it charges:
  *     `quotePurchase` sets `creditMilli` to the amount, and there is no fee
  *     and no price per credit left to apply;
- *   - a resume costs its model's price, and a preview nothing: the price is
- *     the model's `pricePerResumeMilli`, reserved when a build is submitted,
- *     and the builder's cost line is the server's own quote of that same sum;
+ *   - a resume costs the price of its build mode, and a preview nothing: the
+ *     price is the mode's (`suitablePriceMilli`, `partialPriceMilli` or
+ *     `fullPriceMilli`), reserved when a build is submitted, and the builder's
+ *     cost line is the server's own quote of that same sum;
  *   - only a signed webhook credits: `routes/paymentWebhooks.ts`;
  *   - a refund reverses what credit is left and reports the shortfall:
  *     `refundPayment` measures the balance either side and clamps at zero;
@@ -75,7 +76,7 @@ export default function PolicyPanels({ method }: { method: 'card' | 'crypto' }) 
         points={[
           'Credit is added to this account. There is no way to move it to another account, so check you are signed in as the person who should have it.',
           'A credit is a dollar. You are charged exactly the amount you choose, and all of it is added to your balance.',
-          'Each resume costs the price set for the model it is built with, to a tenth of a cent, and the builder shows what a run will cost before you start it. Previews are free and unlimited, so you can see the result before you spend anything.',
+          'Each resume costs the price of the build mode it is built in, to a tenth of a cent, and the builder shows what a run will cost before you start it. Previews are free and unlimited, so you can see the result before you spend anything.',
           'Credit arrives when the payment is confirmed by the provider, not when this page says so. That is usually within a minute.',
         ]}
       />

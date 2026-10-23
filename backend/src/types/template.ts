@@ -27,7 +27,7 @@ export interface ManualTemplateConfigStored {
  */
 export type TemplateSource = 'uploaded' | 'extracted' | 'manual';
 
-/** The style a template is filed under in the new-profile chooser (config/templateCategories.ts). */
+/** The style a template is filed under in the new-resume chooser (config/templateCategories.ts). */
 export type TemplateCategory = 'simple' | 'modern' | 'creative';
 
 export interface Template {
@@ -54,7 +54,7 @@ export interface Template {
   /**
    * Read-only, worked out from the markup on every read and never stored:
    * whether the template has anywhere to put the Soft Skills and Strengths
-   * sections a profile can switch on. The editor uses them to say "this
+   * sections a resume can switch on. The editor uses them to say "this
    * template has no Strengths section" instead of leaving a ticked box that
    * changes nothing.
    */
@@ -63,9 +63,9 @@ export interface Template {
   /**
    * Read-only like the two above, derived from the markup on every read and
    * never stored: which section kinds the template prints (config/
-   * profileSections.ts ids, plus 'custom' for the custom sections - every
+   * sectionCatalogue.ts ids, plus 'custom' for the custom sections - every
    * kind the extra-sections macro generates counts), and the order its own
-   * markup prints them in, which is what a profile with no stored
+   * markup prints them in, which is what a resume with no stored
    * `sectionOrder` is drawn and shown in.
    */
   printsSections?: string[];
@@ -257,12 +257,12 @@ export interface TailoredContent {
   /**
    * With `skillGroups` present the render takes the soft-skill group from
    * them. Without, it prints this list while the switch is on, or the
-   * profile's own when this is empty.
+   * resume's own when this is empty.
    */
   softSkills: string[];
   /**
    * Never printed: with the Strengths switch on the render prints the
-   * profile's OWN strengths, whatever a model or an older build put here.
+   * resume's OWN strengths, whatever a model or an older build put here.
    */
   strengths: TailoredStrength[];
   /** Cover letter body content without the greeting or sign-off */
@@ -284,20 +284,3 @@ export interface TailoredStrength {
   description: string;
 }
 
-/** POST /api/resume/preview's body (the model is read by `readAiOverrides`, the posting by `analysisForRequest`). */
-export interface PreviewResumeRequest {
-  profileId: string;
-  templateId: string;
-  jobDescription?: string;
-  /** The posting's link, which identifies it for the one-analysis rule beside its text. */
-  jobLink?: string;
-  /**
-   * A stored analysis the page already holds (`/resume/analyze` answered
-   * it). The server reads it from the store by id; an analysis OBJECT a
-   * client sends is never read.
-   */
-  analysisId?: string;
-  tailoredContent?: TailoredContent;
-  /** An AI model record id; overrides the profile's own for this run. */
-  model?: string;
-}

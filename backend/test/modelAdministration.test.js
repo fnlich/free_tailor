@@ -245,9 +245,8 @@ test('every admin settings and model response carries the option lists, every se
       name: 'Claude Fable',
       provider: 'claude-cli',
       modelName: 'fable',
-      pricePerResumeUsd: '0.010',
     });
-    assert.equal(created.status, 201);
+    assert.equal(created.status, 201, 'a model is created without a price: it carries none');
     const fable = created.body.aiModels.find((model) => model.modelName === 'fable');
 
     const responses = {
@@ -283,7 +282,7 @@ test('creating a model needs a listed model name, stored in the list\'s spelling
   clearOptionOverrides();
   const server = await serveAdmin('create');
   try {
-    const unlisted = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: 'GPT', provider: 'codex-cli', modelName: 'gpt-5-nano' });
+    const unlisted = await server.call('POST', '/models', { name: 'GPT', provider: 'codex-cli', modelName: 'gpt-5-nano' });
     assert.equal(unlisted.status, 400);
     assert.equal(
       unlisted.body.error,
@@ -291,14 +290,14 @@ test('creating a model needs a listed model name, stored in the list\'s spelling
     );
 
     // A name from another seat's list is still not this seat's.
-    const crossed = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: 'X', provider: 'gemini-cli', modelName: 'opus' });
+    const crossed = await server.call('POST', '/models', { name: 'X', provider: 'gemini-cli', modelName: 'opus' });
     assert.equal(crossed.status, 400);
     assert.match(crossed.body.error, /not one of the Gemini \(Subscription\) models: auto, pro/);
 
-    const nameless = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', provider: 'codex-cli', modelName: 'gpt-6-luna' });
+    const nameless = await server.call('POST', '/models', { provider: 'codex-cli', modelName: 'gpt-6-luna' });
     assert.equal(nameless.status, 400);
     assert.equal(nameless.body.error, 'Display name is required.');
-    const blank = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: '   ', provider: 'codex-cli', modelName: 'gpt-6-luna' });
+    const blank = await server.call('POST', '/models', { name: '   ', provider: 'codex-cli', modelName: 'gpt-6-luna' });
     assert.equal(blank.body.error, 'Display name is required.');
 
     const created = await server.call('POST', '/models', {
@@ -306,6 +305,8 @@ test('creating a model needs a listed model name, stored in the list\'s spelling
       provider: 'codex-cli',
       modelName: 'GPT-6-Luna',
       description: '  Fast and cheap.  ',
+      // A price in a body is not read: a model carries none (what a resume
+      // costs is its build mode's), so this neither prices nor refuses it.
       pricePerResumeUsd: '0.010',
     });
     assert.equal(created.status, 201);
@@ -314,9 +315,12 @@ test('creating a model needs a listed model name, stored in the list\'s spelling
     assert.equal(luna.modelName, 'gpt-6-luna', 'stored as the CLI spells it');
     assert.equal(luna.description, 'Fast and cheap.');
     assert.equal(luna.enabled, true);
+    assert.equal('pricePerResumeMilli' in luna, false, 'no price on the record, whatever the body sent');
+    assert.equal('pricePerResumeUsd' in luna, false);
+    assert.equal('freeEnabledModelIds' in created.body, false, 'no list of free models either');
 
     // The same model twice is refused by name, whatever its spelling.
-    const duplicate = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: 'Luna again', provider: 'codex-cli', modelName: 'gpt-6-LUNA' });
+    const duplicate = await server.call('POST', '/models', { name: 'Luna again', provider: 'codex-cli', modelName: 'gpt-6-LUNA' });
     assert.equal(duplicate.status, 400);
     assert.equal(
       duplicate.body.error,
@@ -324,7 +328,7 @@ test('creating a model needs a listed model name, stored in the list\'s spelling
     );
 
     // Not a seat.
-    const retired = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: 'Metered', provider: 'openai', modelName: 'gpt-5.1' });
+    const retired = await server.call('POST', '/models', { name: 'Metered', provider: 'openai', modelName: 'gpt-5.1' });
     assert.equal(retired.status, 400);
     assert.equal(retired.body.error, 'Model provider must be one of: claude-cli, codex-cli, gemini-cli.');
   } finally {
@@ -338,7 +342,7 @@ test('an edit is checked against the list only when it changes the provider or t
   try {
     // A model saved while the list still offered it - here, a list narrowed
     // through .env since - keeps running and can still be edited.
-    await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: 'Fable', provider: 'claude-cli', modelName: 'fable', description: 'Big.' });
+    await server.call('POST', '/models', { name: 'Fable', provider: 'claude-cli', modelName: 'fable', description: 'Big.' });
     process.env.AI_CLI_MODEL_OPTIONS = 'sonnet,opus,haiku';
     const fable = (await server.call('GET', '/settings')).body.aiModels.find((model) => model.modelName === 'fable');
 
@@ -384,7 +388,7 @@ test('a display name another model already has is refused, in any case or spacin
   const server = await serveAdmin('display-names');
   try {
     for (const name of ['Claude Sonnet', '  claude sonnet ']) {
-      const twin = await server.call('POST', '/models', { name, provider: 'gemini-cli', modelName: 'pro', pricePerResumeUsd: '0.009' });
+      const twin = await server.call('POST', '/models', { name, provider: 'gemini-cli', modelName: 'pro' });
       assert.equal(twin.status, 400, JSON.stringify(name));
       assert.equal(
         twin.body.error,
@@ -399,14 +403,14 @@ test('a display name another model already has is refused, in any case or spacin
     // A record keeps its own name through any edit, a change of case included.
     const recased = await server.call('PUT', '/models/claude-cli-sonnet', { name: 'claude sonnet' });
     assert.equal(recased.status, 200);
-    const created = await server.call('POST', '/models', { pricePerResumeUsd: '0.010', name: 'Gemini Pro', provider: 'gemini-cli', modelName: 'pro' });
+    const created = await server.call('POST', '/models', { name: 'Gemini Pro', provider: 'gemini-cli', modelName: 'pro' });
     assert.equal(created.status, 201);
   } finally {
     server.close();
   }
 });
 
-test('a pair of names stored before the check can still be toggled and repriced', async () => {
+test('a pair of names stored before the check can still be toggled, and a price an older build stored is read past', async () => {
   clearOptionOverrides();
   const { dbDir } = useTempStorage('model-administration-legacy-twins');
   const { writeSettingRaw } = require('./helpers');
@@ -420,10 +424,18 @@ test('a pair of names stored before the check can still be toggled and repriced'
     JSON.stringify({ aiModels: [record('a', 'claude-cli', 'sonnet'), record('b', 'codex-cli', 'default')], defaultModelId: 'a' })
   );
   const config = loadFresh('../dist/config/aiModelConfig');
+  // A `pricePerResumeUsd` in the edit is not read (a model carries no price),
+  // and the `pricePerResumeMilli: 1` the rows were stored with is read past.
   const toggled = await config.updateAIModel('b', { enabled: false, pricePerResumeUsd: '0.003' });
   assert.deepEqual(
-    toggled.aiModels.map((entry) => [entry.id, entry.name, entry.enabled, entry.pricePerResumeMilli]),
-    [['a', 'Twin', true, 1], ['b', 'Twin', false, 3]]
+    toggled.aiModels.map((entry) => [entry.id, entry.name, entry.enabled]),
+    [['a', 'Twin', true], ['b', 'Twin', false]]
+  );
+  assert.equal(toggled.aiModels.some((entry) => 'pricePerResumeMilli' in entry), false);
+  assert.equal(
+    JSON.parse(require('./helpers').readSettingRaw(dbDir, APP_SETTINGS_KEY)).aiModels.some((entry) => 'pricePerResumeMilli' in entry),
+    false,
+    'and the write drops it'
   );
   // Renaming one away is the fix, and is fine; renaming it back is refused.
   const apart = await config.updateAIModel('b', { name: 'Codex' });

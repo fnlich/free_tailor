@@ -20,7 +20,7 @@
  * list "is NOT exhaustive"; a concept with no row is the model's to judge.
  *
  * The order of `tools` here is a plain default: the code SHUFFLES each row's
- * tools per resume, seeded by the profile and the posting
+ * tools per resume, seeded by the source resume and the posting
  * (services/tailorContract.ts), because the prompt tells the model to take the
  * first of two that fit equally "and that order is shuffled for each request,
  * so two candidates do not come back with the same block".

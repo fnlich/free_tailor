@@ -12,7 +12,6 @@ import {
   type AdminAppSettings,
   type AIModelRecord,
 } from '@/lib/api';
-import { formatMoney } from '@/lib/format';
 import { messageWithDetail } from '@/lib/userMessage';
 import { firstModelName, isTaken, optionsFor } from './modelDraft';
 import {
@@ -26,11 +25,10 @@ import {
   type ModelField,
   type ModelProblems,
 } from './modelForm';
-import { readPriceDraft } from './modelPrice';
 
 /**
  * Create New Model, or Edit one (owner decision M1): the model's display name,
- * its seat and model name, its price per resume and a note, in a kit Dialog -
+ * its seat and model name and a note, in a kit Dialog -
  * the pattern Providers' Add / Edit uses.
  *
  * People see the display name and nothing else; the provider and model name
@@ -126,19 +124,10 @@ export default function ModelDialog({
   /*
    * A record saved with a name the seat's list does not hold - typed before
    * the list existed, or since narrowed through .env - keeps its name as an
-   * extra option while it is edited, so its display name, price and
-   * description can still be changed. Choosing a listed name replaces it.
+   * extra option while it is edited, so its display name and description
+   * can still be changed. Choosing a listed name replaces it.
    */
   const listedOption = findProviderModelOption(settings.providerModelOptions, draft.provider, draft.modelName);
-  const price = readPriceDraft(draft.price);
-  const priceHint = !price.ok
-    ? draft.price.trim() === ''
-      ? 'Required. Dollars to $0.001, like 0.023; 0 makes the model free.'
-      : undefined
-    : price.milli === 0
-      ? 'Free - a resume on this model costs $0.'
-      : `${formatMoney(price.milli)} a resume. 0 makes it free.`;
-  const pricePending = draft.price.trim() !== '' && !price.ok && !problems.pricePerResumeUsd;
 
   const footer = (
     <>
@@ -241,37 +230,6 @@ export default function ModelDialog({
               })}
             </select>
             {problems.modelName && <Status tone="error">{problems.modelName}</Status>}
-          </Field>
-
-          {/* The hint goes while the box shows its error: the error already says what the box needs. */}
-          <Field
-            label="Price per resume ($)"
-            htmlFor="model-price-per-resume"
-            hint={problems.pricePerResumeUsd ? undefined : priceHint}
-          >
-            <input
-              id="model-price-per-resume"
-              // Text, like every other dollar box: a number box hands over
-              // what the BROWSER made of the keystrokes, not what was typed.
-              // In an en-US Chrome "0,023" becomes "0023" before onChange sees
-              // it - $23 a resume, a thousand times the price meant -
-              // where the text reaches readPriceDraft and the server as typed
-              // and is refused by name. The range and the $0.001 step are
-              // theirs to check, not the box's.
-              type="text"
-              inputMode="decimal"
-              autoComplete="off"
-              required={creating}
-              placeholder="0.023"
-              value={draft.price}
-              onChange={(event) => edit('price', event.target.value, 'pricePerResumeUsd')}
-              disabled={saving}
-              aria-invalid={Boolean(problems.pricePerResumeUsd) || pricePending}
-              className="tl-input"
-            />
-            {(problems.pricePerResumeUsd || pricePending) && (
-              <Status tone="error">{problems.pricePerResumeUsd ?? (!price.ok ? price.message : '')}</Status>
-            )}
           </Field>
 
           <Field label="Description" htmlFor="model-description">

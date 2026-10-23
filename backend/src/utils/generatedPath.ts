@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { Profile } from '../types/profile';
+import { Resume } from '../types/resume';
 import {
   DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
   DEFAULT_RESUME_FILE_NAME_TEMPLATE,
@@ -53,24 +53,24 @@ export interface GeneratedPathInfo {
    * then the rendered suffix. What a written file's recorded path starts with.
    */
   storagePathBase: string;
-  profileSlug: string;
+  resumeSlug: string;
   resumeFileStem: string;
   coverLetterFileStem: string;
 }
 
 export function getResumeOutputFilename(pathInfo: GeneratedPathInfo, extension: 'pdf' | 'docx'): string {
-  return `${pathInfo.resumeFileStem || pathInfo.profileSlug}.${extension}`;
+  return `${pathInfo.resumeFileStem || pathInfo.resumeSlug}.${extension}`;
 }
 
 export function getCoverLetterOutputFilename(pathInfo: GeneratedPathInfo, extension: 'pdf' | 'docx'): string {
-  return `${pathInfo.coverLetterFileStem || `${pathInfo.profileSlug}_cover_letter`}.${extension}`;
+  return `${pathInfo.coverLetterFileStem || `${pathInfo.resumeSlug}_cover_letter`}.${extension}`;
 }
 
 /**
  * Where ONE run files its resumes, fixed when it was submitted
  * (routes/generation.ts, onto every task's payload).
  *
- * Plain strings for the same reason a task names its profile by id: the
+ * Plain strings for the same reason a task names its resume by id: the
  * payload is written to SQLite and replayed after a restart, and a place
  * worked out again from settings edited in the meantime - a new prefix, a new
  * output folder, an account's new folder path, or midnight passing - would put
@@ -117,7 +117,7 @@ async function currentPlace(): Promise<RunOutputPlace> {
 }
 
 export async function getGeneratedOutputPath(
-  profile: Profile,
+  resume: Resume,
   companyName: string,
   role: string,
   options: GeneratedPathOptions = {}
@@ -126,7 +126,7 @@ export async function getGeneratedOutputPath(
   if (!place.baseDir) {
     throw new Error('Output base directory is not configured.');
   }
-  const profileSlug = sanitizePathSegment(profile.name) || 'unknown';
+  const resumeSlug = sanitizePathSegment(resume.name) || 'unknown';
   const rowNumber = normalizeSourceRowNumber(options.sourceRowNumber);
 
   // The run's prefix as it was rendered when the run was placed, then this
@@ -135,7 +135,7 @@ export async function getGeneratedOutputPath(
   // where the analysis read one (resolveTaskRole).
   const suffix = renderOutputSuffix(place.suffix, {
     date: place.date,
-    profile_name: profile.name || '',
+    profile_name: resume.name || '',
     company_name: companyName || '',
     role: role || '',
     row_number: rowNumber,
@@ -146,18 +146,18 @@ export async function getGeneratedOutputPath(
     date: place.date,
     accountName: place.accountName || 'unknown',
     orderNumber: place.orderNumber || 'unknown',
-    profileName: profile.name || 'unknown',
+    resumeName: resume.name || 'unknown',
     companyName: companyName || 'unknown',
     rowNumber,
     jobTitle: role || 'resume',
   };
   const resumeFileStem = renderOutputFileNameTemplate(
-    profile.profileSettings?.resumeFileNameTemplate || DEFAULT_RESUME_FILE_NAME_TEMPLATE,
+    resume.resumeSettings?.resumeFileNameTemplate || DEFAULT_RESUME_FILE_NAME_TEMPLATE,
     fileNameVariables,
     DEFAULT_RESUME_FILE_NAME_TEMPLATE
   );
   const coverLetterFileStem = renderOutputFileNameTemplate(
-    profile.profileSettings?.coverLetterFileNameTemplate || DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
+    resume.resumeSettings?.coverLetterFileNameTemplate || DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE,
     fileNameVariables,
     DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE
   );
@@ -165,7 +165,7 @@ export async function getGeneratedOutputPath(
   return {
     absoluteDir: path.join(place.baseDir, ...storagePathBase.split('/')),
     storagePathBase,
-    profileSlug,
+    resumeSlug,
     resumeFileStem,
     coverLetterFileStem,
   };

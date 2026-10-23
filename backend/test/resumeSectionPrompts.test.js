@@ -6,7 +6,7 @@ const path = require('node:path');
 const { useTempStorage } = require('./helpers');
 
 /**
- * The profile's section choices, from the prompt to the tailored content.
+ * The resume's section choices, from the prompt to the tailored content.
  *
  * Three choices decide what a tailored resume holds besides its prose:
  * whether it has a Strengths section, whether the posting's soft skills get a
@@ -14,9 +14,9 @@ const { useTempStorage } = require('./helpers');
  * grouped or plain. None of them is a prompt variable any more. The model
  * writes the same answer either way - its Technical Skills block in groups,
  * the posting's soft skills last - and the choices decide how that answer is
- * DRAWN: the soft-skill group in its section or in the block, the profile's
+ * DRAWN: the soft-skill group in its section or in the block, the source's
  * own strengths or none. The one way a switch reaches the model is the
- * profile's strengths, sent in `profileJson` only while Strengths is on.
+ * resume's strengths, sent in `profileJson` only while Strengths is on.
  *
  * Run against the shipped skill library in temp storage, to show it plays no
  * part: nothing is padded, filled or confirmed from it.
@@ -47,7 +47,7 @@ function analysis(posting = POSTING, skills = ['TypeScript', 'Docker']) {
   );
 }
 
-function profile(settings = {}, extra = {}) {
+function resumeRecord(settings = {}, extra = {}) {
   return {
     id: 'p1',
     name: 'Jane Smith',
@@ -70,7 +70,7 @@ function profile(settings = {}, extra = {}) {
     skills: ['TypeScript', 'React', 'Kubernetes', 'Figma'],
     softSkills: ['Persistence', 'Clear written communication'],
     education: [],
-    profileSettings: settings,
+    resumeSettings: settings,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...extra,
@@ -114,8 +114,8 @@ const ON = { includeStrengths: true, includeSoftSkills: true };
 /* ------------------------------------------------------------ prompt values */
 
 test('no section choice is a prompt value; the strengths travel in profileJson only while switched on', () => {
-  const off = buildTailorResumePromptValues(profile(), analysis());
-  const on = buildTailorResumePromptValues(profile({ ...ON, technicalSkillsLayout: 'flat' }), analysis());
+  const off = buildTailorResumePromptValues(resumeRecord(), analysis());
+  const on = buildTailorResumePromptValues(resumeRecord({ ...ON, technicalSkillsLayout: 'flat' }), analysis());
   for (const name of ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout']) {
     assert.equal(name in off, false, name);
   }
@@ -125,7 +125,7 @@ test('no section choice is a prompt value; the strengths travel in profileJson o
   assert.deepEqual({ ...on, profileJson: '' }, { ...off, profileJson: '' });
   // The person's own soft skills are never sent, switched on or not.
   assert.doesNotMatch(on.profileJson, /Persistence|Clear written communication/);
-  assert.equal('profileSettings' in JSON.parse(on.profileJson), false);
+  assert.equal('resumeSettings' in JSON.parse(on.profileJson), false);
 });
 
 test("the shipped prompt names the soft-skill group's heading, which is drawn per resume", () => {
@@ -139,16 +139,16 @@ test("the shipped prompt names the soft-skill group's heading, which is drawn pe
   assert.match(record.content, /Description: leave it EMPTY/);
 
   const { SOFT_SKILL_GROUP_HEADINGS } = require('../dist/services/skillGroups');
-  const heading = buildTailorResumePromptValues(profile(), analysis()).softSkillGroupHeading;
+  const heading = buildTailorResumePromptValues(resumeRecord(), analysis()).softSkillGroupHeading;
   assert.ok(SOFT_SKILL_GROUP_HEADINGS.includes(heading), heading);
-  assert.equal(buildTailorResumePromptValues(profile(), analysis()).softSkillGroupHeading, heading, 'the same resume draws the same');
+  assert.equal(buildTailorResumePromptValues(resumeRecord(), analysis()).softSkillGroupHeading, heading, 'the same resume draws the same');
 });
 
 /* -------------------------------------------------------- the content, by switch */
 
-test('Strengths: the profile\'s own while switched on, none while off, whatever the model wrote', () => {
-  assert.deepEqual(parseTailoredResumeContent(modelAnswer(), profile(), analysis()).strengths, []);
-  assert.deepEqual(parseTailoredResumeContent(modelAnswer(), profile(ON), analysis()).strengths, [
+test('Strengths: the source\'s own while switched on, none while off, whatever the model wrote', () => {
+  assert.deepEqual(parseTailoredResumeContent(modelAnswer(), resumeRecord(), analysis()).strengths, []);
+  assert.deepEqual(parseTailoredResumeContent(modelAnswer(), resumeRecord(ON), analysis()).strengths, [
     { title: 'Own strength', description: 'In her own words.' },
   ]);
   // Untitled ones too, verbatim; and a strength with nothing in it is not one.
@@ -157,15 +157,15 @@ test('Strengths: the profile\'s own while switched on, none while off, whatever 
     { title: '', description: 'A strength she only described.' },
     { title: ' ', description: '' },
   ];
-  assert.deepEqual(parseTailoredResumeContent(modelAnswer(), profile(ON, { strengths: own }), analysis()).strengths, own.slice(0, 2));
+  assert.deepEqual(parseTailoredResumeContent(modelAnswer(), resumeRecord(ON, { strengths: own }), analysis()).strengths, own.slice(0, 2));
 });
 
 test("Soft Skills on: the soft group is the section's; off: it stays the last group of the block", () => {
-  const on = parseTailoredResumeContent(modelAnswer(), profile(ON), analysis());
+  const on = parseTailoredResumeContent(modelAnswer(), resumeRecord(ON), analysis());
   assert.deepEqual(on.softSkills, ['Adaptable', 'Communication']);
   assert.deepEqual(on.hardSkills, ['TypeScript', 'Go', 'Docker', 'Kubernetes'], 'and out of the technical list');
 
-  const off = parseTailoredResumeContent(modelAnswer(), profile(), analysis());
+  const off = parseTailoredResumeContent(modelAnswer(), resumeRecord(), analysis());
   assert.deepEqual(off.softSkills, []);
   assert.deepEqual(off.hardSkills, ['TypeScript', 'Go', 'Docker', 'Kubernetes']);
   // Either way the groups are the model's, the soft one marked so the render
@@ -185,17 +185,17 @@ test("Soft Skills on: the soft group is the section's; off: it stays the last gr
 });
 
 test('Grouped or Plain gives the same content: the layout is decided when the resume is drawn', () => {
-  const grouped = parseTailoredResumeContent(modelAnswer(), profile(ON), analysis());
-  const plain = parseTailoredResumeContent(modelAnswer(), profile({ ...ON, technicalSkillsLayout: 'flat' }), analysis());
+  const grouped = parseTailoredResumeContent(modelAnswer(), resumeRecord(ON), analysis());
+  const plain = parseTailoredResumeContent(modelAnswer(), resumeRecord({ ...ON, technicalSkillsLayout: 'flat' }), analysis());
   assert.deepEqual(plain, grouped);
 });
 
-test('content tailored before a switch is finished for the profile as it is now, and a second pass changes nothing', () => {
-  const before = parseTailoredResumeContent(modelAnswer(), profile(), analysis());
-  assert.deepEqual(parseTailoredResumeContent(JSON.stringify(before), profile(), analysis()), before);
+test('content tailored before a switch is finished for the source as it is now, and a second pass changes nothing', () => {
+  const before = parseTailoredResumeContent(modelAnswer(), resumeRecord(), analysis());
+  assert.deepEqual(parseTailoredResumeContent(JSON.stringify(before), resumeRecord(), analysis()), before);
 
   // The person switches both on, then generates from the preview they hold.
-  const after = parseTailoredResumeContent(JSON.stringify(before), profile(ON), analysis());
+  const after = parseTailoredResumeContent(JSON.stringify(before), resumeRecord(ON), analysis());
   assert.deepEqual(after.softSkills, ['Adaptable', 'Communication']);
   assert.deepEqual(after.strengths, [{ title: 'Own strength', description: 'In her own words.' }]);
   assert.deepEqual(after.skillGroups, before.skillGroups);
@@ -206,28 +206,28 @@ test('content tailored before a switch is finished for the profile as it is now,
 
 test('a queued resume finishes held content the same way - with no model call - and renders it as sent if it cannot', () => {
   const { __finaliseHeldContentForTests: finalise } = require('../dist/services/queue/resumeTask');
-  const held = parseTailoredResumeContent(modelAnswer(), profile(), analysis());
+  const held = parseTailoredResumeContent(modelAnswer(), resumeRecord(), analysis());
 
-  const finished = finalise(held, profile(ON), analysis());
-  assert.deepEqual(finished, parseTailoredResumeContent(JSON.stringify(held), profile(ON), analysis()));
+  const finished = finalise(held, resumeRecord(ON), analysis());
+  assert.deepEqual(finished, parseTailoredResumeContent(JSON.stringify(held), resumeRecord(ON), analysis()));
   assert.deepEqual(finished.softSkills, ['Adaptable', 'Communication']);
 
   // Paid-for content is never failed over this step: the render gate still
   // holds the switches for it.
   const odd = 'not an object at all';
-  assert.equal(finalise(odd, profile(), analysis()), odd);
+  assert.equal(finalise(odd, resumeRecord(), analysis()), odd);
 });
 
 test('an answer with no skill groups - an older prompt record - falls back to her own skills, never an empty block', () => {
   const noGroups = { skillGroups: undefined };
-  const own = parseTailoredResumeContent(modelAnswer(noGroups), profile(), analysis());
+  const own = parseTailoredResumeContent(modelAnswer(noGroups), resumeRecord(), analysis());
   assert.deepEqual(own.skillGroups, [{ category: '', skills: ['TypeScript', 'React', 'Kubernetes', 'Figma'] }]);
   assert.deepEqual(own.hardSkills, ['TypeScript', 'React', 'Kubernetes', 'Figma']);
 
   // Her own grouping, as she typed it, when she has one.
   const grouped = parseTailoredResumeContent(
     modelAnswer(noGroups),
-    profile({}, { skillCategories: [{ category: 'Web', skills: ['React'] }, { category: 'Ops', skills: ['Kubernetes'] }] }),
+    resumeRecord({}, { skillCategories: [{ category: 'Web', skills: ['React'] }, { category: 'Ops', skills: ['Kubernetes'] }] }),
     analysis()
   );
   assert.deepEqual(grouped.skillGroups, [
@@ -237,28 +237,28 @@ test('an answer with no skill groups - an older prompt record - falls back to he
 });
 
 test('a switch the template has no section for reads as off, for the content', () => {
-  const { profileForTemplate } = require('../dist/services/profileService');
+  const { resumeForTemplate } = require('../dist/services/resumeDocument');
   const template = (id) =>
     JSON.parse(fs.readFileSync(path.join(shipped, 'templates', `${id}.json`), 'utf8'));
-  const on = profile(ON);
+  const on = resumeRecord(ON);
 
   // Charcoal Sidebar prints neither section: no strengths, and the soft group
   // stays in the skills block rather than going to a list that never prints.
-  const charcoal = profileForTemplate(on, template('charcoal-sidebar'));
+  const charcoal = resumeForTemplate(on, template('charcoal-sidebar'));
   const parsed = parseTailoredResumeContent(modelAnswer(), charcoal, analysis());
   assert.deepEqual(parsed.strengths, []);
   assert.deepEqual(parsed.softSkills, []);
   assert.equal(parsed.skillGroups.at(-1).category, 'Professional Skills');
-  assert.equal(on.profileSettings.includeStrengths, true, 'the profile itself is not changed');
+  assert.equal(on.resumeSettings.includeStrengths, true, 'the resume itself is not changed');
   // Off for the model too: her strengths are not sent for a template that cannot print them.
   assert.equal('strengths' in JSON.parse(buildTailorResumePromptValues(charcoal, analysis()).profileJson), false);
 
   // Ink Ledger prints Strengths but not Soft Skills.
-  const ink = parseTailoredResumeContent(modelAnswer(), profileForTemplate(on, template('ink-ledger')), analysis());
+  const ink = parseTailoredResumeContent(modelAnswer(), resumeForTemplate(on, template('ink-ledger')), analysis());
   assert.deepEqual(ink.strengths, [{ title: 'Own strength', description: 'In her own words.' }]);
   assert.deepEqual(ink.softSkills, []);
 
   // A template with both sections, or no template at all, changes nothing.
-  assert.equal(profileForTemplate(on, template('default')), on);
-  assert.equal(profileForTemplate(on, null), on);
+  assert.equal(resumeForTemplate(on, template('default')), on);
+  assert.equal(resumeForTemplate(on, null), on);
 });

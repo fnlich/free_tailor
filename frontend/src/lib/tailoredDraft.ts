@@ -3,20 +3,20 @@
  *
  * A tailored resume comes back from the server whole, but most of it is worked
  * out again every time it is sent back (services/resumeService.ts
- * `parseTailoredResumeContent`): the title is the profile's headline with the
+ * `parseTailoredResumeContent`): the title is the source resume's headline with the
  * kind of role composed onto it, each role's company, title, dates and place
- * come from the profile, a role's description is always empty, and the skill
+ * come from the source resume, a role's description is always empty, and the skill
  * lists, the Soft Skills section and Strengths are derived from `skillGroups`
- * and the profile. An edit to any of those was silently undone. So what the
+ * and the source resume. An edit to any of those was silently undone. So what the
  * box offers to change is only what an edit can change - the summary, each
  * role's bullets, the skill groups, the cover letter, and the title (which
- * counts only while the profile has no headline). Each role also carries its
+ * counts only while the source resume has no headline). Each role also carries its
  * company, title and dates, but only to say which role its bullets are: the
- * server restores all three from the profile whatever the box says, and the
+ * server restores all three from the resume whatever the box says, and the
  * note under it says so. The dates stay because the server tells two stints
  * under one company and title apart by them (tailorContract.ts
  * `closestStint`): without them, an answer listing the stints newest first
- * over a profile typed oldest first came back with each stint's bullets under
+ * over a resume typed oldest first came back with each stint's bullets under
  * the other's dates. A role's place identifies nothing, so it is not shown.
  *
  * Imports nothing at runtime (types only), so
@@ -28,7 +28,7 @@ import type { SkillGroup, TailoredContent, TailoredContentEdit } from './api';
 
 /** The line under the box. */
 export const TAILORED_DRAFT_NOTE =
-  'Skills are edited in skillGroups (the soft-skill group is marked "soft": true); the skill lists, Soft Skills and Strengths are worked out from it and from the profile. The title is rebuilt from the profile\'s headline when it has one, and a role\'s company, title and dates only say which role its bullets belong to: they print as the profile has them.';
+  'Skills are edited in skillGroups (the soft-skill group is marked "soft": true); the skill lists, Soft Skills and Strengths are worked out from it and from the resume. The title is rebuilt from the resume\'s headline when it has one, and a role\'s company, title and dates only say which role its bullets belong to: they print as the resume has them.';
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -52,7 +52,7 @@ function skillGroupsOf(value: unknown): SkillGroup[] {
 /**
  * The editable part of a tailored resume, in the box's order. A content from
  * before skill groups (none) shows an empty list, which the server reads as
- * "the profile's own skills".
+ * "the source resume's own skills".
  */
 export function tailoredEditOf(content: TailoredContent | TailoredContentEdit): TailoredContentEdit {
   const experience = Array.isArray(content.experience) ? content.experience : [];

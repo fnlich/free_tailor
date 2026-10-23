@@ -7,8 +7,8 @@ import type { StorageLike } from './immediateRun';
  * KIND of action, so ticking it on an order does not stop Generate
  * Immediately or a subscription asking.
  *
- *  - `order` - an Order, from Build Resumes (the header, the multi-profile
- *    preview, the sheet panel) or Find Jobs: asked only when something will
+ *  - `order` - an Order, from Build Resumes (the header, the preview,
+ *    the sheet panel) or Find Jobs: asked only when something will
  *    be charged, or what it costs could not be worked out.
  *  - `immediate` - Generate Immediately: asked always (until skipped),
  *    because it also carries owner decision B4's warning that closing the tab

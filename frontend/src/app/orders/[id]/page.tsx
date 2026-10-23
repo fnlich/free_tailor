@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import OrderProgress, { OrderStatePill } from '@/components/orders/OrderProgress';
 import {
   cancelOrderQuestion,
+  describeChoice,
   FILE_KIND_LABELS,
   isOrderLive,
   orderFileUrl,
@@ -308,6 +309,7 @@ function OrderItemRow({
   onToggle: () => void;
 }) {
   const selectable = item.available.length > 0;
+  const choice = describeChoice(item.match);
 
   return (
     <tr>
@@ -324,10 +326,17 @@ function OrderItemRow({
       <td className="min-w-56">
         <span className="block font-semibold text-ink">{item.companyName}</span>
         <span className="mt-0.5 block">
-          {item.profileName}
+          {item.profileLabel || item.resumeName}
+          {item.resumeLabel ? ` · ${item.resumeLabel}` : ''}
           {item.role ? ` - ${item.role}` : ''}
           {typeof item.sourceRowNumber === 'number' ? ` - sheet row ${item.sourceRowNumber}` : ''}
         </span>
+        {/* How the run came to build this resume (v4.2); an item placed before it prints as it always did. */}
+        {choice && (
+          <span className="mt-0.5 block text-xs text-muted" data-order-choice>
+            {choice}
+          </span>
+        )}
         {/* An administrator's only: the server sends `ranOn` to nobody else. */}
         {item.ranOn && <span className="mt-0.5 block text-xs text-muted">{describeRanOn(item.ranOn)}</span>}
         {item.error && (

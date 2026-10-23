@@ -124,14 +124,18 @@ export type DownloadKind = (typeof DOWNLOAD_KIND_ORDER)[number];
 export type DownloadableTask = {
   id: string;
   state: string;
-  profileName?: string;
+  resumeName?: string;
+  /** Which of the person's resumes the run chose for the job (`BatchTask.resumeLabel`). */
+  resumeLabel?: string;
   companyName?: string;
   files?: readonly string[];
 };
 
 export type PendingDownload = {
   taskId: string;
-  profileName: string;
+  resumeName: string;
+  /** The chosen resume's headline label, when the snapshot says it: appended to the name as " · label". */
+  resumeLabel?: string;
   companyName: string;
   kinds: DownloadKind[];
 };
@@ -176,7 +180,9 @@ export function pendingDownloads(
     if (kinds.length === 0) continue;
     pending.push({
       taskId: task.id,
-      profileName: task.profileName ?? '',
+      resumeName: task.resumeName ?? '',
+      // Left off while the snapshot names none: an item an older server sent reads as it always did.
+      ...(task.resumeLabel ? { resumeLabel: task.resumeLabel } : {}),
       companyName: task.companyName ?? '',
       kinds,
     });
@@ -204,13 +210,13 @@ const KIND_FILE_LABELS: Record<DownloadKind, string> = {
  * The server names it `<company>_<file name>` in Content-Disposition, but a
  * page on another origin than the API cannot read that header (the API does
  * not expose it), so it is rebuilt here from what the snapshot says: company,
- * profile, and which file it is. Characters a file system refuses are
+ * resume, and which file it is. Characters a file system refuses are
  * replaced, and the stem is capped so a long company name cannot make a name
  * the download is refused for.
  */
-export function downloadName(companyName: string, profileName: string, kind: DownloadKind): string {
+export function downloadName(companyName: string, resumeName: string, kind: DownloadKind): string {
   const extension = kind.endsWith('-docx') ? 'docx' : 'pdf';
-  const parts = [companyName, profileName, KIND_FILE_LABELS[kind]]
+  const parts = [companyName, resumeName, KIND_FILE_LABELS[kind]]
     .map((part) =>
       part
         .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ')

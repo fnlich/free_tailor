@@ -16,7 +16,7 @@ const { useTempStorage } = require('./helpers');
  *   - the last group, the posting's soft skills, goes to the Soft Skills
  *     section while that switch is on (as the template leaves it) and stays in
  *     the block while it is off;
- *   - Strengths are the profile's own; the model writes none;
+ *   - Strengths are the resume's own; the model writes none;
  *   - a role's description "is discarded before the resume is printed", and
  *     no template leaves an empty box where it would have been;
  *   - "anything past the eighth bullet is DISCARDED";
@@ -105,7 +105,7 @@ const BULLETS = [
 
 const TITLE = 'Software Engineer (AI/ML Engineer)';
 
-function profile(settings = {}, extra = {}) {
+function resumeRecord(settings = {}, extra = {}) {
   return {
     id: 'p-render',
     name: 'Ada Example',
@@ -128,7 +128,7 @@ function profile(settings = {}, extra = {}) {
     softSkills: ['Persistence'],
     education: [],
     skills: ['C#', 'Python', 'Docker'],
-    profileSettings: settings,
+    resumeSettings: settings,
     createdAt: '',
     updatedAt: '',
     ...extra,
@@ -166,12 +166,12 @@ test('Grouped prints the model groups as they stand; Plain the same skills once,
   seeded('data');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
 
-  const grouped = prepareResumeRenderData(profile(), modelContent());
+  const grouped = prepareResumeRenderData(resumeRecord(), modelContent());
   assert.deepEqual(grouped.skillCategories, MODEL_GROUPS, 'every group, the soft one last, with Soft Skills off');
   assert.equal(grouped.hardSkills[1], 'CI/CD & Automation: GitHub Actions, Argo CD, CI/CD, Python');
   assert.deepEqual(grouped.skills, grouped.hardSkills);
 
-  const plain = prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }), modelContent());
+  const plain = prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }), modelContent());
   assert.deepEqual(plain.skillCategories, [{ category: '', skills: [...PLAIN, ...SOFT.skills] }]);
   assert.deepEqual(plain.hardSkills, [...PLAIN, ...SOFT.skills], 'one entry per skill');
 });
@@ -180,19 +180,19 @@ test('the soft-skill group goes to the Soft Skills section while the switch is o
   seeded('routing');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
 
-  const grouped = prepareResumeRenderData(profile({ includeSoftSkills: true }), modelContent());
+  const grouped = prepareResumeRenderData(resumeRecord({ includeSoftSkills: true }), modelContent());
   assert.deepEqual(grouped.skillCategories, TECHNICAL);
   assert.deepEqual(grouped.softSkills, SOFT.skills, "the posting's soft skills, not her own");
 
   const plain = prepareResumeRenderData(
-    profile({ includeSoftSkills: true, technicalSkillsLayout: 'flat' }),
+    resumeRecord({ includeSoftSkills: true, technicalSkillsLayout: 'flat' }),
     modelContent()
   );
   assert.deepEqual(plain.hardSkills, PLAIN);
   assert.deepEqual(plain.softSkills, SOFT.skills);
 
   // Off, the section prints nothing and the group stays in the block.
-  const off = prepareResumeRenderData(profile(), modelContent());
+  const off = prepareResumeRenderData(resumeRecord(), modelContent());
   assert.deepEqual(off.softSkills, []);
 
   // The mark the parse leaves finds the group after its heading was edited.
@@ -200,7 +200,7 @@ test('the soft-skill group goes to the Soft Skills section while the switch is o
     index === MODEL_GROUPS.length - 1 ? { ...group, category: 'People', soft: true } : group
   );
   const marked = prepareResumeRenderData(
-    profile({ includeSoftSkills: true }),
+    resumeRecord({ includeSoftSkills: true }),
     modelContent({ skillGroups: renamed, softSkillGroupHeading: undefined })
   );
   assert.deepEqual(marked.skillCategories, TECHNICAL);
@@ -209,7 +209,7 @@ test('the soft-skill group goes to the Soft Skills section while the switch is o
   // No soft group found: nothing leaves the block, and the section falls back
   // to the content's list, else her own - never empty when she asked for it.
   const noSoft = prepareResumeRenderData(
-    profile({ includeSoftSkills: true }),
+    resumeRecord({ includeSoftSkills: true }),
     modelContent({ skillGroups: TECHNICAL, softSkills: [] })
   );
   assert.deepEqual(noSoft.skillCategories, TECHNICAL);
@@ -225,7 +225,7 @@ test('nothing in the block comes from, or is held to, the skill library', () => 
   ];
   for (const layout of ['categorized', 'flat']) {
     const data = prepareResumeRenderData(
-      profile({ technicalSkillsLayout: layout }, { skillCategories: [{ category: 'Mine', skills: ['C#', 'Python', 'Docker'] }] }),
+      resumeRecord({ technicalSkillsLayout: layout }, { skillCategories: [{ category: 'Mine', skills: ['C#', 'Python', 'Docker'] }] }),
       modelContent({ skillGroups: groups })
     );
     const printed = data.skillCategories.flatMap((group) => group.skills);
@@ -233,24 +233,24 @@ test('nothing in the block comes from, or is held to, the skill library', () => 
     assert.equal(
       data.skillCategories.some((group) => group.category === 'Mine'),
       false,
-      `${layout}: the model's block beats the profile's own grouping`
+      `${layout}: the model's block beats the resume's own grouping`
     );
   }
 });
 
-test('a block left with nothing to print is the profile\'s own skills, unpadded', () => {
+test('a block left with nothing to print is the resume\'s own skills, unpadded', () => {
   seeded('fallback');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const ownOnly = (data) => data.skillCategories.flatMap((group) => group.skills).map((skill) => skill.toLowerCase()).sort();
 
   // Only the soft group came back, and the switch moved it.
-  const onlySoft = prepareResumeRenderData(profile({ includeSoftSkills: true }), modelContent({ skillGroups: [SOFT] }));
+  const onlySoft = prepareResumeRenderData(resumeRecord({ includeSoftSkills: true }), modelContent({ skillGroups: [SOFT] }));
   assert.deepEqual(ownOnly(onlySoft), ['c#', 'docker', 'python']);
   assert.deepEqual(onlySoft.softSkills, SOFT.skills);
 
   // No skills of any kind: content from a prompt that never asked for them.
   const none = prepareResumeRenderData(
-    profile(),
+    resumeRecord(),
     modelContent({ skillGroups: [{ category: 'Junk', skills: ['', 7] }], hardSkills: [], skills: [] })
   );
   assert.deepEqual(ownOnly(none), ['c#', 'docker', 'python']);
@@ -266,10 +266,10 @@ test('content from before the model wrote the block prints its own list, unpadde
     hardSkills: ['Go', 'Python', 'CI/CD', 'PostgreSQL'],
     skills: ['Go', 'Python', 'CI/CD', 'PostgreSQL'],
   };
-  const plain = prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }), legacy);
+  const plain = prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }), legacy);
   assert.deepEqual(plain.hardSkills, ['Go', 'Python', 'CI/CD', 'PostgreSQL'], 'as given, CI/CD included');
 
-  const grouped = prepareResumeRenderData(profile(), legacy);
+  const grouped = prepareResumeRenderData(resumeRecord(), legacy);
   const printed = grouped.skillCategories.flatMap((group) => group.skills);
   assert.ok(printed.length <= 4, `padded to ${printed.length}: ${printed.join(', ')}`);
   for (const skill of printed) assert.ok(legacy.hardSkills.includes(skill), `${skill} was never in the content`);
@@ -292,64 +292,64 @@ test("the skill library files and filters only an untailored or older Grouped bl
   // Untailored, Grouped with nothing assigned by hand: the library's headings,
   // Languages before DevOps whatever order the skills were typed in, and the
   // skill it never heard of left off.
-  const grouped = prepareResumeRenderData(profile({}, { skills }));
+  const grouped = prepareResumeRenderData(resumeRecord({}, { skills }));
   assert.equal(grouped.skillCategories[0].category, 'Languages');
   assert.deepEqual(grouped.skillCategories[0].skills, ['TypeScript']);
   assert.deepEqual(printed(grouped).slice().sort(), ['Docker', 'Kubernetes', 'TypeScript']);
 
   // Untailored, Plain: the same library-known skills, in the person's order.
-  const plain = prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }, { skills }));
+  const plain = prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }, { skills }));
   assert.deepEqual(printed(plain), ['Docker', 'TypeScript', 'Kubernetes']);
 
   // Untailored, Grouped under the author's headings: every skill, as typed.
   const authored = prepareResumeRenderData(
-    profile({}, { skills, skillCategories: [{ category: 'Mine', skills }] })
+    resumeRecord({}, { skills, skillCategories: [{ category: 'Mine', skills }] })
   );
   assert.deepEqual(authored.skillCategories, [{ category: 'Mine', skills }]);
 
   // Older tailored content: Plain prints its list whole; Grouped files it.
   const legacy = { ...modelContent(), skillGroups: undefined, softSkillGroupHeading: undefined, hardSkills: skills, skills };
-  assert.deepEqual(prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }), legacy).hardSkills, skills);
-  const legacyGrouped = prepareResumeRenderData(profile(), legacy);
+  assert.deepEqual(prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }), legacy).hardSkills, skills);
+  const legacyGrouped = prepareResumeRenderData(resumeRecord(), legacy);
   assert.equal(legacyGrouped.skillCategories[0].category, 'Languages');
   assert.equal(printed(legacyGrouped).includes('Frobnicator 9000'), false);
 
   // The model's block is never filed or filtered, in either layout.
   for (const layout of ['categorized', 'flat']) {
     const model = prepareResumeRenderData(
-      profile({ technicalSkillsLayout: layout }, { skills }),
+      resumeRecord({ technicalSkillsLayout: layout }, { skills }),
       modelContent({ skillGroups: [{ category: 'Stack', skills }] })
     );
     assert.deepEqual(printed(model), skills, layout);
   }
 });
 
-test("Strengths are the profile's own, whatever the content carries", () => {
+test("Strengths are the resume's own, whatever the content carries", () => {
   seeded('strengths');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
-  const on = prepareResumeRenderData(profile({ includeStrengths: true }), modelContent());
+  const on = prepareResumeRenderData(resumeRecord({ includeStrengths: true }), modelContent());
   assert.deepEqual(on.strengths, [{ title: 'Foresight', description: 'Sees the failure before it ships.' }]);
-  assert.deepEqual(prepareResumeRenderData(profile(), modelContent()).strengths, []);
+  assert.deepEqual(prepareResumeRenderData(resumeRecord(), modelContent()).strengths, []);
 });
 
 test('a tailored role prints no description and at most eight bullets', () => {
   seeded('roles');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
-  const data = prepareResumeRenderData(profile(), modelContent());
+  const data = prepareResumeRenderData(resumeRecord(), modelContent());
   assert.equal(data.experience[0].description, '');
   assert.deepEqual(data.experience[0].achievements, BULLETS.slice(0, 8));
   assert.equal(data.experience[0].company, 'Acme');
 
   // Odd held content renders rather than failing.
   const odd = prepareResumeRenderData(
-    profile(),
+    resumeRecord(),
     modelContent({ experience: [{ title: 'T', company: 'C', achievements: ['Kept', 7, '', null] }, null, 'x'] })
   );
   assert.deepEqual(odd.experience, [{ title: 'T', company: 'C', description: '', achievements: ['Kept'] }]);
-  assert.deepEqual(prepareResumeRenderData(profile(), modelContent({ experience: 'not a list' })).experience, []);
+  assert.deepEqual(prepareResumeRenderData(resumeRecord(), modelContent({ experience: 'not a list' })).experience, []);
 
   // Untailored, the person's own description is theirs to print.
-  assert.equal(prepareResumeRenderData(profile()).experience[0].description, 'Her own description of the role.');
+  assert.equal(prepareResumeRenderData(resumeRecord()).experience[0].description, 'Her own description of the role.');
 });
 
 test('the title is printed as composed: separators kept, other symbols dropped', () => {
@@ -357,8 +357,8 @@ test('the title is printed as composed: separators kept, other symbols dropped',
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const title = (value, tailored = true) =>
     tailored
-      ? prepareResumeRenderData(profile(), modelContent({ title: value })).title
-      : prepareResumeRenderData(profile({}, { title: value })).title;
+      ? prepareResumeRenderData(resumeRecord(), modelContent({ title: value })).title
+      : prepareResumeRenderData(resumeRecord({}, { title: value })).title;
 
   for (const kept of [
     'Senior Software Engineer | Cloud Engineer',
@@ -376,7 +376,7 @@ test('the title is printed as composed: separators kept, other symbols dropped',
     assert.equal(title(kept, false), kept, `${kept} (untailored)`);
   }
   assert.equal(title('Engineer: "Platform" @ Acme [remote] 100%'), 'Engineer Platform Acme remote 100');
-  assert.equal(title('  '), 'Software Engineer', "a blank tailored title is the profile's headline");
+  assert.equal(title('  '), 'Software Engineer', "a blank tailored title is the resume's headline");
 });
 
 /* --------------------------------------------------------- the built-ins */
@@ -395,7 +395,7 @@ test('every built-in prints a tailored resume as promised, in both layouts and b
       for (const softOn of [false, true]) {
         const label = `${template.id} (${layout}, soft ${softOn ? 'on' : 'off'})`;
         const settings = { technicalSkillsLayout: layout, includeSoftSkills: softOn, includeStrengths: true };
-        const body = bodyOf(await generatePreviewHTML(profile(settings), template, modelContent()));
+        const body = bodyOf(await generatePreviewHTML(resumeRecord(settings), template, modelContent()));
         const routed = softOn && supportsSoftSkills;
 
         if (layout === 'categorized') {
@@ -441,7 +441,7 @@ test('every built-in prints a tailored resume as promised, in both layouts and b
 test('an untailored role keeps its description, and an uploaded template is guarded too', async () => {
   seeded('description-guard');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
-  const own = bodyOf(await generatePreviewHTML(profile(), shippedTemplates().find((t) => t.id === 'default')));
+  const own = bodyOf(await generatePreviewHTML(resumeRecord(), shippedTemplates().find((t) => t.id === 'default')));
   assert.match(own, /<div class="description">Her own description of the role\.<\/div>/);
 
   const uploaded = {
@@ -452,10 +452,10 @@ test('an untailored role keeps its description, and an uploaded template is guar
       '{{#if description}}<em class="kept">{{description}}</em>{{/if}}<ul>{{#each achievements}}<li>{{this}}</li>{{/each}}</ul></section>{{/each}}',
     cssContent: '',
   };
-  const tailored = await generatePreviewHTML(profile(), uploaded, modelContent());
+  const tailored = await generatePreviewHTML(resumeRecord(), uploaded, modelContent());
   assert.equal(tailored.includes('role-brief'), false, 'an element holding only the description goes with it');
   assert.equal(tailored.includes('class="kept"'), false);
-  const untailored = await generatePreviewHTML(profile(), uploaded);
+  const untailored = await generatePreviewHTML(resumeRecord(), uploaded);
   assert.match(untailored, /<p class="role-brief">Her own description of the role\.<\/p>/);
   assert.equal((untailored.match(/class="kept"/g) ?? []).length, 1, 'an element already guarded is not guarded twice');
 });
@@ -489,11 +489,11 @@ test('the description guard never stops a template that compiles on its own from
     const template = { id, name: id, htmlContent: roles(inner), cssContent: '' };
     assert.doesNotThrow(() => Handlebars.precompile(template.htmlContent), `${id} parses on its own`);
 
-    const untailored = await generatePreviewHTML(profile(), template);
-    assert.ok(untailored.includes('Her own description of the role.'), `${id}: the profile's description prints`);
+    const untailored = await generatePreviewHTML(resumeRecord(), template);
+    assert.ok(untailored.includes('Her own description of the role.'), `${id}: the resume's description prints`);
     assert.ok(untailored.includes('<li>Her own bullet.</li>'), id);
 
-    const tailored = await generatePreviewHTML(profile(), template, modelContent());
+    const tailored = await generatePreviewHTML(resumeRecord(), template, modelContent());
     assert.ok(tailored.includes(`<li>${BULLETS[0]}</li>`), `${id}: the tailored resume renders`);
     assert.equal(tailored.includes('A description the model wrote anyway.'), false, id);
     if (guarded) assert.equal(tailored.includes(`class="${guarded}"`), false, `${id}: the ordinary wrapper is still guarded`);
@@ -514,7 +514,7 @@ test('a model heading becomes a heading block on a template that prints the line
     htmlContent: '<div class="skills">{{#each hardSkills}}<span class="line">{{this}}</span>{{/each}}</div>',
     cssContent: '',
   };
-  const html = await generatePreviewHTML(profile(), lines, modelContent());
+  const html = await generatePreviewHTML(resumeRecord(), lines, modelContent());
   for (const group of MODEL_GROUPS) {
     assert.ok(
       html.includes(
@@ -537,7 +537,7 @@ test('the DOCX prints the same tailored resume: title, model groups, routed soft
     return html.slice(start, html.indexOf('<u>', start + 1));
   };
 
-  const off = buildResumeDocxHTML(prepareResumeRenderData(profile(), modelContent()));
+  const off = buildResumeDocxHTML(prepareResumeRenderData(resumeRecord(), modelContent()));
   assert.ok(off.includes(`>${TITLE}</p>`), 'the title as composed');
   for (const group of MODEL_GROUPS) {
     assert.ok(
@@ -552,7 +552,7 @@ test('the DOCX prints the same tailored resume: title, model groups, routed soft
   assert.equal(off.includes('Ninth bullet'), false);
 
   const on = buildResumeDocxHTML(
-    prepareResumeRenderData(profile({ includeSoftSkills: true, includeStrengths: true }), modelContent())
+    prepareResumeRenderData(resumeRecord({ includeSoftSkills: true, includeStrengths: true }), modelContent())
   );
   assert.equal(technical(on).includes(escaped(SOFT.category)), false, 'the soft group left the block');
   assert.match(on, new RegExp(`<u>Soft Skills</u></p>\\s*<p[^>]*>${SOFT.skills.join(', ')}</p>`));
@@ -560,13 +560,13 @@ test('the DOCX prints the same tailored resume: title, model groups, routed soft
   assert.equal(on.includes('Model strength'), false);
 
   const plain = technical(
-    buildResumeDocxHTML(prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }), modelContent()))
+    buildResumeDocxHTML(prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }), modelContent()))
   );
   assert.equal(plain.includes('<strong>'), false);
   assert.ok(plain.includes(escaped([...PLAIN, ...SOFT.skills].join(', '))));
 
   // Untailored, a role's own description keeps its paragraph.
-  assert.match(buildResumeDocxHTML(prepareResumeRenderData(profile())), /<p[^>]*>Her own description of the role\.<\/p>/);
+  assert.match(buildResumeDocxHTML(prepareResumeRenderData(resumeRecord())), /<p[^>]*>Her own description of the role\.<\/p>/);
 });
 
 /* ------------------------------------------------------------ the gallery */
@@ -574,7 +574,7 @@ test('the DOCX prints the same tailored resume: title, model groups, routed soft
 test('the gallery draws the sample person tailored, the way a generated resume prints', async () => {
   seeded('gallery');
   const { generateTemplatePreviewHTML } = require('../dist/generators/pdfGenerator');
-  const { SAMPLE_PROFILE, SAMPLE_TAILORED_CONTENT } = require('../dist/services/sampleProfile');
+  const { SAMPLE_RESUME, SAMPLE_TAILORED_CONTENT } = require('../dist/services/sampleResume');
   const { findSoftSkillGroup } = require('../dist/services/skillGroups');
   const { inferTemplateCapabilities } = require('../dist/services/templateImport');
 
@@ -587,7 +587,7 @@ test('the gallery draws the sample person tailored, the way a generated resume p
   for (const role of SAMPLE_TAILORED_CONTENT.experience) {
     assert.equal(role.description, '');
     assert.ok(role.achievements.length >= 1 && role.achievements.length <= 8, role.company);
-    assert.ok(SAMPLE_PROFILE.experience.some((own) => own.company === role.company && own.title === role.title));
+    assert.ok(SAMPLE_RESUME.experience.some((own) => own.company === role.company && own.title === role.title));
   }
 
   // The gallery appends its page chrome as a last stylesheet; the resume is what is before it.
@@ -596,7 +596,7 @@ test('the gallery draws the sample person tailored, the way a generated resume p
   for (const template of shippedTemplates()) {
     const body = galleryBody(generateTemplatePreviewHTML(template));
     assert.ok(body.includes(escaped(SAMPLE_TAILORED_CONTENT.title)), `${template.id}: the composed title`);
-    assert.equal(body.includes(SAMPLE_PROFILE.experience[0].description), false, `${template.id}: no description`);
+    assert.equal(body.includes(SAMPLE_RESUME.experience[0].description), false, `${template.id}: no description`);
     assert.doesNotMatch(body, /class="(?:experience-desc|exp-desc|description)"/, `${template.id}: no empty box`);
     assert.equal(wholeItems(body, groups[0].category), 1, `${template.id}: the model's headings`);
     assert.equal(wholeItems(body, soft.category), 1, `${template.id}: Soft Skills off keeps the group in the block`);
@@ -605,7 +605,7 @@ test('the gallery draws the sample person tailored, the way a generated resume p
     const both = galleryBody(generateTemplatePreviewHTML(template, { softSkills: true, strengths: true }));
     assert.equal(wholeItems(both, soft.category), supportsSoftSkills ? 0 : 1, `${template.id}: routed only where it fits`);
     assert.ok(both.includes(soft.skills[0]), `${template.id}: the soft skills still print`);
-    assert.equal(both.includes(SAMPLE_PROFILE.strengths[0].title), supportsStrengths, `${template.id}: own strengths`);
+    assert.equal(both.includes(SAMPLE_RESUME.strengths[0].title), supportsStrengths, `${template.id}: own strengths`);
   }
 });
 

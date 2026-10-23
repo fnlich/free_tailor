@@ -51,17 +51,17 @@ export const SUBSCRIPTIONS: Readonly<Record<AccountSubscriptionId, AccountSubscr
     id: 'default',
     label: 'Default',
     profileLimit: 1,
-    summary: 'One profile. Everything else in the app is included.',
+    summary: 'One profile, with any number of resumes. Everything else in the app is included.',
     order: 0,
-    features: Object.freeze(['1 profile', 'Builds for one profile at a time', 'Everything else in the app']),
+    features: Object.freeze(['1 profile', 'Any number of resumes in each', 'Everything else in the app']),
   },
   premium: {
     id: 'premium',
     label: 'Premium',
     profileLimit: 5,
-    summary: 'Up to five profiles, for tailoring against a few different tracks.',
+    summary: 'Up to five profiles, each with any number of resumes.',
     order: 1,
-    features: Object.freeze(['Up to 5 profiles', 'Builds for every profile, or a group, in one run', 'Groups']),
+    features: Object.freeze(['Up to 5 profiles', 'Any number of resumes in each']),
   },
   'premium-plus': {
     id: 'premium-plus',
@@ -130,15 +130,6 @@ export type SubscriptionPriceSetting = (typeof SUBSCRIPTION_PRICE_FIELDS)[PaidSu
 
 /** What each paid tier costs for one period, in thousandths of a dollar; null is not offered. */
 export type SubscriptionPrices = Record<PaidSubscriptionId, number | null>;
-
-/**
- * The lowest subscription that may build for more than one profile at once -
- * Multiple, All profiles, Specific group and Select Group, in the builder's
- * manual and sheet modes alike (owner decisions B1-B3). A Default subscription
- * supports one profile, so it builds for that one. Administrators are exempt
- * (`hasSubscription`).
- */
-export const MULTI_PROFILE_SUBSCRIPTION: AccountSubscriptionId = 'premium';
 
 /** The subscription a new account starts on. */
 export const DEFAULT_SUBSCRIPTION: AccountSubscriptionId = 'default';

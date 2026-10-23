@@ -14,7 +14,8 @@ const ts = require('typescript');
  *
  *  - MIRRORS. lib/format.ts copies the server's `parseDollars`,
  *    `describeDollarProblem` and `formatMoney` (utils/money.ts), and the Admin
- *    -> Models box copies the server's price rule. Each pair is run over the
+ *    -> Settings price-per-mode boxes copy the server's price rule
+ *    (`parseBuildModePriceInput`). Each pair is run over the
  *    same inputs and must agree exactly: a box that accepts "0.0235" while the
  *    server refuses it is a form that cannot be saved and does not say why,
  *    and a balance printed $3.98 here and $3.977 in the server's own sentence
@@ -66,7 +67,7 @@ function loadFile(file) {
 const load = (relative) => loadFile(path.join(SRC, relative));
 
 const backendMoney = require('../dist/utils/money');
-const backendPrice = require('../dist/config/pricePerResume');
+const backendModes = require('../dist/config/buildModes');
 const { CREDIT_REASONS } = require('../dist/services/credits/types');
 
 // -- the mirrors ------------------------------------------------------------- //
@@ -176,27 +177,85 @@ test('the helpers that need fixed decimals build them from the digits, not from 
   }
 });
 
-test("a model's price is checked in the box exactly as the server checks it", () => {
-  const { readPriceDraft } = load('app/admin/models/modelPrice.ts');
-  for (const input of ['0.023', '0', '0.000', '1000', '1000.000', '1000.001', '0.0235', '-1', 'two', '', '  5 ', '$2']) {
-    let server;
-    try {
-      server = { ok: true, milli: backendPrice.parsePricePerResume(input, undefined) };
-    } catch (error) {
-      server = { ok: false, message: error.message };
+test("a mode's price box is checked as parseBuildModePriceInput checks it", () => {
+  const draft = load('app/admin/settings/modePriceDraft.ts');
+  const { MODE_PRICE_REQUEST_FIELDS } = load('lib/settingSources.ts');
+
+  // The three boxes are the server's three prices, in its order, under its names.
+  assert.deepEqual(
+    draft.MODE_PRICE_KEYS,
+    backendModes.BUILD_MODES.map((mode) => backendModes.BUILD_MODE_PRICE_FIELDS[mode].setting)
+  );
+  assert.deepEqual(
+    { ...MODE_PRICE_REQUEST_FIELDS },
+    Object.fromEntries(backendModes.BUILD_MODES.map((mode) => [
+      backendModes.BUILD_MODE_PRICE_FIELDS[mode].setting,
+      backendModes.BUILD_MODE_PRICE_FIELDS[mode].request,
+    ]))
+  );
+  assert.equal(draft.MAX_MODE_PRICE_MILLI, backendModes.MAX_BUILD_MODE_PRICE_MILLI);
+
+  const inputs = [
+    '', '   ', 'two', '0.023', '0.0235', '0.0001', '0.001', '0', '0.000', '00', '1000', '1000.000', '1000.001', '1001',
+    '999.999', '-1', '-0', '-0.001', '$2', ' 5 ', '1,000', '1e3', '.5', '5.', '12.5.0', '9999999999999',
+  ];
+  for (const mode of backendModes.BUILD_MODES) {
+    const { setting, request } = backendModes.BUILD_MODE_PRICE_FIELDS[mode];
+    assert.equal(draft.modeOfPriceKey(setting), mode);
+    assert.equal(draft.MODE_PRICE_LABELS[setting], backendModes.BUILD_MODE_LABELS[mode]);
+    assert.equal(draft.modePriceKeyOfField(request), setting);
+    for (const input of inputs) {
+      let server;
+      try {
+        server = { problem: null, milli: backendModes.parseBuildModePriceInput(mode, input) };
+      } catch (error) {
+        assert.equal(error.field, request, `${mode} ${JSON.stringify(input)}: the refusal names its box`);
+        server = { problem: error.message, milli: null };
+      }
+      // The box says what the server would say, word for word - or nothing when the server takes it.
+      assert.equal(draft.modePriceProblem(setting, input), server.problem, `${mode} ${JSON.stringify(input)}`);
+      if (server.problem === null) {
+        // And what it takes is the amount the box's text means.
+        assert.deepEqual(load('lib/format.ts').parseDollars(input), { ok: true, milli: server.milli }, `${mode} ${JSON.stringify(input)}`);
+      }
     }
-    assert.deepEqual(readPriceDraft(input), server, JSON.stringify(input));
   }
+  // The edges, by value: $0 is a price (free), a thousandth is the finest, $1000 the dearest; '' is refused.
+  assert.equal(draft.modePriceProblem('partialPriceMilli', '0'), null);
+  assert.equal(draft.modePriceProblem('partialPriceMilli', '0.001'), null);
+  assert.equal(draft.modePriceProblem('partialPriceMilli', '1000'), null);
+  assert.match(draft.modePriceProblem('partialPriceMilli', ''), /^The Partial Tailor price is required: /);
+  assert.match(draft.modePriceProblem('fullPriceMilli', '1000.001'), /^The Fully Tailor price must be from \$0 to \$1000 in steps of \$0\.001, like 0\.023; 0 makes it free\.$/);
+  assert.equal(draft.modePriceKeyOfField('pricePerResumeUsd'), null);
 });
 
-test('the models listed in red are exactly the ones the server says are free', () => {
-  const { freeEnabledModels } = load('app/admin/models/modelPrice.ts');
-  const aiModels = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }];
-  assert.deepEqual(
-    freeEnabledModels({ aiModels, freeEnabledModelIds: ['c', 'a', 'gone'] }).map((model) => model.id),
-    ['a', 'c']
-  );
-  assert.deepEqual(freeEnabledModels({ aiModels, freeEnabledModelIds: [] }), []);
+test("the three price boxes are filled with what is in effect and send only what changed, as typed", () => {
+  const draft = load('app/admin/settings/modePriceDraft.ts');
+  const { parseDollars } = load('lib/format.ts');
+  const settings = { suitablePriceMilli: 10, partialPriceMilli: 30, fullPriceMilli: 0 };
+
+  const drafts = draft.toModePriceDrafts(settings);
+  assert.deepEqual(Object.keys(drafts), draft.MODE_PRICE_KEYS);
+  // Whatever goes into a box parses back to the very same amount.
+  for (const key of draft.MODE_PRICE_KEYS) assert.deepEqual(parseDollars(drafts[key]), { ok: true, milli: settings[key] }, key);
+  assert.deepEqual(draft.modePriceProblems(drafts), {});
+
+  // Nothing changed: nothing is sent - "0.030" for a stored $0.03 is no change.
+  assert.deepEqual(draft.modePriceChanges(drafts, settings), {});
+  assert.deepEqual(draft.modePriceChanges({ ...drafts, partialPriceMilli: '0.030' }, settings), {});
+  // A change goes under its own ...Usd name, as typed (trimmed), and only it.
+  assert.deepEqual(draft.modePriceChanges({ ...drafts, partialPriceMilli: ' 0.0455 ' }, settings), { partialPriceUsd: '0.0455' });
+  assert.deepEqual(draft.modePriceChanges({ ...drafts, fullPriceMilli: '0.5', suitablePriceMilli: '0' }, settings), {
+    suitablePriceUsd: '0',
+    fullPriceUsd: '0.5',
+  });
+  // A box that is not an amount is a change too: the page refuses it first and sends nothing.
+  assert.deepEqual(draft.modePriceChanges({ ...drafts, suitablePriceMilli: '' }, settings), { suitablePriceUsd: '' });
+  assert.deepEqual(Object.keys(draft.modePriceProblems({ ...drafts, suitablePriceMilli: '' })), ['suitablePriceMilli']);
+  // Never a Milli name in a request: every amount sent is dollars.
+  for (const body of [draft.modePriceChanges({ suitablePriceMilli: '1', partialPriceMilli: '2', fullPriceMilli: '3' }, settings)]) {
+    for (const name of Object.keys(body)) assert.match(name, /PriceUsd$/, name);
+  }
 });
 
 // -- the builder's cost line ------------------------------------------------- //
@@ -205,13 +264,31 @@ test('the cost line multiplies a single price out, and states a mixed run as its
   const { describeRunCost } = load('lib/format.ts');
   assert.equal(describeRunCost({ resumes: 7, costMilli: 161, pricePerResumeMilli: 23 }), '7 resumes × $0.023 = $0.161');
   assert.equal(describeRunCost({ resumes: 1, costMilli: 23, pricePerResumeMilli: 23 }), '1 resume × $0.023 = $0.023');
-  // Profiles on models at different prices: no single price to show.
+  // Resumes in different build modes (or none to price): no single price to show.
   assert.equal(describeRunCost({ resumes: 3, costMilli: 71, pricePerResumeMilli: null }), '3 resumes = $0.071');
   assert.equal(describeRunCost({ resumes: 0, costMilli: 0, pricePerResumeMilli: null }), '0 resumes = $0');
-  // A model nobody has priced yet is free, and says so in figures.
+  // A mode nobody has priced yet is free, and says so in figures.
   assert.equal(describeRunCost({ resumes: 2, costMilli: 0, pricePerResumeMilli: 0 }), '2 resumes × $0 = $0');
   // Whole dollars read as dollars.
   assert.equal(describeRunCost({ resumes: 4, costMilli: 2000, pricePerResumeMilli: 500 }), '4 resumes × $0.5 = $2');
+});
+
+test('what the spend confirm says a run is names the build mode it is priced in', () => {
+  const { describeRunSpend } = load('lib/generationQueue.ts');
+  const labels = backendModes.BUILD_MODE_LABELS;
+  assert.equal(
+    describeRunSpend({ resumes: 3, costMilli: 60, pricePerResumeMilli: 20, buildMode: 'partial' }),
+    `3 resumes at $0.02 each (${labels.partial})`
+  );
+  // One resume, or no single price: the count and the mode.
+  assert.equal(describeRunSpend({ resumes: 1, costMilli: 20, pricePerResumeMilli: 20, buildMode: 'full' }), `1 resume (${labels.full})`);
+  assert.equal(describeRunSpend({ resumes: 4, costMilli: 80, pricePerResumeMilli: null, buildMode: 'suitable' }), `4 resumes (${labels.suitable})`);
+  // A quote that names no mode (an older server) says none.
+  assert.equal(describeRunSpend({ resumes: 2, costMilli: 40, pricePerResumeMilli: 20 }), '2 resumes at $0.02 each');
+  // Every mode the server has is worded, and none by a model's name.
+  for (const mode of backendModes.BUILD_MODES) {
+    assert.match(describeRunSpend({ resumes: 2, costMilli: 0, pricePerResumeMilli: 0, buildMode: mode }), new RegExp(`\\(${labels[mode]}\\)$`));
+  }
 });
 
 // -- the ledger -------------------------------------------------------------- //
@@ -533,7 +610,6 @@ const FRONTEND_MONEY_SOURCES = [
   'app/admin/models/page.tsx',
   'app/admin/models/ModelDialog.tsx',
   'app/admin/models/modelForm.ts',
-  'app/admin/models/modelPrice.ts',
   'app/admin/payments/limitDraft.ts',
   // The Job Data Lake: a reporter's earnings and rate, the admin rate, cap and rewards.
   'lib/jobLake.ts',
@@ -549,6 +625,9 @@ const FRONTEND_MONEY_SOURCES = [
   'lib/subscriptionBilling.ts',
   'app/admin/settings/page.tsx',
   'app/admin/settings/subscriptionPriceDraft.ts',
+  // What a resume costs: the price of each build mode, its boxes, and the cards that say it.
+  'app/admin/settings/modePriceDraft.ts',
+  'components/builder/BuildModeChoice.tsx',
   'lib/subscriptionDisplay.ts',
   'components/subscription/SubscriptionCards.tsx',
   'components/subscription/SubscriptionStatus.tsx',
@@ -588,11 +667,16 @@ test('no box an amount of money is typed into is a number box', () => {
     const code = withoutComments(fs.readFileSync(path.join(SRC, relative), 'utf8'));
     assert.doesNotMatch(code, /type=\{?["'`]number["'`]\}?/, `${relative} has a type="number" input`);
   }
-  // The one that did, by name: Admin -> Models' price per resume, in the Create / Edit dialog.
+  // The ones that are, by name: Admin -> Settings' price per resume of each build mode.
+  // (Admin -> Models had one until a model stopped carrying a price: it is gone.)
   const models = withoutComments(fs.readFileSync(path.join(SRC, 'app/admin/models/ModelDialog.tsx'), 'utf8'));
-  const priceBox = models.match(/<input\s+id="model-price-per-resume"[\s\S]*?\/>/);
+  assert.doesNotMatch(models, /model-price-per-resume|pricePerResume/, 'a model has no price box');
+  const settings = withoutComments(fs.readFileSync(path.join(SRC, 'app/admin/settings/page.tsx'), 'utf8'));
+  // One input, drawn for each of the three prices under `mode-price-<setting>`.
+  const priceBox = settings.match(/<input\s+id=\{id\}[\s\S]*?\/>/g)?.find((box) => /modeDrafts\[key\]/.test(box));
   assert.ok(priceBox, 'the price per resume input is found');
-  assert.match(priceBox[0], /type="text"/);
-  assert.match(priceBox[0], /inputMode="decimal"/);
-  assert.doesNotMatch(priceBox[0], /\bstep=|\bmin=|\bmax=/);
+  assert.match(settings, /const id = `mode-price-\$\{key\}`;/);
+  assert.match(priceBox, /type="text"/);
+  assert.match(priceBox, /inputMode="decimal"/);
+  assert.doesNotMatch(priceBox, /\bstep=|\bmin=|\bmax=/);
 });

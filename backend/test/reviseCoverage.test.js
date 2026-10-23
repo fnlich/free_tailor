@@ -9,12 +9,12 @@ const { freshInstall, posting, serveInstall, untilFinished } = require('./analys
 /**
  * The revise pass (`revise-resume-coverage`): after a fresh tailoring, a
  * second call on the model the resume is charged at puts back the checklist
- * terms the draft left out that the profile's own words carry - and the
- * profile's figures the draft dropped - "changing as little as possible".
+ * terms the draft left out that the resume's own words carry - and the
+ * resume's figures the draft dropped - "changing as little as possible".
  *
  * Pinned here: when it runs and what it is told (the missing terms in
- * priority order, only those the profile names, never one carrying a banned
- * word, at most TAILOR_REVISE_MAX_TERMS; the profile's own lines whose
+ * priority order, only those the resume names, never one carrying a banned
+ * word, at most TAILOR_REVISE_MAX_TERMS; the resume's own lines whose
  * figures the draft no longer shows, and never a request for a figure of the
  * model's making), how its answer is folded in (only the summary and whole
  * roles' bullets, matched by company and title), that a failure leaves the
@@ -52,11 +52,11 @@ const ANALYSIS = {
 };
 
 /**
- * A profile whose own words carry every term of that checklist - the revise
+ * A resume whose own words carry every term of that checklist - the revise
  * pass is asked only for those - and whose bullets carry no figure, so no
  * figure of hers can be dropped unless a test gives her one.
  */
-function profile(extra = {}) {
+function resumeRecord(extra = {}) {
   return {
     id: 'p-revise',
     name: 'Ada',
@@ -70,7 +70,7 @@ function profile(extra = {}) {
     strengths: [],
     softSkills: [],
     education: [],
-    profileSettings: {},
+    resumeSettings: {},
     ...extra,
   };
 }
@@ -83,7 +83,7 @@ const FIGURED = [
   'Answered 200 pages a year.',
 ];
 
-/** A tailoring that carries every checklist term, and no figure of the profile's to drop: nothing for a revision to do. */
+/** A tailoring that carries every checklist term, and no figure of the resume's to drop: nothing for a revision to do. */
 function completeDraft(extra = {}) {
   return JSON.stringify({
     title: 'Backend Engineer',
@@ -188,8 +188,8 @@ test('figures: a number not glued to a letter; S3, EC2, p99 and OAuth2 are names
   assert.deepEqual(revise.figureTokens('Ran EC2, S3 and p99 checks on v1.2.'), []);
 });
 
-test("the figures the draft dropped are the profile's own lines, each under its role - never a figure it never stated", () => {
-  const profile = {
+test("the figures the draft dropped are the source's own lines, each under its role - never a figure it never stated", () => {
+  const resume = {
     experience: [
       {
         company: 'Acme',
@@ -205,21 +205,21 @@ test("the figures the draft dropped are the profile's own lines, each under its 
     experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Moved 12 queues to Kafka.', 'Cut deploys to a 6-minute run.'] }],
   };
   // A line counts as dropped while ANY of its figures is gone - the 40 here.
-  assert.deepEqual(revise.droppedProfileFigures(profile, draft), [
+  assert.deepEqual(revise.droppedResumeFigures(resume, draft), [
     { company: 'Acme', title: 'Engineer', line: 'Cut deploys from 40 minutes to 6.' },
     { company: 'Acme', title: 'Engineer', line: 'Served 2M users a day.' },
     { company: 'Beta', title: 'Lead', line: 'Mentored 3 engineers.' },
   ]);
   // Carried anywhere on the page, in any spelling of its digits, is carried.
   assert.deepEqual(
-    revise.droppedProfileFigures(profile, { summary: '40-minute deploys cut to 6, 2M users, 3 engineers, 12 queues.', experience: [] }),
+    revise.droppedResumeFigures(resume, { summary: '40-minute deploys cut to 6, 2M users, 3 engineers, 12 queues.', experience: [] }),
     []
   );
-  assert.equal(revise.droppedProfileFigures(profile, { summary: '', experience: [] }, 2).length, 2, 'at most the cap');
-  // A profile that states no figure has none to drop, whatever the draft says.
+  assert.equal(revise.droppedResumeFigures(resume, { summary: '', experience: [] }, 2).length, 2, 'at most the cap');
+  // A resume that states no figure has none to drop, whatever the draft says.
   const plain = { experience: [{ company: 'A', title: 'B', description: 'Owned it.', achievements: ['Wrote it.'] }] };
-  assert.deepEqual(revise.droppedProfileFigures(plain, { summary: '', experience: [] }), []);
-  assert.deepEqual(revise.droppedProfileFigures({}, { summary: '', experience: [] }), []);
+  assert.deepEqual(revise.droppedResumeFigures(plain, { summary: '', experience: [] }), []);
+  assert.deepEqual(revise.droppedResumeFigures({}, { summary: '', experience: [] }), []);
 
   const values = revise.buildReviseResumeCoveragePromptValues(
     { summary: 'S.', experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Fixed bugs.', 'Wrote 3 tools.'], startDate: '2020' }] },
@@ -256,8 +256,8 @@ test("the figures the draft dropped are the profile's own lines, each under its 
   assert.equal(revise.revisionWanted([], [{ company: 'A', title: 'B', line: 'Cut it by 4.' }]), true);
 });
 
-test("only the checklist terms the profile's own words carry are ever asked for - never a company's name", () => {
-  const evidence = revise.profileEvidence({
+test("only the checklist terms the source's own words carry are ever asked for - never a company's name", () => {
+  const evidence = revise.resumeEvidence({
     title: 'Backend Engineer',
     summary: 'Builds payment services.',
     skills: ['Python', 'Kafka'],
@@ -283,7 +283,7 @@ test("only the checklist terms the profile's own words carry are ever asked for 
     ),
     ['Python', 'Kafka', 'AWS', 'Ownership', 'Incident response', 'microservices', 'Docker', 'Terraform', 'CKA', 'Go', 'Rust']
   );
-  assert.deepEqual(revise.supportedTerms(['Python'], revise.profileEvidence({})), []);
+  assert.deepEqual(revise.supportedTerms(['Python'], revise.resumeEvidence({})), []);
 });
 
 test('the merge reads the summary and whole roles, matched by company and title - nothing else', () => {
@@ -449,18 +449,18 @@ test("a revised line that would not print whole never costs the draft its own", 
 
 /* ======================================================== through tailorResume */
 
-test('a draft that carries every term the profile names is not revised; one missing a term is, and is told exactly that', async () => {
+test('a draft that carries every term the source names is not revised; one missing a term is, and is told exactly that', async () => {
   install('trigger');
   const complete = seat();
-  await tailorResume(profile(), ANALYSIS, CHOICE);
+  await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
   assert.equal(complete.revisions().length, 0);
 
   const missing = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
-  await tailorResume(profile(), ANALYSIS, CHOICE);
+  await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
   assert.equal(missing.revisions().length, 1);
   const turn = told(missing.revisions()[0]);
   assert.match(turn, /TERMS THE RESUME IS MISSING[^\n]*\n\["microservices"\]/);
-  assert.doesNotMatch(turn, /FIGURES THE PROFILE STATES/, 'the profile states no figure the draft dropped');
+  assert.doesNotMatch(turn, /FIGURES THE PROFILE STATES/, 'the source states no figure the draft dropped');
   assert.match(
     turn,
     /"company":"Acme","title":"Engineer","startDate":"2020","endDate":"Present","achievements":\["Built 4 Python services for 30 teams\."/
@@ -468,16 +468,16 @@ test('a draft that carries every term the profile names is not revised; one miss
   // On the model the resume is charged at.
   assert.equal(missing.revisions()[0].modelName, 'sonnet');
 
-  // A posting term the profile never names is left out on purpose - the
+  // A posting term the resume never names is left out on purpose - the
   // tailoring prompt says so - and is never asked for: no revision at all.
   const unnamed = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
-  await tailorResume(profile({ summary: 'Built Python services on Kafka and Docker, with ownership of the payment flows.' }), ANALYSIS, CHOICE);
+  await tailorResume(resumeRecord({ summary: 'Built Python services on Kafka and Docker, with ownership of the payment flows.' }), ANALYSIS, CHOICE, 'partial');
   assert.equal(unnamed.revisions().length, 0, 'microservices is not hers to claim');
 
   // Nor a term or a figure that only a sentence about the COMPANY carries:
   // the tailoring was shown the role without it (its `companyContext`).
   const roleWith = (description) =>
-    profile({
+    resumeRecord({
       summary: 'Built Python services on Kafka and Docker, with ownership of the payment flows.',
       experience: [
         { title: 'Engineer', company: 'Acme', startDate: '2020', endDate: 'Present', location: 'Remote', description, achievements: ['Her own bullet.'], skills: [] },
@@ -485,27 +485,27 @@ test('a draft that carries every term the profile names is not revised; one miss
       ],
     });
   const blurb = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
-  await tailorResume(roleWith('Acme is a platform of 75 microservices.'), ANALYSIS, CHOICE);
+  await tailorResume(roleWith('Acme is a platform of 75 microservices.'), ANALYSIS, CHOICE, 'partial');
   assert.equal(blurb.revisions().length, 0, "the company's own blurb is not hers");
   // The same words as her own sentence are hers: the term and the figure both.
   const own = seat({ tailor: () => completeDraft({ summary: 'Ownership of services built in Python with Kafka and Docker.' }) });
-  await tailorResume(roleWith('Ran a platform of 75 microservices.'), ANALYSIS, CHOICE);
+  await tailorResume(roleWith('Ran a platform of 75 microservices.'), ANALYSIS, CHOICE, 'partial');
   assert.equal(own.revisions().length, 1);
   assert.match(told(own.revisions()[0]), /TERMS THE RESUME IS MISSING[^\n]*\n\["microservices"\]/);
   assert.match(told(own.revisions()[0]), /\n- Acme, Engineer: Ran a platform of 75 microservices\./);
 
-  // Nothing missing, but the draft dropped a figure the profile states: asked
+  // Nothing missing, but the draft dropped a figure the resume states: asked
   // to put that line's figure back, and for nothing else.
   const figures = seat({
     tailor: () => completeDraft({ experience: [{ title: 'Engineer', company: 'Acme', achievements: ['Built Docker images for Kafka.', 'Fixed bugs.'] }] }),
   });
-  const measured = profile({
+  const measured = resumeRecord({
     experience: [
       { title: 'Engineer', company: 'Acme', startDate: '2020', endDate: 'Present', location: 'Remote', description: '', achievements: ['Cut deploys from 40 minutes to 6.'], skills: [] },
       { title: 'Engineer', company: 'Beta', startDate: '2017', endDate: '2019', location: 'Berlin', description: '', achievements: ['Her older bullet.'], skills: [] },
     ],
   });
-  await tailorResume(measured, ANALYSIS, CHOICE);
+  await tailorResume(measured, ANALYSIS, CHOICE, 'partial');
   assert.equal(figures.revisions().length, 1);
   assert.match(
     told(figures.revisions()[0]),
@@ -516,13 +516,13 @@ test('a draft that carries every term the profile names is not revised; one miss
   const few = seat({
     tailor: () => completeDraft({ experience: [{ title: 'Engineer', company: 'Acme', achievements: ['Built Docker images for Kafka.', 'Fixed bugs.'] }] }),
   });
-  await tailorResume(profile(), ANALYSIS, CHOICE);
-  assert.equal(few.revisions().length, 0, 'no figure is ever asked for that the profile does not state');
+  await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
+  assert.equal(few.revisions().length, 0, 'no figure is ever asked for that the source does not state');
 
   // Switched off, never.
   await withEnv({ TAILOR_REVISE_PASS: 'off' }, async () => {
     const off = seat({ tailor: () => completeDraft({ summary: 'Nothing here.' }) });
-    await tailorResume(profile(), ANALYSIS, CHOICE);
+    await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
     assert.equal(off.revisions().length, 0);
   });
   // And never handed more terms than the cap - the posting's top five first.
@@ -530,7 +530,7 @@ test('a draft that carries every term the profile names is not revised; one miss
     const capped = seat({
       tailor: () => completeDraft({ summary: 'Nothing here.', experience: [{ title: 'Engineer', company: 'Acme', achievements: ['Fixed 3 bugs.'] }] }),
     });
-    await tailorResume(profile(), ANALYSIS, CHOICE);
+    await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
     assert.match(told(capped.revisions()[0]), /TERMS THE RESUME IS MISSING[^\n]*\n\["Python","Kafka"\]/);
   });
 });
@@ -553,7 +553,7 @@ test('the revision is folded in and finished like the draft: dashes out, eight b
         coverLetter: 'A letter from the revision.',
       }),
   });
-  const content = await tailorResume(profile(), ANALYSIS, CHOICE);
+  const content = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
   assert.equal(s.revisions().length, 1);
   assert.equal(content.summary, 'Ownership of microservices built in Python with Kafka and Docker, for payments.');
   const acme = content.experience.find((role) => role.company === 'Acme');
@@ -593,18 +593,18 @@ test('a revision written from the employer\'s side ("our", "we") never replaces 
   const log = console.log;
   console.log = () => {};
   try {
-    const content = await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
+    const content = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
     assert.equal(s.revisions().length, 1, 'the draft was missing microservices');
     assert.equal(content.summary, 'Backend engineer on Python, Kafka and Docker.', "the draft's summary, never ''");
     assert.deepEqual(
       content.experience.find((role) => role.company === 'Acme').achievements,
       draftBullets,
-      "the draft's bullets, never the profile's raw ones"
+      "the draft's bullets, never the source's raw ones"
     );
     assert.equal(repository.countTailorCacheRows(), 1);
 
     // What was kept is that resume: a repeat makes no call and reads the same.
-    const again = await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
+    const again = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
     assert.equal(s.tailorings().length, 1);
     assert.equal(s.revisions().length, 1);
     assert.deepEqual(again, content);
@@ -634,7 +634,7 @@ test('a revision written from the employer\'s side ("our", "we") never replaces 
         ],
       }),
   });
-  const partly = await tailorResume(profile(), ANALYSIS, CHOICE);
+  const partly = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial');
   assert.deepEqual(partly.experience.find((role) => role.company === 'Acme').achievements, [
     'Built 4 Python microservices on Kafka for the order pipeline.',
     draftBullets[1],
@@ -643,7 +643,7 @@ test('a revision written from the employer\'s side ("our", "we") never replaces 
 
 test('back at an old employer in the same job: the revised stint is the one revised, under its own dates', async () => {
   install('stints');
-  const stints = profile({
+  const stints = resumeRecord({
     experience: [
       { title: 'Engineer', company: 'Acme', startDate: '2020', endDate: 'Present', location: 'Remote', description: '', achievements: ['Her own bullet.'], skills: [] },
       { title: 'Engineer', company: 'Acme', startDate: '2016', endDate: '2019', location: 'Berlin', description: '', achievements: ['Her older bullet.'], skills: [] },
@@ -665,7 +665,7 @@ test('back at an old employer in the same job: the revised stint is the one revi
         experience: [{ company: 'Acme', title: 'Engineer', achievements: ['Ran 3 Docker registries behind Kafka.', ...older.slice(1)] }],
       }),
   });
-  const content = await tailorResume(stints, ANALYSIS, CHOICE);
+  const content = await tailorResume(stints, ANALYSIS, CHOICE, 'partial');
   assert.equal(s.revisions().length, 1, 'the draft was missing Kafka');
   assert.deepEqual(
     content.experience.map((role) => [role.startDate, role.location, role.achievements]),
@@ -686,8 +686,8 @@ test('a revision that fails leaves the draft as the resume, said once and never 
   });
   const keyed = { analysisId: 'an-fail', templateId: 'default' };
   const { value: content, warnings } = await quietly(async () => {
-    const first = await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
-    await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
+    const first = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
+    await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
     return first;
   });
   assert.equal(content.summary, 'Nothing here.');
@@ -704,7 +704,7 @@ test('a revision that fails leaves the draft as the resume, said once and never 
       throw request.signal.reason;
     },
   });
-  await assert.rejects(tailorResume(profile(), ANALYSIS, CHOICE, controller.signal), /the page went away/);
+  await assert.rejects(tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', controller.signal), /the page went away/);
 });
 
 test('the cache keeps the revised resume - a repeat makes no call at all - but never a revision a fallback wrote', async () => {
@@ -723,16 +723,16 @@ test('the cache keeps the revised resume - a repeat makes no call at all - but n
   const log = console.log;
   console.log = () => {};
   try {
-    const first = await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
+    const first = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
     assert.equal(first.summary, 'Ownership of microservices built in Python with Kafka and Docker.', 'used for its build');
     assert.equal(repository.countTailorCacheRows(), 0, 'but not kept: a fallback model wrote it');
 
-    const second = await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
+    const second = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
     assert.equal(s.tailorings().length, 2);
     assert.equal(s.revisions().length, 2);
     assert.equal(repository.countTailorCacheRows(), 1, 'the asked-for model\'s revision is kept');
 
-    const third = await tailorResume(profile(), ANALYSIS, CHOICE, undefined, keyed);
+    const third = await tailorResume(resumeRecord(), ANALYSIS, CHOICE, 'partial', undefined, keyed);
     assert.equal(s.tailorings().length, 2, 'no tailoring call');
     assert.equal(s.revisions().length, 2, 'and no revise call: the cache holds the revised resume');
     assert.deepEqual(third, second);
@@ -747,7 +747,7 @@ test("an override on the revise prompt does not move it off the resume's model",
   const record = await promptService.getPromptById('revise-resume-coverage');
   await promptService.updatePrompt('revise-resume-coverage', { content: record.content, modelProvider: 'claude-cli', modelName: 'haiku' });
   const s = seat({ tailor: () => completeDraft({ summary: 'Nothing here.' }) });
-  await tailorResume(profile(), ANALYSIS, { ...CHOICE, modelName: 'opus', modelId: 'claude-cli-opus' });
+  await tailorResume(resumeRecord(), ANALYSIS, { ...CHOICE, modelName: 'opus', modelId: 'claude-cli-opus' }, 'partial');
   assert.deepEqual(s.requests.map((request) => [request.callSite, request.modelName]), [
     ['tailor-resume', 'opus'],
     ['revise-resume-coverage', 'opus'],
@@ -757,13 +757,18 @@ test("an override on the revise prompt does not move it off the resume's model",
 test('content a page sends back is re-read, never revised: through the real routes', async (t) => {
   const h = await serveInstall('revise-held');
   t.after(h.close);
-  const first = await h.post('/resume/preview', { profileId: 'p-claude', jobDescription: posting(71) });
+  // The preview chooses the resume for the profile (one candidate here), then tailors it.
+  const first = await h.post('/resume/preview', {
+    profileId: h.profileOf('p-claude'),
+    buildMode: 'partial',
+    jobDescription: posting(71),
+  });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal(h.seats.tailorings().length, 1);
   assert.equal(h.seats.revisions().length, 1, 'the fresh tailoring is revised');
 
   const held = await h.post('/resume/preview', {
-    profileId: 'p-claude',
+    resumeId: 'p-claude',
     analysisId: first.body.analysisId,
     tailoredContent: first.body.tailoredContent,
   });
@@ -773,9 +778,12 @@ test('content a page sends back is re-read, never revised: through the real rout
     mode: 'order',
     format: 'pdf',
     includeCoverLetterDocx: false,
-    profileIds: ['p-claude'],
+    profileId: h.profileOf('p-claude'),
+    buildMode: 'partial',
+    previewedResumeId: first.body.resumeId,
     jobs: [{ companyName: 'Acme', role: 'Engineer', analysisId: first.body.analysisId }],
-    tailoredContentByProfileId: { 'p-claude': first.body.tailoredContent },
+    tailoredContentByResumeId: { 'p-claude': first.body.tailoredContent },
+    previewTokenByResumeId: { 'p-claude': first.body.previewToken },
   });
   assert.equal(queued.status, 202, JSON.stringify(queued.body));
   assert.equal((await untilFinished(queued.body.batchId)).completed, 1);

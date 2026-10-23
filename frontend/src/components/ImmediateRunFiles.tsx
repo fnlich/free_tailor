@@ -51,7 +51,8 @@ export default function ImmediateRunFiles({
           <li key={item.taskId} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
             <span className="min-w-0 break-words text-sm text-ink">
               <span className="font-medium">{item.companyName || 'Resume'}</span>
-              {item.profileName && <span className="text-muted"> · {item.profileName}</span>}
+              {item.resumeName && <span className="text-muted"> · {item.resumeName}</span>}
+              {item.resumeLabel && <span className="text-muted"> · {item.resumeLabel}</span>}
             </span>
             <span className="flex flex-wrap gap-2">
               {item.kinds.map((kind) => {

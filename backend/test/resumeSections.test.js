@@ -6,16 +6,16 @@ const path = require('node:path');
 const { useTempStorage } = require('./helpers');
 
 /**
- * The profile's section choices, from the stored field to every output.
+ * The resume's section choices, from the stored field to every output.
  *
- *   - `profileSettings.includeSoftSkills` / `includeStrengths`: off unless a
- *     profile says true, and kept by a save that does not mention them;
- *   - `softSkills` on the profile itself: trimmed, de-duplicated, bounded, kept
+ *   - `resumeSettings.includeSoftSkills` / `includeStrengths`: off unless a
+ *     resume says true, and kept by a save that does not mention them;
+ *   - `softSkills` on the resume itself: trimmed, de-duplicated, bounded, kept
  *     when omitted - the editor's chip list, which used to be dropped on save;
  *   - the render gate: what the PDF, the preview and the DOCX are handed has
  *     the two sections exactly when the switches are on - Strengths always the
- *     profile's own, Soft Skills the tailored content's (the model's soft-skill
- *     group, test/tailoredRender.test.js) or the profile's own - and no render
+ *     resume's own, Soft Skills the tailored content's (the model's soft-skill
+ *     group, test/tailoredRender.test.js) or the resume's own - and no render
  *     pads the skills block from the library;
  *   - links the renderer puts in an href are http(s) only.
  */
@@ -27,7 +27,7 @@ function seeded(name) {
   return storage;
 }
 
-function profile(settings = {}, extra = {}) {
+function resumeRecord(settings = {}, extra = {}) {
   return {
     id: 'p1',
     name: 'Sam Chen',
@@ -42,7 +42,7 @@ function profile(settings = {}, extra = {}) {
     softSkills: ['Persistence', 'Clear writing'],
     education: [],
     skills: ['C#', 'Python', 'Docker'],
-    profileSettings: settings,
+    resumeSettings: settings,
     createdAt: '',
     updatedAt: '',
     ...extra,
@@ -63,83 +63,83 @@ function tailored(extra = {}) {
   };
 }
 
-/* ------------------------------------------------------------ the profile */
+/* ------------------------------------------------------------ the resume */
 
-test('the section switches are off unless a profile says true, and a save that omits them keeps them', () => {
-  const { buildNewProfile, buildUpdatedProfile, getProfileResumeSections } = require('../dist/services/profileService');
+test('the section switches are off unless a resume says true, and a save that omits them keeps them', () => {
+  const { buildNewResume, buildUpdatedResume, getResumeSections } = require('../dist/services/resumeDocument');
 
-  const fresh = buildNewProfile({ name: 'A' }, 'a');
-  assert.equal(fresh.profileSettings.includeSoftSkills, false);
-  assert.equal(fresh.profileSettings.includeStrengths, false);
-  assert.deepEqual(getProfileResumeSections(fresh), { layout: 'categorized', softSkills: false, strengths: false });
-  assert.deepEqual(getProfileResumeSections({}), { layout: 'categorized', softSkills: false, strengths: false });
+  const fresh = buildNewResume({ name: 'A' }, 'a');
+  assert.equal(fresh.resumeSettings.includeSoftSkills, false);
+  assert.equal(fresh.resumeSettings.includeStrengths, false);
+  assert.deepEqual(getResumeSections(fresh), { layout: 'categorized', softSkills: false, strengths: false });
+  assert.deepEqual(getResumeSections({}), { layout: 'categorized', softSkills: false, strengths: false });
 
-  const on = buildUpdatedProfile(fresh, {
-    profileSettings: { includeSoftSkills: true, includeStrengths: true, technicalSkillsLayout: 'flat' },
+  const on = buildUpdatedResume(fresh, {
+    resumeSettings: { includeSoftSkills: true, includeStrengths: true, technicalSkillsLayout: 'flat' },
   });
-  assert.deepEqual(getProfileResumeSections(on), { layout: 'flat', softSkills: true, strengths: true });
+  assert.deepEqual(getResumeSections(on), { layout: 'flat', softSkills: true, strengths: true });
 
   // A client that predates the switches saves without them: nothing turns off.
-  const kept = buildUpdatedProfile(on, { name: 'Renamed', profileSettings: { hardSkillOrdering: 'library' } });
-  assert.equal(kept.profileSettings.includeSoftSkills, true);
-  assert.equal(kept.profileSettings.includeStrengths, true);
+  const kept = buildUpdatedResume(on, { name: 'Renamed', resumeSettings: { hardSkillOrdering: 'library' } });
+  assert.equal(kept.resumeSettings.includeSoftSkills, true);
+  assert.equal(kept.resumeSettings.includeStrengths, true);
 
   // Only a boolean decides.
-  const junk = buildUpdatedProfile(on, { profileSettings: { includeSoftSkills: 'no', includeStrengths: null } });
-  assert.equal(junk.profileSettings.includeSoftSkills, true);
-  const off = buildUpdatedProfile(on, { profileSettings: { includeSoftSkills: false } });
-  assert.equal(off.profileSettings.includeSoftSkills, false);
-  assert.equal(off.profileSettings.includeStrengths, true);
+  const junk = buildUpdatedResume(on, { resumeSettings: { includeSoftSkills: 'no', includeStrengths: null } });
+  assert.equal(junk.resumeSettings.includeSoftSkills, true);
+  const off = buildUpdatedResume(on, { resumeSettings: { includeSoftSkills: false } });
+  assert.equal(off.resumeSettings.includeSoftSkills, false);
+  assert.equal(off.resumeSettings.includeStrengths, true);
 });
 
-test("a profile's soft skills are stored, cleaned, bounded, and kept when a save omits them", () => {
+test("a resume's soft skills are stored, cleaned, bounded, and kept when a save omits them", () => {
   const {
-    buildNewProfile,
-    buildUpdatedProfile,
-    MAX_PROFILE_SOFT_SKILLS,
+    buildNewResume,
+    buildUpdatedResume,
+    MAX_RESUME_SOFT_SKILLS,
     MAX_SOFT_SKILL_LENGTH,
-  } = require('../dist/services/profileService');
+  } = require('../dist/services/resumeDocument');
 
-  const stored = buildNewProfile(
+  const stored = buildNewResume(
     { name: 'A', softSkills: ['  Leadership ', 'leadership', 'Clear   writing', '', 7, null, 'Grit'] },
     'a'
   );
   assert.deepEqual(stored.softSkills, ['Leadership', 'Clear writing', 'Grit'], 'the first spelling wins a repeat');
 
-  assert.deepEqual(buildUpdatedProfile(stored, { name: 'B' }).softSkills, stored.softSkills, 'omitted keeps');
-  assert.deepEqual(buildUpdatedProfile(stored, { softSkills: [] }).softSkills, [], 'an empty list clears');
-  assert.deepEqual(buildUpdatedProfile(stored, { softSkills: 'Grit' }).softSkills, [], 'not a list is no list');
+  assert.deepEqual(buildUpdatedResume(stored, { name: 'B' }).softSkills, stored.softSkills, 'omitted keeps');
+  assert.deepEqual(buildUpdatedResume(stored, { softSkills: [] }).softSkills, [], 'an empty list clears');
+  assert.deepEqual(buildUpdatedResume(stored, { softSkills: 'Grit' }).softSkills, [], 'not a list is no list');
 
-  const many = buildNewProfile({ softSkills: Array.from({ length: 80 }, (_, i) => `Skill ${i}`) }, 'm');
-  assert.equal(many.softSkills.length, MAX_PROFILE_SOFT_SKILLS);
-  const long = buildNewProfile({ softSkills: ['x'.repeat(500)] }, 'l');
+  const many = buildNewResume({ softSkills: Array.from({ length: 80 }, (_, i) => `Skill ${i}`) }, 'm');
+  assert.equal(many.softSkills.length, MAX_RESUME_SOFT_SKILLS);
+  const long = buildNewResume({ softSkills: ['x'.repeat(500)] }, 'l');
   assert.equal(long.softSkills[0].length, MAX_SOFT_SKILL_LENGTH);
 
   // Written before the field existed: reads as none, and a save adds it.
   const { softSkills, ...legacy } = stored;
   void softSkills;
-  assert.deepEqual(buildUpdatedProfile(legacy, { name: 'C' }).softSkills, []);
+  assert.deepEqual(buildUpdatedResume(legacy, { name: 'C' }).softSkills, []);
 });
 
 test('the preview builder never throws, and takes only the settings that change the render', () => {
-  const { buildNewProfile, buildPreviewProfile } = require('../dist/services/profileService');
+  const { buildNewResume, buildPreviewResume } = require('../dist/services/resumeDocument');
   const stored = {
-    ...buildNewProfile(
+    ...buildNewResume(
       {
         name: 'Stored',
         summary: 'Stored summary.',
-        profileSettings: { resumeFileNameTemplate: '{{profile name}}_cv', ai: { modelId: 'claude-cli-opus' } },
+        resumeSettings: { resumeFileNameTemplate: '{{profile name}}_cv', ai: { modelId: 'claude-cli-opus' } },
       },
       'p-1'
     ),
     ownerId: 'owner-1',
   };
 
-  const built = buildPreviewProfile(
+  const built = buildPreviewResume(
     {
       name: 'Draft',
       softSkills: ['Grit'],
-      profileSettings: {
+      resumeSettings: {
         resumeFileNameTemplate: '{{bogus}}',
         companyFolderNameTemplate: '{{profile na',
         ai: { modelId: 'not-checked-here' },
@@ -154,35 +154,35 @@ test('the preview builder never throws, and takes only the settings that change 
   assert.equal(built.name, 'Draft');
   assert.equal(built.summary, 'Stored summary.', 'omitted keeps the stored value');
   assert.deepEqual(built.softSkills, ['Grit']);
-  assert.equal(built.profileSettings.includeSoftSkills, true);
-  assert.equal(built.profileSettings.technicalSkillsLayout, 'flat');
-  assert.equal(built.profileSettings.resumeFileNameTemplate, '{{profile name}}_cv', 'file naming stays as stored');
-  assert.deepEqual(built.profileSettings.ai, { modelId: 'claude-cli-opus' }, 'the model choice stays as stored');
+  assert.equal(built.resumeSettings.includeSoftSkills, true);
+  assert.equal(built.resumeSettings.technicalSkillsLayout, 'flat');
+  assert.equal(built.resumeSettings.resumeFileNameTemplate, '{{profile name}}_cv', 'file naming stays as stored');
+  assert.deepEqual(built.resumeSettings.ai, { modelId: 'claude-cli-opus' }, 'the model choice stays as stored');
 
   for (const nonsense of [undefined, null, 'x', 42, [], { experience: 'x', strengths: [1, null], contact: [] }]) {
-    assert.doesNotThrow(() => buildPreviewProfile(nonsense, stored));
-    assert.doesNotThrow(() => buildPreviewProfile(nonsense));
+    assert.doesNotThrow(() => buildPreviewResume(nonsense, stored));
+    assert.doesNotThrow(() => buildPreviewResume(nonsense));
   }
-  assert.equal(buildPreviewProfile({ name: 'New' }).id, 'preview');
+  assert.equal(buildPreviewResume({ name: 'New' }).id, 'preview');
 });
 
-test('a file holding only soft skills is a profile, and the switches survive an import', () => {
-  const { buildImportedProfiles } = require('../dist/services/profileImport');
-  const [entry] = buildImportedProfiles(
+test('a file holding only soft skills is a resume, and the switches survive an import', () => {
+  const { buildImportedResumes } = require('../dist/services/resumeImport');
+  const [entry] = buildImportedResumes(
     {
       name: 'Soft only',
       softSkills: ['Persistence'],
     },
     { idExists: () => false, newId: () => 'new-1' }
   );
-  assert.deepEqual(entry.profile.softSkills, ['Persistence']);
+  assert.deepEqual(entry.resume.softSkills, ['Persistence']);
 
-  const [withSwitches] = buildImportedProfiles(
-    { name: 'Switched', title: 'T', profileSettings: { includeSoftSkills: true, includeStrengths: true } },
+  const [withSwitches] = buildImportedResumes(
+    { name: 'Switched', title: 'T', resumeSettings: { includeSoftSkills: true, includeStrengths: true } },
     { idExists: () => false, newId: () => 'new-2' }
   );
-  assert.equal(withSwitches.profile.profileSettings.includeSoftSkills, true);
-  assert.equal(withSwitches.profile.profileSettings.includeStrengths, true);
+  assert.equal(withSwitches.resume.resumeSettings.includeSoftSkills, true);
+  assert.equal(withSwitches.resume.resumeSettings.includeStrengths, true);
 });
 
 /* ------------------------------------------------------- the render gate */
@@ -190,16 +190,16 @@ test('a file holding only soft skills is a profile, and the switches survive an 
 test('switched off, neither section reaches a render - whatever the content carries', () => {
   seeded('gate-off');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
-  for (const data of [prepareResumeRenderData(profile()), prepareResumeRenderData(profile(), tailored())]) {
+  for (const data of [prepareResumeRenderData(resumeRecord()), prepareResumeRenderData(resumeRecord(), tailored())]) {
     assert.deepEqual(data.softSkills, []);
     assert.deepEqual(data.strengths, []);
   }
 });
 
-test("switched on, an untailored render shows the profile's own lists", () => {
+test("switched on, an untailored render shows the resume's own lists", () => {
   seeded('gate-own');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
-  const data = prepareResumeRenderData(profile({ includeSoftSkills: true, includeStrengths: true }));
+  const data = prepareResumeRenderData(resumeRecord({ includeSoftSkills: true, includeStrengths: true }));
   assert.deepEqual(data.softSkills, ['Persistence', 'Clear writing']);
   assert.deepEqual(
     data.strengths,
@@ -208,10 +208,10 @@ test("switched on, an untailored render shows the profile's own lists", () => {
   );
 });
 
-test("switched on, a tailored render shows the profile's own strengths, and the content's soft skills or the profile's", () => {
+test("switched on, a tailored render shows the resume's own strengths, and the content's soft skills or the resume's", () => {
   seeded('gate-tailored');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
-  const on = profile({ includeSoftSkills: true, includeStrengths: true });
+  const on = resumeRecord({ includeSoftSkills: true, includeStrengths: true });
   const own = [{ title: 'Foresight', description: 'Sees the failure before it ships.' }];
 
   // The tailoring prompt writes no strengths; one the content carries - an
@@ -229,27 +229,27 @@ test("switched on, a tailored render shows the profile's own strengths, and the 
 
 test('no render pads the skills block: the live preview and generation show exactly the skills entered', () => {
   seeded('padding');
-  const { prepareResumeRenderData, generateProfilePreviewHTML } = require('../dist/generators/pdfGenerator');
+  const { prepareResumeRenderData, generateResumeDraftPreviewHTML } = require('../dist/generators/pdfGenerator');
   const claimed = ['c#', 'python', 'docker'];
 
-  const generated = prepareResumeRenderData(profile());
+  const generated = prepareResumeRenderData(resumeRecord());
   const shown = generated.skillCategories.flatMap((group) => group.skills).map((skill) => skill.toLowerCase());
   assert.deepEqual(shown.sort(), [...claimed].sort());
   assert.ok(generated.skillCategories.every((group) => group.category), 'still under headings');
 
   // The editor's preview is the same render.
   const template = shippedTemplate('default');
-  const preview = generateProfilePreviewHTML(profile(), template).html;
+  const preview = generateResumeDraftPreviewHTML(resumeRecord(), template).html;
   for (const padded of ['Java', 'Kubernetes', 'Django', 'Jenkins', 'Terraform']) {
     assert.equal(bodyOf(preview).includes(`>${padded}<`) || bodyOf(preview).includes(`, ${padded}`), false, padded);
   }
 
   // In the order the person keeps them, not the library's priority order.
   const ordered = prepareResumeRenderData(
-    profile({ technicalSkillsLayout: 'flat' }, { skills: ['Docker', 'Python', 'C#'] })
+    resumeRecord({ technicalSkillsLayout: 'flat' }, { skills: ['Docker', 'Python', 'C#'] })
   );
   assert.deepEqual(ordered.hardSkills, ['Docker', 'Python', 'C#']);
-  const languages = prepareResumeRenderData(profile({}, { skills: ['Python', 'C#', 'Go'] })).skillCategories[0];
+  const languages = prepareResumeRenderData(resumeRecord({}, { skills: ['Python', 'C#', 'Go'] })).skillCategories[0];
   assert.deepEqual(languages, { category: 'Languages', skills: ['Python', 'C#', 'Go'] });
 });
 
@@ -257,7 +257,7 @@ test('a link reaches an href only as http(s)', () => {
   seeded('links');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const linkedin = (value) =>
-    prepareResumeRenderData(profile({}, { contact: { email: 'a', phone: '1', location: 'X', linkedin: value } }))
+    prepareResumeRenderData(resumeRecord({}, { contact: { email: 'a', phone: '1', location: 'X', linkedin: value } }))
       .contact.linkedinHref;
 
   assert.equal(linkedin('linkedin.com/in/sam'), 'https://linkedin.com/in/sam');
@@ -275,7 +275,7 @@ test('a link reaches an href only as http(s)', () => {
   }
 
   const contact = prepareResumeRenderData(
-    profile({}, {
+    resumeRecord({}, {
       contact: { email: 'a', phone: '1', location: 'X', github: 'javascript:alert(1)', portfolio: 'example.dev/me' },
     })
   ).contact;
@@ -293,7 +293,7 @@ test('a link reaches an href only as http(s)', () => {
     'java\u0000script:443/alert(1)',
   ]) {
     const links = prepareResumeRenderData(
-      profile({}, { contact: { email: 'a', phone: '1', location: 'X', github: split, portfolio: split, linkedin: split } })
+      resumeRecord({}, { contact: { email: 'a', phone: '1', location: 'X', github: split, portfolio: split, linkedin: split } })
     ).contact;
     assert.equal(links.github, '', JSON.stringify(split));
     assert.equal(links.portfolio, '', JSON.stringify(split));
@@ -308,13 +308,13 @@ test('the DOCX has Strengths and Soft Skills exactly when the PDF does', () => {
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const { buildResumeDocxHTML } = require('../dist/generators/docxGenerator');
 
-  const off = buildResumeDocxHTML(prepareResumeRenderData(profile(), tailored()));
+  const off = buildResumeDocxHTML(prepareResumeRenderData(resumeRecord(), tailored()));
   assert.equal(off.includes('Key Strengths'), false);
   assert.equal(off.includes('Soft Skills'), false);
   assert.equal(off.includes('Negotiation') || off.includes('Persistence'), false);
 
   const on = buildResumeDocxHTML(
-    prepareResumeRenderData(profile({ includeSoftSkills: true, includeStrengths: true }), tailored())
+    prepareResumeRenderData(resumeRecord({ includeSoftSkills: true, includeStrengths: true }), tailored())
   );
   assert.match(on, /<u>Key Strengths<\/u>[\s\S]*<strong>Foresight<\/strong>: Sees the failure before it ships\./);
   assert.equal(on.includes('Tailored strength'), false, "the content's strengths are never printed");
@@ -325,7 +325,7 @@ test('the DOCX has Strengths and Soft Skills exactly when the PDF does', () => {
   // Switched on with nothing to show: no heading over nothing.
   const empty = buildResumeDocxHTML(
     prepareResumeRenderData(
-      profile({ includeSoftSkills: true, includeStrengths: true }, { softSkills: [], strengths: [] })
+      resumeRecord({ includeSoftSkills: true, includeStrengths: true }, { softSkills: [], strengths: [] })
     )
   );
   assert.equal(empty.includes('Key Strengths') || empty.includes('Soft Skills'), false);
@@ -341,16 +341,16 @@ test('the DOCX lists technical skills by layout, and never folds soft skills int
     return html.slice(start, html.indexOf('<u>', start + 1));
   };
 
-  const flat = technical(buildResumeDocxHTML(prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }))));
+  const flat = technical(buildResumeDocxHTML(prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }))));
   assert.equal((flat.match(/<p style="font-size: 9pt/g) ?? []).length, 1, 'flat is one paragraph');
   assert.equal(flat.includes('<strong>'), false, 'with no heading');
 
-  const grouped = technical(buildResumeDocxHTML(prepareResumeRenderData(profile())));
+  const grouped = technical(buildResumeDocxHTML(prepareResumeRenderData(resumeRecord())));
   assert.ok((grouped.match(/<strong>[^<]+<\/strong><br>/g) ?? []).length > 1, 'grouped is a paragraph per heading');
 
   // The no-categories fallback once appended soft skills to this list.
   const fallback = buildResumeDocxHTML({
-    ...prepareResumeRenderData(profile({ includeSoftSkills: true })),
+    ...prepareResumeRenderData(resumeRecord({ includeSoftSkills: true })),
     skillCategories: [],
     hardSkills: ['Python'],
   });
@@ -372,8 +372,8 @@ test('one generation prints the same optional sections in the PDF and the DOCX, 
   seeded('docx-template');
   const { generatePreviewHTML, prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const { buildResumeDocxHTML } = require('../dist/generators/docxGenerator');
-  const { profileForTemplate } = require('../dist/services/profileService');
-  const on = profile({ includeSoftSkills: true, includeStrengths: true });
+  const { resumeForTemplate } = require('../dist/services/resumeDocument');
+  const on = resumeRecord({ includeSoftSkills: true, includeStrengths: true });
 
   for (const [id, strengths, softSkills] of [
     ['charcoal-sidebar', false, false],
@@ -383,8 +383,8 @@ test('one generation prints the same optional sections in the PDF and the DOCX, 
     ['default', true, true],
   ]) {
     const template = shippedTemplate(id);
-    // generateResumeDOCX reads the profile through its template exactly so.
-    const docx = buildResumeDocxHTML(prepareResumeRenderData(profileForTemplate(on, template), tailored()));
+    // generateResumeDOCX reads the resume through its template exactly so.
+    const docx = buildResumeDocxHTML(prepareResumeRenderData(resumeForTemplate(on, template), tailored()));
     const pdf = bodyOf(await generatePreviewHTML(on, template, tailored()));
     assert.equal(pdf.includes('Foresight'), strengths, `${id}: Strengths in the PDF`);
     assert.equal(docx.includes('Key Strengths'), strengths, `${id}: Strengths in the DOCX`);
@@ -402,7 +402,7 @@ test('one generation prints the same optional sections in the PDF and the DOCX, 
       ],
       softSkillGroupHeading: 'Soft Skills',
     });
-    const blockDocx = buildResumeDocxHTML(prepareResumeRenderData(profileForTemplate(on, template), block));
+    const blockDocx = buildResumeDocxHTML(prepareResumeRenderData(resumeForTemplate(on, template), block));
     const blockPdf = bodyOf(await generatePreviewHTML(on, template, block));
     const skillsAt = blockDocx.indexOf('<u>Technical Skills</u>');
     const technical = blockDocx.slice(skillsAt, blockDocx.indexOf('<u>', skillsAt + 1));
@@ -417,7 +417,7 @@ test('the DOCX prints no Technical Skills heading over an empty list', () => {
   seeded('docx-empty-skills');
   const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
   const { buildResumeDocxHTML } = require('../dist/generators/docxGenerator');
-  const html = buildResumeDocxHTML(prepareResumeRenderData(profile({ technicalSkillsLayout: 'flat' }, { skills: [] })));
+  const html = buildResumeDocxHTML(prepareResumeRenderData(resumeRecord({ technicalSkillsLayout: 'flat' }, { skills: [] })));
   assert.equal(html.includes('Technical Skills'), false);
   assert.ok(html.includes('Professional Experience'), 'the rest of the document is still there');
 });
@@ -425,7 +425,7 @@ test('the DOCX prints no Technical Skills heading over an empty list', () => {
 test('a strength with no title draws no lone star, in either template that had one', async () => {
   seeded('strength-icon');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
-  const untitled = profile(
+  const untitled = resumeRecord(
     { includeStrengths: true },
     {
       strengths: [
@@ -446,7 +446,7 @@ test('a strength with no title draws no lone star, in either template that had o
 test('only the Technical Skills lines become heading blocks, never a strength or soft skill that looks like one', async () => {
   seeded('category-lines');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
-  const lookalikes = profile(
+  const lookalikes = resumeRecord(
     { includeStrengths: true, includeSoftSkills: true },
     {
       strengths: [{ title: 'Multilingual', description: 'Languages: English and Spanish, both fluent.' }],
@@ -455,7 +455,7 @@ test('only the Technical Skills lines become heading blocks, never a strength or
   );
   for (const layout of ['categorized', 'flat']) {
     for (const id of ['default', 'azure-stack']) {
-      const subject = { ...lookalikes, profileSettings: { ...lookalikes.profileSettings, technicalSkillsLayout: layout } };
+      const subject = { ...lookalikes, resumeSettings: { ...lookalikes.resumeSettings, technicalSkillsLayout: layout } };
       const body = bodyOf(await generatePreviewHTML(subject, shippedTemplate(id)));
       const where = `${id} / ${layout}`;
       assert.match(
@@ -481,7 +481,7 @@ test('only the Technical Skills lines become heading blocks, never a strength or
     createdAt: '',
     updatedAt: '',
   };
-  const html = await render(profile(), lines);
+  const html = await render(resumeRecord(), lines);
   assert.match(
     html,
     /<div class="skill-category"><div class="skill-category-title">[^<]+<\/div><div class="skill-category-skills">[^<]*Python/

@@ -36,12 +36,13 @@ export type { PayoutOutcome } from '../../database/creditRepository';
  * this module rounds. A $0.023 resume takes 23; seven take 161 = $0.161; two of
  * them failing give back 46 = $0.046, exactly.
  *
- * A RESUME COSTS WHAT ITS MODEL COSTS. Each model record carries a
- * `pricePerResumeMilli` an administrator sets under Admin -> Models (0 is free),
- * and one deliverable unit - one (profile x job) pair - is charged that once,
- * however many files it writes. A run asking for both PDF and DOCX plus a cover
- * letter produces four files and costs one resume's price, because what the
- * person asked for is one tailored resume.
+ * A RESUME COSTS WHAT ITS BUILD MODE COSTS. Each mode (Choose Suitable Resume,
+ * Partial Tailor, Fully Tailor) has a price per resume an administrator sets
+ * under Admin -> Settings (0 is free; config/buildModes.ts), whichever model
+ * runs it, and one deliverable unit - one (resume x job) pair - is charged that
+ * once, however many files it writes. A run asking for both PDF and DOCX plus a
+ * cover letter produces four files and costs one resume's price, because what
+ * the person asked for is one resume.
  *
  * The charge happens at SUBMIT, before the first model call, and every unit that
  * does not deliver gives its own price back. The invariant is: credit spent
@@ -111,9 +112,10 @@ function exactMilli(amount: number, what: string): number {
  * Takes the whole cost of a run up front, or refuses it.
  *
  * `costMilli` is the cost itself, in thousandths of a dollar - the sum of what
- * each resume in the run costs on its own model - not a count of resumes to
- * multiply by a price: since prices are per model, only the caller that
- * resolved each resume's model knows the total.
+ * each resume in the run costs (its build mode's price, or the dearest mode's
+ * for previewed content no token vouches for) - not a count of resumes to
+ * multiply by a price: only the caller that priced each resume
+ * (services/resumeChoice.ts `priceRun`) knows the total.
  *
  * Throws `InsufficientCreditsError` rather than returning a flag, because every
  * caller's correct response is to stop - and a boolean that a handler forgets to
@@ -202,25 +204,27 @@ export function refundRequestedCharge(input: {
 }
 
 /**
- * A charge's line in the account's credit history, by model: "3 resumes: 2 x
- * Claude Sonnet @ $0.023, 1 x Codex @ $0.010 = $0.056".
+ * A charge's line in the account's credit history, by build mode: "3 resumes:
+ * 3 x Partial Tailor @ $0.02 = $0.06".
  *
- * By the display name an administrator gave each model, which is the only name
- * an ordinary account is shown, and in the order the models first appear.
- * Written once, with the reservation, so it says what was charged at the time
- * whatever the models cost later.
+ * By the mode's label (`BUILD_MODE_LABELS`), which is the name the builder's
+ * mode cards show, in the order the labels first appear. A mixed charge (a
+ * preview's content without a valid token costs the dearest mode's price) is
+ * one group per label and price. Written once, with the reservation, so it
+ * says what was charged at the time whatever the prices are later. The
+ * "N resume(s):" prefix stays: the refund parser reads it.
  */
-export function describeCharge(units: ReadonlyArray<{ modelLabel: string; costMilli: number }>): string {
-  const groups = new Map<string, { modelLabel: string; costMilli: number; count: number }>();
+export function describeCharge(units: ReadonlyArray<{ label: string; costMilli: number }>): string {
+  const groups = new Map<string, { label: string; costMilli: number; count: number }>();
   for (const unit of units) {
-    const key = `${unit.modelLabel}\u0000${unit.costMilli}`;
+    const key = `${unit.label}\u0000${unit.costMilli}`;
     const group = groups.get(key);
     if (group) group.count += 1;
-    else groups.set(key, { modelLabel: unit.modelLabel, costMilli: unit.costMilli, count: 1 });
+    else groups.set(key, { label: unit.label, costMilli: unit.costMilli, count: 1 });
   }
   const total = units.reduce((sum, unit) => sum + unit.costMilli, 0);
   const parts = [...groups.values()].map(
-    (group) => `${group.count} x ${group.modelLabel} @ ${formatMoney(group.costMilli)}`
+    (group) => `${group.count} x ${group.label} @ ${formatMoney(group.costMilli)}`
   );
   return `${units.length} resume${units.length === 1 ? '' : 's'}: ${parts.join(', ')} = ${formatMoney(total)}`;
 }

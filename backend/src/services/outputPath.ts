@@ -3,7 +3,7 @@ import path from 'path';
 import { getOutputStorageSettings } from '../config/aiModelConfig';
 import { envOutputPathPrefix, envOutputPathSuffix } from '../config/settingDefaults';
 import { findOrderForBatch } from '../database/orderRepository';
-import { listProfilesFor } from '../database/profileRepository';
+import { listResumesFor } from '../database/resumeRepository';
 import { getOutputPathSuffix, getUserById, setOutputPathSuffix } from '../database/userRepository';
 import type { UserAccount } from '../types/account';
 import { accountFolderName, type RunOutputPlace } from '../utils/generatedPath';
@@ -104,7 +104,7 @@ export function saveAccountOutputPathSuffix(userId: string, value: unknown): Acc
 function sampleValuesFor(account: UserAccount) {
   return sampleOutputPathValues({
     email: account.email,
-    profileName: listProfilesFor(account)[0]?.name ?? null,
+    resumeName: listResumesFor(account)[0]?.name ?? null,
   });
 }
 
@@ -112,7 +112,7 @@ function sampleValuesFor(account: UserAccount) {
  * POST /api/auth/output-path/preview: where a resume of the asker's would be
  * filed with this folder path - `/<prefix>/<folder path>`, rendered by the
  * same function a run uses, with their own email, a sample order number and
- * today's date, their first profile's name (else "Sample Profile") and a
+ * today's date, their first resume's name (else "Sample Profile") and a
  * made-up job. Without `outputPathSuffix` it is the one in effect; with
  * `''` or `null`, the default. Not the output folder: that is a path on the
  * server, the administrator's business.

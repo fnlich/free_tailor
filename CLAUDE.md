@@ -17,7 +17,7 @@ them. A single `.env` at the repository root feeds both sides.
 npm run install:all            # root + backend + frontend (run after every pull)
 npm run build --prefix backend # tsc -> backend/dist   (~8s)
 npm run build --prefix frontend# next build            (~17s)
-npm test                       # backend node:test suite (~60s with the tsc step, 1776 tests)
+npm test                       # backend node:test suite (~60s with the tsc step, 2178 tests in 158 files)
 npm run dev                    # backend watch + frontend dev server (Turbopack; see next.mjs below)
 ```
 
@@ -101,6 +101,12 @@ Facts worth knowing before you build:
   two passages telling the root dev script's history are named in the test). Not
   an operator setting: not in operational.ts or .env.example. NEVER run a
   test file any other way, and never weaken this.
+- **The suite is 2178 tests in 158 files**, 4 skipped (counted on the owner's
+  Windows machine at the end of v4.2, not re-measured on Linux). 16 of them fail there for reasons of that machine, not of the code:
+  Windows has no exec bit, symlinks need a privilege, the CLIs are `.cmd` shims
+  and the root `.env` is read into the test process. A red run there is not
+  evidence that an edit broke something - diff the failing titles against the
+  owner's list of the 16 instead of expecting green.
 - **`npm run lint --prefix frontend` exits 1 on a clean checkout** — 3
   pre-existing `react-hooks/set-state-in-effect` errors, ALL THREE in
   `src/bid-assistant/App.jsx` (lines 271, 305, 381; `src/app/page.tsx`
@@ -119,7 +125,7 @@ Facts worth knowing before you build:
   That block is **unlayered** while every Tailwind utility sits in
   `@layer utilities`, so it beats `dark:` variants outright — on
   `class="bg-white dark:bg-slate-900"` the shim wins and the variant is
-  ignored. 29 of the 30 App Router pages carry no `dark:` at all (only
+  ignored. 30 of the 31 App Router pages carry no `dark:` at all (only
   `/test` does); they are built from the kit and the tokens rather than the
   utilities it remaps, but it is still loaded and still wins wherever it
   matches. New chrome uses the `@theme inline` tokens instead
@@ -218,7 +224,17 @@ reported, not fatal. A database an older build never finished upgrading IS
 fatal, before anything else: one `[db] The database at <path> has not finished
 upgrading: <what is missing>. Start build ac3df79 once on this database ...`
 line and exit code 1 (database/upgradeGuard.ts, below) - start ac3df79 on that
-`DB_DIR` once, then this build.
+`DB_DIR` once, then this build. So is a database holding an old table AND its
+replacement, with rows in each (an older build was started on a database this
+one had upgraded): one `[db] The database at <path> has both a "profiles" table
+(what build 4.1 called a resume) and a "resumes" table, and both hold rows ...`
+line (or the same for `profile_groups` beside `profiles`) and exit code 1
+(database/glossaryRename.ts, below) - restore the backup taken before
+upgrading, then start this build on it. The first start on a database build 4.1
+wrote renames its tables and stored keys in place and prints one `[db] Renamed
+for v4.2: ...` line, as does any later start that renames or drops something
+(an older build re-creates an empty table at every start; this build drops it
+and says so there); a start with nothing to do prints nothing of it.
 
 To sign in, `.env` needs Google OAuth (`GOOGLE_CLIENT_ID`) or SMTP.
 `ADMIN_EMAILS` (else an `SMTP_USER` that is an address) names the
@@ -291,9 +307,7 @@ backend/src/
                       #   default model stored here that cannot run now
                       #   (another is in effect, and `settingSources` is
                       #   THAT one's); Admin -> Models says so and offers
-                      #   Reset. DEFAULT_RESUME_SELECTION=group is refused
-                      #   (warned, `single`): .env cannot name the group.
-                      #   DEFAULT_MODEL / ANALYSIS_MODEL are TEXT here (a
+                      #   Reset. DEFAULT_MODEL / ANALYSIS_MODEL are TEXT here (a
                       #   record id or display name) judged per read against
                       #   the runnable models, warned once when unusable.
                       #   OUTPUT_PATH_PREFIX is the `outputPathPrefix` field's;
@@ -338,11 +352,43 @@ backend/src/
                       #   (`changedSettings`): a form that sent every box
                       #   would mark every one Set here, frozen at that day's
                       #   .env.
-                      #   profileSections.ts is THE catalogue of a resume's
+                      #   The BUILD MODES are such fields (see "Builder modes
+                      #   and the suitable resume" below). buildModes.ts, a
+                      #   leaf, holds `BUILD_MODES` (suitable, partial, full),
+                      #   their labels (Choose Suitable Resume, Partial
+                      #   Tailor, Fully Tailor), `BUILD_MODE_PRICE_FIELDS`
+                      #   (each mode's setting, request field and .env name)
+                      #   and `parseBuildModePriceInput`. `defaultBuildMode`
+                      #   (DEFAULT_TAILOR_MODE in any case; junk warns once
+                      #   and reads `partial`) is the mode Build Resumes
+                      #   starts on and the mode a run that names none runs
+                      #   in. The three PRICES per resume (`suitablePriceMilli`,
+                      #   `partialPriceMilli`, `fullPriceMilli`;
+                      #   RESUME_<MODE>_PRICE_USD, `envBuildModePriceMilli`)
+                      #   are served in thousandths, $0 until somebody sets
+                      #   one (free, on purpose), and SAVED as
+                      #   `suitablePriceUsd`... in dollars: `null` resets, ''
+                      #   is refused (a price is required), a `...PriceMilli`
+                      #   key is refused (`bad-price-field`), junk or above
+                      #   $1,000 is `bad-price` with `field`; .env's above
+                      #   $1,000 clamps, and its junk reads $0 and is listed
+                      #   in the admin payload's `unreadableModePrices`.
+                      #   `getBuildModePrices()` is the services' read, and
+                      #   THROWS when the settings cannot be read. The
+                      #   builder's other default is `defaultProfileId` (a
+                      #   profile of the administrator's, '' = automatic;
+                      #   stored whole, no .env default). A model record
+                      #   carries no price. What an older build stored is read
+                      #   past, never a failure, and dropped by the next
+                      #   write: a model's price, the retired builder target
+                      #   (`defaultResumeSelection`, `defaultResumeId`) and a
+                      #   tailoring mode (`tailorMode`; the keys are
+                      #   `RETIRED_SETTING_KEYS`).
+                      #   sectionCatalogue.ts is THE catalogue of a resume's
                       #   sections and the one place the section order's
-                      #   semantics live (see "Profiles, templates and the
+                      #   semantics live (see "Resumes, templates and the
                       #   section switches" below); pure, mirrored by
-                      #   frontend/src/lib/profileSections.ts, drift-tested.
+                      #   frontend/src/lib/sectionCatalogue.ts, drift-tested.
                       #   providerCatalog.ts is the ONE list of seats (TYPES)
                       #   - `coerceProviderId` answers null for any other id,
                       #   with no alias or retired-id map; aiProviders.ts the
@@ -358,13 +404,19 @@ backend/src/
                       #   `[[conceptToolsJson]]`; closed, ~40 rows, and
                       #   `termPattern`, the whole-word matcher every tailoring
                       #   check uses); providerModels.ts each seat's model-name
-                      #   list; pricePerResume.ts the price field's rules
-                      #   (thousandths of a dollar, see "Money" below);
+                      #   list; buildModes.ts the three build modes and what
+                      #   each costs per resume (thousandths of a dollar, see
+                      #   "Builder modes and the suitable resume" below);
                       #   modelErrors.ts the two model refusals;
                       #   accountSubscriptions.ts the account TIERS (Default,
-                      #   Premium, Premium+, Premium Max), their profile caps
-                      #   and `features` (the Subscription page's card lines,
-                      #   never read as switches), PAID_SUBSCRIPTION_IDS (all
+                      #   Premium, Premium+, Premium Max), their caps on how
+                      #   many PROFILES (people) an account keeps
+                      #   (`profileLimit`: 1, 5, 25, none; counted by
+                      #   database/profileLimit.ts, below - resumes are never
+                      #   counted) and `features` (the Subscription page's
+                      #   card lines, which state the profile count and "Any
+                      #   number of resumes in each"; never read as
+                      #   switches), PAID_SUBSCRIPTION_IDS (all
                       #   but Default), SUBSCRIPTION_PERIOD_DAYS (30),
                       #   MAX_SUBSCRIPTION_PRICE_MILLI ($10,000) and
                       #   SUBSCRIPTION_PRICE_FIELDS (each paid tier's setting,
@@ -379,15 +431,20 @@ backend/src/
                       #   middleware/auth.ts's requireSubscription(min) gates
                       #   on it (403 `subscription-too-low`) and IS satisfied
                       #   by being an admin (`hasSubscription`, owner decision
-                      #   B1 - groups.ts relies on it). The multi-profile lock
-                      #   is `assertProfileScopeAllowed` there: a run that
-                      #   resolves to more than one profile, or omits
-                      #   `profileIds` (= all), needs MULTI_PROFILE_SUBSCRIPTION
-                      #   (premium) - POST /generation/batches, its /quote and
-                      #   /resume/preview-all call it after resolving the
-                      #   profiles and before any charge or model call. A
-                      #   single-profile run, immediate or order, is open to
-                      #   every subscription.
+                      #   B1), but NO router uses it now: routes/profiles.ts
+                      #   was the only one, and profiles are open to every builder
+                      #   on every subscription - the tier's limit is a count
+                      #   of profiles checked when one is made, not a guard on
+                      #   a route. Nor is there a lock on a run any more: it
+                      #   builds exactly ONE profile on every subscription
+                      #   (400 `one-profile-per-run` otherwise,
+                      #   services/resumeChoice.ts), and a profile may hold
+                      #   any number of resumes, so a Default account builds
+                      #   in every build mode. `requireSubscription` and
+                      #   `SubscriptionTooLowError` stay as the guard a
+                      #   future tiered route would use (test/auth.test.js
+                      #   runs it, and test/routeAccess.test.js already knows
+                      #   its level).
                       #   accountRoles.ts the three ROLES - user, reporter,
                       #   admin (exclusive; owner decisions A3/A4) - and
                       #   `canBuildResumes` (user or admin, by name).
@@ -422,18 +479,26 @@ backend/src/
                       #   anything is read (a second opener of a new file
                       #   waits, and never sees a users table before its
                       #   stamp): for an EXISTING database (one with a `users`
-                      #   table) the startup guard, then SCHEMA; for a fresh
+                      #   table) the startup guard, then the vocabulary step
+                      #   (glossaryRename.ts, below), then SCHEMA; for a fresh
                       #   one SCHEMA, then `stampCurrentDatabase`. Then
                       #   addMissingColumns (never fatal; ADDED_COLUMNS holds
                       #   only columns added since ac3df79 - today
-                      #   users.output_path_suffix, orders.output_root and the
-                      #   six users.subscription_* columns of a paid tier - and
+                      #   users.output_path_suffix, orders.output_root, the
+                      #   six users.subscription_* columns of a paid tier,
+                      #   resumes.profile_id, the profile a resume is filed
+                      #   under (NULL until it is filed), and
+                      #   order_items.resume_label, profile_label and
+                      #   match_json, what a run chose for the item (NULL on
+                      #   an item an older build wrote) - and
                       #   every new column goes there AND in SCHEMA, never in
                       #   the guard's frozen list), then
                       #   addIndexesAfterColumns (INDEXES_AFTER_COLUMNS: every
                       #   index naming an added column - in SCHEMA it would
                       #   fail every upgraded boot - idx_users_subscription_due,
-                      #   partial, among them), then the migrations.
+                      #   partial, and the tree's idx_resumes_owner_profile
+                      #   among them; the tree's idx_profiles_owner is made
+                      #   there too), then the migrations.
                       #   subscriptionRepository.ts is the ONLY writer of the
                       #   six subscription_* columns (base, period_start,
                       #   paid_through, period_price_milli, renews, next; all
@@ -508,11 +573,126 @@ backend/src/
                       #   `job_lake.report_ref` - an upgraded one keeps them,
                       #   and its migration logs and settings snapshots in
                       #   app_settings, unread.
+                      #   THE VOCABULARY STEP (glossaryRename.ts, v4.2):
+                      #   `renameRetiredVocabulary(db)` brings a database
+                      #   written under build 4.1's words to the current
+                      #   ones, once and in place - nothing converted and
+                      #   no row deleted. v4.1 stored a resume as a
+                      #   "profile" and a list of resumes as a "group"; v4.2
+                      #   calls them a resume and a profile. It runs in
+                      #   getDb()'s one transaction AFTER the guard (which
+                      #   still reads ac3df79's names, so it must come
+                      #   first) and BEFORE SCHEMA: SCHEMA creates
+                      #   `resumes`, and run first it would put an empty
+                      #   one beside the old table and hide every resume. A
+                      #   throw rolls the guard's first stamp, the renames
+                      #   and SCHEMA back together, and `[db] Renamed for
+                      #   v4.2: ...` is printed once, after the COMMIT.
+                      #   Two blocks, each behind a shape test of its own,
+                      #   in this order because the second renames INTO the
+                      #   name the first vacates: the RESUME block, when
+                      #   `profiles` has a `disabled` column (the ONLY thing
+                      #   that tells build 4.1's table of resumes from this
+                      #   build's table of profiles, which must never gain
+                      #   one), and the PROFILE block, when `profile_groups`
+                      #   exists, so a database only the first block
+                      #   reached still gets the second. The frozen
+                      #   constants: `RENAMED_TABLES` (`profiles` ->
+                      #   `resumes`, `profile_groups` -> `profiles`; one
+                      #   lookup, never a chain), `RENAMED_COLUMNS`
+                      #   (`order_items.profile_id` / `profile_name` ->
+                      #   `resume_id` / `resume_name`,
+                      #   `tailor_cache.profile_id` -> `resume_id`) and
+                      #   `MOVED_JSON_KEYS`: a resume's `profileSettings` ->
+                      #   `resumeSettings`; the app settings'
+                      #   `defaultProfileId` -> `defaultResumeId` and THEN
+                      #   v4.1's `defaultGroupId` -> `defaultProfileId` (that
+                      #   order, or the new key would read a resume id; the
+                      #   builder has no default RESUME now, so the first
+                      #   move leaves a key the settings read past and the
+                      #   next write drops);
+                      #   five keys of a queued task in
+                      #   `generation_tasks.data`, so a task queued before
+                      #   the upgrade restores and builds. A JSON move
+                      #   happens only where the old key is there and the
+                      #   new one is not: nothing is overwritten, and a
+                      #   second run changes nothing. STRAYS: where the old
+                      #   name and the new both exist, the one that is
+                      #   EMPTY is dropped (an unfinished start made an empty
+                      #   `resumes` beside the old table; an older build
+                      #   re-created an empty `profiles` or `profile_groups`
+                      #   beside the renamed one) and the other kept; two
+                      #   that both hold rows are refused with
+                      #   `VocabularyConflictError` (`databasePath`,
+                      #   `tables`), which openAtStartup.ts
+                      #   prints as `[db] <message>` before exiting 1 with
+                      #   nothing touched, not even the guard's first
+                      #   stamp. There is no marker and NO MIGRATION STEP (the
+                      #   numbered ones stop at 10, and there is no 11: the
+                      #   structure is the state; LATEST_SCHEMA_VERSION
+                      #   stays 10), and a start with nothing to rename
+                      #   costs two sqlite_master lookups and one table_info
+                      #   read. Left in the old spelling on purpose:
+                      #   `UPGRADE_ADDED_COLUMNS`' keys (ac3df79's
+                      #   `profiles`, `profile_groups`, `answers`),
+                      #   `repointedProfiles` in the
+                      #   `templates_moved_to_files` marker, a group's
+                      #   stored `profileIds` (unread) and
+                      #   `answers.profile_id`, the Bid Assistant's column,
+                      #   which holds resume ids. The step files no resume
+                      #   under a profile: that is lazy, at the first read of
+                      #   its account's resumes (see "Profiles and their
+                      #   resumes" below).
                       #   Saved templates are NOT a table:
                       #   templateFiles.ts is their store, `<id>.json` in
                       #   static/templates (see the note under this block);
                       #   templateRepository.ts keeps the four signatures it
                       #   had, plus the template_overrides table.
+                      #   resumeRepository.ts is the `resumes` table
+                      #   (`DocumentTable<Resume>('resumes')`, types/
+                      #   resume.ts): a stored resume, scoped to its owner
+                      #   HERE rather than in the routes, and where a resume
+                      #   is FILED under its profile (see "Profiles and their
+                      #   resumes" below): `createResumes` is every create,
+                      #   `saveEditedResume` every edit (a row deleted
+                      #   meanwhile is 404, never recreated), `deleteResume`
+                      #   takes the Bid Assistant's answers for the resume
+                      #   with it and re-points its profile's default, and
+                      #   the raw `saveResume` / `saveResumes` are for tests,
+                      #   seeding and the Bid Assistant's whole-record edit.
+                      #   profileTree.ts is the tree itself: the people's
+                      #   `DocumentTable`, read through `toProfile`;
+                      #   `inTreeTransaction`, the ONE IMMEDIATE transaction
+                      #   on ONE connection that every write to the tree runs
+                      #   in; `placeNewResume`; the default rules' writes
+                      #   (`adoptAsDefaultIfNone`, `repointDefaultAfterLeaving`,
+                      #   `ensureDefault`); `deleteAnswersFor`;
+                      #   `fileUnfiledResumes`, the lazy filing;
+                      #   `summarizeProfiles`; the `?profileId=` checks
+                      #   (`readRequestedProfileId`, `requireOwnProfile`) and
+                      #   the refusals (`ProfileRefusal`,
+                      #   `ProfileNotFoundError`, `ResumeNotFoundError`).
+                      #   profileRepository.ts is the people's API over it
+                      #   (types/profile.ts, scoped the same way):
+                      #   `listProfileSummariesFor` / `getProfileSummaryFor`
+                      #   (counted, as `ProfileSummary`), `createProfileFor`,
+                      #   `updateProfileFor`, `moveResumesIntoProfile` and
+                      #   `deleteProfileFor`, each ONE transaction with the
+                      #   limit counted inside it; `listProfilesFor` /
+                      #   `getProfileFor` answer the stored documents, for a
+                      #   reader that needs the default's id and not the
+                      #   counts, and `saveProfile` is a raw write for
+                      #   seeding. A profile is a person: it lists no
+                      #   resumes (a v4.1 group's member list is never read)
+                      #   and /api/profiles is open to every builder on
+                      #   every subscription.
+                      #   profileLimit.ts is the subscription's cap, apart
+                      #   from the resume repository:
+                      #   `countProfilesForOwner`, `ProfileLimitError` (402
+                      #   `profile-limit`) and `assertCanAddProfile` keep the
+                      #   names the cap has always had, and count the
+                      #   owner's PROFILES (their rows in `profiles`, through
+                      #   idx_profiles_owner), never their resumes.
   database/migrations # the runner, `runDataMigrations(db, steps = MIGRATIONS)`
                       #   (never throws; the version is written after EACH
                       #   step; a step may defer, which stops the ones after
@@ -532,8 +712,10 @@ backend/src/
                       #   sanitized order number, under the output folder in
                       #   effect - and leaves NULL a run that recorded none;
                       #   defers while the column is missing.
-                      #   `LATEST_SCHEMA_VERSION` is what a fresh database
-                      #   ends at. Adding a seed model needs a step: stored
+                      #   `LATEST_SCHEMA_VERSION` (10) is what a fresh
+                      #   database ends at; the v4.2 vocabulary step is not
+                      #   a numbered one (glossaryRename.ts, above). Adding
+                      #   a seed model needs a step: stored
                       #   `aiModels` is read verbatim, never unioned with the
                       #   defaults, so a seed reaches fresh installs only.
                       #   test/migrationRunner.test.js holds the runner to
@@ -545,7 +727,7 @@ backend/src/
                       #   pdfGenerator.ts holds THE render gate every output
                       #   goes through (`prepareResumeRenderData` ->
                       #   `applySkillsLimit`) and the compile step's markup
-                      #   rewrites - see "Profiles, templates and the section
+                      #   rewrites - see "Resumes, templates and the section
                       #   switches" below. sectionLocator.ts is the ONE answer
                       #   to "where is this section in a template's markup"
                       #   (`SECTION_LOCATORS`, `findSections`, `locateSections`,
@@ -558,7 +740,7 @@ backend/src/
                       #   `insertStyleOnce`, the one way a compile step puts a
                       #   stylesheet in the head); plainSkillsMarkup.ts is the
                       #   Plain layout's safety net for a grid of category
-                      #   cells (`fitPlainSkillGroups`, see "Profiles,
+                      #   cells (`fitPlainSkillGroups`, see "Resumes,
                       #   templates and the section switches" below).
                       #   docxGenerator.ts prints its blocks in
                       #   `effectiveSectionOrder`.
@@ -584,14 +766,32 @@ backend/src/
                       #   requestSignal.ts, the abort signal a model call gets
                       #   when the client goes away (one controller per
                       #   response), shared by routes/resume.ts and
-                      #   routes/profiles.ts.
-  routes/             # one file per /api/* area. profiles.ts also holds
-                      #   POST /profiles/preview, the profile editor's live
-                      #   preview (see "Profiles, templates and the section
-                      #   switches" below), and POST /profiles/entries/bullets,
+                      #   routes/resumes.ts.
+  routes/             # one file per /api/* area. resumes.ts (/api/resumes)
+                      #   also holds POST /resumes/preview, the resume editor's
+                      #   live preview (see "Resumes, templates and the section
+                      #   switches" below), POST /resumes/import and /upload,
+                      #   and POST /resumes/entries/bullets,
                       #   the editor's Write with AI (services/entryBullets.ts:
                       #   free, one call per account at a time, the app
-                      #   default model, nothing stored). accounts.ts refuses an admin
+                      #   default model, nothing stored); its two GETs serve
+                      #   each resume with its derived `matchKeywords`.
+                      #   (resume.ts, at /api/resume, is the builder's:
+                      #   models, skills, analysis and its ONE preview, POST
+                      #   /resume/preview, which chooses a profile's resume
+                      #   or draws held content again - see "Builder modes
+                      #   and the suitable resume"; there is no
+                      #   /resume/preview-all.)
+                      #   profiles.ts (/api/profiles) is the people's router,
+                      #   requireUser and nothing more - every builder, on
+                      #   every subscription: list and read (a
+                      #   `ProfileSummary`), make, rename, choose the default
+                      #   resume, move resumes in, delete. It files the
+                      #   viewer's old resumes first, and refuses with
+                      #   PublicErrors that carry a code (see "Profiles and
+                      #   their resumes" below). resumes.ts's creates take
+                      #   `?profileId=`.
+                      #   accounts.ts refuses an admin
                       #   disabling, demoting or deleting their OWN account
                       #   (409 `own-account`; another admin may), and its
                       #   last-admin guard (`wouldStrandInstall`) counts ANY
@@ -625,7 +825,11 @@ backend/src/
                       #   are described under "Money" below. generation.ts is
                       #   the queue's HTTP side - see services/queue/ below for
                       #   its run kinds, the release route and the per-file
-                      #   download. import.ts's GET /tabs lists the caller's
+                      #   download, and "Builder modes and the suitable
+                      #   resume" for what a run names, chooses and costs
+                      #   (its body is `profileId` and `buildMode`; its quote
+                      #   and its 202 say the mode, never a profile count).
+                      #   import.ts's GET /tabs lists the caller's
                       #   OWN sheet's tabs (`listAddressableSheetTabs`: the
                       #   resolveAddressableSheet guard - own sheet only, any
                       #   other id 404, an admin's too - then one listing and
@@ -699,12 +903,20 @@ backend/src/
                       #   there AND in the restore mapper or it silently does
                       #   not persist (`ranOn`, the provider it last ran on, is
                       #   one such). The payload persists whole, which is why
-                      #   a task's price lives on it (`payload.costMilli`), and
+                      #   a task's price lives on it (`payload.costMilli`: its
+                      #   build mode's price when it was submitted), and the
+                      #   run's mode (`payload.buildMode`; absent on a task
+                      #   queued before v4.2, which builds Partial), and
                       #   its job's stored analysis (`payload.analysisId`, set
                       #   at submit or stamped on every task of the job by the
-                      #   first to obtain it - `recordJobAnalysis`) -
-                      #   and so does `batch.shared`, which is why a batch's
-                      #   KIND is there: `shared.kind = 'order' | 'immediate'`
+                      #   first to obtain it - `recordJobAnalysis`) - so does
+                      #   the task's label, which is how a task keeps what the
+                      #   run chose for it (`label.resumeLabel`,
+                      #   `label.profileLabel`, `label.match`; a restored
+                      #   task never chooses again) - and so does
+                      #   `batch.shared`, which is why a batch's mode
+                      #   (`shared.buildMode`) and its
+                      #   KIND are there: `shared.kind = 'order' | 'immediate'`
                       #   (`isOrderBatch`, `isImmediateBatch`; submit body
                       #   `mode`, default immediate - nothing else is read
                       #   for it, so an old script's `asOrder: true` is an
@@ -792,12 +1004,66 @@ backend/src/
   services/tailorCache.ts # the tailoring cache (owner decision P6): the model's
                       #   answer to a tailoring (revised, when the revise pass
                       #   changed it) or a cover-letter call, reused for the
-                      #   same unchanged profile, posting, model and prompts -
+                      #   same unchanged resume, posting, model and prompts -
                       #   see "The tailoring cache" below.
   services/extraSections.ts # the render data of the nine section kinds beyond
                       #   the classic six and of the custom sections, prepared
                       #   (dates joined, links policed by the renderer's own
-                      #   rules) under the profile fields' names; pure.
+                      #   rules) under the resume fields' names; pure.
+  services/profileRules.ts # the rules of profiles (people) and their resumes
+                      #   that need no database - pure, types only, so a test
+                      #   loads it alone: `personKey`, `profileNameForPerson`,
+                      #   `readProfileName` (UNTITLED_PROFILE_NAME,
+                      #   MAX_PROFILE_NAME_LENGTH = 100),
+                      #   `effectiveDefaultResumeId`,
+                      #   `repointedDefaultResumeId`, `oldestFirst` and
+                      #   `resumeLabelOf` (a resume's headline, unless that is
+                      #   empty or the normaliser's 'Professional'; else its
+                      #   name; else 'Untitled resume'). See "Profiles and
+                      #   their resumes" below.
+  services/resumeDocument.ts # a stored resume as a document: built, normalised
+                      #   and read here - `buildNewResume`,
+                      #   `buildUpdatedResume`, `buildPreviewResume`,
+                      #   `normalizeResumePayload` / `normalizeResumeSettings`,
+                      #   the settings' getters (`getResumeSections` for the
+                      #   three switches) and `resumeForTemplate` - see
+                      #   "Resumes, templates and the section switches".
+                      #   resumeService.ts, the tailoring, is another module.
+  services/resumeImport.ts # a resume file read as an upload: GATED first
+                      #   (`assertLooksLikeResume`: a name and some field a
+                      #   resume has, so a package.json is refused), then
+                      #   normalised - `buildImportedResumes`,
+                      #   `readResumeImportDocument`. The one module that
+                      #   still reads v4.1's spellings (see "Conventions from
+                      #   the history").
+  services/resumeChoice.ts # which resume a run builds for each job, and what
+                      #   that costs; a MONEY module (test/money.test.js lists
+                      #   it). routes/generation.ts calls it in this order,
+                      #   before anything is reserved or asked of a model:
+                      #   `readRunRequest` (the body's shape: ONE `profileId`,
+                      #   `buildMode`, `previewedResumeId`, the held content
+                      #   and its tokens), `resolveRunTarget` (the profile, its
+                      #   ENABLED resumes newest first, its effective default;
+                      #   files the caller's unfiled resumes first), `planRun`
+                      #   (a resume and its `TaskMatch` per job),
+                      #   `checkPreview` (409 `preview-changed`) and `priceRun`
+                      #   / `quoteRun` (jobs x the mode's price, the floor for
+                      #   held content no token vouches for). Its refusals are
+                      #   `RunRequestError`s. See "Builder modes and the
+                      #   suitable resume".
+  services/resumeKeywords.ts # a resume's keywords, COMPUTED and never stored:
+                      #   `keywordsOf` (pure), `matchKeywordsOf` (a 512-entry
+                      #   memo that writes nothing back), `KEYWORDS_VERSION`,
+                      #   the vocabulary and its class rules, `TERM_SYNONYMS`,
+                      #   and `scanVocabulary`, which the matcher reads a
+                      #   posting's text with.
+  services/resumeMatch.ts # the suitable resume of a profile for a posting; pure:
+                      #   `scoreResumeForJob`, `chooseForJob` and `TaskMatch`,
+                      #   the explanation an order item keeps.
+  services/sampleResume.ts # `SAMPLE_RESUME` (the gallery's invented person),
+                      #   `SAMPLE_TAILORED_CONTENT` and `withSampleDefaults`
+                      #   (the editor's preview borrows what a draft leaves
+                      #   empty); never a save, a generation or a prompt.
   services/entryBullets.ts # Write Entry Bullets: the editor's Write with AI /
                       #   Improve with AI on one experience, project or
                       #   volunteering entry - the prompt values
@@ -812,10 +1078,18 @@ backend/src/
                       #   cap, the banned vocabulary, the dash and numeral
                       #   backstops. Pure; resumeService puts it together - see
                       #   "Prompt variables are the code's, strictly".
+                      #   `postingTermLists` is the part of the lists that
+                      #   needs nothing else (the skills, the concepts, the
+                      #   five a posting leans on), which the matcher reads in
+                      #   place of the whole of `buildTailorLists`;
+                      #   `isCompanyDescriptionLike` and `words` are exported
+                      #   for the keywords and the matcher, and
+                      #   `buildTailorLists`' output is byte-identical (the
+                      #   golden literals pin it).
   services/reviseCoverage.ts # the revise pass's pure half: missing terms,
-                      #   the profile's evidence for them (`profileEvidence`,
-                      #   `supportedTerms`), the profile's dropped figures
-                      #   (`droppedProfileFigures`), its prompt values,
+                      #   the source resume's evidence for them
+                      #   (`resumeEvidence`, `supportedTerms`), its dropped
+                      #   figures (`droppedResumeFigures`), its prompt values,
                       #   `mergeRevision`.
                       #   resumeService's `tailorResume` makes the call.
   services/sheets/    # each account's OWN job sheet (accountSheet.ts), the
@@ -827,10 +1101,10 @@ backend/src/
                       #   (`skillGroups`), for the tailoring parse and the
                       #   render gate alike: sanitise the shape, find the
                       #   soft-skill group, flatten for Plain. Pure - see
-                      #   "Profiles, templates and the section switches".
+                      #   "Resumes, templates and the section switches".
   services/templateChoice.ts # THE answer to "which template is this resume
-                      #   drawn with" - resolveTemplateForProfile, for the live
-                      #   preview, /resume/preview, /preview-all and the
+                      #   drawn with" - resolveTemplateForResume, for the live
+                      #   preview, /resume/preview and the
                       #   queue. Do not write a
                       #   second copy of the fallback.
   bidAssistant/       # the Bid Assistant's own prompt building, and database.js.
@@ -846,23 +1120,91 @@ backend/src/
                       #   load - an owner-less row an older build saved is
                       #   listed for all and changed by an admin only, and a
                       #   deleted account's is listed to admins only); answers
-                      #   are scoped through the reader's own profiles, and so
-                      #   is a job's `has_answers`. Answers are keyed by profile
-                      #   id alone and ids are reusable, so deleting a profile
-                      #   deletes its answers (profileRepository.deleteProfile)
-                      #   and loading database.js sweeps any left orphaned.
+                      #   are scoped through the reader's own resumes, and so
+                      #   is a job's `has_answers`. THE BID ASSISTANT STILL
+                      #   CALLS A RESUME A "PROFILE": its pages, its routes
+                      #   (/api/bid-assistant/profiles), `profileId` and the
+                      #   `answers.profile_id` column keep that word, and the
+                      #   column holds resume ids. It reads and writes the
+                      #   stored resumes through resumeRepository and
+                      #   resumeDocument. Its create is
+                      #   resumeRepository.createResumes, like every other
+                      #   create: the resume is placed under its person's
+                      #   profile, and the profile limit is counted only when
+                      #   that makes a new profile (a third resume of one
+                      #   person is allowed, a new person obeys the limit).
+                      #   Its whole-record edit is the raw `saveResume`,
+                      #   which keeps the stored placement. Answers are keyed
+                      #   by resume id alone and ids are reusable, so
+                      #   deleting a resume deletes its answers
+                      #   (resumeRepository.deleteResume), deleting a PROFILE
+                      #   deletes its resumes' answers in the same
+                      #   transaction (profileRepository.deleteProfileFor),
+                      #   and loading database.js sweeps any left orphaned
+                      #   (`answers.profile_id` against `resumes.id`).
   types/, utils/      # shared types; path, storage and filename helpers
 backend/
   static/             # shipped defaults, never written at runtime EXCEPT
                       #   templates/, which also holds saved templates - and
                       #   not all read the same way: see the note under this block
-  test/               # node:test, 152 files; fixtures/cli, codex and gemini
+  test/               # node:test, 158 files; fixtures/cli, codex and gemini
                       #   replay real CLI streams (`recorded-` is a capture,
                       #   `constructed-` a real envelope around a fake answer).
-                      #   profileSections.test.js, sectionOrder.test.js and
+                      #   sectionCatalogue.test.js, sectionOrder.test.js and
                       #   entryBullets.test.js hold the section catalogue and
                       #   order, every built-in's render in a stored order, and
-                      #   Write Entry Bullets.
+                      #   Write Entry Bullets. glossaryRename.test.js holds
+                      #   the v4.2 vocabulary (database/glossaryRename.ts and
+                      #   the rename of the code): a fresh database is born
+                      #   with the new names; a database as build 4.1 left
+                      #   it, stamped by it or not yet, opens renamed and
+                      #   intact, its queue rows converted, a Bid Assistant
+                      #   answer kept, ONE `[db] Renamed` line printed and a
+                      #   second open changing nothing, and one only the
+                      #   resume rename reached gets only the profile
+                      #   rename; an empty stray table is dropped and two
+                      #   with rows are refused, by name, with the server's
+                      #   exit 1 before any route loads; the startup guard's
+                      #   column list is ac3df79's; GOLDEN literals pin what
+                      #   a model is told and every tailoring cache key to
+                      #   build 4.1's, so no cached tailoring misses; the
+                      #   Bid Assistant's members exist in the renamed
+                      #   modules; and source scans fail on a retired name,
+                      #   path or compiled module, on a page that calls the
+                      #   account a profile, on a profile spelling outside
+                      #   its own files and on a "group" that is not another
+                      #   sense (skill groups, the Grouped layout) or in a
+                      #   file waiting to be replaced - each pattern with a
+                      #   self-test that it catches its shapes and none of
+                      #   the spellings that stay. Its G-3 compares against a
+                      #   snapshot of the pre-stage files only when
+                      #   `V42_PRE_G_FILES` names them. The six docs (this
+                      #   file, the READMEs, .env.example) are scanned for
+                      #   the retired names too, the release notes aside: a
+                      #   current line may name one only to say what it was.
+                      #   profileTree.test.js holds the profile tree (see
+                      #   "Profiles and their resumes" below): placement, a
+                      #   body that never places, the limit on people (two
+                      #   creates racing included), edits and reused ids, the
+                      #   default resume, move, delete, no tier gate, stale
+                      #   pages, the summaries, that the lookups seek on the
+                      #   two indexes, the tree invariant, and the lazy filing
+                      #   of a database built as v4.1 left it. helpers.js's
+                      #   `seedProfileWithResumes(owner, name, inputs)` seeds
+                      #   a person with resumes, going round the routes and
+                      #   the limit, for a test that needs a tree.
+                      #   buildModes.test.js holds the three build modes over
+                      #   the real routes and queue, with stub seats that
+                      #   count their calls per call site (Choose Suitable
+                      #   Resume asks for no tailoring; the labels and order
+                      #   items, a restart, a deleted pick, the one-profile
+                      #   refusals, the previews); modePricing.test.js the
+                      #   prices per mode (stored, .env and code values, the
+                      #   refusals by box, the quote equal to the charge,
+                      #   tokens and the floor, the refunds);
+                      #   resumeKeywords.test.js and resumeMatch.test.js the
+                      #   keywords and the matcher, the worked example on
+                      #   both of its paths.
 frontend/src/
   app/                # App Router pages: /, /settings/*, /admin/*, /jobs
                       #   (Find Jobs - see "The Job Data Lake" below),
@@ -870,15 +1212,33 @@ frontend/src/
                       #   drawn with no shell - navModel's isBareRoute). There
                       #   is no /account or /settings/plan redirect any more -
                       #   a Next 404.
-                      #   /admin/profiles, /admin/profiles/new and
-                      #   /admin/profiles/[id] are EVERY builder's own profiles
-                      #   and their editor, whatever the path says: My Profiles
-                      #   (FlowCV's "My Resumes" cards), the template chooser
-                      #   (/new with no `template`) or a new profile's editor
-                      #   (/new?template=<id>[&layout=flat]; `template=` alone
-                      #   starts with none - lib/profileGallery.ts
-                      #   `readStartChoice`), and the editor. /report
-                      #   (Report Jobs) is a REPORTER's home, behind
+                      #   /admin/profiles is the PROFILES DASHBOARD, "My
+                      #   Profiles", for EVERY builder on every subscription
+                      #   (its rail label is "Profiles"): a profile is a
+                      #   person, and the page has two tabs - Profiles (N), a
+                      #   card per person, and All resumes (M), a card per
+                      #   resume (`?tab=resumes`; anything else reads as
+                      #   Profiles) - each with a search and a Grid | List
+                      #   view. /admin/profiles/[profileId] is one profile's
+                      #   page: its resumes, the default marked. The resume
+                      #   pages are /admin/resumes/new[?profile=<id>] - the
+                      #   template chooser (no `template`) or a new resume's
+                      #   editor (?template=<id>[&layout=flat][&profile=<id>];
+                      #   `template=` alone starts with none -
+                      #   lib/resumeGallery.ts `readStartChoice`) - and
+                      #   /admin/resumes/[id], the editor, whose address
+                      #   survives a Move to another profile. There is no
+                      #   /admin/groups: the v4.1 Groups page is gone, a Next
+                      #   404 with no redirect (a stale frontend/.next/dev
+                      #   still names it: see its bullet above). A v4.1
+                      #   bookmark, /admin/profiles/<resumeId> (that address
+                      #   was a resume's editor), finds no profile, asks for a
+                      #   resume of that id and `router.replace`s to its
+                      #   editor; the id `new` replaces itself with
+                      #   /admin/resumes/new and the same query string; any
+                      #   other id says "That profile was not found. It may
+                      #   have been deleted." with a link to My Profiles.
+                      #   /report (Report Jobs) is a REPORTER's home, behind
                       #   AuthGate's `ReporterOnly` (an admin may open it, a
                       #   user is told what it is for): their rate, earnings
                       #   and sheet, a tab and rows previewed, "Add to job
@@ -893,7 +1253,10 @@ frontend/src/
                       #   allowlist because /admin/* holds builders' pages too;
                       #   test/frontendRoles.test.js walks every page.tsx and
                       #   fails unless exactly those four are a reporter's, so
-                      #   a new reporter page is added there AND to that list.
+                      #   a new reporter page is added there AND to that list;
+                      #   it also fails on a literal link that names no page
+                      #   (an href, a router.push or redirect, a `*_PATH`
+                      #   constant, a notice's `link`).
                       #   /credits draws `EarningsCredits` for them (balance +
                       #   CreditHistory `variant="earnings"`; no purchase,
                       #   order or refund panels, which a reporter is refused).
@@ -911,15 +1274,26 @@ frontend/src/
                       #   (and `feature`, its lock) is drawn LOCKED below that
                       #   tier - `isNavLocked(item, role, subscription)`,
                       #   admins exempt - as a button.tl-nav-item that opens
-                      #   the lock's dialog (AppSidebar). Groups is such an
-                      #   entry (`needs: 'premium'`), after Profiles. Every
-                      #   entry is a page of the app (frontendRoles.test.js
+                      #   the lock's dialog (AppSidebar; from the phone drawer
+                      #   it hands focus to the menu button first, which the
+                      #   dialog gives back). No entry has `needs` now - the
+                      #   mechanism stays for a future tiered entry, and
+                      #   frontendRoles.test.js holds that nothing is locked on
+                      #   any tier. There is ONE Profiles entry, open to every
+                      #   builder, and no Groups row; it is lit on
+                      #   /admin/profiles and below it AND under /admin/resumes
+                      #   (`NavItem.alsoActiveOn`, which `activeHref` honours:
+                      #   the longest path that matches, an entry's own or one
+                      #   of its aliases, wins, and the answer is always the
+                      #   entry's `href`), so the chooser and the editor light
+                      #   it. Every entry is a page of the app
+                      #   (frontendRoles.test.js
                       #   holds every href to `/`): Find Jobs is /jobs, and a
                       #   builder's way to their sheet is its "Go to my
                       #   sheet". AppShell asks GET /api/sheet for a REPORTER
                       #   only, for the account menu's link.
                       #   A reporter's rail is Report Jobs, Credits, Settings
-                      #   (Profile, Job Sheet); their account menu has their
+                      #   (Account, Job Sheet); their account menu has their
                       #   sheet link, Settings, Contact admin, Log out and no
                       #   subscription. lib/roles.ts copies the backend's role
                       #   catalog (drift-tested) and holds the allowlist. A 403
@@ -935,29 +1309,44 @@ frontend/src/
                       #   .tl-tabs, .tl-button(-quiet), .tl-table(-box),
                       #   .tl-section, .tl-input in globals.css are the shared
                       #   pieces, as classes the dark-mode shim never names.
-  components/profile/ # The Profiles pages, laid out AND drawn after FlowCV's
+  components/resume/  # The resume pages, laid out AND drawn after FlowCV's
                       #   (owner's requests, 2026-10-19), all on the editor's
-                      #   desk and tokens (app/admin/layout.tsx gives
-                      #   /admin/profiles, /new and /<id> a bare <main>; their
-                      #   pages pad their own loading and error states).
-                      #   THE LIST (app/admin/profiles/page.tsx, "My
-                      #   Profiles"): ProfileCards.tsx - the dashed New profile
-                      #   tile and a card per profile: its first page
-                      #   (POST /profiles/preview with `profile: {}`, its id
-                      #   and `sample: false`, asked once the card is near the
-                      #   screen, keyed by `updatedAt`), "Edited ... ago ·
-                      #   <template>" and ActionMenu.tsx's ⋮ (Edit, Duplicate,
-                      #   Download JSON, Disable/Enable, Delete; a role=menu
-                      #   with arrow keys, opening upward near the window's
-                      #   foot). THE CHOOSER (app/admin/profiles/new/page.tsx
+                      #   desk and tokens (app/admin/layout.tsx gives every
+                      #   route lib/profileDashboard.ts `isProfilesDeskRoute`
+                      #   names - /admin/profiles, a profile's page,
+                      #   /admin/resumes/new and /admin/resumes/<id> - a bare
+                      #   <main>; their pages pad their own loading and error
+                      #   states; the dashboard and a profile's page are
+                      #   components/profiles/, below).
+                      #   THE CARDS: ResumeCards.tsx draws a resume as a card
+                      #   (`ResumeCard`) or as a row of the List view
+                      #   (`ResumeRow`): its first page (`ResumeThumb`, POST
+                      #   /resumes/preview with `resume: {}`, its id and
+                      #   `sample: false`, asked once the card is near the
+                      #   screen; the last 24 pages are kept by `id:updatedAt`,
+                      #   so a save is a new key, and a request in flight is
+                      #   shared - a switch of tab or of Grid / List unmounts
+                      #   every card, and a fresh request for each would draw
+                      #   the same pages again), its headline (`resumeLabel`),
+                      #   "Edited ... ago · <template>", the ★ Default and
+                      #   Disabled badges and ActionMenu.tsx's ⋮ (its items
+                      #   are the page's, components/profiles/useResumeActions;
+                      #   a role=menu with arrow keys, opening upward near the
+                      #   window's foot; an item's press hands focus back to
+                      #   the ⋮ button BEFORE it runs, so a dialog it opens
+                      #   returns focus there). The dashed New resume tile is
+                      #   never locked: resumes are not counted.
+                      #   THE CHOOSER (app/admin/resumes/new/page.tsx
                       #   without `template`; Suspense around
                       #   useSearchParams): TemplateChooser.tsx - the filter
                       #   pills (All Templates + each category some template
-                      #   has), "Import existing resume" (resume PDF or profile
-                      #   JSON, useProfileImport.ts and its transient
-                      #   `chooseFile` input), the grid of gallery previews
-                      #   (PageThumb.tsx: an A4 frame scaled to its box by a
-                      #   ResizeObserver; a profile's page is a srcdoc frame
+                      #   has), "Import existing resume" (a resume PDF or a
+                      #   resume JSON file, useResumeImport.ts - which takes
+                      #   the profile the address names and files the
+                      #   resumes under it - and its
+                      #   transient `chooseFile` input), the grid of gallery
+                      #   previews (PageThumb.tsx: an A4 frame scaled to its
+                      #   box by a ResizeObserver; a resume's page is a srcdoc frame
                       #   with every sandbox flag off; a new `src` is a new
                       #   frame - the iframe is keyed by it - because a loaded
                       #   frame sent elsewhere adds a browser-history entry)
@@ -968,39 +1357,63 @@ frontend/src/
                       #   Technical skills switch, role=group aria-label
                       #   "Technical skills", Grouped / Plain, redraws the page
                       #   - every template prints both - opening on Grouped
-                      #   and kept across Previous/Next; Use this template off
-                      #   for one another profile uses). Use this template
-                      #   (`onUse(template, layout)`) goes to /new?template=<id>
-                      #   [&layout=flat, the layout shown], whose editor
-                      #   gets `start` (lib/profileDraft.ts
-                      #   `draftForNewProfile`) and asks ImportStartDialog.tsx's
+                      #   and kept across Previous/Next; Use this template is
+                      #   never off - any resume may use any template). The
+                      #   heading is "Start building a resume", with " for
+                      #   {name}" when `?profile=` names a profile of the
+                      #   viewer's, and the back link names that profile (and
+                      #   goes to its page) or says "My Profiles". Nothing
+                      #   gates the page: resumes are not counted. Use this
+                      #   template (`onUse(template, layout)`) goes to
+                      #   /new?template=<id>[&layout=flat, the layout
+                      #   shown][&profile=<id>] (`startResumeHref`), whose
+                      #   editor gets `start` (lib/resumeDraft.ts
+                      #   `draftForNewResume`) and asks ImportStartDialog.tsx's
                       #   "Import your existing resume": Import resume uploads
-                      #   the PDF (the server saves the profile), PUTs the
+                      #   the PDF (the server saves the resume - under the
+                      #   profile named, else by the person's name), PUTs the
                       #   chosen template and layout on it and replaces the
                       #   address with its editor; Start from blank closes.
-                      #   Their styles are profilePages.module.css; the
+                      #   Their styles are resumePages.module.css; the
                       #   decisions with no React in them - the filters, a
                       #   template's gallery page in either layout
                       #   (`templatePreviewPath`, which Admin -> Templates'
                       #   View and its own Grouped / Plain switch frame too),
-                      #   its feature lines, the start link and its
+                      #   its feature lines, the start links
+                      #   (`startResumeHref(template, layout, profileId)`,
+                      #   `startWithoutTemplateHref`) and their
                       #   reading, "Edited ... ago", Duplicate's body (no id,
-                      #   times, template or `disabled`; the model through
-                      #   savableModelChoice), Download's file - are
-                      #   lib/profileGallery.ts, types only, run against the
+                      #   times, `disabled`, profile or keywords - it KEEPS the
+                      #   template; the model through
+                      #   savableModelChoice, lib/resumeModelChoice.ts),
+                      #   Download's file (the resume less its `profileId` and
+                      #   `matchKeywords`, a file Import takes back) - are
+                      #   lib/resumeGallery.ts, types only, run against the
                       #   server's categories, save and import by
-                      #   test/frontendEditorHelpers.test.js.
-                      #   THE EDITOR: ProfileEditor owns the draft and the save
-                      #   on that desk. A sticky bar: Profiles (back), the
-                      #   Content / Customize tabs (role=tablist "Editor
+                      #   test/frontendEditorHelpers.test.js and
+                      #   frontendProfiles.test.js.
+                      #   THE EDITOR: ResumeEditor owns the draft and the save
+                      #   on that desk. It reads the resume's profile
+                      #   (`profilesApi.get`; a 404 is tolerated - the profile
+                      #   is then not the viewer's to open) and takes a new
+                      #   resume's from the page, which stays the only reader
+                      #   of `?profile=`: the first save is
+                      #   `resumesApi.create(payload, { profileId })`, or with
+                      #   none the server files the resume by the person's
+                      #   name. A sticky bar: the profile's name ("Profiles"
+                      #   where it cannot be read) is the way back - Back, Save
+                      #   and leaving go to that profile's page, else to My
+                      #   Profiles, and nothing pushes the bare list - then the
+                      #   Content / Customize tabs
+                      #   (role=tablist "Editor
                       #   views"; BOTH panels stay MOUNTED under `hidden`, so
-                      #   #profile-template and the layout radios are in the
+                      #   #resume-template and the layout radios are in the
                       #   DOM on either tab), the unsaved state and Save
-                      #   (`form="profile-editor-form"`, outside the form), and
+                      #   (`form="resume-editor-form"`, outside the form), and
                       #   under 1100px the Form / Preview switch (role=tablist
                       #   "Editor", exactly "Form" / "Preview" -
                       #   e2e/preview-vibration.js clicks it). The look is
-                      #   profileEditor.module.css's: tokens on `.editor` (and
+                      #   resumeEditor.module.css's: tokens on `.editor` (and
                       #   `.tokens`, which the portalled Add content dialog
                       #   carries through Dialog's `className`), restated under
                       #   html.dark; the kit's .tl-* pieces restyled INSIDE the
@@ -1014,7 +1427,7 @@ frontend/src/
                       #   over the whole head, CLOSED until opened - the card
                       #   Add content just made opens - a body that stays
                       #   MOUNTED while closed, so the e2e scripts' DOM clicks
-                      #   on #profile-include-* always land; the grip and Move
+                      #   on #resume-include-* always land; the grip and Move
                       #   up/down appear on hover or focus, and on a touch
                       #   screen while the card is open; in SectionSlot.tsx,
                       #   native HTML5 drag and drop armed from the grip), in
@@ -1029,26 +1442,38 @@ frontend/src/
                       #   SoftSkillsCard), "+ Add content" (AddContentDialog
                       #   .tsx: the non-default kinds not yet listed, and a
                       #   Custom section with a title). Customize is parts.tsx's
-                      #   SettingsCard thrice: TemplateCard and LayoutCard
-                      #   (TemplateCard.tsx: the picker; the layout radios and
-                      #   "Use the template's order") and GenerationSettings
-                      #   Card.tsx. A row opens EntryEditor.tsx in
+                      #   SettingsCard four times: TemplateCard and LayoutCard
+                      #   (TemplateCard.tsx: the picker, which lists every
+                      #   enabled template - no "(used by ...)", no disabled
+                      #   option; the layout radios and
+                      #   "Use the template's order"), GenerationSettings
+                      #   Card.tsx - the model, the Building prompt ("Used when
+                      #   this resume is built with Partial Tailor. Fully Tailor
+                      #   runs Tailor Resume (Fully); Choose Suitable Resume
+                      #   builds the resume as written.") and the file names,
+                      #   with no Tailoring choice, because the mode is the
+                      #   RUN's (`ResumeSettings.tailorMode` is gone, and a
+                      #   stored one is read past) - and the read-only
+                      #   KeywordsCard (components/profiles/): the job titles
+                      #   and the skills and technologies the server read from
+                      #   the resume, or "Keywords appear once the resume is
+                      #   saved." for a new one. A row opens EntryEditor.tsx in
                       #   the column's place (the column stays mounted under
                       #   `hidden`); Done drops a blank entry; its bullets box
                       #   has Write with AI / Improve with AI (useWriteBullets
                       #   .ts: one AbortController, aborted on unmount, Undo
                       #   while the box still holds the answer), through
-                      #   `profilesApi.writeBullets` and nothing else. The
+                      #   `resumesApi.writeBullets` and nothing else. The
                       #   first drag, move, add or remove turns a null
                       #   `draft.sectionOrder` (= follow the template, sent as
-                      #   `[]`) into the displayed list. lib/profileSections.ts
+                      #   `[]`) into the displayed list. lib/sectionCatalogue.ts
                       #   is the catalogue mirror (the shared fields of the
-                      #   backend's config/profileSections.ts plus the UI half:
+                      #   backend's config/sectionCatalogue.ts plus the UI half:
                       #   icon, entryNoun, fields, rowTitle/rowMeta, aiKind)
                       #   and the order helpers, `import type` only, held to
                       #   the backend copy by test/frontendEditorHelpers
                       #   .test.js. parts.tsx keeps ChipList, AddInput,
-                      #   SectionSwitch, the notes. ProfilePreview frames the server's render in two
+                      #   SectionSwitch, the notes. ResumeDraftPreview frames the server's render in two
                       #   swapping <iframe sandbox="allow-same-origin"> (no
                       #   allow-scripts - same-origin only so the page can
                       #   measure it), debounced, aborting stale requests and
@@ -1060,14 +1485,17 @@ frontend/src/
                       #   wherever scrollbars take room - puppeteer hides them,
                       #   so only test/e2e/preview-vibration.js sees it. The
                       #   decisions with no React in them - draft <-> payload,
-                      #   what the preview is sent, which templates the picker
-                      #   offers, the sample-text notice and placeholders, what
-                      #   an unticked section keeps - are lib/profileDraft.ts,
+                      #   what the preview is sent, the template a draft or a
+                      #   card is drawn with (`effectiveTemplateId`,
+                      #   `drawnTemplate`), the sample-text notice and
+                      #   placeholders, what
+                      #   an unticked section keeps - are lib/resumeDraft.ts,
                       #   which imports types only so test/frontendHelpers,
                       #   frontendEditorHelpers and frontendTailoring.test.js
                       #   can load it (the last holds what it saves and
                       #   previews to the settings the server reads - no
-                      #   `hardSkillOrdering`, no `coverLetterPromptId`). An
+                      #   `hardSkillOrdering`, no `coverLetterPromptId`, no
+                      #   `tailorMode`). An
                       #   unticked Soft Skills / Strengths box shows only its
                       #   switch and "N kept"; nothing is deleted. The
                       #   switches' copy (SkillCards.tsx for Soft skills, the
@@ -1076,6 +1504,132 @@ frontend/src/
                       #   posting's soft-skill group in that section (off, it
                       #   is the last group of Technical Skills), Strengths
                       #   prints the person's own, as typed.
+  components/profiles/ # The Profiles pages: a profile is a PERSON and holds
+                      #   that person's resumes, and every builder has the
+                      #   pages on every subscription. They sit on the resume
+                      #   desk: profiles.module.css (the tabs, the search, the
+                      #   View switch, the list rows, the badges, the dialogs
+                      #   and the keyword chips) works beside
+                      #   resumePages.module.css, which keeps the page, the
+                      #   cards, the ⋮ menu and the dashed tiles, and uses the
+                      #   editor's tokens (`--ed-*`), restated under html.dark,
+                      #   so nothing here needs a `dark:` variant; the dialogs
+                      #   are portalled to <body>, so each carries the editor's
+                      #   `.tokens` and font through Dialog's `className`.
+                      #   THE DASHBOARD (app/admin/profiles/page.tsx, "My
+                      #   Profiles"; Suspense around useSearchParams): a
+                      #   welcome line (`describeHoldings`), a usage line
+                      #   ("1 of 1 profiles used on the Default subscription")
+                      #   counted from the page's OWN list of profiles
+                      #   (`useProfileLimit`, in useResumeActions.tsx: the
+                      #   session's `profilesUsed` goes stale the moment a
+                      #   profile is deleted here, and would leave New profile
+                      #   locked), the at-the-limit and over-the-limit notices
+                      #   (an account over its limit keeps and uses everything
+                      #   and cannot add another), Import (a resume PDF or JSON
+                      #   file, each resume filed under its person; a JSON
+                      #   import's notice names the profiles it made) and
+                      #   Create New. Two tabs (role=tablist; the arrow, Home
+                      #   and End keys): Profiles (N), a card per person
+                      #   (ProfileCards.tsx: the
+                      #   first page of its default resume, its name, "N
+                      #   resumes", "Edited ... ago"; ⋮ Open, Rename, New
+                      #   resume, Delete), and All resumes (M), a card per
+                      #   resume (components/resume/ResumeCards.tsx, with the
+                      #   profile's name as a link). The tab is the address,
+                      #   `?tab=resumes`, written with `router.replace(href, {
+                      #   scroll: false })`; anything else reads as Profiles.
+                      #   Each tab has its SearchBox (type=search; a role=status
+                      #   line, "1 of 2 profiles match.", only while something
+                      #   is typed; Clear hands focus back to the input - a
+                      #   profile matches by its name or by any of its resumes'
+                      #   label or name, a resume by its label, its name or its
+                      #   profile's name) and the one View: Grid | List
+                      #   (ViewToggle, two aria-pressed buttons; `useViewMode`
+                      #   reads localStorage `freeTailor.profiles.view` in a
+                      #   lazy initialiser and writes it on every change,
+                      #   guarded: a storage that is missing or throws reads
+                      #   Grid). The dialogs are ProfileDialogs.tsx's, each a
+                      #   kit Dialog mounted only while open: ProfileNameDialog
+                      #   ("New profile", "Rename profile"), NewResumeDialog
+                      #   ("New resume"), DeleteProfileDialog ("Delete {name}?"),
+                      #   MoveResumesDialog ("Move {label}") and KeywordsDialog
+                      #   ("Keywords"). Create New on Profiles names a person
+                      #   (ProfileNameDialog) and opens that profile's page; on
+                      #   All resumes it asks whose the resume is
+                      #   (NewResumeDialog: the profiles, and "A new profile";
+                      #   skipped when there is exactly one profile, a name
+                      #   alone when there is none) and opens the chooser for
+                      #   it. Only New profile is locked at the limit: the tile
+                      #   and Create New (`data-new-tile="profile"`,
+                      #   `data-locked-feature="more-profiles"`, "Needs <tier>",
+                      #   pressable) and "A new profile" in the New resume and
+                      #   Move dialogs; the New resume tile
+                      #   (`data-new-tile="resume"`) never is.
+                      #   A PROFILE'S PAGE
+                      #   (app/admin/profiles/[profileId]/page.tsx): the way
+                      #   back to My Profiles, the name with its Rename pencil,
+                      #   "N resumes · Edited ...", the line "★ is the default
+                      #   resume: Fully Tailor builds it. Choose Suitable
+                      #   Resume and Partial Tailor pick, for each job, the
+                      #   resume here whose keywords match the posting best.",
+                      #   ⋮ Rename / Delete profile, New resume
+                      #   (`newResumeHref(profile.id)`) and Import resume
+                      #   (`useResumeImport(profile.id)`), the same Grid | List,
+                      #   the default resume first with its "Default" badge
+                      #   (`data-default-resume`), and a warning where the
+                      #   chosen default is disabled ("{label} is disabled, so
+                      #   Fully Tailor builds {other label} until it is
+                      #   enabled.") or every resume is. Delete profile
+                      #   (DeleteProfileDialog) says what it will do before the
+                      #   press, in the owner's words (`deleteProfileWording`):
+                      #   "You can't undo this. Every resume in this profile will be
+                      #   deleted with it and can't be recovered.", the confirm
+                      #   "Delete profile and its resumes" (a profile with no
+                      #   resume: "This can't be undone." and "Delete
+                      #   profile"); the dashboard then says "Deleted {name} and
+                      #   its resumes." (flashNotice.ts keeps the sentence in
+                      #   sessionStorage for the one navigation). A resume's ⋮
+                      #   (`useResumeActions`, shared by All resumes and a
+                      #   profile's page): Edit, Set as default (an enabled
+                      #   resume that is not already the chosen default),
+                      #   Duplicate (in the same profile and on the same
+                      #   template; never locked), Move to another profile...
+                      #   (MoveResumesDialog: a radio list and "A new profile",
+                      #   which is made WITH the resume, all or nothing),
+                      #   Keywords (KeywordsDialog; KeywordChips.tsx draws the
+                      #   job titles and the skills and technologies, there and
+                      #   in KeywordsCard.tsx, the editor's read-only card),
+                      #   Download JSON, Disable / Enable and Delete (a
+                      #   window.confirm). After
+                      #   a card leaves the page - a resume deleted or moved
+                      #   out, a profile deleted - focus goes to the next card,
+                      #   else the previous, else the New tile (List view
+                      #   has none: then the page's Create New,
+                      #   `data-new-fallback`) (focusAfterRemoval.ts). A
+                      #   change refused with a 404 or 409 (the resume or
+                      #   profile is gone or changed in another tab) reads
+                      #   both lists again (`isStaleRefusal`); a dashboard
+                      #   whose FIRST read failed draws only the error and
+                      #   Try again, never "0 profiles". lib/profileDashboard.ts
+                      #   holds the decisions with no React in them and imports
+                      #   TYPES ONLY, so backend/test loads it: the tabs
+                      #   (`readDashboardTab`, `dashboardHref`), the view
+                      #   (`VIEW_MODE_KEY`, `readViewMode`, `writeViewMode`),
+                      #   the addresses (`isProfilesDeskRoute`, which
+                      #   app/admin/layout.tsx asks instead of keeping a
+                      #   pattern of its own, `profilePageHref`,
+                      #   `newResumeHref`, `readProfileParam`), `resumeLabel`
+                      #   (the server's `resumeLabelOf`: the headline unless it
+                      #   is empty or 'Professional', else the name, else
+                      #   'Untitled resume'), `sortProfiles` (newest edit
+                      #   first, then id), the searches (`matchesQuery`,
+                      #   `filterProfiles`, `filterResumes`) and the sentences
+                      #   (`describeHoldings`, `describeMatches`,
+                      #   `deleteProfileWording`, `keywordPreview`).
+                      #   test/frontendProfiles.test.js runs them, and the
+                      #   clients they sit on, against the server and the real
+                      #   routes; test/e2e/profiles.js drives the pages.
   components/icons/   # Hand-rolled inline SVG set (there is no icon library).
                       #   index.tsx is UI icons - one grid, one stroke, one
                       #   colour, and the ROW decides it. marks.tsx is brand
@@ -1147,25 +1701,37 @@ frontend/src/
                       #   Go to subscription and Close), `LockButton`,
                       #   `ChoiceCard` (a `.tl-choice` radio card that may be
                       #   locked - the lock beside the label, never inside it,
-                      #   `data-locked-choice`), `LockedPanel` (a page or part
-                      #   of one: RequiresSubscription's Groups gate,
-                      #   /admin/profiles/new at the limit), `ProfileLimitLink`
-                      #   (after a 402 `profile-limit`). The words are
-                      #   lib/subscriptions.ts `describeLock` (with copies of
-                      #   the tiers' names and profile limits, drift-tested in
+                      #   `data-locked-choice` - and may carry a `hint`, muted
+                      #   text under its label that never says which
+                      #   subscription a thing needs; a card that is never
+                      #   locked passes neither `lock` nor `onLocked`, as the
+                      #   builder's three build-mode cards do),
+                      #   `ProfileLimitLink` (after a 402 `profile-limit`).
+                      #   The ONE LOCK LEFT is `more-profiles`
+                      #   (`LockedFeatureId` has no other member): adding a
+                      #   PROFILE past the tier's count - the dashboard's New
+                      #   profile tile and Create New, and "A new profile" in
+                      #   the Move and New resume dialogs. A run has no lock (it
+                      #   builds one profile on every tier) and a resume is
+                      #   never counted, so New resume, Duplicate and Import
+                      #   are never drawn locked and no page is a locked panel
+                      #   (`LockedPanel` is gone). The words are
+                      #   lib/subscriptions.ts `describeLock('more-profiles',
+                      #   account)` (with copies of
+                      #   the tiers' names and caps, `SUBSCRIPTION_PROFILE_LIMITS`,
+                      #   drift-tested in
                       #   frontendHelpers.test.js) - and, for what the SERVER
-                      #   refused, `describeTooLowRefusal` /
-                      #   `describeProfileLimitRefusal`, worded from the
-                      #   refusal (below Premium is Default; a 402's `limit`
-                      #   names its tier), never the session, which is behind
+                      #   refused, `describeProfileLimitRefusal`, worded from
+                      #   the refusal (a 402's `limit` names its tier), never
+                      #   the session, which is behind
                       #   the server whenever a refusal reaches a page that
-                      #   offered the thing. A locked rail row in the phone
-                      #   drawer hands focus to the menu button first
-                      #   (AppSidebar `onOpenDialog`), which the dialog gives
-                      #   it back to; the icon is IconLock, never
-                      #   a "Premium" pill. At the profile limit New profile and
-                      #   Duplicate are locked, not off (ProfileCards'
-                      #   `locked`, `DuplicateState`).
+                      #   offered the thing. `hasSubscription` and
+                      #   `subscriptionAtLeast` stay, held to the backend's, as
+                      #   the guard a future tiered route or rail entry would
+                      #   use; no page calls the first and no rail entry has
+                      #   `needs`. The icon is IconLock, never
+                      #   a "Premium" pill. SubscriptionStatus says a profile
+                      #   is a person and holds any number of resumes.
   components/SpendConfirm.tsx # What is asked before anything spends credit,
                       #   with "Do not show again": `useSpendConfirm().ask({
                       #   kind, title, price }, start)` - skipped kind starts at
@@ -1173,7 +1739,13 @@ frontend/src/
                       #   `confirmNeeded` says (Generate Immediately always,
                       #   an order or a subscription only when it takes credit
                       #   or the cost is unknown); the amount, the balance after,
-                      #   Proceed off when short (`spendFigures`). Nothing
+                      #   Proceed off when short (`spendFigures`). When the
+                      #   cost cannot be worked out (a quote that failed is a
+                      #   cost NOT KNOWN, never $0) it says "What this costs
+                      #   could not be worked out just now. It is taken from
+                      #   your credit at the price per resume of the builder
+                      #   mode you chose." - a model has no price - and a
+                      #   subscription's says only the first sentence. Nothing
                       #   starts for a page or dialog that unmounted while its
                       #   price was worked out (a `mounted` ref). Keys
                       #   `freeTailor.spendConfirm.{order,immediate,
@@ -1240,10 +1812,11 @@ frontend/src/
                       #   CSS module. /admin/* pages sit inside app/admin/
                       #   layout.tsx's <main>; the ones that are Settings tabs
                       #   are also under the shell's Settings title, so they
-                      #   open with an h2, not a PageHeader. /admin/templates and
-                      #   /admin/groups are not tabs, and do open with a
-                      #   PageHeader; the Profiles pages draw their own desk and
-                      #   h1 (profilePages.module.css), and the profile editor
+                      #   open with an h2, not a PageHeader. /admin/templates
+                      #   is not a tab, and does open with a
+                      #   PageHeader; the Profiles pages and the resume pages
+                      #   draw their own desk and h1 (resumePages.module.css,
+                      #   profiles.module.css), and the resume editor
                       #   its own bar, under an sr-only h1.
   app/page.tsx        # Build Resumes. Every build is queued (POST
                       #   /generation/batches) as Generate Immediately (`mode:
@@ -1274,59 +1847,105 @@ frontend/src/
                       #   also holds the own sheet's LAYOUT (C:F, then G, H
                       #   and L) and the Analysis cell's states, which
                       #   test/frontendAnalysis.test.js holds to
-                      #   JOB_SHEET_COLUMNS and parseAnalysisCell. The
-                      #   multi-profile choices lock on lib/subscriptions.ts
-                      #   `canBuildForManyProfiles` (the backend's
-                      #   hasSubscription, admins exempt; frontendHelpers.test.js
-                      #   runs both), and the target in effect is DERIVED from it
-                      #   (lib/runChoices.ts `targetInEffect`) rather than
-                      #   corrected in an effect. Locked, they are DRAWN with
-                      #   the lock (components/subscription/LockedFeature.tsx
-                      #   `ChoiceCard`; sheet mode's targets are
-                      #   components/builder/ProfileTargets.tsx, whose locked
-                      #   Select Group is a button, `#sheets-group-locked`), and
-                      #   a run's 403 `subscription-too-low` opens the same
-                      #   lock, worded for Default (`isSubscriptionTooLow`,
-                      #   `describeTooLowRefusal`). Every Generate
+                      #   JOB_SHEET_COLUMNS and parseAnalysisCell. A run builds
+                      #   exactly ONE profile (a person) in ONE build mode, on
+                      #   EVERY subscription: the page has no Single / Multiple
+                      #   choice, no list or group of profiles and no lock on a
+                      #   run. Building by hand and building from the sheet
+                      #   share one `selectedProfileId` and one
+                      #   `buildModeChoice`, drawn by a `ProfileSelector` (the
+                      #   profiles that have an enabled resume, newest edit
+                      #   first, "{name} (N resumes)"; `#manual-profile`,
+                      #   `#sheets-profile`) and by components/builder/
+                      #   BuildModeChoice.tsx - Choose Suitable Resume, Partial
+                      #   Tailor and Fully Tailor as three `ChoiceCard`s that
+                      #   are never locked (radios `manualBuildMode`,
+                      #   `sheetsBuildMode`, value = the mode's id), each
+                      #   saying what the mode does (lib/buildModes.ts
+                      #   `BUILD_MODE_CHOICES`) and, once /resume/models has
+                      #   answered, "Free." or "$0.02 a resume.". The page
+                      #   starts on the administrator's Default profile (else
+                      #   the first) and Default builder mode
+                      #   (`startingProfileId`, `startingBuildMode`), and a line
+                      #   under the cards says which resume a run builds
+                      #   (`buildModeNote`, `[data-build-mode-note]`). A request
+                      #   is `{ profileId, buildMode, jobs, ... }` with no
+                      #   template: the server draws the chosen resume on its
+                      #   own. A change of mode, profile or model drops the
+                      #   preview, which was that mode's work. Every Generate
                       #   Immediately and every Order goes through ONE gate,
                       #   `confirmSpend` -> components/SpendConfirm.tsx's
                       #   `useSpendConfirm().ask`, priced by
                       #   lib/generationQueue.ts `estimateRun` (the quote of a
-                      #   `quoteBody` - the profiles, placeholder jobs, the
-                      #   model and, finalising previews, their content AND
+                      #   `quoteBody` - the profile, the mode, placeholder jobs,
+                      #   the model and, finalising previews, their content AND
                       #   tokens as the submission carries them: content whose
-                      #   token expired is charged at least the profile's own
-                      #   model); while it prices, the run buttons wait
-                      #   (`runBusy`) and say "Checking the price..." (the
-                      #   button, or CostLine's `pricing` beside the sheet
-                      #   panel's); frontendSpendConfirm.test.js holds every
-                      #   run handler to it, the page read CRLF or LF alike.
-                      #   The cost line
+                      #   token expired is charged at least the dearer tailoring
+                      #   mode); the quote is exact, jobs x the mode's price,
+                      #   so no line says "up to"; while it prices, the run
+                      #   buttons wait (`runBusy`) and say "Checking the
+                      #   price..." (the button, or CostLine's `pricing` beside
+                      #   the sheet panel's); frontendSpendConfirm.test.js holds
+                      #   every run handler to it, the page read CRLF or LF
+                      #   alike. The cost line
                       #   is components/builder/CostLine.tsx and an order's
                       #   receipt (its poll and Cancel) components/orders/
                       #   OrderReceipt.tsx (`placedOrderFrom`), both moved out
                       #   for every page that orders - Find Jobs' Order
-                      #   Immediately draws them, and ProfileTargets, too; who
-                      #   a run builds for, the
-                      #   starting target and the files are lib/runChoices.ts
-                      #   (`targetProfiles`, `targetBlocker`, `startingTarget`,
-                      #   `defaultRunFormat`). A preview's
-                      #   "Manual Edits (JSON)" box offers only what an edit
-                      #   can change (lib/tailoredDraft.ts: title, summary,
-                      #   each role's bullets, skillGroups - the soft group
+                      #   Immediately draws them, and ProfileSelector and
+                      #   BuildModeChoice, too; the starting profile and mode,
+                      #   what still blocks a run and the files are
+                      #   lib/runChoices.ts (`startingProfileId`,
+                      #   `profileBlocker`, `startingBuildMode`,
+                      #   `buildModeNote`, `defaultRunFormat`; its one runtime
+                      #   import is ./buildModes). With Auto-generate off,
+                      #   Analyze & Preview asks the server to choose and draw
+                      #   the resume as a run would for this posting
+                      #   (`resumeApi.preview({ profileId, buildMode,
+                      #   analysisId, ... })`; there is no preview-all and no
+                      #   Multiple flow, and the v4.1 lib/builderPreviews.ts
+                      #   that served it is gone) and keeps the answer as the
+                      #   preview's choice (`previewChoice`: the resume, its
+                      #   label, its `match`). Choose Suitable Resume shows the
+                      #   chosen resume AS WRITTEN - no ATS pill, no Manual
+                      #   Edits - and Generate Immediately sends its
+                      #   `previewedResumeId` alone (the server refuses content
+                      #   for that mode). Partial and Fully Tailor show the
+                      #   tailored resume,
+                      #   with the pill and Manual Edits, redraw it through
+                      #   `{ resumeId, tailoredContent }` and finalise with
+                      #   `previewedResumeId` and the content and token keyed
+                      #   by that resume. The preview's note is "{resume
+                      #   label} · {describeChoice(match)}" (lib/orders.ts;
+                      #   `[data-preview-choice]`); a posting too short to
+                      #   analyse is drawn as written in every mode, so with no
+                      #   pill or Manual Edits either; and a 409
+                      #   `preview-changed` shows the server's sentence and
+                      #   drops the preview. Under the Model box Fully Tailor
+                      #   says "Defaults come from {default resume label}, the
+                      #   profile's default resume." and the other modes "Each
+                      #   resume uses its own model; one chosen here applies to
+                      #   this run only."; the progress line, the rows of the
+                      #   finished resumes (ImmediateRunFiles) and a failed
+                      #   download name the resume the run chose
+                      #   (` · {resumeLabel}`, from `BatchTask.resumeLabel`).
+                      #   A tailored preview's "Manual Edits (JSON)" box offers
+                      #   only what an edit can change (lib/tailoredDraft.ts:
+                      #   title, summary, each role's bullets, skillGroups -
+                      #   the soft group
                       #   marked `soft: true` - and coverLetter), plus each
                       #   role's company, title and dates, which only say which
                       #   role the bullets are - the parse restores them from
-                      #   the profile, and the dates are how its `closestStint`
+                      #   the resume, and the dates are how its `closestStint`
                       #   tells two stints apart; no description, no place.
                       #   TAILORED_DRAFT_NOTE says so, and that the title
                       #   counts only without a headline. It sends
                       #   that back for the server to finish against the
-                      #   profile; frontendTailoring.test.js holds the edit to
+                      #   resume; frontendTailoring.test.js holds the edit to
                       #   finish exactly as the whole content does. There is no
                       #   skill-confirm panel: nothing a tailoring prints is
                       #   checked against the library, so no answer carries a
-                      #   list of skills to confirm (the profile editor's add
+                      #   list of skills to confirm (the resume editor's add
                       #   still goes through /skills/confirm).
   components/, lib/   # UI and the API client. Shared bits worth knowing before
                       #   writing another copy: lib/format.ts (one formatDate for
@@ -1359,6 +1978,31 @@ frontend/src/
                       #   says it did (/orders, an order's page, the builder's
                       #   receipt) - one file, so the two agree that a resume
                       #   stopped mid-build is refunded unless it finished.
+                      #   lib/buildModes.ts is a copy of the server's
+                      #   config/buildModes.ts - `BUILD_MODES`, `isBuildMode`,
+                      #   `BUILD_MODE_LABELS`, `BUILD_MODE_PRICE_SETTINGS` (the
+                      #   setting each mode's price is served under) and
+                      #   `BUILD_MODE_CHOICES` (the three mode cards' words,
+                      #   which never name a subscription) - and imports
+                      #   nothing; lib/settingSources.ts's
+                      #   `MODE_PRICE_REQUEST_FIELDS` (setting -> the `...Usd`
+                      #   name a save sends it under) is a copy of
+                      #   `BUILD_MODE_PRICE_FIELDS`'s request names.
+                      #   test/frontendHelpers.test.js and
+                      #   frontendProfiles.test.js hold the first to the
+                      #   server's; frontendSettings.test.js and
+                      #   frontendMoney.test.js the second. lib/api.ts speaks
+                      #   the server's shapes: `profilesApi` answers a
+                      #   `ProfileSummary` (the resumes counted, never listed),
+                      #   `resumesApi.create / uploadPdf / importJson` take
+                      #   `{ profileId }` (sent as `?profileId=`) and
+                      #   `resumeApi.preview` takes `{ profileId, buildMode }`
+                      #   (it chooses a resume) or `{ resumeId,
+                      #   tailoredContent }` (it draws held content again);
+                      #   `TaskMatch` is the explanation an order item keeps,
+                      #   and lib/orders.ts `describeChoice(match)` words it
+                      #   once, for the order's page and the builder's
+                      #   preview note.
 ```
 
 Crypto payments go through **Cryptomus** (`integrations/cryptomus.ts`), a
@@ -1405,9 +2049,9 @@ ids are `[a-z0-9-]`, at most 100, never a Windows device name, checked before
 any path is built (`templateFileId`); a built-in's id, or an unreadable file's,
 is never overwritten; `supportsSoftSkills` / `supportsStrengths` / `isBuiltIn`
 are never written. An id is taken exactly as its file carries it - no folding
-of case or `_`, no rename aliases - and a profile's `preferredTemplate` is
-stored as given, trimmed, because the editor, the Profiles list and the
-one-template-per-profile rule compare ids as they are. A write that fails
+of case or `_`, no rename aliases - and a resume's `preferredTemplate` is
+stored as given, trimmed, because the editor, the resume cards and the
+template chooser compare ids as they are. A write that fails
 throws `TemplateStoreError`, which the template routes answer with "Template
 could not be saved." and a ref. The rows ac3df79 moved out of an older
 database's `templates` table are left there, never read (the guard requires
@@ -1416,15 +2060,402 @@ gitignored, so they show in `git status` and can be committed to ship them.
 Startup prints whether the directory is writable, and names any `.json` there
 no id can have (not offered), under `Database:`.
 
-## Profiles, templates and the section switches
+## Profiles and their resumes
 
-A profile's resume choices are three fields of `ProfileSettings`:
+Owner decisions D11-D18 (v4.2, 2026-10-21). A profile is a PERSON and holds
+that person's resumes; an account keeps several profiles, and every resume
+sits in exactly one. The tree is written by `database/profileTree.ts`, by
+`database/profileRepository.ts` (the people) and by
+`database/resumeRepository.ts` (the resumes), and the rules that need no
+database are `services/profileRules.ts`'s. A resume's place under its profile
+is what "filed" means in this section - not "Where resumes are filed" below,
+which is the folders a build's files go to.
+
+**Three words.** A **profile** is a person: `Profile` and `ProfileSummary`
+(types/profile.ts), the `profiles` table, `/api/profiles`. A **resume** is one
+resume document: `Resume` (types/resume.ts), the `resumes` table,
+`/api/resumes` (the builder's `/api/resume/*` is another router). The
+**account** is the signed-in user's own settings: Settings -> Account, the
+`users` table. The names of the cap keep the word "profile" because they mean
+a person - `profileLimit`, `profilesUsed`, `ProfileLimitError` with the wire
+code `profile-limit`, `orphanedProfiles` - and they count people now, where
+build 4.1 counted resumes with them; the run's v4.1 names (`profileIds`, which
+carried resumes) are gone: a run names ONE profile (see "Conventions from the
+history").
+
+**The tree** (D11). `Resume.profileId` is the one pointer: in the resume's
+document, and mirrored to the column `resumes.profile_id` on every save (the
+indexed-columns map in resumeRepository.ts, as `ownerId` is to `owner_id`). A
+profile stores NO member list, so a resume cannot be in two profiles, a
+deleted resume leaves nothing behind to clean, and an id that comes back (an
+import keeps a free id; the Bid Assistant takes the client's) can never rejoin
+somebody else's profile. A profile is `{ id, ownerId?, name, defaultResumeId?,
+createdAt, updatedAt }` and is read ONLY through `toProfile(raw)` (the people's
+`DocumentTable` revives through it), which keeps those keys and no others: a
+v4.1 group's member list (`profileIds`) is never read and the profile's next
+write drops it for good, and a blank name reads as 'Untitled Profile'.
+**`profiles` has no `disabled` column and must never gain one**:
+glossaryRename.ts tells it from build 4.1's table of resumes of the same name
+by that column alone (see database/ above). `DocumentTable`'s indexed columns
+may be null (an unfiled resume's `profile_id`), and every method of it takes an
+optional connection (below). `resumes.profile_id` is in SCHEMA and in
+ADDED_COLUMNS, never in the guard's frozen list; `idx_resumes_owner_profile`
+(`owner_id, profile_id`) and `idx_profiles_owner` (`owner_id, created_at`) are
+in INDEXES_AFTER_COLUMNS. Neither table had an index on the owner, so a
+profile's resumes, an owner's profiles in age order, the count behind the
+limit and the filing query would each be a scan; test/profileTree.test.js pins
+that they seek on these.
+
+**What /api/profiles answers** is a `ProfileSummary`: a profile with its
+resumes COUNTED and never listed - `{ id, name, ownerId?, createdAt, updatedAt,
+lastEditedAt, resumeCount, enabledResumeCount, defaultResumeId,
+chosenDefaultResumeId }`. `ownerId` is there only on an administrator's
+`?allOwners=true` list; `lastEditedAt` is the later of the profile's own
+`updatedAt` and its newest resume's; `defaultResumeId` is the EFFECTIVE default
+(null only for a profile with no resume) and `chosenDefaultResumeId` the stored
+choice (null while none is stored), both under "The default resume" below. The
+list is newest edit first, then id, read by `summarizeProfiles` with one
+`GROUP BY profile_id` query for the counts and the newest edit and one for the
+resumes behind the effective defaults - not a query per profile.
+
+**Placement is the repository's, and a body never places** (D12). A NEW resume
+is placed by `placeNewResume`, in the caller's transaction: (1) on the profile
+the request names with `?profileId=`, which must be the caller's OWN - an
+administrator's included - else 404 `profile-not-found` (a repeated or
+non-text `?profileId=` is 400 `bad-profile-id`); (2) otherwise on the caller's
+OLDEST profile (`created_at`, then id) whose name has the same person key
+(below) as the resume's name; (3) otherwise on a new profile named for the
+person. Only (3) makes a profile, so only (3) counts the limit: adding a
+resume to a person who has a profile costs nothing, on any tier. A `profileId`
+in a request body is read by nothing. `buildNewResume`, `buildUpdatedResume`
+and `buildImportedResumes` do not carry it (an import file's entries and the
+Bid Assistant's JSON editor included), so a create is placed by (1) to (3)
+whatever the body says. PUT /api/resumes/:id is `saveEditedResume`: it reads
+the row AGAIN inside its transaction and takes the owner and the profile from
+it, so a Move that landed meanwhile is not undone and a body cannot hand a
+resume to another profile or account; a row that is gone, or that another
+account took by reusing the id, is 404 `resume-not-found` - never an upsert,
+which a plain `DocumentTable.save` would be, recreating a resume deleted
+meanwhile; and a stored resume that was never filed is filed first. The Bid
+Assistant's whole-record edit goes through the raw writer (below), which keeps
+the stored placement.
+
+**One transaction, one connection.** Every write to the tree - `createResumes`,
+`saveEditedResume`, `deleteResume`, the raw writers, `createProfileFor`,
+`updateProfileFor`, `moveResumesIntoProfile`, `deleteProfileFor` and filing -
+is ONE IMMEDIATE transaction on ONE connection (`inTreeTransaction`:
+`db.inTransaction ? fn(db) : db.transaction(() => fn(db)).immediate()`;
+nothing inside awaits, and a nested call joins the open one). The write lock
+is taken before anything is read, so a decision made from a read - the profile
+limit, "is this id free", "which profile is this person's" - is still true
+when the write lands, across processes as within one. Every helper,
+`DocumentTable` included, runs on the connection the transaction holds: a
+statement sent through a second connection from inside it waits out the 5 s
+busy timeout and fails with SQLITE_BUSY (a test that reloads database/sqlite
+leaves an older module holding an older connection). A read for display
+(`summarizeProfiles`) needs no transaction.
+
+**Creates.** `createResumes(account, built[], { profileId? })` is EVERY create -
+POST /api/resumes, /api/resumes/import and /api/resumes/upload, and the Bid
+Assistant's - and does, in one transaction: file the account's old unfiled
+resumes (so the limit is counted against the profiles they make); check every
+id is free (409 `resume-id-taken`, never an overwrite; two entries of one
+batch naming one id count) and give a requested id of `new` - the chooser's
+address, /admin/resumes/new - a fresh uuid; place each resume (a later entry of
+one batch sees the profile made for an earlier one, so two resumes of one
+person share one new profile); adopt it as its profile's default when that has
+none; and save it, owned by the account. A refusal anywhere writes nothing: no
+resume and no new profile. `createResumesWithProfiles` is the same and also
+answers the profiles it made, for the import's answer. The raw writers
+`saveResume` / `saveResumes` (tests, seeding, and the Bid Assistant's
+whole-record edit) place a NEW row at once - on the `profileId` it carries when
+that is a profile of the same owner, else by (2) and (3) - and never count the
+limit, as filing does not; an existing row keeps its stored placement, for as
+long as that is still a profile of its owner.
+
+**The person key** (services/profileRules.ts). `personKey(name)` is the key of
+the name a profile would be GIVEN (`profileNameForPerson`, below): the name in
+Unicode NFC, trimmed, every run of whitespace one space, cut to
+MAX_PROFILE_NAME_LENGTH, lower-cased - the cut is part of the key because a
+profile stores the CUT name, and a key of a longer resume name could never match
+it (a 150-character name made a new profile for every resume of that person, and
+a 402 on a Default account). So
+'jane  DOE ' and 'Jane Doe' are one person; a blank or non-text name has the
+key of 'Untitled Profile', so resumes nobody named share ONE profile of that
+name. Placement compares it with each profile's CURRENT name, so renaming a
+profile changes whose resumes join it (an old group is a profile with a name,
+and a resume named for it joins it). `profileNameForPerson(name)` is the name
+a profile made for a person gets: the tidied name cut to MAX_PROFILE_NAME_LENGTH
+(100) characters as a person counts them (an emoji is one), or 'Untitled
+Profile'. `readProfileName` is for a name somebody TYPES: blank is 400
+`profile-name-required`, over 100 characters 400 `profile-name-too-long` -
+never cut quietly, since a name the person did not choose would be a surprise
+on a card.
+
+**The limit counts people** (D15; database/profileLimit.ts). The tier's
+`profileLimit` (Default 1, Premium 5, Premium+ 25, Premium Max none) caps how
+many PROFILES an account keeps; resumes are unlimited in every profile on every
+tier and are never counted. `countProfilesForOwner(ownerId, db?)` counts the
+owner's rows in `profiles` - an empty profile counts, or the cap would be free
+to dodge. `assertCanAddProfile(account, db, adding = 1, { forPerson? })` is
+called INSIDE the transaction of every write that makes a profile, on that
+transaction's connection, and for nothing else: `POST /api/profiles` (with or
+without `resumeIds`) and a resume create whose placement reaches (3). So two
+creates racing at the limit cannot both pass (one wins), and an import is all
+or nothing: the entry that would pass the limit refuses the file, and no
+resume and no profile is written. Administrators are exempt. Over the limit is
+402 `profile-limit` with `limit` beside the sentence, in two forms. Making a
+profile: *The {Default} subscription allows {1 profile} and this account has
+{1}. Delete one, or move up to a higher subscription on the Subscription
+page.* A resume for a person who has no profile yet, with no `?profileId=`:
+*This resume is for {Bob Lee}, who has no profile yet, and the {Default}
+subscription allows {1 profile} - this account has {1}. Add it from one of your
+profiles, or move up to a higher subscription on the Subscription page.* (the
+braces mark what is filled in: the tier's label, "N profile(s)", the count and
+the person's name). `profilesUsed` on /auth/me and Admin -> Accounts is the
+same count of FILED profiles. Old resumes are filed lazily (below), so the
+count is only as complete as the filing: `describeAccount` (/auth/me, and the
+sign-in answer) files the account's own resumes first, so the session never
+understates the limit; Admin -> Accounts' list does NOT (a list read should not
+write other accounts' data), so an upgraded account shows fewer there until its
+owner next opens the app - and a page deciding an "at the limit" lock should
+read the session's `profilesUsed` or GET /api/profiles, never the admin list.
+Deleting an account (DELETE /api/admin/accounts/:id) files the target's
+resumes first, then leaves its
+profiles and resumes where they are and answers `orphanedProfiles` and
+`orphanedResumes`, with the note *{R resume(s)} in {P profile(s)} belonged to
+that account and still exist. They are visible to administrators only until
+they are reassigned or deleted.* when there are any.
+
+**An account over its limit keeps everything.** Old resumes filed by their
+person's name (filing ignores the limit), or a tier lowered by an
+administrator, can leave an account with more profiles than its tier allows:
+it keeps and uses all of them - adds, edits, moves and deletes among them - and
+cannot make another. Taking somebody's work away because a dropdown changed
+would be the wrong way round.
+
+**Tier copy** (config/accountSubscriptions.ts; test/subscriptionBilling.test.js,
+test/subscriptionRoutes.test.js and test/profileTree.test.js pin it). Each
+tier states its profile count and that a profile holds any number of resumes.
+Default: *One profile, with any number of resumes. Everything else in the app
+is included.*, features '1 profile', 'Any number of resumes in each',
+'Everything else in the app'. Premium: *Up to five profiles, each with any
+number of resumes.*, 'Up to 5 profiles', 'Any number of resumes in each'.
+Premium+: *Up to twenty-five profiles.*, 'Up to 25 profiles', 'Everything in
+Premium'. Premium Max: *Unlimited profiles.*, 'Unlimited profiles',
+'Everything in Premium'. No tier names a group or a build for several
+profiles; `features` are words, never switches.
+
+**The default resume** (D13). `Profile.defaultResumeId` is the resume a run
+builds from in Fully Tailor mode, and the one a tie between resumes goes to
+(see "Builder modes and the suitable resume": a run reads the EFFECTIVE
+default, below). It is not the app settings' `defaultProfileId`, which is the
+administrator's choice of the profile the builder starts on. The
+FIRST resume in becomes it (`adoptAsDefaultIfNone`, run in the placing
+transaction before the resume is written: a profile with no valid default -
+none stored, or one that is no longer one of its resumes - takes the joiner).
+When the default LEAVES, deleted or moved to another profile, it is re-pointed
+to the OLDEST ENABLED resume left, else the oldest, else the profile stores none
+(`repointDefaultAfterLeaving`, run after the resumes have gone; "oldest" is
+`created_at`, an unreadable date last, ties to the lower id); a profile that
+receives moved resumes and has no valid default gets one the same way
+(`ensureDefault`). DISABLING the default writes NOTHING: the choice is kept,
+and enabling the resume brings it back. A consumer reads the EFFECTIVE default,
+`effectiveDefaultResumeId(chosen, members)`: the chosen one while it is an
+ENABLED resume of the profile, else the oldest enabled, else the oldest - even
+when every resume is disabled, so a reader that must build an enabled resume
+checks `disabled` itself (`enabledResumeCount` says whether there is one; a
+run's `resolveRunTarget` refuses a profile with none before it looks at the
+default) - and null only for a profile with no resume. `PUT /api/profiles/:id {
+defaultResumeId }` must name an ENABLED resume of that profile: one that is not
+its own, or none, is 400 `default-not-member`; a disabled one is 409
+`default-disabled`.
+
+**Move.** `POST /api/profiles/:id/move { resumeIds }` moves resumes into a
+profile, and `POST /api/profiles { name, resumeIds }` makes a profile
+(counting the limit) and moves them in, in the same transaction. ALL OR
+NOTHING: a resume that is not there, or that the viewer may not see, is 404
+`resume-not-found` and none moves (an administrator sees any); a resume whose
+owner is not the profile's owner is 409 `profile-owner-mismatch`, which only an
+administrator can reach; an empty list is 400 `nothing-to-move`. The list is
+read as distinct ids in order, anything that is not text left out, and a
+resume already in the target is not counted as moved. A moved resume keeps its
+`updatedAt` and everything else of its document but `profileId` (which
+`writePlacement` sets with the column): moving is not editing it, and lists,
+thumbnails and the order a run builds in all key on that time. The profile each
+resume came from re-points its default when the default left, and the target
+takes one if it had none. The answer is `{ moved, profiles }`: the target and
+every profile a resume came from, counted after the move.
+
+**Delete** (D14). `DELETE /api/profiles/:id` deletes the profile, EVERY resume
+in it and those resumes' Bid Assistant answers (`deleteAnswersFor`), in ONE
+IMMEDIATE transaction, and answers `{ deleted: true, deletedResumes }`. There
+is no count to send and no 409 for a profile that still holds resumes - the
+page warns, and "all the resumes in the profile" is the rule - so a resume
+added after the person was warned goes too, and an empty profile deletes. An
+administrator reaches any profile by id; anyone else, only their own. A queued
+build of a deleted resume fails as for any deleted resume (`ResumeGoneError`,
+*This resume was deleted before it could be built.*, 410, not retried) and the
+queue's `taskFinished` hook refunds the price it was charged
+(test/buildModes.test.js runs it). One resume's
+delete (`DELETE /api/resumes/:id`, `deleteResume`) takes that resume's answers
+with it and re-points its profile's default.
+
+**The routes.** `/api/profiles` is `requireUser` and nothing more: every
+builder, on every subscription, and an administrator reaches any profile by id
+(a reporter is refused as everywhere, 403 `role-not-allowed`). A router-level
+step files the viewer's own old resumes before any route runs, so the first
+read of an account that still has some WRITES, once (lazy filing, below).
+Every refusal is a `PublicError` - a sentence written for anybody, with a code
+a page can branch on - sent through `sendPublicError`, so the body is
+`{ error, code, ...extra }`.
+
+| Route | Takes | Answers |
+|---|---|---|
+| GET `/api/profiles` | `?allOwners=true` (an administrator's; ignored for anyone else) | 200 `ProfileSummary[]`: the caller's own, or every account's with `ownerId` |
+| GET `/api/profiles/:id` | | 200 `ProfileSummary`; 404 `profile-not-found` |
+| POST `/api/profiles` | `{ name?, resumeIds? }` and no other key | 201 `ProfileSummary`; counts the limit; a blank or absent name makes 'Untitled Profile'; the listed resumes are moved in, all or nothing |
+| PUT `/api/profiles/:id` | `{ name?, defaultResumeId? }` | 200 `ProfileSummary` |
+| POST `/api/profiles/:id/move` | `{ resumeIds }` | 200 `{ moved, profiles }`, `profiles` a `ProfileSummary[]` |
+| DELETE `/api/profiles/:id` | | 200 `{ deleted: true, deletedResumes }` |
+
+The resumes' routes (`/api/resumes`) change thus. POST `/`, `/import` and
+`/upload` take `?profileId=`: `/upload` checks it BEFORE the model is asked (a
+profile that is not the caller's is 404 and nothing is extracted) as well as at
+the save, and `/import` before it reads the file. An import answers 201
+`{ resumes, imported, keptIds, profileIds, createdProfiles }` - `profileIds`
+the distinct profiles in file order, `createdProfiles` an array of
+`{ id, name }` for the ones it made - and without a `?profileId=` files each
+entry by its person, in file order. GET `/` and GET `/:id` file the viewer's
+old resumes first, and every resume in every answer carries its `profileId`.
+PUT `/:id` is `saveEditedResume` and DELETE `/:id` is `deleteResume`.
+
+Refusals, by status and code:
+
+| Status and code | When | Sentence |
+|---|---|---|
+| 402 `profile-limit` + `limit` | a profile would pass the tier's count | the two above |
+| 404 `profile-not-found` | no such profile, or (for anyone but an administrator) not the caller's; a `?profileId=` that is not the caller's own, an administrator's too | *That profile was not found. It may have been deleted; reload the page.* |
+| 404 `resume-not-found` | a resume to move that is not there or not the viewer's; an edit whose row is gone or was taken by another account | *One of those resumes was not found. It may have been deleted; reload the page.* |
+| 400 `bad-profile-id` | a repeated or non-text `?profileId=` | *Name one profile for the resume.* |
+| 400 `nothing-to-move` | no resume listed to move, or a `resumeIds` that is not a list | *Choose the resumes to move.* |
+| 400 `use-move` | a PUT naming `resumeIds` | *A profile's resumes are not changed here: move them with Move.* |
+| 400 `nothing-to-change` | a PUT naming neither a name nor a default resume | *There is nothing to change: send a name or a default resume.* |
+| 400 `profile-name-required`, `profile-name-too-long` | a name typed for a profile (a PUT, or a POST with a non-blank one) | *Give the profile a name.* / *A profile name can be at most 100 characters.* |
+| 400 `default-not-member` | a default that is not one of the profile's resumes | *The default resume must be one of this profile's resumes.* |
+| 400 `stale-page` | a POST /api/profiles with any other key | *This page is out of date; reload it before saving.* |
+| 409 `default-disabled` | a default that is disabled | *That resume is disabled, so it cannot be the default. Enable it first.* |
+| 409 `profile-owner-mismatch` | a move into a profile of another account (only an administrator can ask) | *A resume can only move to a profile of the account it belongs to.* |
+| 409 `resume-id-taken` | a create naming an id another resume holds, checked inside the transaction (the Bid Assistant checks first, in its own words) | *A resume with this id already exists.* |
+
+**Stale pages** (D27). Until v4.2 POST /api/profiles took a RESUME's body, and
+a stale editor tab - or a script - still sends one; read as a profile it would
+quietly make a person out of a resume, and count the limit. So the route takes
+`{ name?, resumeIds? }` and nothing else: any other key, or a body that is not
+an object, is 400 `stale-page`. PUT and DELETE need no such check: a resume's
+id names no profile, so they are 404 `profile-not-found`, and a PUT naming
+`resumeIds` (a v4.1 Groups page's save) is 400 `use-move`.
+
+**Lazy filing, instead of a data migration** (D17; owner decision: no
+migration). The structural step only renames and LATEST_SCHEMA_VERSION stays
+10, so a database from v4.1 opens with every resume's `profile_id` NULL and its
+old groups as profiles under their names. `fileUnfiledResumes(db, ownerKey)`
+files an owner's resumes that sit under no valid profile - none, one that is
+gone, or one of another account (`UNFILED_RESUMES_SQL`: `resumes r LEFT JOIN
+profiles p ON p.id = r.profile_id AND p.owner_id = r.owner_id WHERE r.owner_id
+= ? AND p.id IS NULL AND json_valid(r.data) ORDER BY r.created_at, r.id`) - oldest first, by the
+placement rule's (2) and (3), so a profile made earlier in the pass is seen by
+the later resumes, one person's resumes share one profile, and the oldest
+becomes its default ("the first resume in is the default"). It IGNORES the
+limit (an account with old resumes of three people on Default ends with three
+profiles, and cannot make a fourth) and writes the document's `profileId` and
+the column and NOTHING else: `updated_at` and the document's `updatedAt` do not
+move, because lists, thumbnails and the order a run builds in key on them, and
+a profile it makes takes the dates of the resume it was made for, so the
+dashboard does not show every old person as edited just now. With nothing to
+file the check is TWO reads and no write lock: `HAS_UNFILED_RESUME_SQL`, a true
+index seek (`owner_id = ? AND profile_id IS NULL` on
+`idx_resumes_owner_profile`, first row enough), and, only when that finds
+nothing, `HAS_DANGLING_RESUME_SQL`, which is NOT a seek: it walks the owner's
+resumes in that index and probes `profiles` by primary key for each, to catch a
+pointer to no profile (only a hand edit makes one - deleting a profile deletes
+its resumes - so it is a safety net, and O(the owner's resumes) on every
+profiles route). With something, the list is read again under the lock, since
+another process may have filed it. A row whose `data` is not JSON (`json_valid`
+leaves it out of all three statements, so it never keeps the check true for its
+owner) or that has no owner is left alone. It files the VIEWER's resumes
+only, when they are READ: in every /api/profiles route (router-level), in GET
+/api/resumes and GET /api/resumes/:id, in /auth/me's `describeAccount`, inside
+every create, profile create and move (before the limit is counted, so the limit
+sees the profiles filing makes), and on an edit of a stored resume that was
+never filed - the Bid Assistant's whole-record PUT included
+(`resumeRepository` `saveRawIn` files the owner's unfiled resumes by their
+STORED names before the body's name can place the row, so a rename in the body
+never splits one person across two profiles). Another
+account's resumes wait for their own read, and an administrator's
+`?allOwners=true` list can still show them with no `profileId`. An old group is
+a profile like any other and its member list is never read, so resumes are
+filed by NAME and not by the group they were in: a resume named "Zed Zee" joins
+an old group called "Zed ZEE" (the same person key), and nothing is deleted.
+
+**Not carried over.** An old group's member list, and a resume's own
+Partial/Fully choice: Partial or Fully Tailor is the RUN's now (see "Builder
+modes and the suitable resume"), `ResumeSettings.tailorMode` and
+`getResumeTailorMode` are gone, and a resume stored with a `tailorMode` is read
+past and loses it at its next save.
+
+**No template rule** (D16). Any resume may use any template:
+`resolveTemplateForResume` takes the requested template, else the resume's
+own `preferredTemplate`, else `default`, and no server code ever refused a
+template another resume already uses - the profile tree adds none. The pages of
+v4.1 did enforce a rule of their own (a template another resume used was not
+offered, and Duplicate dropped the template); it is gone from them too: the
+editor's picker and the chooser's Use this template offer every enabled
+template, and Duplicate keeps the template (see components/resume/ above).
+
+**The Bid Assistant** (D18) keeps every word, path, field and table, and one
+call of it changed: its create. It called `assertCanAddProfile(viewer)` and
+then a raw save, which under a limit on people would refuse a third resume of
+one person as if it were a new person; it now calls
+`resumeRepository.createResumes(viewer, [built])`, so one limit is honoured by
+both doors into the table. Its whole-record PUT stays on the raw `saveResume`
+and its delete on `deleteResume`. Deleting a PROFILE takes its resumes' answers
+with it in the same transaction, in plain SQL (`deleteAnswersFor`):
+bidAssistant/database.js opens its own connection as it loads and creates its
+tables then, so the answers table exists only once it has, and the orphans an
+earlier build left are swept when it loads.
+
+**Tests.** test/profileTree.test.js holds all of the above over the real
+routers (see test/ above). A test that needs a tree and is not about how it
+grows seeds one with `seedProfileWithResumes(owner, name, inputs)` in
+test/helpers.js, which goes round the routes and the limit on purpose: a seed
+is not a request, so a Default account can be given three people to prove what
+it may then do.
+
+**Where v4.2 stands.** It is built, backend and pages: the tree (above), the
+builder modes (see "Builder modes and the suitable resume") and the pages that
+speak them - the Profiles dashboard and a profile's page, the template chooser
+and the resume editor, Build Resumes, Find Jobs' Order Immediately, the
+receipts and the order pages, Admin -> Settings and Admin -> Models (see the
+layout above). Nothing of the old multi-profile builder is left in
+frontend/src: no page sends a `profileIds` list or calls the preview-all
+route, no page draws a price on a model, reads a retired setting, offers a
+per-resume Partial/Fully choice or limits a resume to a template another
+resume uses, and the resume pages count nothing against `profileLimit` (only a
+new PROFILE is counted, and locked at the limit). Download JSON writes the
+resume without the derived `matchKeywords` and the `profileId` it is filed
+under, a file Import takes back. Every frontend copy of a server table is held
+to it by a drift test, and none is red on purpose any more.
+
+## Resumes, templates and the section switches
+
+A resume's choices are three fields of `ResumeSettings`:
 `technicalSkillsLayout` (`'categorized' | 'flat'`, shown as **Grouped** /
 **Plain**, absent = categorized) and the booleans `includeSoftSkills` and
 `includeStrengths`, absent = false - which is what every resume rendered before
-they existed, so they needed no migration. Read them with `profileService`'s
-getters (`getProfileResumeSections` for all three); a save keeps a stored value
-when the payload omits it, and only a boolean decides. `Profile.softSkills` is
+they existed, so they needed no migration. Read them with `resumeDocument`'s
+getters (`getResumeSections` for all three); a save keeps a stored value
+when the payload omits it, and only a boolean decides. `Resume.softSkills` is
 the person's own list (trimmed, case-insensitively unique, 50 x 100 chars).
 
 **The render gate** is `applySkillsLimit` in `generators/pdfGenerator.ts`: every
@@ -1445,22 +2476,22 @@ with case-insensitive repeats removed, and the soft-skill group goes to the
 Soft Skills section while that switch is on as the TEMPLATE leaves it (so on
 burgundy-rule, navy-rule, charcoal-sidebar and ink-ledger it stays in the
 block) and stays in the block, under its heading, while it is off; a block
-left empty is the profile's own skills; (2) older content with only
+left empty is the resume's own skills; (2) older content with only
 `hardSkills` (or `skills`), unpadded: Plain that list, unfiltered, in its
-order; Grouped under the author's headings when the profile has any
+order; Grouped under the author's headings when the resume has any
 (`buildAuthoredSkillCategories`: every skill, the author's heading order, a
 skill they never placed under the library's heading at the end), else
 regrouped under the library's headings in `SKILL_CATEGORY_ORDER`,
-library-known skills only (`groupClaimedSkills`); (3) otherwise the profile's
+library-known skills only (`groupClaimedSkills`); (3) otherwise the resume's
 own (`ownSkillCategories`), unpadded: Plain the library-known skills in the
 person's order, in the library's spelling (`normalizeLibraryHardSkills`);
 Grouped the author's grouping as typed, else `groupClaimedSkills` - the
 library's headings in their order, the person's order under each,
 library-known skills only. With no soft group routed the Soft Skills section
-is the content's `softSkills`, else the profile's own. Strengths are ALWAYS
-the profile's own (the tailoring prompt writes none; a content `strengths`
+is the content's `softSkills`, else the resume's own. Strengths are ALWAYS
+the resume's own (the tailoring prompt writes none; a content `strengths`
 is never printed). `prepareResumeRenderData`'s tailored branch prints the
-title as composed (`tailoredContent.title`, else the profile's headline, both
+title as composed (`tailoredContent.title`, else the resume's headline, both
 through `sanitizeTitleForATS`, which keeps letters, digits and `| ( ) / , . &
 + # · -` and turns any other symbol into a space), blanks every role's
 `description` and keeps at most 8 bullets (`MAX_TAILORED_BULLETS`, the
@@ -1546,40 +2577,40 @@ gated lists, so it never needed the finder; it prints no paragraph for an
 empty description either.
 
 **The template decides the switches too.** A switch that the generation's
-template has no section for counts as OFF everywhere: read the profile through
-`profileForTemplate(profile, template)` (`profileService`), which every render
+template has no section for counts as OFF everywhere: read the resume through
+`resumeForTemplate(resume, template)` (`resumeDocument`), which every render
 entry point does (`generateResumePDF`, `generatePreviewHTML`,
-`generateProfilePreviewHTML`, and `generateResumeDOCX`, which takes the
+`generateResumeDraftPreviewHTML`, and `generateResumeDOCX`, which takes the
 template for exactly this) and every tailoring caller does before
 `tailorResume` / `parseTailoredResumeContent` / `finaliseHeldContent`
-(`/resume/preview`, `/preview-all` - which resolves each profile's template
-before tailoring - and `runResumeTask`), and the gallery does too. A new output or
+(`/resume/preview` - which resolves the chosen resume's template before
+tailoring - and `runResumeTask`), and the gallery does too. A new output or
 tailoring path that skips it prints a section the PDF does not, or routes the
 model's soft-skill group to a Soft Skills section the template does not have,
 where it never prints.
 
 **Every section is reorderable, and nine more kinds exist.**
-`config/profileSections.ts` is THE catalogue (`SECTION_KINDS`: fifteen kinds
+`config/sectionCatalogue.ts` is THE catalogue (`SECTION_KINDS`: fifteen kinds
 in canonical order - the classic six in the DOCX's fixed order `summary,
 strengths, skills, softSkills, experience, education`, then `certifications,
 projects, volunteering, awards, publications, courses, languages, interests,
 references`; `DEFAULT_SECTION_KINDS` = the classic six + certifications, the
-cards every profile shows; a custom section is `custom:<key>`, the key
+cards every resume shows; a custom section is `custom:<key>`, the key
 `[a-z0-9-]{1,40}`, client-minted) and the ONE place the order's semantics live
 (`presenceOf`, `cleanSectionOrder`, `sectionSortKey`,
 `effectiveSectionOrder(stored, native, presence)`); the frontend keeps a copy
-(frontend/src/lib/profileSections.ts) that test/frontendEditorHelpers.test.js
-runs beside it. The new kinds are lists on the profile (`projects`,
+(frontend/src/lib/sectionCatalogue.ts) that test/frontendEditorHelpers.test.js
+runs beside it. The new kinds are lists on the resume (`projects`,
 `languages`, `awards`, `publications`, `volunteering`, `courses`, `interests`,
-`references`, `customSections`; types/profile.ts), normalised like every other
+`references`, `customSections`; types/resume.ts), normalised like every other
 list (omitted or non-array keeps, `[]` clears, blank entries dropped, 50 per
 list, 10 custom sections) with no switch: a kind prints when it has an entry.
-`Profile.sectionOrder` is the person's order and the record of added sections:
-ABSENT means the template's own order (every older profile) and the normaliser
+`Resume.sectionOrder` is the person's order and the record of added sections:
+ABSENT means the template's own order (every older resume) and the normaliser
 NEVER fills it in; omitted keeps it, re-cleaned against the custom sections
 just saved; `[]` clears it to absent; a list is stored as its valid refs, as
 given, nothing appended (a listed kind with no entries is an added, empty
-section). It is excluded from the tailoring cache's `profileFingerprint` and
+section). It is excluded from the tailoring cache's `resumeFingerprint` and
 is not in `profileJson`. The PDF honours it at COMPILE time
 (`normalizeTemplateSkillsSections`: expand the macro -> strip/guard the two
 switched sections -> `reorderTemplateSections` only when an order is stored ->
@@ -1604,15 +2635,15 @@ and one per custom section (`{{#with (lookup @root.customSectionsByKey
 it; every built-in carries the line once, in its main column after Education
 (the manual builder too); an uploaded template prints the kinds nowhere until
 it carries it. `services/extraSections.ts` prepares the lists (dates, a
-link's http(s) href) under the fields' own names, spread after `...profile`
+link's http(s) href) under the fields' own names, spread after `...resume`
 by `prepareResumeRenderData`. Two more template fields are derived on every
 read and stripped before any write, like `supportsSoftSkills`:
 `printsSections` and `nativeSectionOrder` (`services/templateImport.ts`,
-memoised by markup) - the second is what the editor shows a profile with no
+memoised by markup) - the second is what the editor shows a resume with no
 stored order in, by the same locator the PDF moves with. The DOCX iterates
 `effectiveSectionOrder(stored, canonical, presence)` and prints a filled kind
 whether or not the PDF's template has the macro. test/sectionOrder.test.js
-holds all of it over every built-in; test/profileSections.test.js the
+holds all of it over every built-in; test/sectionCatalogue.test.js the
 catalogue and the normalisers.
 
 Every template prints both layouts, so there is NO layout list: `Template`
@@ -1624,13 +2655,14 @@ description?, disabled? }` and answers a body naming none of them 400 *There
 is nothing to change: send a name, a description or disabled.* - a stale
 page's `{ skillsLayouts }` would otherwise bump `updatedAt` (the gallery's
 order) and rewrite a saved file for nothing. `services/templateChoice.ts`'s
-`resolveTemplateForProfile(profile: Pick<Profile,'preferredTemplate'>,
+`resolveTemplateForResume(resume: Pick<Resume,'preferredTemplate'>,
 requested?, { allowDisabledRequested })` takes the requested template, else the
-profile's own, else `default` - the first that exists and is enabled (a
+resume's own, else `default` - the first that exists and is enabled (a
 disabled REQUESTED one for an administrator's preview) - else the first
 enabled template of `getAllTemplates()` (newest first), else null, which every
 caller turns into `noTemplateAvailable()`; the layout plays no part, and the
-picker (lib/profileDraft.ts `templateOptions`) lists every template.
+editor's picker (TemplateCard.tsx) and the chooser's Use this template offer
+every enabled template.
 The template chooser's details and Admin -> Templates' View each draw a
 Grouped / Plain switch (role=group aria-label "Technical skills") that frames
 `templatePreviewPath(id, layout)`, each layout in a NEW frame (PageThumb keys
@@ -1644,30 +2676,30 @@ layout radios change only the
 layout. `supportsSoftSkills` / `supportsStrengths` are derived from the
 markup on every read and stripped before a stored row is written. A template's
 `category` (`config/templateCategories.ts`: simple | modern | creative) files it
-under the new-profile chooser's filters: every built-in states one in its JSON
+under the new-resume chooser's filters: every built-in states one in its JSON
 (test/templateLayouts.test.js holds them, and that each category has some), a
 saved template keeps one its JSON states, and any other word is dropped by the
 reader (`normalizeTemplateRecord`), the import and the file writer alike. No
-route sets it; the frontend's copy of the list is lib/profileGallery.ts's.
+route sets it; the frontend's copy of the list is lib/resumeGallery.ts's.
 
-`POST /api/profiles/preview` (any signed-in account, body `{ profile,
-profileId?, templateId?, sample? }`, answers `{ html, templateId, page: { widthPx,
+`POST /api/resumes/preview` (any signed-in account, body `{ resume,
+resumeId?, templateId?, sample? }`, answers `{ html, templateId, page: { widthPx,
 heightPx, contentHeightPx }, sampled }`) renders a DRAFT untailored through the same
 pipeline as generation - with one difference, unless the body says `sample:
-false` (the boolean; the Profiles list's thumbnails, which draw the stored
-profile as `{ profile: {}, profileId, sample: false }` and answer `sampled:
+false` (the boolean; the dashboard's resume thumbnails, which draw the stored
+resume as `{ resume: {}, resumeId, sample: false }` and answer `sampled:
 []`): whatever the draft leaves empty
 is drawn from the gallery's sample person (`withSampleDefaults`,
-`services/sampleProfile.ts`, which also holds `SAMPLE_PROFILE`), per field for
+`services/sampleResume.ts`, which also holds `SAMPLE_RESUME`), per field for
 single values and per section for lists, Strengths and Soft Skills only while
-their switch is on for the template (it runs after `profileForTemplate`).
+their switch is on for the template (it runs after `resumeForTemplate`).
 `sampled` names what was filled, from `SAMPLE_FIELDS` and in that order:
 `name, title, email, phone, location, linkedin, summary, experience,
 education, skills, strengths, softSkills`. It is applied in that route and
 nowhere else - never a save, a generation, a PDF/DOCX or a prompt -
-and test/sampleDefaults.test.js fails if anything else calls it. `buildPreviewProfile` never throws and takes only the
+and test/sampleDefaults.test.js fails if anything else calls it. `buildPreviewResume` never throws and takes only the
 three render settings from the draft; nothing is saved, no subscription limit is
-checked, no model is asked, no credit moves (test/profilePreview.test.js runs
+checked, no model is asked, no credit moves (test/resumeDraftPreview.test.js runs
 with every seat locked to prove it). The document carries
 `PREVIEW_CONTENT_SECURITY_POLICY` as a meta right after its doctype - before it
 would flip the page into quirks mode and away from the PDF's layout. The
@@ -1676,9 +2708,9 @@ and takes `?layout=&softSkills=&strengths=`; it draws the sample person
 TAILORED (`SAMPLE_TAILORED_CONTENT`, the same file: a composed title, model
 `skillGroups` ending in a `soft: true` "Professional Skills" group, no role
 descriptions, at most 8 bullets) through the tailored branch, read through
-`profileForTemplate`, so it shows what a generated resume prints;
+`resumeForTemplate`, so it shows what a generated resume prints;
 test/sampleDefaults.test.js fails if any file but pdfGenerator.ts and
-sampleProfile.ts names either sample.
+sampleResume.ts names either sample.
 
 ## Where resumes are filed
 
@@ -1721,7 +2753,7 @@ spaced or aliased spelling) - the two validators and the one renderer.
   outputPathSuffix }` (requireUser; `''`/`null` resets; a stored one that no
   longer passes is not used, warned once); POST /api/auth/output-path/preview
   `{ outputPathSuffix? }` -> `{ path, problems, notes }` (the asker's own
-  email, a sample order number and today, their first profile's name else
+  email, a sample order number and today, their first resume's name else
   "Sample Profile", Acme, Software Engineer, row 2; no base - a server path is
   the administrator's; `notes` is non-refusing advice: no `{{company_name}}`).
   `outputPathUsesJobTitle` (the builder's Role box) is THE CALLER's suffix
@@ -1746,7 +2778,7 @@ spaced or aliased spelling) - the two validators and the one renderer.
   claimed in this process or recorded on its order item
   (`recordedRunFilePaths`) gets `_2`, `_3`... on the resume and cover letter
   alike; a retry or restored task keeps its own; forgotten at
-  `batchFinished`. The per-profile FILE NAME templates stay, and read the
+  `batchFinished`. The per-resume FILE NAME templates stay, and read the
   folder tokens' spellings (`{{profile_name}}`, `{{company_name}}`,
   `{{role}}`, `{{row_number}}`, `{{date}}`, `{{order_number}}`,
   `{{user_email}}`, the defaults' and the editor's) beside their old ones
@@ -1777,7 +2809,7 @@ spaced or aliased spelling) - the two validators and the one renderer.
   sentences under the box before anything is saved, and a save's refusal
   (`field`) goes under it too. Admin -> Settings -> General has Output folder
   and Output prefix, each with its source and Reset (the old folder template
-  box and its client-side preview are gone); Settings -> Profile has
+  box and its client-side preview are gone); Settings -> Account has
   **Resume files** (components/settings/ResumeFilesSection.tsx, read with
   GET /auth/account - the session's /auth/me carries none of it), its source
   "Your own" or "Default" (`suffixSourceLabel`: never which .env line), Save
@@ -1788,8 +2820,466 @@ spaced or aliased spelling) - the two validators and the one renderer.
   answer with no folder path is a failed read with Try again.
   lib/outputPath.ts's chip lists are held to `OUTPUT_PREFIX_TOKENS` /
   `OUTPUT_SUFFIX_TOKENS` by test/frontendSettings.test.js, which also drives
-  lib/auth.ts's three calls against the real routes. The profile editor's
+  lib/auth.ts's three calls against the real routes. The resume editor's
   Company folder name box is gone; its file NAME boxes stay.
+
+## Builder modes and the suitable resume
+
+Owner decisions D19-D25 (v4.2, 2026-10-21; decision 10 makes every run one
+profile). config/buildModes.ts (a leaf), services/resumeKeywords.ts and
+services/resumeMatch.ts (pure), services/resumeChoice.ts (a money module),
+routes/generation.ts, routes/resume.ts, services/queue/resumeTask.ts,
+services/credits/previewToken.ts and database/orderRepository.ts carry it. A
+profile, its resumes and its default resume are "Profiles and their resumes"
+above; this section is what a RUN does with them.
+
+**Three modes** (D19). `BuildMode` is `'suitable' | 'partial' | 'full'`
+(`BUILD_MODES`), named for a person by `BUILD_MODE_LABELS`: *Choose Suitable
+Resume*, *Partial Tailor*, *Fully Tailor*. The mode belongs to the RUN, not to a
+resume or a model: the request's `buildMode` (`mode` already means order or
+immediate), snapshotted on every task as `payload.buildMode` and on the batch as
+`shared.buildMode`. A request that names none runs in the administrator's
+`defaultBuildMode` in effect (`resolveBuildMode`).
+
+| Mode | Builds, for each job | Model calls per resume | Prompts (Admin -> Prompts) |
+|---|---|---|---|
+| `suitable`, Choose Suitable Resume | the matcher's pick, AS WRITTEN | the cover letter alone | Generate Cover Letter |
+| `partial`, Partial Tailor | the matcher's pick, tailored for the posting | the tailoring, then the revise pass when it is due; its answer carries the letter, and the letter call is the fallback | the resume's Building prompt (Tailor Resume, or a variant of it), Revise Resume Coverage, Generate Cover Letter |
+| `full`, Fully Tailor | the profile's EFFECTIVE default resume, written for the posting | as Partial | Tailor Resume (Fully), Revise Resume Coverage, Generate Cover Letter |
+
+Every run writes a cover letter (the PDF always, the DOCX when
+`includeCoverLetterDocx`), so Choose Suitable Resume costs one letter call per
+resume and no more: `runResumeTask` never calls `tailorResume` for it, the
+resume prints as written (`result.tailored` is `Boolean(tailoredContent)`, so
+false) and the letter is written from the resume's own text. A posting never
+analysed is analysed once, as for every run - through the gate, on the analysis
+model, and nothing is charged for it - and that analysis names the role the
+letter and the folder path use when the job gave none. Content a task carries
+from a preview is finished against the resume as it is now
+(`finaliseHeldContent`) and not tailored again.
+
+**The run request.** `POST /api/generation/batches` and `/quote` read it with
+`readRunRequest` (services/resumeChoice.ts): `{ profileId, buildMode?,
+previewedResumeId?, tailoredContentByResumeId?, previewTokenByResumeId?, model?,
+jobs, format?, includeCoverLetterDocx?, label?, templateId?, sheet?, mode?,
+tabId? }`. A run names exactly ONE profile (a person of the caller) on every
+subscription, administrators included, so there is no scope gate, no Premium
+lock on a run and no `/resume/preview-all`: a Default account builds a profile
+of any number of resumes in every mode, and the tiers differ only in how many
+profiles an account keeps. `tailoredContentByResumeId` (entries that are
+objects) and `previewTokenByResumeId` (entries that are text) are keyed by
+resume id and hold what a preview produced, and `previewedResumeId` is the
+resume it showed. `/batches` answers 202 `{ batchId, kind, total, jobCount,
+buildMode, orderId?, orderNumber?, queues? }` - `total` is the resumes queued,
+one per job, and `queues` an administrator's - and names the run `{N} job(s) for
+{profile name}, {mode label}` unless the caller gave a label. Every refusal is
+a `PublicError` written for anybody, comes before anything is charged or asked
+of a model, and is sent as `{ error, code, ...extra }`:
+
+| Status and code | When | Sentence |
+|---|---|---|
+| 400 `one-profile-per-run` | no `profileId`, one that is not text, or a `profileIds` or `resumeIds` of any shape (an empty list too) | *Choose one profile to build for.* |
+| 400 `bad-build-mode` | a `buildMode` that is not one of the three | *buildMode must be "suitable", "partial" or "full".* |
+| 400 `suitable-takes-no-content` | Choose Suitable Resume - named, or the default in effect - with previewed content or a token | *Choose Suitable Resume builds each resume as written, so it takes no previewed content.* |
+| 400 `bad-previewed-resume` | a `previewedResumeId` that is not text | *previewedResumeId must be the id of the resume the preview showed.* |
+| 404 `profile-not-found` | no such profile, or another account's (an administrator's too) | *That profile was not found. It may have been deleted; reload the page.* |
+| 400 `no-profiles-to-build` | the profile has no ENABLED resume | *That profile has no enabled resume to build. Add or enable a resume on its page.* (`NO_PROFILES_TO_BUILD`) |
+| 409 `preview-changed` + `profileId`, `resumeId` | the run would build a resume the preview did not show (below) | *Jane Doe's resumes have changed since the preview: this run would now build Backend Engineer. Preview again.* |
+| 402 `insufficient-credits` + `neededMilli`, `balanceMilli` | the balance cannot cover the whole sum | *This needs {$X} of credit and the account has {$Y}. Generate fewer at once, or add more credit.* |
+
+In `/batches` the steps run in this order: `readRunRequest` (before the jobs, as
+`/quote` asks it, so the wrong people are told so and not that there are no
+jobs), `normalizeJobs`, the mode in effect, `resolveRunTarget` (for its refusals,
+ahead of the Google read), the sheet and the analyses
+(`resolveAnalysesAtSubmit`, which asks no model), `resolveRunTarget` AGAIN (the
+profile and its enabled resumes as they are after those awaits, which can take
+seconds on a big sheet run, so a resume disabled meanwhile is not chosen),
+`planRun`, `checkPreview`, the
+prices (`getBuildModePrices`), `buildTasks`, `chargeFor`, `reserveCredits`,
+`createOrder` and `queue.submit`. `/quote` mirrors them as far as the model
+check: it is lenient where the form is still being filled in (jobs are counted,
+not validated, and no jobs is a quote of nothing) and answers `{ resumes,
+costMilli, pricePerResumeMilli, balanceMilli, exempt, buildMode }`,
+`pricePerResumeMilli` being the one price (a quote stands one resume in for every
+job, so they all cost the same, and one priced stand-in is multiplied rather than
+a plan built per job), null when there is nothing to price. It makes no choice, so it cannot say 409 `preview-changed`. The log line of
+a submission reads `(N job(s) for {profile name}, {mode label}; chosen among C
+resume(s) in T ms)`.
+
+**Keywords** (D24; services/resumeKeywords.ts). A resume's keywords are COMPUTED,
+never stored. `keywordsOf(resume)` is pure and takes about a millisecond;
+`matchKeywordsOf(resume)` memoises it in 512 entries
+(`MATCH_KEYWORDS_CACHE_SIZE`) keyed by the resume's id, its `updatedAt` and
+`KEYWORDS_VERSION` (a save moves `updatedAt`, so an edited resume is computed
+afresh; the version is bumped by hand whenever the extraction changes what it
+answers for the same resume), freezes the answer and writes NOTHING back: a read
+that saved would upsert the whole document and could overwrite a concurrent
+edit with an older copy. A draft with no id or no time is answered and not
+memoised. `ResumeKeywords` is `{ version, vocabulary, basedOn, headline,
+roleTitles, terms }`: `vocabulary` a hash of the vocabulary and its synonym
+groups, `basedOn` a hash of exactly the fields read, `headline` and `roleTitles`
+the KIND of role the headline (up to four, for "A | B") and each held title
+(twelve, in resume order, repeats dropped) name - `roleKind`, the level words
+taken off the edges, and the normaliser's placeholder headline 'Professional'
+counts as none - and `terms` the technologies, tools and concepts the resume
+claims, from three sources in this order, at most 80 (`MAX_KEYWORD_TERMS`) of at
+most 60 characters (`MAX_KEYWORD_LENGTH`), the earlier never displaced by the
+later:
+
+- CURATED - what the person typed: the resume's `skills` and each role's `skills`,
+  in their order, spelled as the shipped list spells them (`go` is `Go`).
+- SCANNED - the technologies the prose names, in first-appearance order. The prose
+  is the fields the revise pass reads as evidence (headline, summary, skills and
+  their headings, strengths, each role's title, description, achievements and
+  skills, certifications, projects, volunteering, courses, awards and
+  publications) less the soft skills; never the name, the contact, a company
+  field, education, languages, interests, references or custom sections. A
+  sentence about the COMPANY ("Acme is a fintech platform built on Kafka.") is
+  left out, by the test the tailoring prompt's `companyContext` uses
+  (`isCompanyDescriptionLike`).
+- TITLES - `headline` and `roleTitles`.
+
+The vocabulary the prose is scanned against is the SHIPPED one -
+`backend/static/skills/skills.json`'s hard skills (about 1,500) with
+config/conceptTools.ts's tools and aliases - and never the live skill library:
+any builder can add to that one (POST /resume/skills/confirm), which would make
+one account's keywords depend on another's actions (the tailoring cache's key
+follows the same rule and carries no library). A shipped list that cannot be
+read falls back to the concept table with one warning, and never fails a GET or
+a save; tests swap the list or the file it is read from
+(`setMatchVocabularyForTests`, `setMatchVocabularyFileForTests`). Everyday
+English words sit in that list (Kind, Less, Express, Spring, Swift, Echo), so a
+name is found in prose only by a rule for its shape: one character (C, R) never, curated
+only; two letters (Go, Nx; the alias CI) in their own case, not where a
+sentence or bullet starts (unless it reads as a list item or a requirement,
+below) and not before a hyphen ("Go-live"); two characters
+with a digit or symbol (C#, S3) in their own case; one Title-case word
+(Express) in its own case, and at a sentence start only if it is not an
+everyday word (see below); one lower- or UPPER-case
+word (curl, REST) in its own case; anything else (Node.js, CI/CD, "unit
+testing", an alias of three characters or more that is not ALL-CAPS) in any
+case, as a whole word. A sentence starts at the text's start, after a line
+break (and a bullet), after a numbered item or after `.`, `!` or `?` and a
+space (so after "e.g.", "i.e." and "etc." too); `:` and `,` do not
+end one, so "Nice to have: Terraform" counts. A requirement list names one
+technology per line or bullet, so a Title-case name at such a start IS taken
+("- Python", "Kubernetes" on a line of its own, "1. Terraform", "(e.g. Docker)")
+unless it is in `SENTENCE_START_AMBIGUOUS`, a hand-curated, exported and
+test-pinned set (126 lower-case words) of the title-class names that are also
+everyday words, names or plain-noun practices: Express, Spring, Swift, Kind,
+Less, Echo, Hack, Node, Testing, Analysis, Infrastructure, Automation,
+Statistics, Migrations, Transactions, Streams, Vector, Render, Relay, Vault,
+Phoenix, Chef, Puppet, Hive, Nomad... ("Kind regards", "Express yourself",
+"Spring is here", "Swift Developer wanted", "Testing is hard" stay out; "Built
+Express APIs" and "Stack: Spring" still count). It was made by reading all the
+title-class entries: 359 in the shipped list, 384 distinct ones with the
+concept table's tools and the synonym spellings (counted with the code's own
+classifier). DEVIATION FROM DESIGN G2, which refused the whole title class at a
+sentence start and so missed most bullet-start technologies (the owner's
+"choose by similarity of keywords" needs them): a name that is no everyday word
+is accepted there. A name the sentence-start rule would refuse - the
+two-letter class (Go, Nx, jq, TS) and every word of `SENTENCE_START_AMBIGUOUS`
+- is still taken there when it READS AS A LIST ITEM OR A REQUIREMENT
+(`readsAsListItemOrRequirement`, `KEYWORDS_VERSION` 4): (a) it is the whole
+line after an optional bullet or number ("Go", "- TS", "1. Swift", "- Node",
+"Swift (iOS)"); (b) a list separator and another technology follow it, in that
+technology's own case ("Go, Docker", "Go/Docker", "Swift and Objective-C", "TS
+or JS", "Go & Rust", "(e.g. Go or Rust)", a skills line "Go: 3 years"); or (c)
+a requirement cue follows, optionally after "is" or "are" and "a" ("Swift
+required.", "Go experience", "Node is a plus", "TS preferred"; the cues are
+required, requirement(s), experience(d), preferred, proficiency, proficient,
+knowledge, expertise, skill(s), plus, desired, background, fluency, fluent,
+familiarity). "developer(s)" and "development" are NOT cues, so "Swift
+Developer wanted" and "Go developer" stay prose; neither are "Kind regards",
+"Swift reply", "Go to market", "Go ahead", "Express yourself", "Spring and
+summer" or "Kind, caring people" (the word after a separator must itself be a
+vocabulary name). Mid-sentence behaviour is unchanged. Lower-case
+"go", "node" and "spring" prose is never a technology. The same name in the
+resume's `skills` list or a role's always counts, being curated. Three
+refinements (`KEYWORDS_VERSION` 3 added them, with the title-class rule and the
+synonym scan; 4 is current): a short closed list of names
+that are no English word (`SAFE_ANY_CASE`: Docker, Kubernetes, Python, Postgres,
+Kafka, Terraform...) is found in ANY case, for the casual or all-capitals
+posting - lower-case "react", "express", "rust", "spring" and "kind" are
+everyday words and stay out of it; a name inside a LONGER name found in the same
+text is not a hit of its own ("CI" in "CI/CD", "GitHub" in "GitHub Actions";
+a standalone mention elsewhere still is); and a name inside a company's
+("American Express", "Express Scripts") or the clearance "TS/SCI" is not a hit.
+`TERM_SYNONYMS` is a closed list of spellings of one thing (Go and Golang,
+Kubernetes and K8s, TypeScript and TS, HTML and HTML5, CSS and CSS3, Python and
+Python3, JavaScript and JS and ES6...): one term for the dedupe and the matcher,
+AND (`KEYWORDS_VERSION` 3, DEVIATION FROM DESIGN G2, whose scan found only the
+shipped list's and the concept table's own spellings) every spelling in it is
+also scanned for in a text, as a library entry with the class its shape earns
+and the same synonym key as its canonical one - "Golang services on K8s" names
+Go and Kubernetes, "Node" mid-sentence Node.js, "Amazon Web Services" AWS -
+while lower-case "go" and "node" prose still names nothing. `isVocabularyTerm`
+says whether a whole string is an entry of that vocabulary.
+
+They are served on GET /api/resumes and GET /api/resumes/:id as a derived
+`matchKeywords` (`withMatchKeywords`: a resume stored before keywords existed, or
+under an older vocabulary, is answered current; a failure leaves the field off
+and never fails the read) and on no other answer. Nothing reads one back: the
+document builders carry none, a `matchKeywords` in a POST, PUT or import body is
+ignored and an import stores none, it is not on the `Resume` type, and it is
+left out of `resumeFingerprint` (the tailoring cache's key), of
+`prepareResumeRenderData` (which spreads the document), of the prompt JSON
+(`buildPromptResume` names its fields) and of the revise pass's evidence.
+
+**The matcher** (D25; services/resumeMatch.ts, pure: no database, no model, no
+I/O). `chooseForJob(job, candidates, mode)` picks among a profile's ENABLED
+resumes (`MatchCandidate { resume, isDefault }`; `MatchJob { analysis?, text?,
+title? }`) and `scoreResumeForJob` scores one. The score is S = 0.45 T + 0.55 R.
+
+- T is TITLE affinity: the kinds of role the posting names (its analysis' title and
+  the role the caller gave, each through `roleKind`) against the resume's
+  headline (70%) and its best held title (30%; a part the resume lacks is left
+  out). A kind's last word, its head, counts 1 and every qualifier before it
+  counts 2 ("Software" counts 1: every second engineer's title has it),
+  `developer`, `programmer`, `dev` and `swe` read as `engineer`, and
+  "front end", "machine learning" and their kin fold to one word, so "Data
+  Engineer" is a third of the way to "Backend Engineer" and "Backend Developer"
+  all of it; DevOps, SRE and "site reliability" fold to one word, and a Platform
+  Engineer posting counts a DevOps resume (and the other way round) half a
+  qualifier. The words of the title's TAIL - what `roleKind` cuts off after
+  a comma, " - ", " | ", a colon or a bracket (`roleTail`), as in "Software
+  Engineer, Backend", "Software Engineer (Backend)", "Software Engineer -
+  Backend Platform" and "Engineer II, Backend Platform" - are further
+  qualifiers of weight 2 (DEVIATION FROM DESIGN G2, which used `roleKind` alone
+  and so read every one of those as the generic "Software Engineer", a Full Stack
+  Software Engineer's whole title); level numerals, the closed
+  `TAIL_NOISE` words (Remote, Hybrid, Contract, Full-time...), the kind's own
+  words and a tail word that is a single-word TERM of the posting (the "(Go,
+  Kubernetes)" of a title, scored as the terms they are) are not counted.
+  `titleMatched` says a whole KIND was said, the tail aside. A posting with no terms
+  and no role given may take its text's opening line for the title - at most
+  eight words, not ending like a sentence - and ONLY then (a posting with terms
+  is scored on them as before).
+- R = 0.7 core + 0.3 rest is RECALL over the posting's own terms, each tier the
+  weighted share of its terms the resume has. What the resume has beyond what
+  the posting names counts for nothing, so a long list cannot win on size.
+  With an analysis - read through `postingTermLists` and `pickTopSkills`, never
+  `buildTailorLists`, whose concept tools compile thousands of patterns per call
+  (about 8 ms a job) - core is the five terms it leans on and its must-include
+  terms, weight 3; rest is its other skills, weight 2, and its concepts and
+  domain knowledge, weight 1; soft skills, verbs and responsibilities are never
+  scored. From text alone - a job with no analysis yet, or one that names
+  nothing - the terms are what the vocabulary scan finds in the analysis' own
+  text, else the job's, plus every candidate's own term the text names
+  ("payments" is in nobody's vocabulary but may be on a resume): a term in the
+  role or the posting's first line weighs 3, one in a requirements block 2 (core
+  is weight 2 and up), one anywhere else 1, and a one-letter term is never
+  looked for.
+- A posting term's FACTOR is the best the resume reaches: 1.0 the same thing
+  (synonym), or the posting's term a whole word inside the resume's ("AWS" in
+  "AWS Lambda"); 0.6 the resume's term a whole word inside the posting's; 0.8 the
+  resume's term an alias of a concept the posting's term names ("continuous
+  integration" for "CI/CD"); 0.5 a tool of that concept (Jenkins). A one- or
+  two-character term matches exactly only ("C" is not "C++", "Go" is not
+  "Gopher"). An ANALYSIS term that spells alternatives - "Go (Golang)",
+  "Golang (Go)", "Go/Golang", "Airflow or Dagster", "Kubernetes (K8s)" - is
+  expanded before scoring (DEVIATION FROM DESIGN G2): split at a bracket, " or "
+  and "/" unless the whole term is a vocabulary entry ("CI/CD", "TCP/IP", "A/B
+  testing"), the term itself kept as one of the readings (so "CI/CD pipelines"
+  still names its concept), at most six; each reading is scored and the best
+  factor counts, while the term keeps its own spelling in `matched` and counts
+  once in `postingTermCount`. With terms and no titles, or titles and no terms, that part alone
+  is the score; with neither every score is 0.
+- Ties: scores are compared to six decimals, and a shared best score goes to the
+  profile's effective default, then the more PRECISE resume (the share of its
+  terms the posting names), then STRICT title affinity (a missing headline
+  counted as nothing, so a specialist whose headline and roles both match beats
+  a headline-less resume that merely lists one matching role), then the newer
+  `updatedAt`, then the lower id - a total order, so the answer never depends on the order the candidates came in.
+  Nothing matching at all is such a tie: the default is built.
+
+`TaskMatch` is the explanation, `{ v: 1, mode, reason, candidates, basis?,
+score?, titleMatched?, matched?, matchedCount?, postingTermCount? }`. `reason` is
+`matched` (the resume won on its score), `tie` (the best score was shared, or
+nothing matched, and the tie-break decided), `only` (the profile has one enabled
+resume) or `default` (Fully Tailor, which builds the effective default by rule);
+`candidates` is the number of enabled resumes at submit; `basis`, for `matched`
+and `tie`, says what the score was worked out from - `analysis`, `text`, `title`
+or `none`; `score` is rounded to four decimals; `matched` is the posting's terms
+the chosen resume carries, best first (weight x factor, then the posting's
+order), at most 8, in the posting's spelling, and `matchedCount` and
+`postingTermCount` count them all. An unexpected pick is read off the order
+item's `match`. The worked
+example the owner's question came from - a bare "Backend Engineer" resume beats
+the profile's default "Data Engineer" resume (a stack of Python, Spark, Airflow,
+AWS, Kubernetes, PostgreSQL and Docker) for a Senior Backend Engineer posting
+that asks for Go and Kubernetes, and the data engineer wins once it also lists
+Go and gRPC - is pinned on the analysis path and on the text path
+(test/resumeMatch.test.js), as are 500 jobs among 25 resumes in well under three
+seconds; `planRun` yields to the event loop every 25 jobs, so a long sheet run
+does not hold the server's other requests.
+
+**The choice is fixed at submit** (D20). `resolveRunTarget` files the caller's
+unfiled resumes first (an account that has not opened its dashboard since the
+upgrade still has its people), finds the profile (the caller's own, else 404
+`profile-not-found`) and returns its ENABLED resumes, newest first, with the
+effective default among them: a disabled resume is never a candidate. `planRun`
+then gives every job one resume and its `TaskMatch`: Fully Tailor the effective
+default (reason `default`), a profile with one enabled resume that one (`only`),
+otherwise `chooseForJob` on the job's analysis - the stored one its `analysisId`
+names, which `resolveAnalysesAtSubmit` has put on the job by then (the sheet
+row's, the page's or the store's; no model is asked) - else, for a job with none
+yet, on its posting text and role. The model is resolved once per DISTINCT
+resume (the request's `model` wins, then the resume's own, then the app
+default) and changes where a resume runs, never what it costs. The answer is
+written onto each task's label (`resumeId`, `resumeName`, `companyName`, `role`,
+`sourceRowNumber?`, plus `resumeLabel`, the chosen resume's headline label
+(`resumeLabelOf`), `profileLabel`, the profile's name at submit, and `match`),
+which reaches the queue's snapshots through `...task.label`, and onto the order
+item (`order_items.resume_label`, `profile_label` and `match_json`, in SCHEMA and
+ADDED_COLUMNS, NULL on an item an older build wrote), which `GET
+/api/orders/:id` serves as `resumeLabel`, `profileLabel` and `match` long after
+the batch is evicted. `toItem` reads them leniently: junk is null, and only the
+known keys of `match` survive (at most 50 matched terms of 200 characters).
+`resumeName` stays the resume's own name, the person's; `resumeLabel` is what
+tells two resumes of one person apart. A restored task builds `payload.resumeId`
+in `payload.buildMode` and never chooses again; one queued before v4.2 has
+neither a mode (it builds Partial, as every resume without a stored choice did)
+nor a `match`.
+
+**The preview check** (`checkPreview`, `/batches` only). When a request sends a
+`previewedResumeId` or any previewed content, every planned resume must be the
+previewed one or a key of the content; otherwise the profile's resumes (or the
+posting's analysis) changed since the page previewed, and building something
+else at the price of what was shown is refused: 409 `preview-changed`, with the
+profile's name and the resume's label in the sentence and `profileId` and
+`resumeId` beside it, BEFORE anything is reserved or charged. A request with
+neither is never checked. **A deleted pick is refunded, not replaced:** a chosen
+resume deleted before its turn fails its task with `ResumeGoneError` (410, not
+retried) and the queue's `taskFinished` hook gives back that task's own
+snapshotted price (test/buildModes.test.js and test/modePricing.test.js run
+it); another resume is not built in its place, since the choice was made, priced
+and recorded at submit.
+
+**Fully Tailor builds the profile's EFFECTIVE default** (D13): the chosen default
+while it is an ENABLED resume of the profile, else the oldest enabled
+(`effectiveDefaultResumeId`; a profile with no enabled resume is refused before
+it is asked), whatever would match the posting better and without asking the
+matcher. A disabled chosen default is skipped, not replaced: the choice is kept,
+and enabling the resume brings it back (test/buildModes.test.js).
+
+**Previews** (`POST /api/resume/preview`, routes/resume.ts). The body names
+exactly one of `profileId` and `resumeId` (both: 400 `profile-or-resume`, *Name
+the profile to preview, or the resume to show again, not both.*; neither: 400
+`profile-required`, *Choose a profile to preview.*).
+
+- `{ profileId, buildMode?, analysisId?, jobDescription?, jobLink?, companyName?,
+  role?, templateId?, model? }` CHOOSES, then previews: the resume is picked as a run
+  would pick it for this posting (`planRun` with one job). The refusals that cost
+  nothing come first - an unknown or another account's profile 404, a profile
+  with no enabled resume 400 `no-profiles-to-build` in its own words (*Jane Doe
+  has no enabled resume to preview. Add or enable one on the profile's page.*), a
+  `model` the request may not use 400 `model-unavailable`, asked of Partial and
+  Fully only - and then the posting is analysed through the gate, once, as ever.
+  Choose Suitable Resume draws the resume as written: no tailoring call,
+  `tailored: false`, no token. Partial and Fully tailor it, through the chosen
+  resume's template, and answer a `previewToken` for this account, that resume
+  and that mode. A posting too short to analyse is drawn as written, untailored,
+  in every mode.
+- `{ resumeId, tailoredContent, ... }` DRAWS HELD CONTENT AGAIN, as the manual path
+  always did: re-read against the resume as it is now when an analysis is known,
+  no tailoring call and no token; without content, 400 `content-required`, *Send
+  the previewed content to show it again, or name the profile to preview.*
+
+The answer is `{ html, tailored, tailoredContent?, previewToken?, analysisId?,
+profileId, profileName, resumeId, resumeLabel, buildMode, match }`, `match` being
+null when held content is drawn again; `resumeId` is what the page sends back as
+`previewedResumeId`. A preview charges nothing, and there is no `/resume/choose`.
+
+**Prompts per mode, and the Building prompt.** No prompt text, variable or
+contract changed for the modes: each mode's prompts already existed and are
+edited under Admin -> Prompts. Partial runs `tailor-resume`, or the variant the
+resume chose as its Building prompt (`resumeSettings.resumePromptId`; a choice
+naming a record that is gone, or one that is not a Tailor Resume prompt, runs
+the built-in with one warning). Fully runs `tailor-resume-full`, a single-prompt
+feature, whatever Building prompt the resume chose. Choose Suitable Resume
+ignores the Building prompt: it tailors nothing, and only the cover letter
+prompt, which the other two use too when their tailoring brought no letter, runs
+for it. Revise Resume Coverage follows either tailoring. Only descriptions and
+sentences changed (promptService.ts): Tailor Resume's usage says it runs "for
+every resume built with Partial Tailor", Tailor Resume (Fully)'s "for every
+resume built with Fully Tailor - the profile's default resume", Generate Cover
+Letter's names "every Choose Suitable Resume build, which tailors nothing", and
+the refusal of a second Fully prompt reads *Fully tailoring has one prompt, the
+built-in Tailor Resume (Fully), which every Fully Tailor run uses. Edit that
+prompt instead of adding another.*
+
+**Prices per mode** (D21; config/buildModes.ts). What a resume costs is the price
+of the mode it is built in; the model that runs it never changes it, and a model
+record carries no price. The settings are `suitablePriceMilli`,
+`partialPriceMilli` and `fullPriceMilli` (`BUILD_MODE_PRICE_FIELDS` names each
+one's setting, its request field `suitablePriceUsd`... and its `.env` variable
+`RESUME_SUITABLE_PRICE_USD`, `RESUME_PARTIAL_PRICE_USD`,
+`RESUME_FULL_PRICE_USD`): per mode, stored > `.env` > $0 (owner decisions S1-S3,
+in the config/ entry above). $0 is free, and there is no default price on
+purpose: a mode nobody priced builds for nothing. The range is $0 to $1,000 in
+steps of $0.001. A save (PUT /api/admin/settings) sends dollars: `null` resets,
+'' is refused, anything else goes through `parseBuildModePriceInput` and is
+stored exactly. A refusal is a `BuildModePriceError` whose `field` (the `...Usd`
+name) and `code` the route passes on: 400 `bad-price`, *The Partial Tailor price
+is required: an amount in dollars, like 0.023. It is from $0 to $1000 in steps
+of $0.001, like 0.023; 0 makes it free.* for '' (junk and a fraction of a
+thousandth say their own first sentence), *The Partial Tailor price must be from
+$0 to $1000 in steps of $0.001, like 0.023; 0 makes it free.* above the ceiling;
+400 `bad-price-field`, *Send the Partial Tailor price in dollars, as
+partialPriceUsd.* for a `partialPriceMilli` key. `.env`'s value above $1,000
+clamps with one warning; junk (not an amount, negative, finer than a thousandth)
+warns once and reads $0, and while nothing is stored over it the admin payload
+lists the mode in `unreadableModePrices`, for the page to show it red and name
+the variable; a stored price this app never writes is dropped with one warning
+and is not flagged. The admin payload carries each price's `settingSources` and
+`settingDefaults`; `GET /api/resume/models` carries `defaultBuildMode` and the
+three prices, for the builder's mode cards - the same figures a quote reveals.
+`getBuildModePrices()` is the services' read, and THROWS when the settings cannot
+be read: a run is never priced at a guess.
+
+A run costs EXACTLY its jobs times the mode's price. `priceRun` gives every
+planned resume `prices[mode]` and sums the integers (`chargeFor`), so seven
+Partial resumes at $0.023 are $0.161; there is no "up to", and `/quote` is the
+same arithmetic (`quoteRun`), so the figure quoted is the figure charged. The
+price is taken when the run is submitted and snapshotted on each task
+(`payload.costMilli`); a resume that does not deliver gives back its own. A free
+mode takes nothing and writes no row, an account with no credit can run it, and
+too little credit for the whole sum is 402 with nothing queued. Administrators
+are quoted the full amount (`exempt: true`) and charged nothing; they are not
+exempt from the one-profile rule. Previewed content is the exception:
+`previewTokenByResumeId` holds a signed token per resume
+(`issuePreviewToken({ userId, resumeId, buildMode })`, claims `{ u, r, b, t }`,
+valid for a day, HMAC with a secret kept in `app_settings`) and content is
+priced at the run's mode only when its token is
+valid for this account, this resume AND this mode (`readPreviewToken`: forged,
+expired, another account's or resume's, an old-format token and none at all read
+as null). Content without one costs the FLOOR, `max(prices[mode], prices.partial,
+prices.full)`: a request cannot name the cheapest mode while supplying the
+dearest one's work, and a Partial token does not pay for Fully work. A token is
+not bound to the content, since the page lets the person edit the JSON, which is
+still that mode's work; administrators are never held to the floor. KNOWN GAP
+(the owner's to decide): previews are free, so an account can preview a resume
+in Fully (keeping the content) and in Partial (keeping that token) and finalise
+Partial with the Fully content, paying Partial's price for Fully's work. Closing
+it means binding the token to a hash of the content, which would make every hand
+edit the floor's price (services/credits/previewToken.ts says so too).
+
+**The pages.** Build Resumes and Find Jobs' Order Immediately choose ONE profile
+(`ProfileSelector`) and ONE mode (components/builder/BuildModeChoice.tsx: three
+cards, never locked, each saying what the mode does and what a resume costs in
+it) and send `{ profileId, buildMode }` - see app/page.tsx in the layout above
+and Find Jobs in "The Job Data Lake" for the previews, the receipt and the
+order's page. The administrator's side is Settings -> General. Its Builder
+Defaults choose the **Default profile** (`#default-profile`: "Choose
+automatically" - stored as '' - then the administrator's own profiles, each
+"{name} (N resumes)"; with none, "You have no profiles yet. Add one under
+Profiles before choosing a default."; no source line, because it has no `.env`
+default) and the **Default builder mode** (`#default-build-mode`, a select with
+the three modes, its source line and Reset to default); the old build-target
+setting is gone from the page as from the server. Its **Price per resume**
+section has the three prices (see "Money"). Admin -> Models has no price (see
+"The AI layer").
 
 ## Money
 
@@ -1811,13 +3301,16 @@ plus `parseProviderCents` for an amount a
 provider reports (exact; `12.505` is not a match for 1250 cents). The frontend's
 `lib/format.ts` mirrors both - its fixed-decimal helpers (`toDollarInput`'s
 `2.50`, `formatLegacyUnitPrice`'s `$0.50`) build from a private `moneyParts`,
-never by slicing `formatMoney`'s text - and test/frontendMoney.test.js runs each pair over
-the same inputs (and the Admin -> Models price box against
-`parsePricePerResume`) and fails on any difference - and on a `Math.floor`,
-`parseInt`, `parseFloat`, `Number.isInteger` or `toFixed` in the frontend money
-files it lists. A page shows every amount with `formatMoney`, never `Intl`
+never by slicing `formatMoney`'s text - and test/frontendMoney.test.js runs each
+pair over the same inputs (and the build modes' price boxes,
+app/admin/settings/modePriceDraft.ts, against the server's
+`parseBuildModePriceInput`, every refusal word for word) and fails on any
+difference - and on a `Math.floor`, `parseInt`, `parseFloat`,
+`Number.isInteger` or `toFixed` in the frontend money files it lists
+(modePriceDraft.ts and the mode cards, components/builder/BuildModeChoice.tsx,
+among them). A page shows every amount with `formatMoney`, never `Intl`
 currency formatting, and SENDS an amount as the text that was typed
-(`amountUsd`, `balanceUsd`, `pricePerResumeUsd`), never a number it parsed.
+(`amountUsd`, `balanceUsd`, `partialPriceUsd`), never a number it parsed.
 History from before dollars is shown in its own unit and never converted: a
 ledger row with `legacyCredits` reads `-12 credits` (lib/ledger.ts), and a
 payment that bought credits keeps its "195 Credits at $0.50 each" invoice line
@@ -1826,16 +3319,17 @@ checkout opened before the switch and paid after was credited in dollars).
 
 **The API contract.** Every amount in every response is an integer in a field
 ending `Milli` (`balanceMilli`, `heldMilli`, `deltaMilli`, `balanceAfterMilli`,
-`costMilli`, `pricePerResumeMilli`, `neededMilli`, `amountMilli`,
-`creditMilli`...). Every amount in a request is dollars, as text or a JSON
-number, in a field ending `Usd` (`pricePerResumeUsd`, `balanceUsd`, `amountUsd`,
-`minUsd`...). A field in the old unit (`credits`, `amount`, `creditsPerResume`,
-`minCents`) is never read, as dollars or anything else: where the `Usd` field
-is required its absence is refused (a checkout or quote: *Choose an amount in
-dollars and cents, like 25 or 12.50.*; a model create without
-`pricePerResumeUsd`; a payment limit without `minUsd`), and elsewhere the old
-field is ignored. The old integer-credit fields are gone from responses, not
-aliased.
+`costMilli`, `pricePerResumeMilli` - the generation quote's one price -,
+`partialPriceMilli`, `neededMilli`, `amountMilli`, `creditMilli`...). Every
+amount in a request is dollars, as text or a JSON number, in a field ending
+`Usd` (`partialPriceUsd`, `balanceUsd`, `amountUsd`, `minUsd`...). A field in the
+old unit (`credits`, `amount`, `creditsPerResume`, `minCents`) is never read,
+as dollars or anything else: where the `Usd` field is required its absence is
+refused (a checkout or quote: *Choose an amount in dollars and cents, like 25
+or 12.50.*; a build-mode price sent empty, where `null` is Reset; a payment
+limit without `minUsd`), and elsewhere the old field is ignored - a model's
+`pricePerResumeUsd` among them, since models carry no price. The old
+integer-credit fields are gone from responses, not aliased.
 
 **Storage is NEW columns, never the old ones reinterpreted** - the old ones
 hold history, in its own unit: `users.balance_milli`, `credit_ledger.delta_milli`
@@ -1860,8 +3354,36 @@ that held old credits (reason `reset`, in the old unit, served as
 `legacyCredits`; one at delta 0 for an account whose credits were all held by
 a run), `users.credits` zeroed, and a snapshot in
 `app_settings["migration-log.credits-to-dollars"]` that nothing reads. Model
-prices read $0 BY RULE: an absent `pricePerResumeMilli` is 0, with no
-write-back.
+prices no longer exist: what a resume costs is the price of its build mode (see
+below), and a `pricePerResumeMilli` an older build stored on a model record is
+read past and dropped by the next settings write.
+
+**What a resume costs** is its build mode's price - `suitablePriceMilli`,
+`partialPriceMilli` or `fullPriceMilli`, whichever model runs it - taken when
+the run is submitted as the SUM of the integer prices of its resumes (jobs times
+the mode's price, exactly) and given back per task. The settings, the exact
+charge, the previews' tokens and the floor are "Builder modes and the suitable
+resume" above; the reservation, the per-task refund and the ledger line are "The
+AI layer"'s Price per resume. The pages say it wherever a figure appears.
+Settings -> General's **Price per resume** has a box for each mode
+(`#mode-price-suitablePriceMilli`, `#mode-price-partialPriceMilli`,
+`#mode-price-fullPriceMilli`: text, `inputMode="decimal"`, dollars as typed).
+app/admin/settings/modePriceDraft.ts, subscriptionPriceDraft.ts's twin, judges
+each box in the server's own sentences before anything is sent - an empty box
+is refused, since a price is required, and `0` is how a mode is made free - and
+sends only the boxes that changed, as typed, under their `...Usd` names; each
+box has its source line (Set here, From .env (NAME), Default) and Reset to
+default, which sends `null` through `appSettingResetBody`; a refusal's `field`
+puts the server's sentence under its own box; a mode priced $0 is flagged in
+red (*Free: nobody is charged for Partial Tailor.*), and so is a mode in
+`unreadableModePrices`, naming its `.env` variable; Save Prices. The build-mode
+cards on Build Resumes and Find Jobs say what a resume costs in each mode
+(*Free.* or *$0.02 a resume.*), the cost line and the spend confirm quote the
+run exactly - `describeRunSpend` writes "3 resumes at $0.02 each (Partial
+Tailor)" - and the Credits copy (components/credits AmountStep and
+PolicyPanels) says a resume costs the price of the build mode it is built in.
+No page says a model has a price (test/frontendSettings.test.js and
+frontendRefunds.test.js hold that).
 
 **Reporter payouts** (owner decision A4). A reporter's earnings are paid
 OUTSIDE the app; an administrator records each one with POST
@@ -2092,16 +3614,18 @@ with no runnable models (saves keep their asserts) while a run fails with
 `AiUnavailableError`. The Bid Assistant runs on the app default MODEL - a
 record's provider and model name - like any run that names none, and a
 prompt's model override still decides it; so does Write Entry Bullets
-(services/entryBullets.ts, the profile editor's Write with AI: free, one call
+(services/entryBullets.ts, the resume editor's Write with AI: free, one call
 per account at a time, `runChoiceWins` on the default model). It does NOT decide a resume:
 tailoring, its revise pass and the cover letter pass `runChoiceWins`, so they
-run on the model the run was charged at, whatever the prompt record says. A JOB ANALYSIS runs on the
+run on the model resolved for that resume (the request's, else the resume's own,
+else the app default), whatever the prompt record says. A JOB ANALYSIS runs on the
 administrator's analysis model (`analysisModelId`, see "Job analysis runs once"
 below), also with `runChoiceWins`, and the Job Filter makes no model call of its
 own at all - it judges that analysis.
 
-Models are admin-curated records: a display name, a seat, a model name and
-`pricePerResumeMilli`. The model name is chosen from `config/providerModels.ts`'s
+Models are admin-curated records: a display name, a seat, a model name and a
+description - and no price: what a resume costs is the price of its build mode.
+The model name is chosen from `config/providerModels.ts`'s
 `listProviderModelOptions(provider)`, each seat's list overridable in `.env`
 (`AI_CLI_MODEL_OPTIONS`, `AI_CODEX_MODEL_OPTIONS`, `AI_GEMINI_MODEL_OPTIONS`,
 read per call, all-or-nothing). It is checked when a model is created or its
@@ -2110,9 +3634,11 @@ provider or model name changes, and when a prompt override is saved -
 a settings read. An ordinary account sees models as `{ id, name }` only
 (`getUserAppSettings`, `GET /api/resume/models`); the admin payload carries
 everything plus `providerModelOptions`. A REQUEST naming a model that cannot run
-is refused (`ModelUnavailableError`, 400) rather than swapped, because another
-model could cost another price, while a STORED profile preference that went
-stale falls back to the default with a warning once. The bare-provider and
+is refused (`ModelUnavailableError`, 400) rather than swapped, because the
+person chose it for this request and a run on another model, with no word of
+it, is not the run they asked for (it would not change the price, which is the
+build mode's), while a STORED resume preference that went stale falls back to
+the default with a warning once. The bare-provider and
 `provider:modelName` request forms are admin-only.
 
 **Admin -> Models** (owner decisions M1, M2) opens with its heading and
@@ -2122,40 +3648,47 @@ in modelForm.ts - the draft, the local checks in the server's own sentences,
 an edit's body of only what changed (an untouched one closes with no
 request), and `modelRefusalField`. The model routes answer a refusal about
 one box with `field` (config/aiModelConfig.ts `AIModelInputError`,
-`AI_MODEL_FIELDS`: name, provider, modelName, pricePerResumeUsd,
-description, enabled), so a name another administrator took meanwhile lands
-under the name box; test/frontendSettings.test.js drives the dialog's
-helpers through the real routes. The table's badges and the default and
-analysis choices are under "Job analysis runs once" below.
+`AI_MODEL_FIELDS`: name, provider, modelName, description, enabled), so a name
+another administrator took meanwhile lands under the name box;
+test/frontendSettings.test.js drives the dialog's helpers through the real
+routes. A model carries no price: a create without one is 201, a
+`pricePerResumeUsd` in a body is not read, refused or stored, and one an older
+build stored on a record is read past and dropped by the next write. The page
+draws none - no Price column, no price box, no red notice for a free model - and
+says under its heading *What a resume costs is set per builder mode under
+Settings > General > Price per resume.*; modelForm.ts's `MODEL_FIELDS` is the
+server's `AI_MODEL_FIELDS`, and no price is among them. The table's badges and
+the default and analysis choices are under "Job analysis runs once" below.
 
-**Price per resume.** `pricePerResumeMilli` is thousandths of a dollar,
-0..1,000,000 ($0-$1,000), 0 = free (`config/pricePerResume.ts`). There is
-NO default: an admin create without `pricePerResumeUsd` is refused, and a stored
-record without the field - a shipped seed, or one an older build priced in
-credits (its `creditsPerResume` is never read) - reads as 0 in memory, no
-write-back, and the admin payload's `freeEnabledModelIds` lists
-every enabled model at 0 for Admin -> Models to show in red. Junk or a fraction
-of a thousandth reads as 0 and warns once; out of range clamps; admin mutations
-refuse a bad value by name (`creditsPerResume` in a mutation is ignored), and
-a partial edit keeps it. A resume is priced at submit by the same
-resolution its task runs (`resolvePricedAiChoice` -> `{ choice, costMilli }`:
-request, then profile, then default) and the price is snapshotted on the task
-as `payload.costMilli` - OUTSIDE `payload.choice`, so a restore that re-resolves
-a retired choice never re-prices it; `chargeFor` sums `taskCostMilli(payload)`
-and the queue hook refunds it, 0 when absent (a task from before dollars, whose
-`creditCost` is never read as money). `reserveCredits` and `refundTaskUnit`
-take AMOUNTS in thousandths, a batch reserves the sum, and
-`POST /api/generation/quote` prices a batch body through the same
-`resolveProfileChoices` without reserving anything (`costMilli`, and
-`pricePerResumeMilli` when every resume costs the same, else null).
-Administrators stay exempt.
-Tailored content a preview already wrote is priced at the model that WROTE it,
-not the one the finalising request names: `/resume/preview` and `/preview-all`
-hand back a signed `previewToken` (`services/credits/previewToken.ts`, HMAC with
-a secret kept in `app_settings`), `/generation/batches`
-(`previewTokenByProfileId`, which the quote takes alone) prices and runs on its
-model, and supplied content without a valid token is charged at least what the
-profile's own model costs (`resolveSuppliedContentChoice`).
+**Price per resume** is the build mode's, never the model's. The three prices
+(`suitablePriceMilli`, `partialPriceMilli`, `fullPriceMilli`) are thousandths of
+a dollar, 0..1,000,000 ($0-$1,000), 0 = free (config/buildModes.ts; "Builder
+modes and the suitable resume" has their `.env` names, sources and refusals).
+There is NO default price: a mode nobody priced is free, and the admin payload
+lists a mode priced $0 only because its `.env` line was junk
+(`unreadableModePrices`). A run's resumes are priced at submit by
+services/resumeChoice.ts `priceRun` - the mode's price for each planned resume,
+or the floor below - and the price is snapshotted on the task as
+`payload.costMilli`, OUTSIDE `payload.choice`, so a restore that re-resolves a
+retired choice never re-prices it; `chargeFor` sums `taskCostMilli(payload)` and
+the queue hook refunds it, 0 when absent (a task from before dollars, whose
+`creditCost` is never read as money). `reserveCredits` and `refundTaskUnit` take
+AMOUNTS in thousandths, a batch reserves the sum (a free run reserves nothing and
+writes no ledger row), and the ledger line is `describeCharge`'s, by mode: *3
+resumes: 3 x Partial Tailor @ $0.02 = $0.06* (the "N resume(s):" prefix stays,
+because the refund parser reads it; a mixed charge is one group per mode label
+and price). `POST /api/generation/quote` prices a batch body through the same
+arithmetic without reserving anything (`costMilli`, and `pricePerResumeMilli`
+when every resume costs the same, else null). Administrators stay exempt.
+Tailored content a preview already wrote is priced as the mode that WROTE it, not
+the one the finalising request names: `/resume/preview` hands back a signed
+`previewToken` for Partial and Fully (`services/credits/previewToken.ts`, HMAC
+with a secret kept in `app_settings`; claims `{ u, r, b, t }` - account, resume,
+build mode, time), and `/generation/batches` and the quote
+(`tailoredContentByResumeId` with its `previewTokenByResumeId`) charge the run's
+mode for content whose token is valid for that account, resume AND mode;
+content without one is charged the floor,
+`max(prices[mode], prices.partial, prices.full)`.
 
 **Prompt variables are the code's, strictly.** A feature-linked prompt may use
 exactly the variables `PROMPT_FEATURES` declares for it (`promptService.ts`), and
@@ -2198,7 +3731,7 @@ prompt must use [[a]] and [[b]].`); validate and preview report them
 A STORED FEATURE record without them, OR naming a variable the code no longer
 supplies (`validation.unknownVariables` - an analysis edit asking for the old
 `[[jobFieldList]]`, a filter edit from before its retirement reading
-`[[jobContent]]`, a tailoring edit or per-profile variant naming the old
+`[[jobContent]]`, a tailoring edit or per-resume variant naming the old
 `[[includeStrengths]]`/`[[includeSoftSkills]]`/`[[technicalSkillsLayout]]`
 switches or `[[hardSkillsJson]]`) - edited before the rule, or by hand - is listed
 `needsUpdate: true` and never run: at runtime (resolvePromptByExactId /
@@ -2221,30 +3754,30 @@ record of it saved before then - the admin's edit of the built-in or a
 variant, never the shipped file, and an `updatedAt` that is no time counts as
 before - is `needsUpdate` and `savedForOlderVersion` whatever its variables;
 any save clears it. The 2026-10-19 contract is GROUNDING: every one of the
-five texts was rewritten so a resume or letter claims only what the profile
-says (the tailoring's "THE PROFILE IS THE ONLY SOURCE OF FACT", a posting
-technology only where the profile names it, a figure only where it states
+five texts was rewritten so a resume or letter claims only what the source
+resume says (the tailoring's "THE PROFILE IS THE ONLY SOURCE OF FACT", a posting
+technology only where the source names it, a figure only where it states
 one, the skills block the candidate's real stack - no fill to thirty, no
 "tools their companies run on" - and a self-check; the analysis extracts
 only what a posting states, with no implied skills and no target counts;
 the revise prompt leaves a term it cannot place honestly missing and adds no
-figure but the profile's) - so an older edit, which may still ask for a
+figure but the source's) - so an older edit, which may still ask for a
 figure the work "implies", gives way. The 2026-10-20 tailoring contract
-(owner's request) opened two holes in it on purpose, because a profile of
+(owner's request) opened two holes in it on purpose, because a resume of
 titles and dates came out with an EMPTY Experience and an EMPTY Technical
 Skills: Partial's skills block leads with every hard skill the posting names,
-whether or not the profile lists it (abilities, practices and concepts stay
+whether or not the resume lists it (abilities, practices and concepts stay
 in the prose; 15 to 30 entries; in no sentence about a described role), and
-a role the profile leaves EMPTY - no `companyContext`, no `achievements` - is
+a role the resume leaves EMPTY - no `companyContext`, no `achievements` - is
 written from the posting (3 to 6 bullets, believable for its title, company
 and years, modest figures allowed there only; the summary may draw on that
 work too) - the owner, asked whether Partial should invent at all, kept this
 (2026-10-20); and Fully tailor exists. An edit of the tailoring saved before
 it leaves an empty role empty, so it gives way, and so do edits of the
 revise pass (its draft now carries each role's dates, for a years rule, and
-after a Fully draft its terms are not the profile's) and of the cover letter
+after a Fully draft its terms are not the source's) and of the cover letter
 (told the tailored resume when there is one). promptVariables.test.js's "the shipped
-prompts keep a resume to what the profile says" holds each rule in the
+prompts keep a resume to what its source says" holds each rule in the
 shipped files and the absence of the ones they replaced. Write Entry Bullets
 is not dated (its text never changed). That is how every edit written for an
 older prompt contract gives way to the shipped texts, with no migration. An UNATTACHED record is never flagged (it has no built-in to give
@@ -2258,15 +3791,17 @@ its exact id on a model the code chooses (`runChoiceWins`) - so `createPrompt` r
 prompt into one) and `activatePrompt` an old variant, each in its feature's
 own sentence, a stale `activePrompts` entry for one is ignored (and dropped on
 the next write), and a variant an older build saved is listed, never active.
-`profileSettings.coverLetterPromptId` is gone (no page ever set it; a save
-drops a stored one): `generateCoverLetter` runs the built-in. A profile's
+`resumeSettings.coverLetterPromptId` is gone (no page ever set it; a save
+drops a stored one): `generateCoverLetter` runs the built-in. A resume's
 `resumePromptId` naming a record that is gone (a deleted custom prompt) or one
 that is not a Tailor Resume prompt runs the built-in `tailor-resume`, warned
-once per profile and id (resumeService `resolveProfileResumePromptId`), rather
-than failing every build with `Prompt "<id>" not found`.
+once per resume and id (resumeService `resolveResumePromptId`), rather
+than failing every build with `Prompt "<id>" not found`. Only Partial Tailor
+reads a resume's `resumePromptId` (its Building prompt); Fully Tailor and
+Choose Suitable Resume ignore it.
 
 The tailoring's values (`buildTailorResumePromptValues`) are the posting's
-analysis in its own spelling and nothing else - no skill library, no profile
+analysis in its own spelling and nothing else - no skill library, no resume
 setting - built by services/tailorContract.ts `buildTailorLists`, which reads an
 analysis of either shape (a posting is analysed once, ever, so most are older):
 `jobAnalysisJson` the analysis prompt's own schema (no posting text, facts or
@@ -2282,52 +3817,59 @@ buzzwords, `conceptToolsJson` config/conceptTools.ts's rows its terms name
 responsibilities, the domain knowledge alone, and `softSkillGroupHeading` one
 of services/skillGroups.ts's six. The three per-resume draws - the heading,
 the tools' order, the title's shape - are SEEDED (`tailorSeed` =
-sha256(profile id + posting hash), `mulberry32`, one sequence per draw), never
+sha256(resume id + posting hash), `mulberry32`, one sequence per draw), never
 `Math.random()`: the same resume asked again is the same question and a cache
 hit, and the parse can redo them. The section switches and layout are not
 values: they decide how the answer is DRAWN. The Strengths switch reaches the
 model only as `profileJson`'s `strengths` (sent while on), and `softSkills`
 is never sent. Nothing is appended to a tailor-resume turn.
 
-**Partial and Fully tailor** (owner's request, 2026-10-20).
-`ProfileSettings.tailorMode` is `'partial' | 'full'`, read by profileService's
-`getProfileTailorMode`: the profile's own, else `.env`'s `DEFAULT_TAILOR_MODE`
-(settingDefaults.ts `envDefaultTailorMode`, a per-profile default like
-OUTPUT_PATH_SUFFIX's per-account one, in SETTING_DEFAULT_VARIABLES), else
-`partial`. A save takes a mode, `null` clears a stored one, anything else
-keeps it; absent is not stored. `tailorResume` runs `tailor-resume-full`
-(`FULL_TAILOR_PROMPT_ID`, a single-prompt feature declared from tailor-resume's
-own variables by promptService's `withFullyTailoring`) for `full`, whatever
-`resumePromptId` says, and the profile's choice for `partial`;
-`buildTailorResumePromptValues(profile, analysis, mode)` is the one builder,
-and only `profileJson` differs (`buildPromptProfile(profile, mode)`: in Fully
+**Partial and Fully tailor** (owner's request, 2026-10-20; since v4.2 the mode
+is the RUN's, see "Builder modes and the suitable resume"). `TailorMode` is
+`'partial' | 'full'` (types/resume.ts) and comes from the task's
+`payload.buildMode`, passed down explicitly: `tailorResume(resume, analysis,
+choice, mode, signal?, cache?)` takes it as a REQUIRED fourth argument, so the
+compiler finds every caller, and `buildTailorResumePromptValues(resume,
+analysis, mode = 'partial')`, `buildCoverLetterPromptValues(..., tailored?, mode
+= 'partial')` and `generateCoverLetter(..., tailored?, mode = 'partial')` take
+it too. Choose Suitable Resume never reaches them (it tailors nothing). No
+resume carries a mode: `ResumeSettings.tailorMode`, resumeDocument's
+`getResumeTailorMode`, settingDefaults.ts's `envDefaultTailorMode` and the
+`defaultTailorMode` of GET /api/resume/models are gone, and a resume stored with
+a `tailorMode` is read past and loses it at its next save.
+`DEFAULT_TAILOR_MODE` is the BUILDER's starting mode now (`defaultBuildMode`,
+taking `suitable`, `partial` or `full`; an install that had
+DEFAULT_TAILOR_MODE=full keeps meaning Fully Tailor). `tailorResume` runs
+`tailor-resume-full` (`FULL_TAILOR_PROMPT_ID`, a single-prompt feature declared
+from tailor-resume's own variables by promptService's `withFullyTailoring`) for
+`full`, whatever `resumePromptId` says, and the resume's choice for `partial`;
+`buildTailorResumePromptValues` is the one builder,
+and only `profileJson` differs (`buildPromptResume(resume, mode)`: in Fully
 each role is `{ title, company, startDate, endDate }` and there is no
 `summary` - no description, achievements, role skills or location). In both,
-`totalYearsExperience` is the profile's own, else the whole years from its
+`totalYearsExperience` is the resume's own, else the whole years from its
 earliest role start to its latest end, "Present" being today
 (`yearsOfExperience`: a model adding dates up does not know today's date,
 and wrote 6 for 7). The parse
-is the same (the facts, location included, come back from the profile). The
+is the same (the facts, location included, come back from the source resume). The
 revise pass after a Fully draft is asked for the whole checklist
 (no `supportedTerms` filter) and given no figures note; its `draftJson` has
 each role's dates in both modes, for the revise prompt's years rule. The
 cover letter the tailoring answer brings is written by the same prompt; the
 fallback (`generateCoverLetter`, when the answer brought none) is given, with
 tailored content (`runResumeTask` passes it), the mode's projection with the
-resume's own summary and bullets in place of the profile's
-(`profileAsTheResumeSays`, a role matched by company, title and dates, so
+tailored resume's own summary and bullets in place of the source's
+(`sourceAsTailored`, a role matched by company, title and dates, so
 two stints keep their own), and without it the PARTIAL projection whatever
-the mode - the untailored resume prints the profile's own text. The posting's
+the mode - the untailored resume prints the source's own text. The posting's
 action verbs reach `jobAnalysisJson` without the banned openers
 (`analysisForPrompt`; a live Partial run opened a bullet with the posting's
 "Architected"). The mode is in no cache-key field of its own: the
-prompt id and `profileJson` differ. The editor's Customize -> Generation card
-draws the choice (lib/profileDraft.ts `TAILOR_MODE_CHOICES`, the draft's
-`tailorMode`, null = the default), the default from GET /api/resume/models'
-`defaultTailorMode`. test/tailorModes.test.js holds all of it.
+prompt id and `profileJson` differ. test/tailorModes.test.js holds all of it,
+Choose Suitable Resume's tailoring-free path included.
 
 `parseTailoredResumeContent` reads an answer - fresh, cached, or held by a page
-- against the profile as it is NOW, idempotently: the title is the profile's
+- against the source resume as it is NOW, idempotently: the title is the source's
 headline (else the model's, else the latest role's title - never the kind
 alone; with none of them it is '' and the render prints getResumeTitle's
 fallback) with the posting's role KIND (`roleKind`: any " - "/","/":"/"("
@@ -2335,22 +3877,22 @@ tail cut, then level words taken off its EDGES only - a leading Senior/Staff/
 Lead..., a trailing II/3 - so "Tech Lead" keeps its Lead) composed on in one
 of six seeded shapes unless the headline already says it
 (`composeTailoredTitle`); roles keep
-the model's order with their five facts restored from the profile, a role the
-profile lacks dropped, one the answer left out put back with its own bullets
+the model's order with their five facts restored from the source, a role the
+source lacks dropped, one the answer left out put back with its own bullets
 (`restoreRoles`; of two stints with one company and title, the one whose
 dates agree with the answer's - `closestStint`: start before end, the same
-text before the same years, else profile order - so a profile typed oldest
+text before the same years, else the source's order - so a resume typed oldest
 first never swaps them), `description` '' always, and bullets sanitised and capped at
 8 - the eight with the most distinct checklist terms (`capBullets`); an empty
-role gets the profile's own bullets. The summary is only made safe (spelled-out
+role gets the source's own bullets. The summary is only made safe (spelled-out
 years, one to twenty and both ends of a range, become numerals; a compound
 like "Twenty-five" or "twenty one" is left as written); no sentence is added. `skillGroups` are kept as the
 model wrote them (shape only), the soft group marked `soft: true` and
 `softSkillGroupHeading` stored; `hardSkills` = `skills` the technical groups,
 `softSkills` the soft group's while Soft Skills is on for the template, else
-[]; strengths the profile's own while on (and no list of skills to confirm:
+[]; strengths the source's own while on (and no list of skills to confirm:
 nothing printed is checked against the library). With no `skillGroups` in the
-answer, the profile's own grouping or skills.
+answer, the source's own grouping or skills.
 `dashBackstop` takes em/en dashes and a spaced `--` out of the summary,
 bullets and cover letter (a range becomes a hyphen - a dash whose words on
 both sides carry a digit, so `$5M–$10M`, `50%–80%` and `Q1–Q3` stay ranges,
@@ -2359,36 +3901,36 @@ never lists), and
 through the same parse (`finaliseHeldContent`), as `/resume/preview` does.
 
 **The revise pass** (owner's `revise-resume-coverage`; services/reviseCoverage.ts,
-called inside `tailorResume`, so /resume/preview, /preview-all and the queue
-task all get it) runs after a FRESH
+called inside `tailorResume`, so /resume/preview (Partial and Fully) and the
+queue task get it) runs after a FRESH
 tailoring only - never on a cache hit or on content a page sent back - when
 TAILOR_REVISE_PASS is on and the draft is missing a checklist term THE
-PROFILE'S OWN WORDS CARRY, or has dropped a figure the profile states. The
+SOURCE RESUME'S OWN WORDS CARRY, or has dropped a figure the source states. The
 checklist (`TailorLists.checklist`): the top five, the must-include terms, the
 concepts, the soft skills, the skills, the verbs - not responsibilities or
 domain knowledge - filtered to `supportedTerms(checklist,
-profileEvidence(profileAsShown(profile)))`: the same whole-word `containsTerm` over the
-profile's headline, summary, skills and their headings, soft skills,
+resumeEvidence(sourceAsShown(resume)))`: the same whole-word `containsTerm` over the
+resume's headline, summary, skills and their headings, soft skills,
 strengths, each role's title, description, bullets and skills, and its
 certifications, projects, volunteering, courses, awards and publications -
 never a company name, and each description as the tailoring saw it
-(resumeService `profileAsShown`: its sentences about the company dropped, as
-for `companyContext`; `droppedProfileFigures` reads the same profile). The revise call reads the draft and not the profile,
-and the tailoring is told to leave out a term the profile never names, so
+(resumeService `sourceAsShown`: its sentences about the company dropped, as
+for `companyContext`; `droppedResumeFigures` reads the same resume). The revise call reads the draft and not the source,
+and the tailoring is told to leave out a term the source never names, so
 asking for one would undo that on the one call that cannot check.
 `missingTermsJson` is the supported ones the summary and bullets lack,
 in that order, never one with a banned word or opener
 (`RESUME_BANNED_WORDS`/`RESUME_BANNED_OPENERS`, which the revise prompt bans
 outright), at most TAILOR_REVISE_MAX_TERMS. `figuresNote` is
-`figuresNote(droppedProfileFigures(profile, draft))`: each role's bullets,
-then its description's sentences, in profile order, that carry a figure
+`figuresNote(droppedResumeFigures(resume, draft))`: each role's bullets,
+then its description's sentences, in the source's order, that carry a figure
 (`figureTokens`: a number not glued to a letter, so S3, EC2, p99 are names;
 separators dropped, a 19xx/20xx year left out) the draft's summary and
 bullets no longer carry anywhere, at most `MAX_DROPPED_FIGURE_LINES` (12),
 each under its company and title, with the one instruction to put the figure
 back where a bullet of that role describes the same work - or '' (its
 wording, `FIGURES_NOTE_WORDING`, is in the cache key). Nothing asks for a
-figure the profile does not state: the old "fewer than five figures" rule,
+figure the source does not state: the old "fewer than five figures" rule,
 whose sentence asked for "modest" figures the work "implies", is gone. The call
 (`callSite: 'revise-resume-coverage'`, the seat's TAILOR timeout) runs on the
 resume's choice with `runChoiceWins` and the same signal, inside the queue's
@@ -2406,8 +3948,8 @@ role keeps its draft bullets; a part returned as the draft has it is no
 change. The result is finished by the same parse. An unparsable or empty answer changes nothing; a seat failure
 leaves the draft as the resume (`[tailor] The revise pass failed ...`, once
 per model and reason, and nothing cached); an abort is passed on. Nothing
-about a profile is in a posting's analysis, on purpose: the analysis reads the
-posting, not the profile, and one analysis serves every profile, for ever
+about a resume is in a posting's analysis, on purpose: the analysis reads the
+posting, not the resume, and one analysis serves every resume, for ever
 (below).
 
 **What a failure may tell whom** (`middleware/publicError.ts`). Most people
@@ -2441,8 +3983,8 @@ removed them from every database the guard admits; their logs and settings
 snapshots stay in app_settings, unread). An id outside the catalog is simply
 unknown: `coerceProviderId` answers null, a settings READ drops a model record
 naming one (an admin save refuses it), a REQUEST naming one of their models is
-400 `model-unavailable` like any other unknown model, a profile save naming one
-is refused, a STORED profile choice naming one falls back to the default with
+400 `model-unavailable` like any other unknown model, a resume save naming one
+is refused, a STORED resume choice naming one falls back to the default with
 a warning once, and a prompt override naming a provider this build lacks is no
 override (aiModelCatalog's `readStoredPromptModelSelection`: warned once, never
 a throw, so Admin -> Prompts still lists; saving one is refused). The flat
@@ -2523,7 +4065,7 @@ Owner decisions P1-P4. A PROVIDER is one place a type runs:
 enabled, createdAt, updatedAt }`, only what an administrator set -
 `storableProviders`; an untouched built-in is not stored). The FIRST of each
 type is the BUILT-IN one, id = the type id, so every stored model, prompt
-override, profile and queued task (which all name a type) keeps working; its
+override, resume and queued task (which all name a type) keeps working; its
 values come from `.env` as before (`AI_CLI_BIN` / `CLAUDE_CONFIG_DIR` /
 `AI_CLI_CONCURRENCY`, `AI_CODEX_BIN` / `CODEX_HOME` / `AI_CODEX_CONCURRENCY`,
 `AI_GEMINI_BIN` / `AI_GEMINI_HOME` / `AI_GEMINI_CONCURRENCY` -
@@ -2675,14 +4217,23 @@ table `tailor_cache`, `idx_tailor_cache_key` UNIQUE on `cache_key` and
 pinned by test/tailorCache.test.js). `tailorResume` and `generateCoverLetter`
 take an optional `TailorCacheContext { analysisId, templateId }` and look the
 answer up BEFORE their model call; every caller that has the posting's stored
-analysis passes one (the queue task, /resume/preview, /preview-all).
+analysis passes one (the queue task and /resume/preview).
 `tailorCacheKey` is SHA-256 of `TAILOR_CACHE_VERSION` (2:
 the model writes the skills block, roles are restored and capped, and a
-resume's answer may be its revised one), the kind, the profile as the call
-sees it (after `profileForTemplate`) minus `createdAt`/`updatedAt`,
-`profileSettings` AND `sectionOrder` (`profileFingerprint`: the layout, the
+resume's answer may be its revised one), the kind, the resume as the call
+sees it (after `resumeForTemplate`) minus `createdAt`/`updatedAt`,
+`resumeSettings`, `sectionOrder`, `profileId` AND the derived `matchKeywords`
+(`resumeFingerprint`, hashed
+under the
+literal key `profile:` - build 4.1's spelling, which stays, or every cached
+tailoring would miss: the layout, the
 Soft Skills switch and the section order only decide how the answer is drawn,
-so flipping or dragging them is a hit; the Strengths switch reaches the key
+so flipping or dragging them is a hit; which profile a resume is filed under
+is the server's bookkeeping and no word of what the model is told, and it is
+written when old resumes are filed and when one is moved, so a key that
+carried it would miss every cached tailoring once; the keywords GET
+/api/resumes serves with a resume are made FROM it and say nothing it does not,
+so a resume read there and passed on is the same question as the stored one; the Strengths switch reaches the key
 through `profileJson`, the chosen prompt and model through their own fields;
 the nine new section lists are content and change the key, though none is
 in `profileJson` yet), canonical JSON, the template id, the analysis id,
@@ -2708,7 +4259,7 @@ write (`[tailor-cache] Not keeping this ...`) - and never when the revise call
 failed (the next build asks for the revision again). They call
 `createPromptCompletionResult`, the variant of `createPromptCompletion` that
 answers the whole result. A hit runs `parseTailoredResumeContent` against the
-profile again (idempotent on its own output), and an answer that no longer
+resume again (idempotent on its own output), and an answer that no longer
 parses is a miss. The charge never depends on it: a resume is priced at
 submission. Read and write failures are a miss, warned once. Every caller and
 both rules are pinned by test/tailorCache.test.js through the real routes. `TAILOR_CACHE_DAYS` (operational.ts, default 30, 1-3650)
@@ -2773,7 +4324,7 @@ facts record's stable part through `CreatePromptCompletionInput.systemPreamble`
 without system blocks), so it is cached and no edit can drop it, and the
 one-line `JOB_FIELD_REMINDER` after the posting through `appendToUserBody`.
 `prompt_hash` is SHA-256 over both records' texts and those two constants.
-Nothing about a model, a prompt, a profile or an account is part of a
+Nothing about a model, a prompt, a resume or an account is part of a
 posting's identity, so an edit of either prompt or a new analysis model
 reaches only postings never analysed before - a posting analysed by an older
 build keeps that analysis, and every reader takes both shapes - and there is
@@ -2799,18 +4350,19 @@ it) - because the analysis leaves company names out and the lake's merge hashes
 on it. Never part of a posting's identity.
 
 **Callers pass `analysisId`**, never an analysis: `/resume/analyze` answers the
-analysis plus `analysisId` and `jobFieldLabel`; `/resume/preview`,
-`/preview-all`, `/generate` and every job of `/generation/batches` take
-`analysisId` (must exist: 400 otherwise) or `jobDescription` + `jobLink` and
-answer `analysisId`. A `jobAnalysis` object in any body is NOT read - it was a
+analysis plus `analysisId` and `jobFieldLabel`; `/resume/preview` and every job
+of `/generation/batches` take `analysisId` (must exist: 400 otherwise) or
+`jobDescription` + `jobLink`, and the preview answers `analysisId`. A
+`jobAnalysis` object in any body is NOT read - it was a
 way to forge a job field. `/generation/batches` resolves ONE analysis per job
-at submission, before fanning out per profile (`submit.ts`'s
-`resolveAnalysesAtSubmit`, no model call, `storedOnly`), and puts it on every
-task as `payload.analysisId`; a job with none is analysed by its first task
-through the gate (the others wait for that call), which then stamps every task
-of the job (`AnalysisHooks.recorded` -> queue/index.ts `recordJobAnalysis`), so
-a retry, a restored task and a sibling skip the analysis step. Per-profile
-analysis prompts are gone (`profileSettings.analyzeJobPromptId` is dropped on
+at submission, before the resume is chosen for the job (`submit.ts`'s
+`resolveAnalysesAtSubmit`, no model call, `storedOnly`; the matcher reads that
+same analysis), and puts it on the job's task as `payload.analysisId`; a job
+with none is analysed by its task through the gate (a posting repeated in the
+batch waits for that call), which then stamps the job's task
+(`AnalysisHooks.recorded` -> queue/index.ts `recordJobAnalysis`), so a retry and
+a restored task skip the analysis step. Per-resume
+analysis prompts are gone (`resumeSettings.analyzeJobPromptId` is dropped on
 save, a variant cannot be created or activated, an old one is listed but never
 active).
 
@@ -3042,8 +4594,8 @@ A deleted analysis model clears the setting.
 `/resume/analyze` answered with the description it was made for
 (lib/jobAnalysis.ts `holdAnalysis` / `heldAnalysisFor`: the server's own
 whitespace normalisation, so re-spacing the text is the same posting) and
-sends its `analysisId` to preview, preview-all and every batch; a change of
-company, role, profile or model never asks again (the held analysis is NOT
+sends its `analysisId` to preview and every batch; a change of
+company, role, resume or model never asks again (the held analysis is NOT
 reset with the other outputs), an edited description is another posting, and
 a 400 from a request that named it lets it go (`dropsHeldAnalysis`).
 components/AnalysisFacts shows its title, job field label, job type,
@@ -3052,8 +4604,8 @@ seniority, clearance and salary - each only when the analysis says it
 `clearanceRequiredOf` and `seniorityOf` - the facts call's
 `filter.seniority`, else an older analysis's `jobMeta.seniority`, what the
 Job Filter judges - each a copy of the server's, run against it by
-test/frontendAnalysis.test.js) under the description, in both preview
-dialogs and on Prompt Test, which has no prompt or model select any more,
+test/frontendAnalysis.test.js) under the description, in the preview
+dialog and on Prompt Test, which has no prompt or model select any more,
 names both prompts, and marks in the posting only the keyword half
 (lib/analysisHighlights.ts `collectHighlightTerms`: never `jobField`,
 `industry`, `salary` or `filter`, which once marked every "us" in "join us"). The sheet panel sends `sheet: { tabName }` (the account's own sheet,
@@ -3110,7 +4662,7 @@ again" clears; no runtime import), which
 test/frontendAnalysis.test.js holds to `listSinglePromptFeatures`,
 `listRequiredPromptVariables`, `validatePromptContent` and `updatePrompt`'s
 refusal. The page loads its model options with `adminApi.getSettings` (there
-is no `/api/admin/ai-models` any more). The profile
+is no `/api/admin/ai-models` any more). The resume
 editor's Extracting prompt select is gone with `analyzeJobPromptId`.
 test/frontendAnalysis.test.js runs every copy here against the server's code.
 
@@ -3514,31 +5066,52 @@ hands it to the select-all box, the form's Clear (off once nothing is left) to S
 modal dialog is open (only an export blocks it) so Cancel gives it back there,
 and a placed order's receipt (`[data-order-result]`, `tabIndex=-1`; the
 receipt itself `role=status`) takes it. **Order Immediately** (OrderJobsDialog) is an
-ORDER: `ProfileTargets` (Single / Several profiles / All profiles / Specific
-group, all but the first locked below Premium via `useLockedFeature`; Several
-is the dialog's alone - `selectedProfileIds` and `onProfileIdsChange` draw the
-card and an inline MultiSelect of the enabled profiles, `order-profiles`, and
-Build Resumes passes neither, keeping its three cards - the kind in effect
-`targetInEffect`, the start `startingTarget`, which never names Several),
-`AiPreferenceFields`
-(`order-ai`), `CostLine` from a quote of exactly the order - or, in its
-place while who it is for cannot be built for, `targetBlocker`'s sentence
-(`[data-order-blocker]`, aria-live) - and Place order
+ORDER for ONE profile in ONE build mode, on every subscription, so nothing in
+it is locked: `ProfileSelector` (`#order-profile`: the profiles that have an
+enabled resume, newest edit first, "{name} (N resumes)", loaded on every tier;
+"You have no profile with an enabled resume. Add one under Profiles first."
+when there is none) and components/builder/BuildModeChoice.tsx (radios
+`orderBuildMode`: the three mode cards, each saying what the mode does and,
+once GET /resume/models has answered, what a resume costs in it), starting
+where Build Resumes starts (`startingProfileId`, `startingBuildMode`), with
+`buildModeNote` under the cards (`[data-build-mode-note]`), `AiPreferenceFields`
+(`order-ai`; the model is this order's only - Fully Tailor builds the
+profile's default resume, so it says "Defaults come from {label}, the profile's
+default resume. A model chosen here applies to this order only." and the other
+modes "Each resume uses its own model; one chosen here applies to this order
+only."), `CostLine` from a quote of exactly the order - keyed by the profile,
+the job count, the model and the mode, so a 402 shortfall belongs to the order
+that was refused - or, in its place while who it is for cannot be built for,
+`profileBlocker`'s sentence (`[data-order-blocker]`, aria-live) - and Place order
 through `useSpendConfirm().ask({ kind: 'order', ... estimateRun(body) })`
 before `generationApi.submit({ label: lakeOrderLabel(n), mode: 'order',
-profileIds, jobs: lakeOrderJobs(rows).jobs, ...defaultRunFormat })` - each job
-`{ companyName, role, jobLink, analysisId }`, a row with no analysis left out
-and said (`describeOrderSkipped`); a 403 `subscription-too-low` opens the lock
-(`describeTooLowRefusal`) and re-reads the account, a 402 is the cost line's
+buildMode, profileId, jobs: lakeOrderJobs(rows).jobs, ...defaultRunFormat })` -
+each job `{ companyName, role, jobLink, analysisId }`, a row with no analysis
+left out and said (`describeOrderSkipped`); a 402 is the cost line's
 shortfall; placed, the page shows `OrderReceipt`, lets the selection go and
-re-reads the account (the top bar's balance). Closed while its price is worked
+re-reads the account (the top bar's balance). The receipt says what is being
+built, "3 resumes for 3 jobs are being built: Partial Tailor for Jane Doe."
+(`placedOrderFrom(submitted, skippedNote, profileName)`; the mode and the
+profile are left out of the sentence when the page does not know them), and the
+order's page prints each item as the profile's name (else the resume's name),
+" · " and the resume's label, " - " and the role, " - sheet row N" for a sheet
+row, with, muted under it (`[data-order-choice]`), how the run came to build
+that resume, `describeChoice(match)` (lib/orders.ts):
+"Suitable resume: matched Go, Kafka" (the first eight terms, then " and N
+more"), "... its title matches the posting's", "... no other resume matched
+better, so the profile's default", "... the profile's only enabled resume" and
+"Fully Tailor: the profile's default resume"; an item placed before v4.2 has no
+`match` and prints as it always did. Closed while its price is worked
 out (Cancel, Escape, the backdrop), the dialog unmounts and `useSpendConfirm`
 starts nothing for a hook that has gone - a free or exempt order was once
 placed behind the person's back. test/frontendFindJobs.test.js
-holds the MultiSelect's decisions, the targets against
-`assertProfileScopeAllowed` and the order's wiring; test/e2e/find-jobs.js
-drives the page, the export and the order against stub-lake-push-sheets.js
-(its export seam) and stub-seat.js.
+holds the MultiSelect's decisions, serves a real Default account through the
+real /generation/quote - the request the dialog builds is a 200 at each of the
+three modes' prices, and a `profileIds` or `resumeIds` list is 400
+`one-profile-per-run` - and the order's wiring; test/e2e/find-jobs.js
+drives the page, the export and the order (in Partial Tailor and in Choose
+Suitable Resume, the items naming the resume chosen and why) against
+stub-lake-push-sheets.js (its export seam) and stub-seat.js.
 
 ## Conventions from the history
 
@@ -3555,6 +5128,63 @@ is refused by the startup guard, which names the build to start once first.
 The pattern in nearly every feature arc is a feature commit
 followed by one or more "fix what the adversarial review found" commits, so
 expect review passes to be part of the work rather than an afterthought.
+
+**The v4.2 vocabulary.** v4.1 called one resume document a "profile" and a list
+of resumes a "group"; v4.2 calls them a **resume** and a **profile** (the
+person), and the signed-in user's own settings page **Account** (Settings ->
+Account; it was the "Profile" tab). The code, the tables, the API paths, the
+tests and these notes say so together, and the names a database stored are
+renamed in place by database/glossaryRename.ts (see database/ above). A resume
+is `Resume`, `ResumeSettings` / `resumeSettings`, the `resumes` table,
+`/api/resumes` and `routes/resumes.ts`; a profile is `Profile`, the `profiles`
+table, `/api/profiles`, `routes/profiles.ts` and `profilesApi`. A profile is a
+person on the server and on the pages (see "Profiles and their resumes"): what
+the pages of v4.1 said "group" for went with the several-profile builder - the
+Groups page that edited a member list, its rail row and lock, the builder's
+"Specific group" target and the administrator's default build target - and no
+page says "group" in that sense now. Do not rename a "group" or a "profile"
+without knowing which sense it is: skill groups, the Grouped layout and
+`role="group"` / `role="radiogroup"` are other senses entirely, and
+test/glossaryRename.test.js fails on a retired name.
+
+**Names that keep the old word.** Some say "profile" and are not the rename's to
+change: what a model reads or a cache key hashes (`[[profileJson]]`, the
+literal key `profile:` of the tailoring cache, "FIGURES THE PROFILE STATES" in
+the revise pass, the prompt id `extract-profile-from-resume` and the shipped
+prompt texts), what is stored or printed (the output token `{{profile_name}}`
+with its aliases `profile` and `profile name`, the blank name 'Untitled
+Profile', the sample "Sample Profile", `answers.profile_id`) and the cap and
+the run, whose names kept the word because their final meaning is a person:
+the cap's (`profileLimit`, `profilesUsed`, `ProfileLimitError` and
+`profile-limit`, `orphanedProfiles`) count people now, and the run's names are
+gone, backend and frontend alike: a run names ONE profile (`profileId`, where
+the body said `profileIds`) and a build mode, and `assertProfileScopeAllowed`,
+`MULTI_PROFILE_SUBSCRIPTION`, `NO_MATCHING_PROFILES`, the 202's
+`profileCount`, the frontend's `profileIds` lists, its several-profile
+targets (the v4.1 `ProfileTargets`, `canBuildForManyProfiles`, the group
+target) and its preview-all client were deleted with the builder's
+several-profile flow. What is left is right as it stands: `ProfileSelector`
+lists people, and the list at `/admin/profiles` (rail label "Profiles",
+heading "My Profiles") is the dashboard of people now.
+Renaming the first kind would orphan stored prompt edits or miss every
+cached tailoring (the golden literals in test/glossaryRename.test.js pin it).
+The Bid Assistant keeps its own words altogether (see bidAssistant/ above).
+
+**The one alias.** For the renamed words, nothing reads a retired spelling and
+there is no alias map, with ONE exception, an input one (owner decision D9):
+services/resumeImport.ts still reads a v4.1 resume file - the list wrapper
+`{ "profiles": [ ... ] }` (beside `resumes`, `items` and `data`) and, on each
+record, the field `profileSettings`, which it moves to `resumeSettings` before
+the record is built - so that a file v4.1 wrote can be imported. It reads them
+and never writes one; the drift test allows the spelling in that file and in
+glossaryRename.ts alone; and nothing else reads it, so a record pasted into the
+Bid Assistant's editor with `profileSettings` keeps no settings. Two other
+readers of an old spelling are not aliases of the rename:
+database/glossaryRename.ts reads the old table, column and key names once, to
+move them, and the file-name token map (`FILE_NAME_TOKEN_ALIASES` in
+utils/outputStorage.ts) reads `{{profile}}` and `{{profile name}}` beside
+`{{profile_name}}`, the spellings resumes stored their file name templates in
+(see "Where resumes are filed").
 
 Commit subjects are written as sentences saying what changed and why it
 matters — "Stop link-sharing every new spreadsheet, and let an operator ask for

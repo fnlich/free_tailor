@@ -2,15 +2,15 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
-  normalizeProfilePayload,
+  normalizeResumePayload,
   normalizeSkillsInput,
-  getProfileTechnicalSkillsLayout,
-} = require('../dist/services/profileService');
+  getResumeTechnicalSkillsLayout,
+} = require('../dist/services/resumeDocument');
 
 /**
  * Skills as people actually write them, and as the resume renders them.
  *
- * Two halves that have to agree. A profile may CARRY its skills grouped, and it
+ * Two halves that have to agree. A resume may CARRY its skills grouped, and it
  * may RENDER them grouped - and those are separate decisions: someone who took
  * the trouble to sort their skills into headings can still want a flat list on
  * a one-page resume, and must get their grouping back when they switch away
@@ -69,7 +69,7 @@ test('every categorized skill is also in the flat list', () => {
   // prompt is given, so a skill typed only into a category would be rendered on
   // the resume and never reach the model - which would then drop it as
   // unclaimed, and the resume would show a skill the prose never supports.
-  const saved = normalizeProfilePayload({
+  const saved = normalizeResumePayload({
     name: 'A',
     skills: ['Rust'],
     skillCategories: [{ category: 'Languages', skills: ['C#'] }],
@@ -84,12 +84,12 @@ test('every categorized skill is also in the flat list', () => {
 
 test('a payload naming neither skills field leaves both alone', () => {
   // Omitting a field means "leave it alone" everywhere else in this normalizer.
-  // A client that predates categories must not blank them by saving a profile.
-  const existing = normalizeProfilePayload({
+  // A client that predates categories must not blank them by saving a resume.
+  const existing = normalizeResumePayload({
     name: 'A',
     skills: [{ category: 'Languages', skills: ['C#'] }],
   });
-  const after = normalizeProfilePayload({ name: 'A', title: 'Engineer' }, {
+  const after = normalizeResumePayload({ name: 'A', title: 'Engineer' }, {
     ...existing,
     id: 'p1',
     createdAt: '',
@@ -102,11 +102,11 @@ test('a payload naming neither skills field leaves both alone', () => {
 test('a payload naming a flat list CLEARS the grouping', () => {
   // "My skills are these, in a list" is a complete statement. Keeping a stale
   // grouping around it would put back headings the person just removed.
-  const grouped = normalizeProfilePayload({
+  const grouped = normalizeResumePayload({
     name: 'A',
     skills: [{ category: 'Languages', skills: ['C#', 'Python'] }],
   });
-  const flattened = normalizeProfilePayload({ name: 'A', skills: ['C#', 'Python'] }, {
+  const flattened = normalizeResumePayload({ name: 'A', skills: ['C#', 'Python'] }, {
     ...grouped,
     id: 'p1',
     createdAt: '',
@@ -117,29 +117,29 @@ test('a payload naming a flat list CLEARS the grouping', () => {
 });
 
 test('the layout defaults to categories, which is how templates render today', () => {
-  assert.equal(getProfileTechnicalSkillsLayout(null), 'categorized');
-  assert.equal(getProfileTechnicalSkillsLayout({ profileSettings: {} }), 'categorized');
+  assert.equal(getResumeTechnicalSkillsLayout(null), 'categorized');
+  assert.equal(getResumeTechnicalSkillsLayout({ resumeSettings: {} }), 'categorized');
   assert.equal(
-    getProfileTechnicalSkillsLayout({ profileSettings: { technicalSkillsLayout: 'sideways' } }),
+    getResumeTechnicalSkillsLayout({ resumeSettings: { technicalSkillsLayout: 'sideways' } }),
     'categorized',
     'a value this build does not understand inherits rather than breaking the render'
   );
   assert.equal(
-    getProfileTechnicalSkillsLayout({ profileSettings: { technicalSkillsLayout: 'flat' } }),
+    getResumeTechnicalSkillsLayout({ resumeSettings: { technicalSkillsLayout: 'flat' } }),
     'flat'
   );
 });
 
 test('the layout survives a save that does not mention it', () => {
-  const saved = normalizeProfilePayload({
+  const saved = normalizeResumePayload({
     name: 'A',
-    profileSettings: { technicalSkillsLayout: 'flat' },
+    resumeSettings: { technicalSkillsLayout: 'flat' },
   });
-  const after = normalizeProfilePayload({ name: 'A', profileSettings: {} }, {
+  const after = normalizeResumePayload({ name: 'A', resumeSettings: {} }, {
     ...saved,
     id: 'p1',
     createdAt: '',
     updatedAt: '',
   });
-  assert.equal(after.profileSettings.technicalSkillsLayout, 'flat');
+  assert.equal(after.resumeSettings.technicalSkillsLayout, 'flat');
 });

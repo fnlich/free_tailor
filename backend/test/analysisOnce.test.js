@@ -16,11 +16,11 @@ const { posting, serveInstall, until, untilFinished } = require('./analysisHarne
  * | # | It used to re-run when...                    | Now...                                        |
  * |---|-----------------------------------------------|-----------------------------------------------|
  * | 1 | the 6 h / 100-entry cache missed              | the store has no window and no cap            |
- * | 2 | profiles in one batch used different models   | one analysis per job, resolved before fan-out |
+ * | 2 | resumes in one batch used different models   | one analysis per job, resolved before fan-out |
  * | 3 | the server restarted                          | analysisId is on each persisted task          |
  * | 4 | an order had > 100 postings                   | each posting once, a second order none        |
  * | 5 | an admin edited the analysis prompt           | the prompt is no part of the key              |
- * | 6 | a profile had its own analysis prompt         | per-profile analysis prompts are gone         |
+ * | 6 | a resume had its own analysis prompt         | per-resume analysis prompts are gone         |
  * | 7 | Preview (or Generate) was pressed again       | analysisId, or the store by text/link         |
  * | 8 | two requests arrived at once                  | the process-wide in-flight join               |
  * | 9 | a task retried                                | the retry skips the analysis step             |
@@ -70,26 +70,36 @@ test('row 1: the same posting is not analysed again after "six hours" or a hundr
 test('row 2: three profiles on three models - one analysis, the same analysisId on every task', async (t) => {
   const h = await serveInstall('row2');
   t.after(h.close);
-  const { batchId } = await submit(h, { jobs: jobs(1), profileIds: ['p-claude', 'p-codex', 'p-gemini'] });
-  const snapshot = await untilFinished(batchId);
-  assert.equal(snapshot.completed, 3, JSON.stringify(snapshot.tasks.map((task) => task.error)));
+  // A run builds one profile (decision 10), so the same job is placed for each
+  // of the three people in turn.
+  const batchIds = [];
+  for (const resumeId of ['p-claude', 'p-codex', 'p-gemini']) {
+    batchIds.push((await submit(h, { jobs: jobs(1), profileId: h.profileOf(resumeId) })).batchId);
+  }
+  for (const batchId of batchIds) {
+    const snapshot = await untilFinished(batchId);
+    assert.equal(snapshot.completed, 1, JSON.stringify(snapshot.tasks.map((task) => task.error)));
+  }
 
   assert.equal(h.seats.analyses().length, 1, 'one analysis for the job, not one per model');
   assert.equal(h.seats.facts().length, 1, 'and one facts call with it');
-  assert.equal(h.seats.facts()[0].provider, h.seats.analyses()[0].provider, 'on the analysis model, not a profile\'s');
-  const ids = new Set(payloads(batchId).map((payload) => payload.analysisId));
+  assert.equal(h.seats.facts()[0].provider, h.seats.analyses()[0].provider, 'on the analysis model, not a resume\'s');
+  const ids = new Set(batchIds.flatMap((batchId) => payloads(batchId).map((payload) => payload.analysisId)));
   assert.equal(ids.size, 1);
   assert.ok([...ids][0]);
-  // Each resume is still tailored on its own profile's model.
+  // Each resume is still tailored on the model its source record names.
   assert.deepEqual(h.seats.tailorings().map((call) => call.provider).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
 });
 
 test('row 3: a restart mid-order - store and queue reopened from disk - and the restored tasks skip analysis', async (t) => {
   const h = await serveInstall('row3');
   t.after(h.close);
-  // The process "dies" with both resumes mid-tailoring, after the analysis.
+  // The process "dies" with both runs (two people, one resume each) mid-tailoring,
+  // after the analysis.
   h.seats.holdTailoring = true;
-  const { batchId } = await submit(h, { jobs: jobs(1), profileIds: ['p-claude', 'p-codex'] });
+  const first = await submit(h, { jobs: jobs(1), profileId: h.profileOf('p-claude') });
+  const second = await submit(h, { jobs: jobs(1), profileId: h.profileOf('p-codex') });
+  const batchIds = [first.batchId, second.batchId];
   await until(() => h.seats.tailorings().length === 2, 'both tasks to be tailoring');
   assert.equal(h.seats.analyses().length, 1);
 
@@ -98,23 +108,23 @@ test('row 3: a restart mid-order - store and queue reopened from disk - and the 
   h.gate.resetAnalysisGateForTests();
   h.config.invalidateSettingsCache();
   const { loadBatchRows } = require('../dist/database/generationRepository');
-  const onDisk = loadBatchRows().find((row) => row.id === batchId);
-  const stamped = onDisk.tasks.map((task) => task.data.payload.analysisId);
+  const onDisk = loadBatchRows().filter((row) => batchIds.includes(row.id));
+  const stamped = onDisk.flatMap((row) => row.tasks.map((task) => task.data.payload.analysisId));
+  assert.equal(stamped.length, 2);
   assert.equal(new Set(stamped).size, 1, 'every task row on disk names the one analysis');
   assert.ok(stamped[0]);
 
   h.seats.holdTailoring = false;
   const report = await h.queue.restoreGenerationQueue();
-  assert.deepEqual(report.batchIds, [batchId]);
-  const snapshot = await untilFinished(batchId);
-  assert.equal(snapshot.completed, 2);
+  assert.deepEqual([...report.batchIds].sort(), [...batchIds].sort());
+  for (const batchId of batchIds) assert.equal((await untilFinished(batchId)).completed, 1);
   assert.equal(h.seats.analyses().length, 1, 'the restored tasks did not analyse again');
 });
 
 test('row 4: a 150-row order analyses each posting once, and a second order on the same rows not at all', async (t) => {
   const h = await serveInstall('row4');
   t.after(h.close);
-  const first = await submit(h, { jobs: jobs(150), profileIds: ['p-claude'] });
+  const first = await submit(h, { jobs: jobs(150), profileId: h.profileOf('p-claude') });
   const snapshot = await untilFinished(first.batchId, 4000);
   assert.equal(snapshot.completed, 150);
   assert.equal(h.seats.analyses().length, 150);
@@ -128,7 +138,7 @@ test('row 4: a 150-row order analyses each posting once, and a second order on t
   assert.equal(h.seats.facts().length, 150, 'nor its facts asked twice');
 
   // Placed again: every job starts with its analysis, so no task asks.
-  const second = await submit(h, { jobs: jobs(150), profileIds: ['p-claude'] });
+  const second = await submit(h, { jobs: jobs(150), profileId: h.profileOf('p-claude') });
   assert.ok(payloads(second.batchId).every((payload) => payload.analysisId), 'resolved at submission');
   await untilFinished(second.batchId, 4000);
   assert.equal(h.seats.analyses().length, 150, 'the second order made no analysis call');
@@ -138,22 +148,24 @@ test('row 4: a 150-row order analyses each posting once, and a second order on t
 test('row 5: an analysis prompt edited between two builds does not analyse the posting again', async (t) => {
   const h = await serveInstall('row5');
   t.after(h.close);
-  const before = await h.post('/resume/preview', { profileId: 'p-claude', jobDescription: posting(5) });
+  const before = await h.post('/resume/preview', { profileId: h.profileOf('p-claude'), jobDescription: posting(5) });
   assert.equal(before.status, 200, JSON.stringify(before.body));
 
   const promptService = require('../dist/services/promptService');
   const shipped = await promptService.getPromptById('analyze-job-description');
   await promptService.updatePrompt('analyze-job-description', { content: `Edited.\n${shipped.content}` });
 
-  const after = await h.post('/resume/preview', { profileId: 'p-claude', jobDescription: posting(5) });
+  const after = await h.post('/resume/preview', { profileId: h.profileOf('p-claude'), jobDescription: posting(5) });
   assert.equal(after.body.analysisId, before.body.analysisId);
   assert.equal(h.seats.analyses().length, 1);
 });
 
-test('row 6: a profile that had its own analysis prompt shares the one analysis, on the one prompt', async (t) => {
+test('row 6: a resume that had its own analysis prompt shares the one analysis, on the one prompt', async (t) => {
+  // (Two people, one resume each: a preview builds one profile, and
+  // /resume/preview-all is gone.)
   const promptRepository = require('../dist/database/promptRepository');
   const h = await serveInstall('row6', {
-    profiles: [
+    resumes: [
       ['p-claude', 'Ada', 'claude-cli-sonnet'],
       ['p-own', 'Bea', 'codex-cli-default', { analyzeJobPromptId: 'custom-own-analysis' }],
     ],
@@ -169,18 +181,19 @@ test('row 6: a profile that had its own analysis prompt shares the one analysis,
     createdAt: now,
     updatedAt: now,
   });
-  // Premium is not needed: the owner is an administrator.
-  const response = await h.post('/resume/preview-all', { profileIds: ['p-claude', 'p-own'], jobDescription: posting(6) });
-  assert.equal(response.status, 200, JSON.stringify(response.body));
+  for (const resumeId of ['p-claude', 'p-own']) {
+    const response = await h.post('/resume/preview', { profileId: h.profileOf(resumeId), jobDescription: posting(6) });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+  }
   assert.equal(h.seats.analyses().length, 1);
-  assert.doesNotMatch(h.seats.analyses()[0].stableSystem, /HER OWN ANALYSIS PROMPT/, 'the per-profile variant is not run');
+  assert.doesNotMatch(h.seats.analyses()[0].stableSystem, /HER OWN ANALYSIS PROMPT/, 'the per-resume variant is not run');
   assert.equal(h.seats.tailorings().length, 2);
 });
 
 test('row 7: Preview pressed again - with the analysisId, and without it - analyses nothing more', async (t) => {
   const h = await serveInstall('row7');
   t.after(h.close);
-  const body = { profileId: 'p-claude', companyName: 'Acme', role: 'Engineer' };
+  const body = { profileId: h.profileOf('p-claude'), companyName: 'Acme', role: 'Engineer' };
   const first = await h.post('/resume/preview', { ...body, jobDescription: posting(7), jobLink: LINK });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.ok(first.body.analysisId);
@@ -192,7 +205,7 @@ test('row 7: Preview pressed again - with the analysisId, and without it - analy
   // ...and by its link, reworded.
   await h.post('/resume/preview', { ...body, jobDescription: `${posting(7)} Reposted elsewhere.`, jobLink: `${LINK}/?utm_source=x` });
   // A batch, the same.
-  const { batchId } = await submit(h, { jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(7) }], profileIds: ['p-claude'] });
+  const { batchId } = await submit(h, { jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(7) }], profileId: h.profileOf('p-claude') });
   await untilFinished(batchId);
   assert.equal(h.seats.analyses().length, 1);
 
@@ -226,7 +239,7 @@ test('row 9: a task retried after its tailoring failed does not analyse again', 
   const h = await serveInstall('row9');
   t.after(h.close);
   h.seats.failTailorings = 1;
-  const { batchId } = await submit(h, { jobs: jobs(1, 9), profileIds: ['p-claude'] });
+  const { batchId } = await submit(h, { jobs: jobs(1, 9), profileId: h.profileOf('p-claude') });
   const snapshot = await untilFinished(batchId);
   assert.equal(snapshot.completed, 1, JSON.stringify(snapshot.tasks));
   assert.equal(h.seats.tailorings().length, 2, 'the tailoring was retried');
@@ -296,7 +309,7 @@ test('row 10: the Job Filter, then a build of the same posting - one analysis, w
   assert.deepEqual(written, [], 'nothing written into the sheet');
 
   // The build of the first posting: the sheet's own text for it, its link.
-  const built = await h.post('/resume/preview', { profileId: 'p-claude', jobDescription: `${posting(10)} As the sheet has it.`, jobLink: LINK });
+  const built = await h.post('/resume/preview', { profileId: h.profileOf('p-claude'), jobDescription: `${posting(10)} As the sheet has it.`, jobLink: LINK });
   assert.equal(built.status, 200);
   assert.equal(h.seats.analyses().length, 2, 'the build found the filter\'s analysis');
 
@@ -336,7 +349,7 @@ test('a stored analysis damaged outside the program is analysed once more and re
     assert.equal(again.body.analysisId, first.body.analysisId, 'the same row, readable again');
   }
   assert.equal(h.seats.analyses().length, 2, 'one call more, for the damaged row - not one per request');
-  const { batchId } = await submit(h, { jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(60) }], profileIds: ['p-claude'] });
+  const { batchId } = await submit(h, { jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(60) }], profileId: h.profileOf('p-claude') });
   assert.equal((await untilFinished(batchId)).completed, 1);
   assert.equal(h.seats.analyses().length, 2, 'and none for a build');
 

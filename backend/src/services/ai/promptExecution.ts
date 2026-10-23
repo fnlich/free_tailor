@@ -30,7 +30,7 @@ import {
  * The one entry point every AI call in this app goes through.
  *
  * `claude-cli` is the provider a call that names none starts from. Two callers
- * (profile extraction and template extraction) pass no provider at all, and
+ * (resume extraction and template extraction) pass no provider at all, and
  * when an administrator has switched this seat off or the deployment locks it,
  * such a call is rerouted rather than failed - see `runAssembled`.
  */
@@ -109,8 +109,8 @@ export type CreatePromptCompletionInput = {
    * Stable id of the calling FEATURE, for timeouts and usage buckets.
    *
    * Distinct from `promptId`, which is a prompt-record id and can be a custom
-   * per-profile record. Keying the tailor-resume timeout on the record id
-   * meant a profile with a custom prompt silently got the default budget.
+   * prompt that one resume chose. Keying the tailor-resume timeout on the
+   * record id meant a resume with a custom prompt silently got the default budget.
    */
   callSite?: string;
   /**

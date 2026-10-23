@@ -355,13 +355,13 @@ test('an admin can pre-create an account with its subscription already set', asy
   }
 });
 
-test('deleting an account leaves its profiles behind, and says so', async () => {
+test('deleting an account leaves its resumes behind, and says so', async () => {
   const server = await serve();
   try {
-    const profiles = loadFresh('../dist/database/profileRepository');
-    const { buildNewProfile } = loadFresh('../dist/services/profileService');
-    profiles.saveProfile({
-      ...buildNewProfile(
+    const resumes = loadFresh('../dist/database/resumeRepository');
+    const { buildNewResume } = loadFresh('../dist/services/resumeDocument');
+    resumes.saveResume({
+      ...buildNewResume(
         {
           name: 'Alice CV',
           title: 'Engineer',
@@ -383,9 +383,16 @@ test('deleting an account leaves its profiles behind, and says so', async () => 
     assert.equal(response.status, 200);
     // Deleting somebody's work as a side effect of removing their login is not
     // recoverable, so it does not happen - but it is not silent either.
+    // Counted in people and in resumes: the resume filed itself under a profile
+    // named for its person when it was saved.
     assert.equal(body.orphanedProfiles, 1);
-    assert.match(body.note, /still exist/i);
-    assert.ok(loadFresh('../dist/database/profileRepository').getProfile('p-alice'));
+    assert.equal(body.orphanedResumes, 1);
+    assert.equal(
+      body.note,
+      '1 resume in 1 profile belonged to that account and still exist. ' +
+        'They are visible to administrators only until they are reassigned or deleted.'
+    );
+    assert.ok(loadFresh('../dist/database/resumeRepository').getResume('p-alice'));
   } finally {
     server.close();
   }

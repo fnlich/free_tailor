@@ -105,11 +105,11 @@ test('a public error says its own words to anybody; its detail is only for an ad
 test('anything that is not public is the generic sentence and a ref, never its own message', async () => {
   const raw = new Error("SQLITE_BUSY: database is locked (/data/db/free_tailor.db)");
   const { result, lines } = await captureErrorLog(() => ({
-    asUser: publicError.publicFailure(raw, { admin: false, fallback: 'Failed to fetch groups' }),
-    asAdmin: publicError.publicFailure(raw, { admin: true, fallback: 'Failed to fetch groups' }),
+    asUser: publicError.publicFailure(raw, { admin: false, fallback: 'Failed to fetch profiles' }),
+    asAdmin: publicError.publicFailure(raw, { admin: true, fallback: 'Failed to fetch profiles' }),
   }));
   assert.equal(result.asUser.status, 500);
-  assert.equal(result.asUser.body.error, 'Failed to fetch groups. Please try again, or contact your administrator.');
+  assert.equal(result.asUser.body.error, 'Failed to fetch profiles. Please try again, or contact your administrator.');
   assert.match(result.asUser.body.ref, REF);
   assert.equal(result.asUser.body.detail, undefined);
   assert.doesNotMatch(JSON.stringify(result.asUser.body), /SQLITE|\/data\/db/);
@@ -163,14 +163,15 @@ test('a stored failure is the public sentence and a ref; an old raw one reads ge
     'This resume could not be built. Please try again, or contact your administrator.'
   );
   assert.equal(
-    read('Profile 7c9e6679-7425-40de-944b-e07fc1f90ae7 no longer exists, so this resume cannot be generated.'),
+    read('Resume 7c9e6679-7425-40de-944b-e07fc1f90ae7 no longer exists, so this resume cannot be generated.'),
     'This resume could not be built. Please try again, or contact your administrator.'
   );
 });
 
 test('the user-actionable refusals the app already had are public, with their fields', () => {
   const { InsufficientCreditsError } = require('../dist/services/credits/errors');
-  const { ProfileLimitError } = require('../dist/database/profileRepository');
+  const { ProfileLimitError } = require('../dist/database/profileLimit');
+  const { createProfileFor } = require('../dist/database/profileRepository');
   const { ModelUnavailableError, AiUnavailableError } = require('../dist/config/modelErrors');
 
   const credits = publicError.publicFailure(new InsufficientCreditsError(161, 23), { admin: false });
@@ -186,6 +187,24 @@ test('the user-actionable refusals the app already had are public, with their fi
   assert.equal(limit.status, 402);
   assert.equal(limit.body.code, 'profile-limit');
   assert.equal(limit.body.limit, 1);
+
+  // And as the repository raises it now: the SECOND profile of a Default account
+  // (the cap counts people), the same public body.
+  useTempStorage('public-errors-profile-limit');
+  const holder = require('../dist/database/userRepository').createUser({ email: 'limit-holder@example.com' });
+  createProfileFor(holder, { name: 'First' });
+  let raised;
+  try {
+    createProfileFor(holder, { name: 'Second' });
+  } catch (error) {
+    raised = error;
+  }
+  const second = publicError.publicFailure(raised, { admin: false });
+  assert.equal(second.status, 402);
+  assert.equal(second.body.code, 'profile-limit');
+  assert.equal(second.body.limit, 1);
+  assert.equal(second.body.ref, undefined, 'the caller\'s own entitlement: nothing to look up');
+  assert.match(second.body.error, /^The Default subscription allows 1 profile and this account has 1\./);
 
   return captureErrorLog(() => ({
     model: publicError.publicFailure(new ModelUnavailableError('"gpt-6-luna" is switched off.'), { admin: false }),
@@ -322,7 +341,7 @@ test('the routes that leak an installation\'s workings are administrator-only', 
     assert.equal(queues.status, 200);
 
     // What every account still does: confirm a skill found in use, which adds
-    // it with its category and priority inferred. The profile editor's way of
+    // it with its category and priority inferred. The resume editor's way of
     // adding a hard skill - the admin endpoint refused it without metadata.
     const confirmed = await server.call('alice', 'POST', '/api/resume/skills/confirm', { type: 'hard', skill: 'Terraform' });
     assert.equal(confirmed.status, 200);
@@ -476,8 +495,8 @@ test("an order item's stored failure reads generically to its owner; an administ
   const safe = 'The AI request failed. Please try again. (Ref: ERR-0A1B2C)';
   const seed = (userId, batchId) => {
     const order = orders.createOrder({ userId, batchId, label: 'Run', retentionDays: 5 }, [
-      { seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
-      { seq: 1, profileId: 'p1', profileName: 'Ada', companyName: 'Globex', role: 'SWE' },
+      { seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
+      { seq: 1, resumeId: 'p1', resumeName: 'Ada', companyName: 'Globex', role: 'SWE' },
     ]);
     orders.recordItemOutcome(batchId, 0, { state: 'failed', taskId: 't0', error: raw, files: [] });
     orders.recordItemOutcome(batchId, 1, { state: 'failed', taskId: 't1', error: safe, files: [] });
@@ -505,15 +524,15 @@ test("a batch's stored failures, lanes and seats read generically to its owner",
   });
   const queueModule = require('../dist/services/queue/index');
   queueModule.resetGenerationQueueForTests();
-  const raw = 'Profile 7c9e6679-7425-40de-944b-e07fc1f90ae7 no longer exists, so this resume cannot be generated.';
-  const label = { profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' };
+  const raw = 'Resume 7c9e6679-7425-40de-944b-e07fc1f90ae7 no longer exists, so this resume cannot be generated.';
+  const label = { resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' };
   const queue = queueModule.getGenerationQueue();
   queue.restore(
     { id: 'bat_old', label: 'Before the upgrade', jobCount: 2, shared: { ownerId: server.alice.id }, createdAt: Date.now() },
     [
       { id: 'tsk_a', seq: 0, state: 'failed', queue: 'cli', label, kind: 'resume', payload: {}, error: raw },
       { id: 'tsk_b', seq: 1, state: 'done', queue: 'cli', label: { ...label, companyName: 'Globex' }, kind: 'resume', payload: {}, value: {
-        profileId: 'p1', profileName: 'Ada', companyName: 'Globex', role: 'SWE', tailored: true,
+        resumeId: 'p1', resumeName: 'Ada', companyName: 'Globex', role: 'SWE', tailored: true,
         unconfirmedHardSkills: [], unconfirmedSoftSkills: [],
       } },
     ]

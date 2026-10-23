@@ -6,7 +6,7 @@ import type { CreateNotificationDTO, Notification } from '../types/notification'
 /**
  * Reading and writing the notice board.
  *
- * Columnar rather than the JSON-document style used for profiles and prompts,
+ * Columnar rather than the JSON-document style used for resumes and prompts,
  * because the one question asked on every page load - "how many are newer than
  * this timestamp" - is a query, and a document table would have to parse every
  * row to answer it.

@@ -1,14 +1,14 @@
 # Backend Source Layout
 
-- `config/`: application settings orchestration, the AI provider catalog, and static asset path resolution.
-- `database/`: SQLite connection, schema, and repository helpers for profiles, groups, templates, prompts, skills, and settings. `upgradeGuard.ts` refuses, at startup, a database an older build never finished upgrading (start build ac3df79 on it once first); `openAtStartup.ts` opens the database before any route loads, so that refusal is one line and exit code 1. `database/migrations/` holds the runner for numbered one-time data migrations - there are none today - applied on first database use.
+- `config/`: application settings orchestration, the AI provider catalog, the three build modes and their prices (`buildModes.ts`), the catalogue of a resume's sections (`sectionCatalogue.ts`), and static asset path resolution.
+- `database/`: SQLite connection, schema, and repository helpers for resumes (`resumeRepository.ts`, the `resumes` table), profiles - the people who hold the resumes (`profileRepository.ts`, the `profiles` table; `profileTree.ts` is the tree itself: the one transaction every write to the two runs in, where a new resume is placed, and the default-resume rules; `profileLimit.ts` counts people against a subscription's cap) - templates, prompts, skills, and settings. `upgradeGuard.ts` refuses, at startup, a database an older build never finished upgrading (start build ac3df79 on it once first); `openAtStartup.ts` opens the database before any route loads, so that refusal is one line and exit code 1. `glossaryRename.ts` runs right after that check, once and in place, and renames what a v4.1 database called a profile (now a resume) and a group (now a profile) - see Upgrading in the top-level README. `database/migrations/` holds the runner for numbered one-time data migrations - two today, 9 (`settings-defaults`) and 10 (`orders-output-root`) - applied on first database use.
 - `extractors/`: modules that extract structured data from external inputs.
 - `generators/`: modules that generate output artifacts such as PDF, DOCX, and cover letters.
 - `integrations/`: external service clients and API adapters.
 - `middleware/`: Express middleware.
-- `routes/`: HTTP route handlers.
+- `routes/`: HTTP route handlers. `profiles.ts` (`/api/profiles`) is the people, `resumes.ts` (`/api/resumes`) the stored resume, and `resume.ts` (`/api/resume`, singular) the builder's models, analysis and preview.
 - `scripts/`: operator tools, each behind an npm script: the mail and sheets doctors (`mail:doctor`, `sheets:doctor`) and the Google sign-in for job sheets (`sheets:login`).
-- `services/`: core domain services. `services/ai/` is the AI transport layer and the only place that knows how a model is reached; `services/resumeService.ts` is the resume and cover-letter domain logic that uses it.
+- `services/`: core domain services. `services/ai/` is the AI transport layer and the only place that knows how a model is reached; `services/resumeService.ts` is the resume and cover-letter domain logic that uses it, and `services/resumeDocument.ts` builds, normalises and reads the stored resume. A run's choice of resume is `services/resumeChoice.ts` (which resume each job builds, and what that costs), `services/resumeMatch.ts` (the suitable resume of a profile for a posting) and `services/resumeKeywords.ts` (the keywords it is matched on, computed and never stored); `services/profileRules.ts` holds the rules of profiles that need no database.
 - `types/`: shared TypeScript types.
 - `utils/`: focused utility helpers with no route-level responsibilities.
 

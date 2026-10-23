@@ -48,7 +48,7 @@ const ALICE_LETTER = 'alice@example.com/2026-09-14/ada/acme/Ada_cover_letter.pdf
 function seedExpiredOrder(context, { relatives = [ALICE_RESUME, ALICE_LETTER] } = {}) {
   const order = context.orders.createOrder(
     { userId: 'u1', batchId: 'bat_old', label: 'Sheets import', retentionDays: 5 },
-    [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }]
+    [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' }]
   );
 
   const kinds = ['resume-pdf', 'cover-letter-pdf'];
@@ -102,7 +102,7 @@ test('an order still inside its window is left alone', async () => {
   const context = setup('unexpired');
   const order = context.orders.createOrder(
     { userId: 'u1', batchId: 'bat_new', retentionDays: 5 },
-    [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }]
+    [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' }]
   );
   write(context.outputBaseDir, ALICE_RESUME, 'STILL HERE');
   context.orders.recordItemOutcome('bat_new', 0, {
@@ -137,7 +137,7 @@ test("a run's own folder goes with its last file, wherever the prefix put it, an
   const placed = (batchId, number) =>
     context.orders.createOrder(
       { userId: 'u1', batchId, retentionDays: 5, outputRootFor: () => runFolder(number) },
-      [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }]
+      [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' }]
     );
   const expired = placed('bat_old', 'ft_x1');
   const relative = 'alice_example_com/ft_x1/2026_09_14/ada/acme/Ada.pdf';
@@ -200,7 +200,7 @@ test('a backlog larger than one page is cleared by a single sweep', async () => 
     const batchId = `bat_backlog_${index}`;
     const order = context.orders.createOrder(
       { userId: 'u1', batchId, retentionDays: 5 },
-      [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: `Co${index}`, role: 'SWE' }]
+      [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: `Co${index}`, role: 'SWE' }]
     );
     const relative = `alice@example.com/2026-09-14/ada/co${index}/Ada.pdf`;
     write(context.outputBaseDir, relative, 'BYTES');
@@ -228,8 +228,8 @@ test('an order whose work is still running is never purged', async () => {
   const order = context.orders.createOrder(
     { userId: 'u1', batchId: 'bat_live', retentionDays: 0 },
     [
-      { seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' },
-      { seq: 1, profileId: 'p1', profileName: 'Ada', companyName: 'Globex', role: 'SWE' },
+      { seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' },
+      { seq: 1, resumeId: 'p1', resumeName: 'Ada', companyName: 'Globex', role: 'SWE' },
     ],
     new Date('2026-09-19T00:00:00.000Z')
   );
@@ -286,7 +286,7 @@ test('a zero-day order expires immediately, which is what the setting promises',
   const context = setup('zero-days');
   const order = context.orders.createOrder(
     { userId: 'u1', batchId: 'bat_zero', retentionDays: 0 },
-    [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }],
+    [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' }],
     new Date('2026-09-20T00:00:00.000Z')
   );
   write(context.outputBaseDir, ALICE_RESUME, 'GOING');

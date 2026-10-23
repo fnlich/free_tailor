@@ -7,15 +7,24 @@ import {
   releaseReservation,
   reserveCredits,
 } from '../services/credits';
-import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { resolveAiChoice, type AiChoice, type AiPreferences } from '../config/aiPreferences';
+import { getAppSettings, getBuildModePrices } from '../config/aiModelConfig';
+import { BUILD_MODE_LABELS, type BuildMode } from '../config/buildModes';
+import type { Viewer } from '../database/resumeRepository';
 import {
-  resolvePricedAiChoice,
-  resolveSuppliedContentChoice,
-  type AiPreferences,
-  type PricedAiChoice,
-} from '../config/aiPreferences';
-import { readPreviewToken } from '../services/credits/previewToken';
-import { listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
+  assertSuitableTakesNoContent,
+  checkPreview,
+  planRun,
+  priceRun,
+  quoteRun,
+  readRunRequest,
+  resolveRunTarget,
+  type PlannedItem,
+  type RunRequest,
+  type RunUnit,
+} from '../services/resumeChoice';
+import { resumeLabelOf } from '../services/profileRules';
 import {
   genericMessage,
   isPublicError,
@@ -61,8 +70,8 @@ import { orderRetentionDays } from '../services/orders/retention';
 import { sanitizeFileNameStem } from '../utils/outputStorage';
 import { getGeneratedFilePath } from '../utils/generatedPath';
 import { planRunOutput } from '../services/outputPath';
-import type { Profile } from '../types/profile';
 import type { UserAccount } from '../types/account';
+import type { TailoredContent } from '../types/template';
 import { openBatchStream } from './batchStream';
 import { loadAnalysis } from '../services/jobAnalysis/gate';
 import { resolveAnalysesAtSubmit, type SheetSource } from '../services/jobAnalysis/submit';
@@ -96,7 +105,7 @@ const router = Router();
  *
  * At the router rather than per route, so a route added later is protected by
  * default. Before v2 these were open, which was defensible with one user on one
- * machine and is not once profiles belong to people.
+ * machine and is not once resumes belong to people.
  */
 router.use(requireUser);
 
@@ -107,7 +116,19 @@ type SubmitBody = {
   format?: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx?: boolean;
   model?: string;
-  profileIds?: string[];
+  /**
+   * The ONE profile (person) the run builds for. A run builds exactly one on
+   * every subscription: `profileIds` (any shape) and `resumeIds` are refused
+   * 400 `one-profile-per-run` (services/resumeChoice.ts `readRunRequest`).
+   */
+  profileId?: string;
+  /**
+   * `suitable` (Choose Suitable Resume), `partial` (Partial Tailor) or `full`
+   * (Fully Tailor). Absent: the administrator's default builder mode in effect.
+   */
+  buildMode?: BuildMode;
+  /** The resume a preview showed, when the page finalises a preview: the run is refused (409 `preview-changed`) if it would build another. */
+  previewedResumeId?: string;
   jobs?: Array<{
     companyName?: string;
     role?: string;
@@ -131,13 +152,15 @@ type SubmitBody = {
    * a row analysed now has its cells written back, once.
    */
   sheet?: { spreadsheetId?: unknown; tabName?: unknown };
-  /** Tailored content a preview already produced, keyed by profile id. */
-  tailoredContentByProfileId?: Record<string, unknown>;
+  /** Tailored content a preview already produced, keyed by resume id. Partial and Fully only. */
+  tailoredContentByResumeId?: Record<string, unknown>;
   /**
-   * Each preview's token, keyed by profile id: which model wrote that
-   * profile's content, so it is priced - and quoted - as that model's work.
+   * Each preview's token, keyed by resume id: which build mode wrote that
+   * resume's content, so it is priced - and quoted - as that mode's work. Content
+   * without a token valid for this account, resume and mode costs the dearest
+   * mode's price.
    */
-  previewTokenByProfileId?: Record<string, unknown>;
+  previewTokenByResumeId?: Record<string, unknown>;
   /**
    * `immediate` (Generate Immediately, the default) or `order` (the Order
    * button). An order runs whether or not anybody is watching, is listed on
@@ -195,17 +218,29 @@ export function readTabId(value: unknown): string | undefined {
   throw new SubmitError('tabId must be 1 to 100 letters, digits, "-" or "_".');
 }
 
-function readAiOverrides(body: SubmitBody): AiPreferences {
+function readAiOverrides(body: Pick<SubmitBody, 'model'>): AiPreferences {
   return {
     ...(body.model ? { modelId: body.model } : {}),
   };
 }
 
 /**
+ * The build mode a run is in: the one the request names, else the
+ * administrator's default builder mode in effect (`defaultBuildMode`). Choose
+ * Suitable Resume takes no previewed content, whichever way the mode was
+ * decided (400 `suitable-takes-no-content`).
+ */
+async function resolveBuildMode(request: RunRequest): Promise<BuildMode> {
+  const mode = request.buildMode ?? (await getAppSettings()).defaultBuildMode;
+  assertSuitableTakesNoContent(mode, request);
+  return mode;
+}
+
+/**
  * Reads the jobs out of a submission, refusing only what could never work.
  *
  * A missing company name is refused here, before anything is queued, because it
- * is wrong for every profile and there is nothing to be gained from discovering
+ * is wrong for every resume and there is nothing to be gained from discovering
  * it thirty times. A missing ROLE is not refused: the job analysis is what names
  * the role when a sheet row does not (`resolveTaskRole`), and that analysis has
  * not run yet; a role still empty then files under an `unknown` `{{role}}`
@@ -270,21 +305,11 @@ async function resolveRunSheet(account: UserAccount | undefined, sheet: SubmitBo
   }
 }
 
-function loadProfiles(viewer: Viewer, profileIds?: string[]): Profile[] {
-  const selected = Array.isArray(profileIds)
-    ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
-    : null;
-  return listProfilesFor(viewer)
-    .filter((profile) => !profile.disabled)
-    .filter((profile) => !selected || selected.has(profile.id))
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
 /**
  * Which queue a task belongs in.
  *
- * The profile's own model choice decides, per profile - a batch of profiles that
- * disagree runs each on what it was set to, rather than on whichever profile
+ * The resume's own model choice decides, per resume - a batch of resumes that
+ * disagree runs each on what it was set to, rather than on whichever resume
  * happened to come first.
  */
 export function routeFor(choice: { provider: string }): { queue: QueueName } {
@@ -301,53 +326,48 @@ export function routeFor(choice: { provider: string }): { queue: QueueName } {
 /**
  * Builds the task list for a submission.
  *
- * Exported so it can be tested without a server: this is where jobs and profiles
+ * Exported so it can be tested without a server: this is where jobs and resumes
  * become the cross-product that goes in the queue, and getting the count or the
  * order wrong is invisible in the response.
  */
 export type BuildTaskOptions = {
   /**
    * Whether the submitter is an administrator, which decides the forms the
-   * request's `model` may take (see ModelRequestOptions). Absent is not one.
+   * request's `model` may take (see ModelRequestOptions) and that the price of
+   * previewed content is not floored for them. Absent is not one.
    */
   admin?: boolean;
   /** The submitter's account id, which a preview token must have been issued to. */
   userId?: string;
+  /** The run's build mode: every task of it builds in this mode. */
+  mode: BuildMode;
+  /** What each mode costs per resume, in thousandths of a dollar (the settings read at submit). */
+  prices: Record<BuildMode, number>;
+  /** The profile the run builds for: its name is recorded on every task. */
+  unit: Pick<RunUnit, 'profileLabel'>;
+  /** The previewed content and tokens the request carried, by resume id (Partial and Fully only). */
+  supplied?: Pick<RunRequest, 'suppliedContent' | 'previewTokens'>;
 };
 
 /**
- * The model each profile runs on, and what a resume on it costs.
+ * The model each planned resume runs on.
  *
- * Resolved once per profile rather than once per task: the choice is a profile
- * setting, and a thirty-job batch would otherwise read the settings row thirty
- * times per profile to get the same answer. The ONE resolution both the
- * submission and its quote use, so a quote is what the submission charges.
+ * Resolved once per DISTINCT resume rather than once per task: a thirty-job
+ * run that chooses the same three resumes would otherwise read the settings
+ * row thirty times to get the same answers. The request's `model` wins; else
+ * the resume's own choice; else the app default. The model never changes what
+ * a resume costs (prices are per build mode), only where it runs.
  */
-async function resolveProfileChoices(
-  body: SubmitBody,
-  profiles: Profile[],
-  options: Pick<BuildTaskOptions, 'admin' | 'userId'>
-): Promise<Map<string, PricedAiChoice>> {
+async function resolveResumeChoices(
+  body: Pick<SubmitBody, 'model'>,
+  plan: readonly PlannedItem[],
+  admin: boolean
+): Promise<Map<string, AiChoice>> {
   const overrides = readAiOverrides(body);
-  const requestOptions = { admin: options.admin === true };
-  const supplied = (body.tailoredContentByProfileId ?? {}) as Record<string, unknown>;
-  const tokens = (body.previewTokenByProfileId ?? {}) as Record<string, unknown>;
-  const choices = new Map<string, PricedAiChoice>();
-  for (const profile of profiles) {
-    // A preview's token names the model that wrote this profile's content, and
-    // that is the model it runs - and is priced - on; a valid token counts on
-    // its own. Content without one (expired, forged, never given) is priced
-    // by `resolveSuppliedContentChoice`, so the builder sends a quote the
-    // content too, as its submission will.
-    const previewModelId = options.userId
-      ? readPreviewToken(tokens[profile.id], { userId: options.userId, profileId: profile.id })
-      : null;
-    choices.set(
-      profile.id,
-      previewModelId || supplied[profile.id]
-        ? await resolveSuppliedContentChoice(overrides, profile, requestOptions, previewModelId)
-        : await resolvePricedAiChoice(overrides, profile, requestOptions)
-    );
+  const choices = new Map<string, AiChoice>();
+  for (const item of plan) {
+    if (choices.has(item.resume.id)) continue;
+    choices.set(item.resume.id, await resolveAiChoice(overrides, item.resume, { admin }));
   }
   return choices;
 }
@@ -355,78 +375,105 @@ async function resolveProfileChoices(
 export async function buildTasks(
   body: SubmitBody,
   jobs: NormalizedJob[],
-  profiles: Profile[],
+  plan: PlannedItem[],
   batchId: string,
-  options: BuildTaskOptions = {}
+  options: BuildTaskOptions
 ): Promise<Array<TaskDescriptor<ResumeTaskResult>>> {
   const format = body.format === 'docx' ? 'docx' : body.format === 'pdf' ? 'pdf' : 'both';
   const includeCoverLetterDocx = body.includeCoverLetterDocx !== false;
-  const tailoredByProfile = (body.tailoredContentByProfileId ?? {}) as Record<string, never>;
-  const choices = await resolveProfileChoices(body, profiles, options);
+  const supplied = options.supplied ?? { suppliedContent: {}, previewTokens: {} };
+  const choices = await resolveResumeChoices(body, plan, options.admin === true);
+  // Each planned resume's price, fixed now (priceRun: its mode's price, or the
+  // dearest mode's for previewed content without a token valid for this mode).
+  const { costs } = priceRun({
+    plan,
+    mode: options.mode,
+    prices: options.prices,
+    suppliedContent: supplied.suppliedContent,
+    previewTokens: supplied.previewTokens,
+    userId: options.userId ?? '',
+    admin: options.admin === true,
+  });
 
   const descriptors: Array<TaskDescriptor<ResumeTaskResult>> = [];
-  // Jobs outer, profiles inner, so the queue order reads down the sheet the way
-  // the person who imported it expects.
-  for (const [jobIndex, job] of jobs.entries()) {
-    for (const profile of profiles) {
-      const { choice, costMilli } = choices.get(profile.id)!;
-      descriptors.push({
-        queue: routeFor(choice).queue,
-        label: {
-          profileId: profile.id,
-          profileName: profile.name,
-          companyName: job.companyName,
-          role: job.role,
-          ...(typeof job.sourceRowNumber === 'number'
-            ? { sourceRowNumber: job.sourceRowNumber }
-            : {}),
-        },
-        kind: RESUME_TASK_KIND,
-        // The PROFILE ID and the JOB INDEX, not the profile and the job. Both
-        // are looked up when the task runs, so a task can be written to a
-        // database and read back after a restart - and so thirty tasks on one
-        // posting do not carry thirty copies of it.
-        payload: {
-          // Correct from the start now that the route mints the id. It used to
-          // be written blank here and patched up after `submit` returned.
-          batchId,
-          profileId: profile.id,
-          jobIndex,
-          templateId: body.templateId,
-          format,
-          includeCoverLetterDocx,
-          choice,
-          // What this resume is charged, in thousandths of a dollar, fixed
-          // now: the reservation is the sum of these, and a failure refunds
-          // exactly its own.
-          costMilli,
-          ...(tailoredByProfile[profile.id]
-            ? { tailoredContent: tailoredByProfile[profile.id] }
-            : {}),
-          // The job's ONE analysis, the same on every profile's task, when
-          // its posting already had one at submission (resolveAnalysesAtSubmit).
-          ...(job.analysisId ? { analysisId: job.analysisId } : {}),
-        } satisfies ResumeTaskPayload,
-      });
-    }
+  // One planned resume per job, in job order, so the queue order reads down the
+  // sheet the way the person who imported it expects.
+  for (const [index, planned] of plan.entries()) {
+    const jobIndex = planned.jobIndex;
+    const job = jobs[jobIndex];
+    const resume = planned.resume;
+    const choice = choices.get(resume.id)!;
+    const content = Object.prototype.hasOwnProperty.call(supplied.suppliedContent, resume.id)
+      ? (supplied.suppliedContent[resume.id] as TailoredContent)
+      : undefined;
+    descriptors.push({
+      queue: routeFor(choice).queue,
+      label: {
+        resumeId: resume.id,
+        resumeName: resume.name,
+        companyName: job.companyName,
+        role: job.role,
+        ...(typeof job.sourceRowNumber === 'number'
+          ? { sourceRowNumber: job.sourceRowNumber }
+          : {}),
+        // What the run chose and why, recorded at submit and never chosen
+        // again (a restored task builds the resume its payload names).
+        resumeLabel: resumeLabelOf(resume),
+        profileLabel: options.unit.profileLabel,
+        match: planned.match,
+      },
+      kind: RESUME_TASK_KIND,
+      // The RESUME ID and the JOB INDEX, not the resume and the job. Both
+      // are looked up when the task runs, so a task can be written to a
+      // database and read back after a restart - and so thirty tasks on one
+      // posting do not carry thirty copies of it.
+      payload: {
+        // Correct from the start now that the route mints the id. It used to
+        // be written blank here and patched up after `submit` returned.
+        batchId,
+        resumeId: resume.id,
+        jobIndex,
+        templateId: body.templateId,
+        format,
+        includeCoverLetterDocx,
+        choice,
+        // The run's mode, snapshotted: a restored task builds in it and never
+        // asks the settings again (absent on a task queued before v4.2, which
+        // builds Partial).
+        buildMode: options.mode,
+        // What this resume is charged, in thousandths of a dollar, fixed
+        // now: the reservation is the sum of these, and a failure refunds
+        // exactly its own.
+        costMilli: costs[index],
+        // Content a preview produced is attached only to its own resume.
+        ...(content ? { tailoredContent: content } : {}),
+        // The job's ONE analysis, the same on every resume's task, when
+        // its posting already had one at submission (resolveAnalysesAtSubmit).
+        ...(job.analysisId ? { analysisId: job.analysisId } : {}),
+      } satisfies ResumeTaskPayload,
+    });
   }
   return descriptors;
 }
 
 /**
  * What a list of tasks costs, in thousandths of a dollar, and the line the
- * account's credit history shows for it - by each task's model display name,
- * so a mixed batch reads as what it was charged.
+ * account's credit history shows for it - by the run's build mode, so the
+ * line reads as what it was charged: "3 resumes: 3 x Partial Tailor @ $0.02 =
+ * $0.06".
  *
  * An integer sum of integer prices: seven resumes at $0.023 are exactly 161
  * thousandths, every time - not a float sum that adds up only on lucky inputs.
  */
-export function chargeFor(descriptors: Array<TaskDescriptor<ResumeTaskResult>>): { costMilli: number; label: string } {
+export function chargeFor(
+  descriptors: Array<TaskDescriptor<ResumeTaskResult>>,
+  mode: BuildMode
+): { costMilli: number; label: string } {
   const units = descriptors.map((descriptor) => {
     const payload = descriptor.payload as ResumeTaskPayload;
     // Read the way the refund hook reads it, so what is charged and what a
     // failure gives back can never be worked out two different ways.
-    return { modelLabel: payload.choice.modelLabel, costMilli: taskCostMilli(payload) };
+    return { label: BUILD_MODE_LABELS[mode], costMilli: taskCostMilli(payload) };
   });
   return {
     costMilli: units.reduce((sum, unit) => sum + unit.costMilli, 0),
@@ -454,7 +501,7 @@ function collectOutcome(batchId: string, admin: boolean) {
   if (!batch) return null;
 
   const results: ResumeTaskResult[] = [];
-  const failures: Array<{ profileId: string; profileName: string; companyName: string; error: string }> =
+  const failures: Array<{ resumeId: string; resumeName: string; companyName: string; error: string }> =
     [];
 
   for (const task of batch.tasks) {
@@ -462,8 +509,8 @@ function collectOutcome(batchId: string, admin: boolean) {
       results.push(task.value as ResumeTaskResult);
     } else if (task.state === 'failed' || task.state === 'cancelled') {
       failures.push({
-        profileId: task.label.profileId,
-        profileName: task.label.profileName,
+        resumeId: task.label.resumeId,
+        resumeName: task.label.resumeName,
         companyName: task.label.companyName,
         error: task.error ? readTaskError(task.error, admin) : genericMessage(TASK_FAILED),
       });
@@ -536,23 +583,28 @@ router.post('/batches', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as SubmitBody;
     const kind = readRunKind(body);
     const tabId = kind === IMMEDIATE_BATCH_KIND ? readTabId(body.tabId) : undefined;
+    // A run builds exactly ONE profile, on every subscription: `profileIds`,
+    // `resumeIds` or no `profileId` is a 400, another account's profile a 404,
+    // a profile with no enabled resume a 400. Before anything is priced,
+    // reserved or asked of a model, so a refusal costs nothing. Asked BEFORE
+    // the jobs are read, as /quote asks it: a request naming the wrong people
+    // is told so, not that it has no jobs.
+    const request = readRunRequest(body);
     const jobs = normalizeJobs(body);
+    const admin = isAdmin(req);
+    const mode = await resolveBuildMode(request);
+    // The early read is for its refusals (an unknown or foreign profile, one
+    // with nothing to build) ahead of the Google read below; the profile the
+    // run is planned against is read again after it (`unit`, below).
+    await resolveRunTarget(req.user ?? null, request.profileId);
+    const startedAt = Date.now();
 
-    const profiles = loadProfiles(req.user ?? null, body.profileIds);
-    if (profiles.length === 0) {
-      res.status(400).json({ error: NO_MATCHING_PROFILES });
-      return;
-    }
-    // More than one profile - or all of them - needs a subscription that
-    // includes it (403 `subscription-too-low`), for an order and an
-    // immediate run alike. Before anything is priced or charged.
-    assertProfileScopeAllowed(req.user, { profileIds: body.profileIds, resolvedCount: profiles.length });
-
-    // ONE analysis per job, resolved before the jobs fan out into a task per
-    // profile, so every profile's task carries the same `analysisId`: the
-    // sheet row's own (one batched read of the rows), the one the page named,
-    // or the posting's stored one. No model is asked here - a job with none
-    // is analysed by its first task, through the same gate.
+    // ONE analysis per job, resolved before the choice is made, so every
+    // job's task carries its `analysisId` and the matcher reads the same
+    // analysis the tailoring will: the sheet row's own (one batched read of
+    // the rows), the one the page named, or the posting's stored one. No model
+    // is asked here - a job with none is analysed by its task, through the
+    // same gate, and is matched on its text and title meanwhile.
     const sheet = await resolveRunSheet(req.user, body.sheet);
     const analyses = await resolveAnalysesAtSubmit(jobs, { sheet, requestedBy: req.user?.id ?? null });
     if (sheet) {
@@ -562,34 +614,61 @@ router.post('/batches', async (req: Request, res: Response) => {
       );
     }
 
+    // The profile and its enabled resumes as they are NOW, not as they were
+    // before the sheet and the analyses were awaited (seconds, on a big sheet
+    // run): a resume disabled or deleted in that window is not chosen, and
+    // Fully Tailor builds the default in effect at the moment of the plan.
+    const unit = await resolveRunTarget(req.user ?? null, request.profileId);
+
     // Minted here rather than inside `submit`, because the credits have to be
     // reserved against this batch BEFORE any task can start - and `submit`
     // dispatches immediately, so there is no window afterwards in which to do it.
     const batchId = newBatchId();
-    const descriptors = await buildTasks(body, jobs, profiles, batchId, {
-      admin: isAdmin(req),
+
+    // The choice, made once and fixed: which resume of the profile each job is
+    // built from (the matcher's pick, or the default for Fully Tailor), and why.
+    // Then the preview check - a run that would build something other than what
+    // the page previewed is refused (409 `preview-changed`) before a thing is
+    // reserved or charged.
+    const plan = await planRun(
+      jobs.map((job) => ({ text: job.jobDescription, title: job.role, analysisId: job.analysisId })),
+      unit,
+      mode
+    );
+    checkPreview(plan, request.previewedResumeId, Object.keys(request.suppliedContent), unit.profileLabel);
+
+    // What each mode costs, read now (THROWS when the settings cannot be read:
+    // a run is never priced at a guess).
+    const prices = await getBuildModePrices();
+    const descriptors = await buildTasks(body, jobs, plan, batchId, {
+      admin,
       userId: req.user?.id,
+      mode,
+      prices,
+      unit,
+      supplied: request,
     });
     // Where the run files its resumes - the output folder, the prefix and the
     // submitter's own folder path in effect NOW, and today - worked out once,
     // so the whole run lands in one folder whatever is edited while it runs.
     const output = await planRunOutput(req.user!);
-    const charge = chargeFor(descriptors);
+    const charge = chargeFor(descriptors, mode);
 
     /**
      * The charge, before the first model call.
      *
-     * Placed here on purpose: after `normalizeJobs`, the empty-profiles check
-     * and the subscription check (so a 400 or 403 never costs anything), after `buildTasks` (which only reads
-     * settings - no model call, no file), and before `submit`.
+     * Placed here on purpose: after `normalizeJobs`, the run request's checks
+     * (one profile, a mode, a profile with a resume to build, the preview
+     * check - so a 400, 404 or 409 never costs anything), after `buildTasks`
+     * (which only reads settings - no model call, no file), and before `submit`.
      *
      * Per handler rather than as router middleware, and that is the guarantee
      * that keeps previews free: this router also serves reads, and a blanket
      * charge would catch anything added later by accident.
      *
-     * The SUM of what each resume costs on the model it resolved to, so a
-     * batch whose profiles run on differently priced models is charged each at
-     * its own price, and a 402 names the whole amount.
+     * The SUM of what each planned resume costs in the run's build mode (the
+     * mode's price, or the dearest mode's for previewed content without a
+     * token valid for this mode), and a 402 names the whole amount.
      */
     reserveCredits(req.user!, charge.costMilli, {
       kind: 'batch',
@@ -631,14 +710,14 @@ router.post('/batches', async (req: Request, res: Response) => {
               label:
                 typeof body.label === 'string' && body.label.trim()
                   ? body.label.trim()
-                  : `${jobs.length} job(s) x ${profiles.length} profile(s)`,
+                  : `${jobs.length} job(s) for ${unit.profileLabel}, ${BUILD_MODE_LABELS[mode]}`,
               retentionDays: kind === ORDER_BATCH_KIND ? orderRetentionDays() : 0,
               outputRootFor: output.rootFor,
             },
             descriptors.map((descriptor, seq) => ({
               seq,
-              profileId: descriptor.label.profileId,
-              profileName: descriptor.label.profileName,
+              resumeId: descriptor.label.resumeId,
+              resumeName: descriptor.label.resumeName,
               companyName: descriptor.label.companyName,
               role: descriptor.label.role,
               ...(typeof descriptor.label.sourceRowNumber === 'number'
@@ -647,6 +726,11 @@ router.post('/batches', async (req: Request, res: Response) => {
               // Kept on the item because the task is not: a refund request
               // for this resume can come long after the batch is evicted.
               costMilli: taskCostMilli(descriptor.payload),
+              // What the run chose for this job and why: the chosen resume's
+              // label, the person's name, and the matcher's explanation.
+              ...(descriptor.label.resumeLabel ? { resumeLabel: descriptor.label.resumeLabel } : {}),
+              ...(descriptor.label.profileLabel ? { profileLabel: descriptor.label.profileLabel } : {}),
+              ...(descriptor.label.match ? { match: descriptor.label.match } : {}),
             }))
           );
 
@@ -677,7 +761,7 @@ router.post('/batches', async (req: Request, res: Response) => {
         // The kind says how it is followed: an order on /orders (the builder's
         // active list leaves it out, see GET /batches), an immediate run by
         // the tab named here, which holds its lease.
-        shared: { jobs, ownerId: req.user!.id, kind, ...(tabId ? { tabId } : {}) },
+        shared: { jobs, ownerId: req.user!.id, kind, buildMode: mode, ...(tabId ? { tabId } : {}) },
         // Somebody is sitting in front of an immediate run; nobody is waiting
         // on an order. On the same seat, the first goes first.
         urgent: kind === IMMEDIATE_BATCH_KIND,
@@ -716,7 +800,8 @@ router.post('/batches', async (req: Request, res: Response) => {
 
     console.log(
       `[queue] ${kind === ORDER_BATCH_KIND ? `order ${order!.number}` : 'immediate run'} ${batch.id}: ` +
-        `${descriptors.length} resume(s) queued (${jobs.length} job(s) x ${profiles.length} profile(s))`
+        `${descriptors.length} resume(s) queued (${jobs.length} job(s) for ${unit.profileLabel}, ` +
+        `${BUILD_MODE_LABELS[mode]}; chosen among ${unit.candidates.length} resume(s) in ${Date.now() - startedAt} ms)`
     );
 
     res.status(202).json({
@@ -724,9 +809,9 @@ router.post('/batches', async (req: Request, res: Response) => {
       kind,
       total: descriptors.length,
       jobCount: jobs.length,
-      profileCount: profiles.length,
+      buildMode: mode,
       // The lanes and how busy they are, for an administrator's eyes only.
-      ...(isAdmin(req) ? { queues: queue.stats() } : {}),
+      ...(admin ? { queues: queue.stats() } : {}),
       // An order's number is what the receipt shows. An immediate run's row
       // is not the person's business - it is never listed - so it is not named.
       ...(kind === ORDER_BATCH_KIND && order ? { orderId: order.id, orderNumber: order.number } : {}),
@@ -742,24 +827,25 @@ router.post('/batches', async (req: Request, res: Response) => {
 /**
  * What a submission WOULD cost, without submitting anything.
  *
- * Takes the body `POST /batches` takes and resolves each profile's model the
- * way it does (`resolveProfileChoices`), so the figure is what that submission
- * would charge. Answers `{ resumes, costMilli, pricePerResumeMilli,
- * balanceMilli, exempt }` - thousandths of a dollar - and nothing about which
- * models or seats: the builder shows it as one line beside the generate
- * button ("7 resumes x $0.023 = $0.161"), and re-asks whenever the selection
- * or the model changes. `pricePerResumeMilli` is the one price every resume
- * in the run costs, or null when the profiles' models are priced differently
- * (or there is nothing to price).
+ * Takes the body `POST /batches` takes and prices it the way it does
+ * (services/resumeChoice.ts `quoteRun`: jobs times the build mode's price, or
+ * the dearest mode's for previewed content without a token valid for the
+ * mode), so the figure is what that submission would charge. Answers
+ * `{ resumes, costMilli, pricePerResumeMilli, balanceMilli, exempt,
+ * buildMode }` - thousandths of a dollar - and nothing about which models or
+ * seats: the builder shows it as one line beside the generate button ("7
+ * resumes x $0.023 = $0.161"), and re-asks whenever the profile, the mode or
+ * the jobs change. `pricePerResumeMilli` is the one price every resume in the
+ * run costs, or null when they differ (or there is nothing to price).
  *
  * Lenient where the submission is strict, on purpose. The builder asks while
  * the form is still being filled in, and a missing company name or role does
  * not change what anything costs - so jobs are counted, not validated, and no
- * profiles or no jobs is a quote of nothing rather than an error. The two
- * refusals are the submission's own: a request naming a model it may not use
- * (400), and a run for more than one profile - or all of them - on a
- * subscription that does not include that (403 `subscription-too-low`). `costMilli` is the full amount even
- * for an administrator, who is not charged it: `exempt` says so.
+ * jobs is a quote of nothing rather than an error. The refusals are the
+ * submission's own: not exactly one profile (400 `one-profile-per-run`),
+ * another account's or unknown profile (404), one with no enabled resume (400),
+ * and a request naming a model it may not use (400). `costMilli` is the full
+ * amount even for an administrator, who is not charged it: `exempt` says so.
  *
  * Reads only. No reservation, no task, no model call.
  */
@@ -767,24 +853,36 @@ router.post('/quote', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as SubmitBody;
     const jobCount = Array.isArray(body.jobs) ? body.jobs.length : 0;
-    // The submission's subscription refusal, mirrored, so the cost line never
-    // prices a run that would be refused. Asked of the profiles even with no
-    // jobs yet, because the refusal is about WHO the run is for.
-    const targeted = loadProfiles(req.user ?? null, body.profileIds);
-    assertProfileScopeAllowed(req.user, { profileIds: body.profileIds, resolvedCount: targeted.length });
-    const profiles = jobCount > 0 ? targeted : [];
-    const choices = await resolveProfileChoices(body, profiles, { admin: isAdmin(req), userId: req.user?.id });
-
-    const prices = [...choices.values()].map((priced) => priced.costMilli);
-    const perJob = prices.reduce((sum, price) => sum + price, 0);
-    const resumes = jobCount * profiles.length;
+    // The submission's refusals, mirrored, so the cost line never prices a run
+    // that would be refused. Asked even with no jobs yet, because they are about
+    // WHO the run is for.
+    const request = readRunRequest(body);
+    const admin = isAdmin(req);
+    const mode = await resolveBuildMode(request);
+    const unit = await resolveRunTarget(req.user ?? null, request.profileId);
+    if (jobCount > 0) {
+      // A model the request may not use is refused here as it is at submit.
+      await resolveAiChoice(readAiOverrides(body), unit.defaultResume ?? unit.candidates[0], { admin });
+    }
+    const prices = await getBuildModePrices();
+    const { resumes, perResumeMilli, totalMilli } = quoteRun({
+      jobCount,
+      unit,
+      mode,
+      prices,
+      suppliedContent: request.suppliedContent,
+      previewTokens: request.previewTokens,
+      ...(request.previewedResumeId ? { previewedResumeId: request.previewedResumeId } : {}),
+      userId: req.user!.id,
+      admin,
+    });
     res.json({
       resumes,
-      costMilli: jobCount * perJob,
-      pricePerResumeMilli:
-        resumes > 0 && prices.every((price) => price === prices[0]) ? prices[0] : null,
+      costMilli: totalMilli,
+      pricePerResumeMilli: resumes > 0 ? perResumeMilli : null,
       balanceMilli: getStatus(req.user!).balanceMilli,
       exempt: isExempt(req.user!),
+      buildMode: mode,
     });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to price the run');
@@ -885,7 +983,7 @@ router.get('/batches', (req: Request, res: Response) => {
 });
 
 router.get('/batches/:id', (req: Request<{ id: string }>, res: Response) => {
-  // 404 rather than 403 for somebody else's batch, matching the profile
+  // 404 rather than 403 for somebody else's batch, matching the resume
   // routes: a 403 would confirm that a batch with that id exists.
   const snapshot = visibleBatch(req, req.params.id)
     ? getGenerationQueue().snapshot(req.params.id)
@@ -1041,7 +1139,7 @@ const CONTENT_TYPES: Record<string, string> = {
 /**
  * What a downloaded file is called: the company first, then the file's own
  * name. A Generate Immediately run downloads every resume into one folder,
- * and a profile's file names do not usually say which posting each is for -
+ * and a resume's file names do not usually say which posting each is for -
  * five `Jane_Doe.pdf (n)` would leave the person opening each to find out.
  */
 export function downloadFileName(companyName: string, absolutePath: string): string {

@@ -16,8 +16,11 @@
  *   - Load rows shows the jobs found - company, title, a link only when it is
  *     a web address - and counts the rows skipped, before anything is built
  *   - another tab is another set of rows, loaded again
+ *   - the build target is ONE profile (#sheets-profile) and one of three
+ *     build modes (input[name=sheetsBuildMode]), none locked
  *   - Order answers with an order number - a free one asks nothing first -
- *     and Cancel on the receipt stops it
+ *     naming the mode and the profile it builds ("... are being built:
+ *     Partial Tailor for Sam Sheet."), and Cancel on the receipt stops it
  *   - Generate Immediately builds the loaded rows here and hands every file
  *     to the browser once
  *   - the Analysis column says which rows already hold their analysis (the
@@ -42,8 +45,6 @@ const puppeteer = require('puppeteer');
 const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -129,38 +130,43 @@ async function main() {
   const stamp = Date.now().toString(36);
   const all = 'All';
   const user = users.createUser({ email: `e2e-sheet-${stamp}@example.com`, name: 'Sheet User' });
-  const profileId = `p-sheet-${stamp}`;
-  saveProfile({
-    ...buildNewProfile(
-      {
-        name: 'Sam Sheet',
-        title: 'Senior Engineer',
-        contact: { email: 'sam@example.com', phone: '1', location: 'Remote' },
-        summary: 'Engineer who ships.',
-        experience: [
-          {
-            title: 'Engineer',
-            company: 'Acme',
-            startDate: '01/2020',
-            endDate: 'Present',
-            location: 'Remote',
-            description: 'Built product services.',
-            achievements: ['Cut build time by 37%.'],
-            skills: [],
-          },
-        ],
-        skills: ['TypeScript', 'Docker'],
-        education: [],
-      },
-      profileId
-    ),
-    ownerId: user.id,
-  });
   const token = users.createSession(user.id);
-  const api = async (route) => {
-    const response = await fetch(`${API}${route}`, { headers: { authorization: `Bearer ${token}` } });
+  const api = async (route, init = {}) => {
+    const response = await fetch(`${API}${route}`, {
+      ...init,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    });
     return { status: response.status, body: await response.json().catch(() => null) };
   };
+  // The resume is made through the API, as a builder makes it: the server files
+  // it under its person's profile, which is what a run builds (one profile).
+  const seeded = await api('/resumes', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Sam Sheet',
+      title: 'Senior Engineer',
+      contact: { email: 'sam@example.com', phone: '1', location: 'Remote' },
+      summary: 'Engineer who ships.',
+      experience: [
+        {
+          title: 'Engineer',
+          company: 'Acme',
+          startDate: '01/2020',
+          endDate: 'Present',
+          location: 'Remote',
+          description: 'Built product services.',
+          achievements: ['Cut build time by 37%.'],
+          skills: [],
+        },
+      ],
+      skills: ['TypeScript', 'Docker'],
+      education: [],
+    }),
+  });
+  // Not a claim of its own: a setup that failed ends the script here.
+  if (seeded.status !== 201 || !seeded.body?.profileId) {
+    throw new Error(`setup: the resume was not filed under a profile: ${seeded.status} ${JSON.stringify(seeded.body)}`);
+  }
 
   const handed = [];
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
@@ -200,6 +206,10 @@ async function main() {
       return Boolean(card);
     });
     check('the Google Sheet card opens', opened);
+    // The build target: the account's one profile is chosen once the profiles
+    // are read (#sheets-profile), and Partial Tailor is the mode these runs use.
+    await until(page, () => Boolean(document.getElementById('sheets-profile')?.value), 15_000);
+    await page.evaluate(() => document.querySelector('input[name="sheetsBuildMode"][value="partial"]')?.click());
     await until(page, () => {
       const select = document.getElementById('sheet-tab');
       return Boolean(select) && !select.disabled && select.options.length > 1;
@@ -223,10 +233,14 @@ async function main() {
       advanced: Array.from(document.querySelectorAll('button')).some((b) => /Advanced columns/i.test(b.textContent)),
       columnInputs: Boolean(document.getElementById('sheet-from-col') || document.getElementById('sheet-col-company')),
       note: /Tabs that are not laid out as job tabs are listed but not read/.test(document.body.innerText),
+      // The build target is ONE profile and ONE mode: a select and three open cards, no target kinds.
+      targetKinds: Boolean(document.querySelector('input[name="sheetsTargetMode"], input[name="generateMode"]')),
+      modeCards: Array.from(document.querySelectorAll('input[name="sheetsBuildMode"]')).map((input) => `${input.value}${input.disabled ? ':disabled' : ''}`),
     }));
     check(
-      'no sheet to choose and no column mapping: the own sheet and its columns are the app\'s; the page says why a tab is not read',
-      !sheetChrome.sheetSelect && !sheetChrome.advanced && !sheetChrome.columnInputs && sheetChrome.note,
+      'no sheet to choose and no column mapping: the own sheet and its columns are the app\'s; the page says why a tab is not read; the build target is one profile and three open mode cards',
+      !sheetChrome.sheetSelect && !sheetChrome.advanced && !sheetChrome.columnInputs && sheetChrome.note &&
+        !sheetChrome.targetKinds && sheetChrome.modeCards.join(',') === 'suitable,partial,full',
       JSON.stringify(sheetChrome)
     );
     // Picked anyway - a select can be driven past its disabled options - it is still All.
@@ -312,9 +326,15 @@ async function main() {
     /* --------------------------------------------- Order, and Cancel on it */
     check('Order is pressed', await pressButton(page, 'Order'));
     const receipt = await until(page, () => /You ordered successfully: Order number - FT-\d{8}-\d{4}/.test(document.body.innerText), 15_000);
-    check('Order answers with an order number at once', receipt);
-    // The stub seat's model is free, so the order spends nothing: it is not
-    // asked about (an Order asks first only when it takes credit).
+    const receiptText = await page.evaluate(() => document.querySelector('[role="status"].tl-notice, .tl-notice')?.innerText.replace(/\s+/g, ' ') ?? '');
+    check(
+      'Order answers with an order number at once, saying what it builds: the mode, for the profile',
+      receipt && /2 resumes for 2 jobs are being built: Partial Tailor for Sam Sheet\./.test(await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' '))),
+      receiptText
+    );
+    // Partial Tailor is unpriced here (a mode nobody priced is free), so the
+    // order spends nothing: it is not asked about (an Order asks first only
+    // when it takes credit).
     check('a free order is placed without a spend confirm', await page.evaluate(() => !document.querySelector('[role="dialog"]')));
     const orderNumber = await page.evaluate(() => document.body.innerText.match(/FT-\d{8}-\d{4}/)?.[0] ?? null);
     await page.screenshot({ path: `${SHOTS}/sheet-2-ordered.png` });

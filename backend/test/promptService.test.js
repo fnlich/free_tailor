@@ -148,9 +148,9 @@ test('prompt service supports multiple prompt variants per feature and active se
 });
 
 test('the analysis, the job facts, Fully tailor, the revise pass and the cover letter have one prompt each: no new variant, no activation, an old variant listed but never active', async () => {
-  // One analysis per posting for every profile (owner decision J0) needs one
+  // One analysis per posting for every resume (owner decision J0) needs one
   // prompt per call to produce it; Fully tailor, the revise pass and a cover
-  // letter run on the model the resume is charged at: each is its built-in
+  // letter run on the model the run builds with: each is its built-in
   // record, which an administrator edits, run by its exact id.
   const { staticDir } = useTempStorage('prompts-single');
   writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyse [[jobLink]] [[jobDescription]]');
@@ -164,10 +164,10 @@ test('the analysis, the job facts, Fully tailor, the revise pass and the cover l
   writeDefaultPrompt(staticDir, 'generate-cover-letter', 'Write for [[profileJson]] at [[companyName]]');
   writeDefaultPrompt(staticDir, 'write-entry-bullets', 'Bullets for [[entryJson]]');
   const promptService = loadFresh('../dist/services/promptService');
-  // Six: the profile editor's Write Entry Bullets runs by its exact id on the
+  // Six: the resume editor's Write Entry Bullets runs by its exact id on the
   // app default model, like the others on a model the code chooses; Fully
-  // tailor runs for every profile set to it, whatever prompt the profile chose
-  // for Partial.
+  // tailor is the one prompt of every Fully Tailor run, whatever prompt the
+  // resume chose for Partial Tailor.
   assert.deepEqual(promptService.listSinglePromptFeatures(), [
     'analyze-job-description',
     'filter-google-sheet-job',
@@ -182,9 +182,9 @@ test('the analysis, the job facts, Fully tailor, the revise pass and the cover l
     'filter-google-sheet-job': ['Mine [[jobDescription]]', /^Error: The job facts have one prompt, the built-in Job Facts \(Filter\), which every analysis runs beside Analyze Job Description\./],
     'tailor-resume-full': [
       'Mine [[profileJson]] [[jobAnalysisJson]] [[softSkillGroupHeading]]',
-      /^Error: Fully tailoring has one prompt, the built-in Tailor Resume \(Fully\), which every profile set to Fully tailor runs\. Edit that prompt instead of adding another\.$/,
+      /^Error: Fully tailoring has one prompt, the built-in Tailor Resume \(Fully\), which every Fully Tailor run uses\. Edit that prompt instead of adding another\.$/,
     ],
-    'revise-resume-coverage': ['Mine [[draftJson]] [[missingTermsJson]]', /^Error: The revise pass has one prompt, the built-in Revise Resume Coverage, which runs after a tailoring that left checklist terms out or dropped a figure the profile states\. Edit that prompt instead of adding another\.$/],
+    'revise-resume-coverage': ['Mine [[draftJson]] [[missingTermsJson]]', /^Error: The revise pass has one prompt, the built-in Revise Resume Coverage, which runs after a tailoring that left checklist terms out or dropped a figure the resume states\. Edit that prompt instead of adding another\.$/],
     'generate-cover-letter': ['Mine [[profileJson]]', /^Error: A cover letter has one prompt, the built-in Generate Cover Letter\./],
     'write-entry-bullets': ['Mine [[entryJson]]', /^Error: Writing an entry's bullets has one prompt, the built-in Write Entry Bullets\. Edit that prompt instead of adding another\.$/],
   };

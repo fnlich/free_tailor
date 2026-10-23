@@ -52,8 +52,6 @@ const users = require(path.join(DIST, 'database', 'userRepository'));
 const analyses = require(path.join(DIST, 'database', 'jobAnalysisRepository'));
 const identity = require(path.join(DIST, 'services', 'jobAnalysis', 'identity'));
 const lakeService = require(path.join(DIST, 'services', 'jobLake', 'index'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -238,33 +236,37 @@ async function main() {
     Object.values(stored).every((job) => job.status === 'added'),
     JSON.stringify(Object.fromEntries(Object.entries(stored).map(([company, job]) => [company, job.status])))
   );
-  const profileId = `p-push-${stamp}`;
-  saveProfile({
-    ...buildNewProfile(
-      {
-        name: 'Pat Push',
-        title: 'Senior Engineer',
-        contact: { email: 'pat@example.com', phone: '1', location: 'Remote' },
-        summary: 'Engineer who ships.',
-        experience: [
-          {
-            title: 'Engineer',
-            company: 'Acme',
-            startDate: '01/2020',
-            endDate: 'Present',
-            location: 'Remote',
-            description: 'Built product services.',
-            achievements: ['Cut build time by 37%.'],
-            skills: [],
-          },
-        ],
-        skills: ['TypeScript', 'Docker'],
-        education: [],
-      },
-      profileId
-    ),
-    ownerId: admin.id,
+  // The administrator's resume is made through the API, as a builder makes it:
+  // the server files it under its person's profile, which the build below names
+  // (a run builds exactly one profile).
+  const seededResume = await api(tokens.admin, '/resumes', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Pat Push',
+      title: 'Senior Engineer',
+      contact: { email: 'pat@example.com', phone: '1', location: 'Remote' },
+      summary: 'Engineer who ships.',
+      experience: [
+        {
+          title: 'Engineer',
+          company: 'Acme',
+          startDate: '01/2020',
+          endDate: 'Present',
+          location: 'Remote',
+          description: 'Built product services.',
+          achievements: ['Cut build time by 37%.'],
+          skills: [],
+        },
+      ],
+      skills: ['TypeScript', 'Docker'],
+      education: [],
+    }),
   });
+  const profileId = seededResume.body?.profileId;
+  // Not a claim of its own: a setup that failed ends the script here.
+  if (seededResume.status !== 201 || !profileId) {
+    throw new Error(`setup: the resume was not filed under a profile: ${seededResume.status} ${JSON.stringify(seededResume.body)}`);
+  }
 
   // The other administrator's sheet exists before any push: it must come out exactly as it went in.
   const otherSheet = await api(tokens.other, '/sheet');
@@ -450,7 +452,7 @@ async function main() {
     });
     const built = await api(tokens.admin, '/generation/batches', {
       method: 'POST',
-      body: JSON.stringify({ label: 'Google Sheet (2 jobs)', profileIds: [profileId], jobs, sheet: { tabName: TEMP }, mode: 'order' }),
+      body: JSON.stringify({ label: 'Google Sheet (2 jobs)', profileId, buildMode: 'partial', jobs, sheet: { tabName: TEMP }, mode: 'order' }),
     });
     check('an order is placed from the two pushed rows', built.status === 202 && Boolean(built.body?.orderNumber), JSON.stringify(built.body));
     // The write-back of a cell the server would not use is batched a moment after submission: wait past it.

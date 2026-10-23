@@ -96,7 +96,7 @@ function fallbackSentence(fallback: string): string {
  * - Nothing answered (or `fetch` itself threw its network TypeError): the
  *   unreachable sentence. The technical text, which names the URLs tried and
  *   the port in the build, goes to the console for whoever is debugging.
- * - An `Error` the app threw itself (`new Error('Pick a profile first')`): its
+ * - An `Error` the app threw itself (`new Error('Pick a resume first')`): its
  *   message - those are written for the reader already.
  * - Anything else, including a library's own exception classes whose text was
  *   never written for a person: the fallback, with the exception's own text

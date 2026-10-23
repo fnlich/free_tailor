@@ -9,7 +9,7 @@ const test = require('node:test');
  * There are two paths and they are both legitimate. With a job description,
  * `tailor-resume` writes the letter as one field of its JSON, informed by the
  * job analysis. Without one - the caller gave only a company and a role -
- * `generate-cover-letter` writes it from the profile alone. routes/resume.ts
+ * `generate-cover-letter` writes it from the source resume alone. routes/resume.ts
  * picks between them on whether the tailored content came back with a letter.
  *
  * What is NOT legitimate is the two writing differently, because they produce
@@ -93,9 +93,9 @@ test('the fallback asks only for inputs it is actually given', () => {
 
 test('no prompt invents facts it is not asked to write', () => {
   assert.match(FALLBACK, /Never invent an achievement, employer or metric/);
-  // Partial: the frame never, and nothing in a role the profile describes;
+  // Partial: the frame never, and nothing in a role the resume describes;
   // only a role it leaves empty is written from the posting (the owner kept
-  // that rule, 2026-10-20), and the summary holds what the profile shows and
+  // that rule, 2026-10-20), and the summary holds what the resume shows and
   // what those bullets describe.
   assert.match(TAILORED, /Never invent a company, title, date or location/);
   assert.match(TAILORED, /In every described role, never a metric, project, outcome, technology, tool or certification the profile does not show/);

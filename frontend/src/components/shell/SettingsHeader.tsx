@@ -28,7 +28,7 @@ const ADMINISTRATION_HREF = SETTINGS_ADMIN_TABS[0].href;
  * directory a layout could own - `/test` is one of them.
  *
  * Two levels, not one long row. The account's four tabs are every builder's -
- * a reporter gets Profile and Job Sheet, the two that are theirs; an
+ * a reporter gets Account and Job Sheet, the two that are theirs; an
  * administrator gets a fifth, Administration, and only on its pages a second,
  * smaller row of the installation's nine. One row of thirteen ran off the end
  * of a 1440px window with nothing to say there was more - four of the nine
@@ -42,7 +42,7 @@ export default function SettingsHeader({ pathname, role }: Props) {
   const adminRow = useTabRow<HTMLElement>(`${pathname}:${onAdmin}`);
 
   // Longest match, so /settings/subscription lights Subscription and not
-  // Profile, whose /settings is a prefix of it.
+  // Account, whose /settings is a prefix of it.
   const accountActive = onAdmin ? null : activeHref(pathname, accountTabs);
   const adminActive = onAdmin ? activeHref(pathname, SETTINGS_ADMIN_TABS) : null;
 

@@ -64,7 +64,10 @@ const ENV_NAMES = [
   'ANALYSIS_MODEL',
   'DEFAULT_MODE',
   'DEFAULT_THEME',
-  'DEFAULT_RESUME_SELECTION',
+  'DEFAULT_TAILOR_MODE',
+  'RESUME_SUITABLE_PRICE_USD',
+  'RESUME_PARTIAL_PRICE_USD',
+  'RESUME_FULL_PRICE_USD',
   'DEFAULT_RESUME_DOCX',
   'DEFAULT_COVER_LETTER_DOCX',
   'OUTPUT_BASE_DIR',
@@ -212,6 +215,25 @@ test("the source lib's tables are the server's, and it imports nothing at runtim
     plain(lib.SUBSCRIPTION_PRICE_REQUEST_FIELDS),
     Object.fromEntries(Object.values(SUBSCRIPTION_PRICE_FIELDS).map((field) => [field.setting, field.request]))
   );
+
+  // Each build mode's price is saved under the server's own dollar name and follows the server's .env variable (owner decision D21).
+  const { BUILD_MODES, BUILD_MODE_PRICE_FIELDS } = require('../dist/config/buildModes');
+  assert.deepEqual(
+    plain(lib.MODE_PRICE_REQUEST_FIELDS),
+    Object.fromEntries(BUILD_MODES.map((mode) => [BUILD_MODE_PRICE_FIELDS[mode].setting, BUILD_MODE_PRICE_FIELDS[mode].request]))
+  );
+  assert.deepEqual(Object.keys(lib.MODE_PRICE_REQUEST_FIELDS), BUILD_MODES.map((mode) => BUILD_MODE_PRICE_FIELDS[mode].setting), "the server's mode order");
+  for (const mode of BUILD_MODES) {
+    const { setting, env } = BUILD_MODE_PRICE_FIELDS[mode];
+    assert.deepEqual(lib.APP_SETTING_ENV_VARIABLES[setting], [env], `${setting} follows ${env}`);
+    assert.ok(lib.APP_SETTING_KEYS.includes(setting), setting);
+  }
+  // The builder's starting mode is a setting with a .env default; the retired build target is not one.
+  assert.deepEqual(lib.APP_SETTING_ENV_VARIABLES.defaultBuildMode, ['DEFAULT_TAILOR_MODE']);
+  for (const retired of ['defaultResumeSelection', 'defaultResumeId', 'defaultTailorMode']) {
+    assert.equal(retired in lib.APP_SETTING_ENV_VARIABLES, false, `${retired} is gone from the table`);
+    assert.equal(lib.APP_SETTING_KEYS.includes(retired), false, `${retired} is no setting`);
+  }
 });
 
 test('a source reads "Set here", "From .env (NAME)" or "Default" - the words Providers uses - and only "Set here" resets', () => {
@@ -265,7 +287,16 @@ test('what changed is compared as data, and an unchanged form sends nothing', ()
 /* ===================================================== General, Payments */
 
 test('the admin payload reads whole: every source and every Reset value the server sends', async () => {
-  await withEnv({ DEFAULT_THEME: 'dark', PAYMENT_CARD_MIN_USD: '5', OUTPUT_PATH_PREFIX: '/{{date}}/{{order_number}}' }, async () => {
+  await withEnv(
+    {
+      DEFAULT_THEME: 'dark',
+      PAYMENT_CARD_MIN_USD: '5',
+      OUTPUT_PATH_PREFIX: '/{{date}}/{{order_number}}',
+      DEFAULT_TAILOR_MODE: 'full',
+      RESUME_FULL_PRICE_USD: '0.05',
+      RESUME_PARTIAL_PRICE_USD: 'abc',
+    },
+    async () => {
     const server = await serve('payload');
     try {
       await server.config.updateAppSettings({ defaultMode: 'generate' });
@@ -274,6 +305,26 @@ test('the admin payload reads whole: every source and every Reset value the serv
         const read = await api.adminApi.getSettings();
         assert.deepEqual(read.settingSources, sent.settingSources);
         assert.deepEqual(read.settingDefaults, sent.settingDefaults);
+        // The builder's mode and the three prices (D21), read as the server sent them.
+        assert.equal(read.defaultBuildMode, sent.defaultBuildMode);
+        assert.equal(read.defaultBuildMode, 'full');
+        assert.equal(read.settingSources.defaultBuildMode, 'env');
+        for (const key of ['suitablePriceMilli', 'partialPriceMilli', 'fullPriceMilli']) {
+          assert.equal(read[key], sent[key], key);
+          assert.equal(read.settingSources[key], sent.settingSources[key], `${key} source`);
+          assert.equal(read.settingDefaults[key], sent.settingDefaults[key], `${key} Reset value`);
+        }
+        assert.equal(read.fullPriceMilli, 50);
+        assert.equal(read.settingSources.fullPriceMilli, 'env');
+        assert.equal(read.partialPriceMilli, 0, 'junk in .env reads $0');
+        assert.deepEqual(sent.unreadableModePrices, ['partial']);
+        assert.deepEqual(read.unreadableModePrices, sent.unreadableModePrices, 'the page can name the variable that is junk');
+        // Retired fields: not served by the server, so not read by the page.
+        for (const retired of ['freeEnabledModelIds', 'defaultResumeSelection', 'defaultResumeId', 'defaultTailorMode']) {
+          assert.equal(retired in sent, false, `the server no longer sends ${retired}`);
+          assert.equal(retired in read, false, `and the page does not read ${retired}`);
+        }
+        for (const model of read.aiModels) assert.equal('pricePerResumeMilli' in model, false, `${model.name} carries no price`);
         assert.equal(read.settingSources.defaultMode, 'admin');
         assert.equal(read.settingSources.defaultTheme, 'env');
         assert.equal(read.settingSources.outputPathPrefix, 'env');
@@ -284,7 +335,8 @@ test('the admin payload reads whole: every source and every Reset value the serv
     } finally {
       server.close();
     }
-  });
+    }
+  );
 });
 
 test('General and Payments send only what changed: an untouched form leaves .env in charge, and Reset hands one back', async () => {
@@ -292,7 +344,16 @@ test('General and Payments send only what changed: an untouched form leaves .env
     const server = await serve('changed');
     const lib = sources();
     const limits = loadFrontend('app/admin/payments/limitDraft.ts');
-    const BUILDER = ['defaultMode', 'defaultTheme', 'defaultResumeSelection', 'defaultModelId', 'defaultResumeDocxEnabled', 'defaultCoverLetterDocxEnabled'];
+    // The Builder Defaults boxes with a .env default (the page's BUILDER_SETTING_KEYS) and the profile, which is stored whole.
+    const BUILDER = [
+      'defaultMode',
+      'defaultTheme',
+      'defaultBuildMode',
+      'defaultModelId',
+      'defaultResumeDocxEnabled',
+      'defaultCoverLetterDocxEnabled',
+      'defaultProfileId',
+    ];
     try {
       await asClient(server, 'boss', async ({ api }) => {
         let settings = await api.adminApi.getSettings();
@@ -326,6 +387,17 @@ test('General and Payments send only what changed: an untouched form leaves .env
         settings = await api.adminApi.updateSettings(body);
         assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'defaultMode'), 'Set here');
         assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'defaultTheme'), 'From .env (DEFAULT_THEME)');
+
+        // The builder's starting mode is such a box: sent alone, "Set here", and Reset hands .env's (here the code's) back.
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'defaultBuildMode'), 'Default');
+        const modeBody = lib.changedSettings({ ...form, defaultMode: 'preview', defaultBuildMode: 'full' }, settings, BUILDER);
+        assert.deepEqual(modeBody, { defaultBuildMode: 'full' });
+        settings = await api.adminApi.updateSettings(modeBody);
+        assert.equal(settings.defaultBuildMode, 'full');
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'defaultBuildMode'), 'Set here');
+        settings = await api.adminApi.updateSettings(lib.resetBody('defaultBuildMode'));
+        assert.equal(settings.defaultBuildMode, 'partial');
+        assert.equal(settings.settingSources.defaultBuildMode, 'default');
 
         // A limit changed: that method's row goes alone, as typed, and the server takes it.
         const changed = settings.paymentLimits.map(limits.toLimitDraft);
@@ -505,6 +577,122 @@ test("Settings -> General's price boxes send only what changed, as typed, and re
   assert.match(page, /type="text"\s+inputMode="decimal"\s+value=\{priceDrafts\[key\]\}/);
 });
 
+test("Settings -> General's price per resume: three boxes sent as typed under the mode's dollar name, refused in the server's own words, and a refusal lands under its box", async () => {
+  await withEnv({ RESUME_PARTIAL_PRICE_USD: '0.023' }, async () => {
+    const server = await serve('mode-price-boxes');
+    const draft = loadFrontend('app/admin/settings/modePriceDraft.ts');
+    const lib = sources();
+    const { BUILD_MODES, BUILD_MODE_LABELS, BUILD_MODE_PRICE_FIELDS, MAX_BUILD_MODE_PRICE_MILLI } = require('../dist/config/buildModes');
+    try {
+      // The draft's tables are the server's, in the server's mode order.
+      const settingsInOrder = BUILD_MODES.map((mode) => BUILD_MODE_PRICE_FIELDS[mode].setting);
+      assert.deepEqual([...draft.MODE_PRICE_KEYS], settingsInOrder);
+      assert.deepEqual([...draft.MODE_PRICE_KEYS], Object.keys(lib.MODE_PRICE_REQUEST_FIELDS));
+      for (const mode of BUILD_MODES) {
+        assert.equal(draft.MODE_PRICE_LABELS[BUILD_MODE_PRICE_FIELDS[mode].setting], BUILD_MODE_LABELS[mode]);
+        assert.equal(draft.modeOfPriceKey(BUILD_MODE_PRICE_FIELDS[mode].setting), mode);
+        assert.equal(draft.modePriceKeyOfField(BUILD_MODE_PRICE_FIELDS[mode].request), BUILD_MODE_PRICE_FIELDS[mode].setting);
+      }
+      assert.equal(draft.MAX_MODE_PRICE_MILLI, MAX_BUILD_MODE_PRICE_MILLI);
+      assert.equal(draft.modePriceKeyOfField('partialPriceMilli'), null, 'the served name is not a field a save is refused under');
+      assert.equal(draft.modePriceKeyOfField('outputPathPrefix'), null);
+
+      await asClient(server, 'boss', async ({ api }) => {
+        // The ceiling api.ts clamps every price it reads to is the server's too, not only the draft's copy.
+        assert.equal(api.MAX_MODE_PRICE_MILLI, MAX_BUILD_MODE_PRICE_MILLI);
+        let settings = await api.adminApi.getSettings();
+        assert.equal(settings.partialPriceMilli, 23);
+        assert.equal(settings.suitablePriceMilli, 0, 'a mode nobody priced is free, on purpose');
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'partialPriceMilli'), 'From .env (RESUME_PARTIAL_PRICE_USD)');
+        assert.equal(lib.appSettingSourceLabel(settings.settingSources, 'fullPriceMilli'), 'Default');
+        let drafts = draft.toModePriceDrafts(settings);
+        assert.deepEqual(
+          Object.fromEntries(draft.MODE_PRICE_KEYS.map((key) => [key, draft.modePriceDraftOf(settings[key])])),
+          drafts
+        );
+        assert.equal(drafts.partialPriceMilli, '0.023');
+
+        // Untouched, retyped to the same amount, or a free mode left free: nothing is sent.
+        assert.deepEqual(draft.modePriceChanges(drafts, settings), {});
+        assert.deepEqual(draft.modePriceChanges({ ...drafts, partialPriceMilli: '$0.023', suitablePriceMilli: '0' }, settings), {});
+        assert.deepEqual(draft.modePriceProblems(drafts), {});
+
+        // One changed: only it, as typed, under its dollar name - and .env's Partial stays .env's.
+        const body = draft.modePriceChanges({ ...drafts, fullPriceMilli: ' 0.05 ' }, settings);
+        assert.deepEqual(body, { fullPriceUsd: '0.05' });
+        settings = await api.adminApi.updateSettings(body);
+        assert.equal(settings.fullPriceMilli, 50);
+        assert.equal(settings.settingSources.partialPriceMilli, 'env');
+        assert.equal(settings.settingSources.fullPriceMilli, 'admin');
+        assert.equal(draft.toModePriceDrafts(settings).fullPriceMilli, draft.modePriceDraftOf(50));
+        assert.equal(lib.canReset(settings.settingSources.fullPriceMilli), true);
+
+        // $0 is a price: it beats .env's, and it is the mode being free.
+        drafts = draft.toModePriceDrafts(settings);
+        settings = await api.adminApi.updateSettings(draft.modePriceChanges({ ...drafts, partialPriceMilli: '0' }, settings));
+        assert.equal(settings.partialPriceMilli, 0);
+        assert.equal(settings.settingSources.partialPriceMilli, 'admin');
+        assert.equal(settings.settingDefaults.partialPriceMilli, 23, 'what Reset gives');
+
+        // The page's refusal is the server's, word for word, and a refusal's field names the box it lands under.
+        drafts = draft.toModePriceDrafts(settings);
+        for (const [key, typed] of [
+          ['partialPriceMilli', '9,99'],
+          ['fullPriceMilli', '1000.001'],
+          ['suitablePriceMilli', '1.2345'],
+          ['partialPriceMilli', '-5'],
+          ['fullPriceMilli', ''],
+          ['suitablePriceMilli', '   '],
+        ]) {
+          const local = draft.modePriceProblem(key, typed);
+          const refused = await refusalOf(api.adminApi.updateSettings({ [lib.MODE_PRICE_REQUEST_FIELDS[key]]: typed }));
+          assert.equal(refused.status, 400, `${key} ${JSON.stringify(typed)}`);
+          assert.equal(refused.body.code, 'bad-price');
+          assert.equal(local, refused.message, `${key} ${JSON.stringify(typed)}`);
+          assert.equal(draft.modePriceKeyOfField(refused.body.field), key, 'the box the page pins it under');
+          assert.deepEqual(Object.keys(draft.modePriceProblems({ ...drafts, [key]: typed })), [key]);
+          // And a box the server would refuse is a change the page judges first.
+          assert.deepEqual(Object.keys(draft.modePriceChanges({ ...drafts, [key]: typed }, settings)), [lib.MODE_PRICE_REQUEST_FIELDS[key]]);
+        }
+        assert.match(draft.modePriceProblem('partialPriceMilli', ''), /^The Partial Tailor price is required/);
+        assert.equal(draft.modePriceProblem('fullPriceMilli', '1000'), null);
+        assert.equal(draft.modePriceProblem('fullPriceMilli', '0'), null);
+        assert.equal(draft.modePriceProblem('fullPriceMilli', '0.001'), null);
+        const ceiling = await api.adminApi.updateSettings({ fullPriceUsd: '1000' });
+        assert.equal(ceiling.fullPriceMilli, 1_000_000);
+
+        // The served name is never a save's: refused, under the box it names.
+        const served = await refusalOf(api.adminApi.updateSettings(lib.resetBody('partialPriceMilli')));
+        assert.equal(served.status, 400);
+        assert.equal(served.body.code, 'bad-price-field');
+        assert.equal(draft.modePriceKeyOfField(served.body.field), 'partialPriceMilli');
+
+        // Reset sends null under the dollar name: .env's price again, and the code's for a mode with none.
+        settings = await api.adminApi.updateSettings(lib.appSettingResetBody('partialPriceMilli'));
+        assert.equal(settings.partialPriceMilli, 23);
+        assert.equal(settings.settingSources.partialPriceMilli, 'env');
+        settings = await api.adminApi.updateSettings(lib.appSettingResetBody('fullPriceMilli'));
+        assert.equal(settings.fullPriceMilli, 0);
+        assert.equal(settings.settingSources.fullPriceMilli, 'default');
+        assert.deepEqual(lib.appSettingResetBody('suitablePriceMilli'), { suitablePriceUsd: null });
+        assert.deepEqual(lib.appSettingResetBody('partialPriceMilli'), { partialPriceUsd: null });
+        assert.deepEqual(lib.appSettingResetBody('fullPriceMilli'), { fullPriceUsd: null });
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  // The page saves through the draft - only `modePriceChanges` - after judging the boxes, pins a refusal under its box, and draws text boxes.
+  const page = fs.readFileSync(path.join(SRC, 'app/admin/settings/page.tsx'), 'utf8');
+  assert.match(page, /const problems = modePriceProblems\(modeDrafts\);/);
+  assert.match(page, /const changes = modePriceChanges\(modeDrafts, settings\);/);
+  assert.match(page, /modePriceKeyOfField\(err\.body\?\.field\)/);
+  assert.match(page, /adminApi\.updateSettings\(appSettingResetBody\(key\)\)/);
+  assert.match(page, /type="text"\s+inputMode="decimal"\s+autoComplete="off"\s+value=\{modeDrafts\[key\]\}/);
+  assert.match(page, /Save Prices/);
+});
+
 test("Contact's Reset sends { channels: null }: .env's channels again, where a saved empty list is none", async () => {
   await withEnv({ CONTACT_CHANNELS: 'email:help@example.org|Support' }, async () => {
     const server = await serve('contact');
@@ -591,15 +779,12 @@ test("the Models dialog's field names are the server's, and every refusal lands 
         const blank = form.blankModelDraft(settings);
         const cases = [
           // [draft, the box, whether the form says it first]
-          [{ ...blank, name: '', price: '0.01' }, 'name', true],
-          [{ ...blank, name: 'claude SONNET ', price: '0.01' }, 'name', true],
-          [{ ...blank, name: 'Fresh', modelName: '', price: '0.01' }, 'modelName', true],
-          [{ ...blank, name: 'Fresh', price: '' }, 'pricePerResumeUsd', true],
-          [{ ...blank, name: 'Fresh', price: '0.0005' }, 'pricePerResumeUsd', true],
-          [{ ...blank, name: 'Fresh', price: '1001' }, 'pricePerResumeUsd', true],
+          [{ ...blank, name: '' }, 'name', true],
+          [{ ...blank, name: 'claude SONNET ' }, 'name', true],
+          [{ ...blank, name: 'Fresh', modelName: '' }, 'modelName', true],
           // What only the server can see: a name the seat does not list, a pair another record holds.
-          [{ ...blank, name: 'Fresh', provider: 'claude-cli', modelName: 'no-such-model', price: '0.01' }, 'modelName', false],
-          [{ ...blank, name: 'Fresh', provider: 'claude-cli', modelName: 'sonnet', price: '0.01' }, 'modelName', false],
+          [{ ...blank, name: 'Fresh', provider: 'claude-cli', modelName: 'no-such-model' }, 'modelName', false],
+          [{ ...blank, name: 'Fresh', provider: 'claude-cli', modelName: 'sonnet' }, 'modelName', false],
         ];
         for (const [draft, field, local] of cases) {
           const error = await refusalOf(api.adminApi.createModel(form.createModelBody(draft)));
@@ -614,19 +799,22 @@ test("the Models dialog's field names are the server's, and every refusal lands 
 
         // Created as typed; an edit sends only what changed, and an untouched one nothing.
         const created = await api.adminApi.createModel(
-          form.createModelBody({ ...blank, name: 'Fresh', provider: 'claude-cli', modelName: 'fable', price: '0.023' })
+          form.createModelBody({ ...blank, name: 'Fresh', provider: 'claude-cli', modelName: 'fable' })
         );
         const fresh = created.aiModels.find((model) => model.name === 'Fresh');
-        assert.equal(fresh.pricePerResumeMilli, 23);
+        assert.equal('pricePerResumeMilli' in fresh, false, 'a model carries no price: a resume costs its build mode\'s');
+        assert.deepEqual(Object.keys(form.createModelBody(blank)).sort(), [...AI_MODEL_FIELDS].sort(), 'the body names exactly the boxes');
         const untouched = form.draftFromModel(fresh);
         assert.deepEqual(form.editModelBody(fresh, untouched), {});
         assert.deepEqual(form.editModelBody(fresh, { ...untouched, modelName: 'FABLE' }), {}, 'a model name in another case');
-        const body = form.editModelBody(fresh, { ...untouched, name: 'Fresher', price: '0.05' });
-        assert.deepEqual(body, { name: 'Fresher', pricePerResumeUsd: '0.05' });
+        const body = form.editModelBody(fresh, { ...untouched, name: 'Fresher', description: 'Written here' });
+        assert.deepEqual(body, { name: 'Fresher', description: 'Written here' });
         const edited = await api.adminApi.updateModel(fresh.id, body);
         const fresher = edited.aiModels.find((model) => model.id === fresh.id);
-        assert.equal(fresher.pricePerResumeMilli, 50);
-        assert.deepEqual(form.editModelBody(fresher, { ...form.draftFromModel(fresher), price: '0.050' }), {}, 'the same amount retyped');
+        assert.equal(fresher.name, 'Fresher');
+        assert.equal(fresher.description, 'Written here');
+        assert.equal('pricePerResumeMilli' in fresher, false);
+        assert.deepEqual(form.editModelBody(fresher, form.draftFromModel(fresher)), {}, 'nothing retyped, nothing sent');
         // Keeping its own name is no clash, in any case.
         assert.deepEqual(form.modelDraftProblems({ ...form.draftFromModel(edited.aiModels.find((m) => m.id === fresh.id)), name: 'FRESHER' }, edited, fresh.id), {});
       });
@@ -634,6 +822,18 @@ test("the Models dialog's field names are the server's, and every refusal lands 
       server.close();
     }
   });
+
+  // The page draws no price: not a column, not a box, not a notice about a free model - one sentence says where it is set now.
+  const dir = path.join(SRC, 'app', 'admin', 'models');
+  assert.equal(fs.existsSync(path.join(dir, 'modelPrice.ts')), false, 'the price helper is gone');
+  const drawn = ['page.tsx', 'ModelDialog.tsx', 'modelForm.ts', 'modelDraft.ts']
+    .map((file) => fs.readFileSync(path.join(dir, file), 'utf8'))
+    .join('\n');
+  assert.doesNotMatch(drawn, /pricePerResume|model-price-per-resume|freeEnabledModelIds|formatPricePerResume/);
+  assert.match(
+    fs.readFileSync(path.join(dir, 'page.tsx'), 'utf8'),
+    /What a resume costs is set per builder mode under Settings > General > Price per resume\./
+  );
 });
 
 test('Set default and Use for analysis are one settings field each; "Use the default model" is the empty choice', async () => {
@@ -754,7 +954,7 @@ test('Resume files: an account made a reporter mid-session goes to the session, 
   /*
    * The page draws the section by the SESSION's role. An administrator who
    * makes a user a reporter keeps their session, and nothing on Settings ->
-   * Profile is refused - which is what re-reads the session elsewhere - so
+   * Account is refused - which is what re-reads the session elsewhere - so
    * the section's own read is where the page learns of it.
    */
   await withEnv({}, async () => {
@@ -788,4 +988,72 @@ test('Resume files: an account made a reporter mid-session goes to the session, 
   // asks for the administrator, so the notice ends in its Contact admin link.
   const loadFailed = /const LOAD_FAILED =\s*'([^']+)'/.exec(section)?.[1];
   assert.equal(loadFrontend('lib/contactChannels.ts').asksForAdministrator(loadFailed), true, String(loadFailed));
+});
+
+test("Settings -> General's builder defaults and price boxes are wired the way the draft helpers assume (pinned in the page's source)", () => {
+  const page = fs.readFileSync(path.join(SRC, 'app/admin/settings/page.tsx'), 'utf8');
+
+  // What the Builder Defaults save sends is read from the page, not copied here: the boxes with a .env default,
+  // then the profile, which is stored whole. Dropping either from the list freezes it unsaved.
+  const listed = /const BUILDER_SETTING_KEYS = \[([^\]]*)\]/.exec(page)?.[1];
+  assert.ok(listed, 'the page names its Builder Defaults keys');
+  assert.deepEqual(
+    [...listed.matchAll(/'([A-Za-z]+)'/g)].map((match) => match[1]),
+    ['defaultMode', 'defaultTheme', 'defaultBuildMode', 'defaultModelId', 'defaultResumeDocxEnabled', 'defaultCoverLetterDocxEnabled']
+  );
+  assert.match(page, /changedSettings\(form, settings, \[\.\.\.BUILDER_SETTING_KEYS, 'defaultProfileId'\]\)/);
+
+  // The two Builder Defaults controls the end-to-end scripts find by id.
+  assert.match(page, /id="default-profile"/);
+  assert.match(page, /id="default-build-mode"/);
+  assert.match(page, /You have no profiles yet\. Add one under Profiles before choosing a default\./);
+
+  // Each price box: red while free, red when .env's line is junk, and its source with Reset to default.
+  assert.match(page, /settings\[key\] === 0 && <Status tone="error">Free: nobody is charged for \{label\}\.<\/Status>/);
+  assert.match(page, /settings\.unreadableModePrices\.includes\(modeOfPriceKey\(key\)\)/);
+  assert.match(page, /sourceOf\(key, `\$\{label\} price`, formatMoney\(defaults\[key\]\)\)/);
+});
+
+test("the ordinary account's settings (GET /resume/models) are read whole: the three prices, the starting mode and the starting profile", async () => {
+  await withEnv(
+    { RESUME_SUITABLE_PRICE_USD: '0.005', RESUME_PARTIAL_PRICE_USD: '0.023', RESUME_FULL_PRICE_USD: '0.1', DEFAULT_TAILOR_MODE: 'full' },
+    async () => {
+      const server = await serve('user-settings');
+      try {
+        // What the route answers (getUserAppSettings, sent as JSON), then what a damaged answer reads as.
+        const served = JSON.parse(JSON.stringify(await server.config.getUserAppSettings('')));
+        await asClient(server, 'jane', async ({ api }) => {
+          const real = globalThis.fetch;
+          const answering = (body) => async () => ({ ok: true, status: 200, json: async () => body });
+          try {
+            globalThis.fetch = answering(served);
+            const settings = await api.resumeApi.getModels();
+            assert.equal(settings.suitablePriceMilli, 5);
+            assert.equal(settings.partialPriceMilli, 23);
+            assert.equal(settings.fullPriceMilli, 100);
+            assert.equal(settings.defaultBuildMode, 'full');
+            assert.equal(settings.defaultProfileId, served.defaultProfileId);
+
+            // Junk reads as free and Partial, never as a price or a mode the server did not give.
+            globalThis.fetch = answering({
+              ...served,
+              suitablePriceMilli: 'x',
+              partialPriceMilli: -4,
+              fullPriceMilli: 1.5,
+              defaultBuildMode: 'everything',
+            });
+            const damaged = await api.resumeApi.getModels();
+            assert.equal(damaged.suitablePriceMilli, 0);
+            assert.equal(damaged.partialPriceMilli, 0);
+            assert.equal(damaged.fullPriceMilli, 0);
+            assert.equal(damaged.defaultBuildMode, 'partial');
+          } finally {
+            globalThis.fetch = real;
+          }
+        });
+      } finally {
+        server.close();
+      }
+    }
+  );
 });

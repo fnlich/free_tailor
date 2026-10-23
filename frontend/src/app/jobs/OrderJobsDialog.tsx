@@ -4,57 +4,47 @@ import { useEffect, useMemo, useState } from 'react';
 
 import AiPreferenceFields from '@/components/AiPreferenceFields';
 import CostLine, { type CreditShortfall } from '@/components/builder/CostLine';
-import ProfileTargets from '@/components/builder/ProfileTargets';
+import BuildModeChoice from '@/components/builder/BuildModeChoice';
 import { placedOrderFrom, type PlacedOrder } from '@/components/orders/OrderReceipt';
+import ProfileSelector from '@/components/ProfileSelector';
 import { useSpendConfirm } from '@/components/SpendConfirm';
-import { useLockedFeature } from '@/components/subscription/LockedFeature';
 import Dialog from '@/components/ui/Dialog';
 import { ErrorNotice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   DEFAULT_USER_APP_SETTINGS,
-  groupsApi,
-  isInsufficientCredits,
-  isSubscriptionTooLow,
-  normalizeAiPreferences,
   profilesApi,
+  isInsufficientCredits,
+  normalizeAiPreferences,
+  resumesApi,
   resumeApi,
   type AiPreferences,
-  type Group,
-  type Profile,
+  type ProfileSummary,
+  type Resume,
   type UserAppSettings,
 } from '@/lib/api';
+import { BUILD_MODE_PRICE_SETTINGS, BUILD_MODES, type BuildMode } from '@/lib/buildModes';
 import { formatMoney } from '@/lib/format';
 import { estimateRun, generationApi, type GenerationQuote, type SubmitBatchRequest } from '@/lib/generationQueue';
 import type { FindJobsRow } from '@/lib/jobLake';
 import { describeOrderSkipped, lakeOrderJobs, lakeOrderLabel } from '@/lib/jobLakeDisplay';
-import {
-  defaultRunFormat,
-  startingTarget,
-  targetBlocker,
-  targetInEffect,
-  targetProfiles,
-  type TargetChoice,
-  type TargetKind,
-} from '@/lib/runChoices';
-import { canBuildForManyProfiles, describeLock, describeTooLowRefusal } from '@/lib/subscriptions';
+import { resumeLabel } from '@/lib/profileDashboard';
+import { buildModeNote, defaultRunFormat, profileBlocker, startingBuildMode, startingProfileId } from '@/lib/runChoices';
 import { userMessage } from '@/lib/userMessage';
 
 /**
  * Order Immediately, from Find Jobs: an ORDER (`mode: 'order'`) of a resume
- * for every job picked, for the profiles chosen here, built on the server and
- * collected on Orders - owner's decision. The jobs go by their stored
- * analyses, so nothing is analysed again; a picked job with none is left out
- * and the receipt says so.
+ * for every job picked, built on the server and collected on Orders - owner's
+ * decision. The jobs go by their stored analyses, so nothing is analysed
+ * again; a picked job with none is left out and the receipt says so.
  *
- * Who it builds for is Build Resumes' own choice (components/builder/
- * ProfileTargets.tsx) and one more: Single profile, Several profiles (chosen
- * in a box of the enabled ones), All profiles or Specific group, all but the
- * first LOCKED below Premium - drawn, never hidden, each opening the lock -
- * and the kind in effect derived as Single for such an account
- * (lib/runChoices.ts `targetInEffect`). It starts where Build Resumes starts:
- * the administrator's default target, profile and group. The model is this
- * order's only (`AiPreferenceFields`), each profile's own model otherwise.
+ * Like every run, an order builds exactly ONE profile (a person) in ONE build
+ * mode - Choose Suitable Resume, Partial Tailor or Fully Tailor - on every
+ * subscription, so nothing here is locked: `ProfileSelector` offers the
+ * profiles that have an enabled resume and `BuildModeChoice` the three modes
+ * with what each costs a resume. It starts where Build Resumes starts: the
+ * administrator's default profile and default mode. The model is this order's
+ * only (`AiPreferenceFields`), each resume's own model otherwise.
  *
  * Its price is the server's quote for exactly this order (CostLine) - or,
  * while who it is for cannot be built for yet, the reason, in the same place,
@@ -64,9 +54,8 @@ import { userMessage } from '@/lib/userMessage';
  * while the price is worked out, the dialog places nothing (the confirm hook
  * starts nothing for a page that has gone). A refusal stays in the dialog -
  * 402 as the cost line's shortfall with Buy credits (only while the same
- * order is chosen - another target or model shows its own price), 403
- * `subscription-too-low` as the lock, worded from the refusal, anything else
- * as an error notice.
+ * order is chosen - another profile, mode or model shows its own price),
+ * anything else as an error notice.
  */
 export default function OrderJobsDialog({
   rows,
@@ -80,18 +69,17 @@ export default function OrderJobsDialog({
   onPlaced: (order: PlacedOrder | null, total: number) => void;
 }) {
   const { account, refresh } = useAuth();
-  const manyProfiles = canBuildForManyProfiles(account);
-  const manyLock = describeLock('many-profiles', account);
-  const locked = useLockedFeature();
   const spend = useSpendConfirm();
 
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
+  // The profiles with an enabled resume, newest edit first, and the enabled resumes behind them.
+  const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
+  const [resumes, setResumes] = useState<Resume[]>([]);
   const [settings, setSettings] = useState<UserAppSettings>(DEFAULT_USER_APP_SETTINGS);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
-  const [choice, setChoice] = useState<TargetChoice>({ kind: 'single', profileId: null, profileIds: [], groupId: '' });
+  const [profileId, setProfileId] = useState<string | null>(null);
+  const [buildMode, setBuildMode] = useState<BuildMode>('partial');
   const [aiOverrides, setAiOverrides] = useState<AiPreferences>({});
   const [quoted, setQuoted] = useState<{ key: string; quote: GenerationQuote | null } | null>(null);
   const [placing, setPlacing] = useState(false);
@@ -99,26 +87,30 @@ export default function OrderJobsDialog({
   const [refusal, setRefusal] = useState<{ key: string; shortfall: CreditShortfall } | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  // What the dialog chooses from: the enabled profiles, the groups (Premium
-  // and up - a Default account is refused them, and draws Specific group
-  // locked anyway), and the models with the administrator's defaults.
+  // What the dialog chooses from, on every subscription: the profiles that
+  // have an enabled resume, those resumes (the default one names the model
+  // and the label a Fully Tailor order builds), and the models with the
+  // administrator's defaults and the three prices per resume.
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
-        const [all, loadedGroups, loadedSettings] = await Promise.all([
-          profilesApi.getAll({ includeDisabled: true }),
-          manyProfiles ? groupsApi.getAll().catch(() => [] as Group[]) : Promise.resolve([] as Group[]),
+        const [allProfiles, all, loadedSettings] = await Promise.all([
+          profilesApi.getAll(),
+          resumesApi.getAll().catch(() => [] as Resume[]),
           resumeApi.getModels().catch(() => null),
         ]);
         if (!alive) return;
-        const enabled = all.filter((profile) => !profile.disabled);
+        const offered = allProfiles
+          .filter((profile) => profile.enabledResumeCount > 0)
+          .sort((a, b) => (a.lastEditedAt < b.lastEditedAt ? 1 : a.lastEditedAt > b.lastEditedAt ? -1 : a.id < b.id ? -1 : 1));
         const defaults = loadedSettings ?? DEFAULT_USER_APP_SETTINGS;
-        setProfiles(enabled);
-        setGroups(loadedGroups);
+        setProfiles(offered);
+        setResumes(all.filter((resume) => !resume.disabled));
         setSettings(defaults);
         setModelsLoaded(loadedSettings !== null);
-        setChoice({ ...startingTarget(defaults, enabled, loadedGroups, manyProfiles), profileIds: [] });
+        setProfileId(startingProfileId(defaults, offered));
+        setBuildMode(startingBuildMode(defaults));
       } catch (caught) {
         if (alive) setLoadError(caught ?? new Error('Could not load your profiles.'));
       } finally {
@@ -128,25 +120,31 @@ export default function OrderJobsDialog({
     return () => {
       alive = false;
     };
-    // Again when the subscription changes under the dialog (a refused order re-reads the account).
-  }, [manyProfiles]);
+  }, []);
 
-  const target = useMemo<TargetChoice>(
-    () => ({ ...choice, kind: targetInEffect(choice.kind, manyProfiles) }),
-    [choice, manyProfiles]
-  );
-  const runProfiles = useMemo(() => targetProfiles(target, profiles, groups), [groups, profiles, target]);
+  const profile = useMemo(() => profiles.find((candidate) => candidate.id === profileId) ?? null, [profiles, profileId]);
   const { jobs, skipped } = useMemo(() => lakeOrderJobs(rows), [rows]);
   const modelId = aiOverrides.modelId;
+  // The three prices per resume, from the settings; null until they are known.
+  const prices = useMemo<Record<BuildMode, number> | null>(
+    () =>
+      modelsLoaded
+        ? (Object.fromEntries(BUILD_MODES.map((mode) => [mode, settings[BUILD_MODE_PRICE_SETTINGS[mode]]])) as Record<
+            BuildMode,
+            number
+          >)
+        : null,
+    [modelsLoaded, settings]
+  );
 
   /** The order as it would be sent - and, without its label and files, what the quote and the confirm price. */
   const request = useMemo<SubmitBatchRequest | null>(() => {
-    if (runProfiles.length === 0 || jobs.length === 0) return null;
-    return { ...(modelId ? { model: modelId } : {}), profileIds: runProfiles.map((profile) => profile.id), jobs };
-  }, [jobs, modelId, runProfiles]);
-  const quoteKey = request ? `${request.profileIds?.join(',')}|${jobs.length}|${modelId ?? ''}` : '';
+    if (!profile || jobs.length === 0) return null;
+    return { ...(modelId ? { model: modelId } : {}), buildMode, profileId: profile.id, jobs };
+  }, [buildMode, jobs, modelId, profile]);
+  const quoteKey = request ? `${request.profileId}|${jobs.length}|${modelId ?? ''}|${buildMode}` : '';
 
-  // The price of this order, asked again whenever who it is for or the model changes.
+  // The price of this order, asked again whenever who it is for, the mode or the model changes.
   useEffect(() => {
     if (!request) return;
     let cancelled = false;
@@ -165,12 +163,15 @@ export default function OrderJobsDialog({
   const quote = quoted && quoted.key === quoteKey ? quoted.quote : null;
   const shortfall = refusal && refusal.key === quoteKey ? refusal.shortfall : null;
 
-  // What the model select falls back to: the chosen profile's own model on a
-  // single target, else the app default - and only one that can still run.
-  const single = target.kind === 'single' ? (profiles.find((profile) => profile.id === target.profileId) ?? null) : null;
-  const profileModelId = normalizeAiPreferences(single?.profileSettings?.ai).modelId;
+  // What the model select falls back to: where one resume is certain to be
+  // built - Fully Tailor builds the profile's default resume - that resume's
+  // own model, else the app default; and only one that can still run.
+  const defaultResume =
+    profile && profile.defaultResumeId ? (resumes.find((resume) => resume.id === profile.defaultResumeId) ?? null) : null;
+  const single = buildMode === 'full' ? defaultResume : null;
+  const resumeModelId = normalizeAiPreferences(single?.resumeSettings?.ai).modelId;
   const inheritedModel =
-    settings.models.find((model) => model.id === profileModelId) ??
+    settings.models.find((model) => model.id === resumeModelId) ??
     settings.models.find((model) => model.id === settings.defaultModelId);
 
   const place = async (body: SubmitBatchRequest) => {
@@ -185,13 +186,9 @@ export default function OrderJobsDialog({
         mode: 'order',
         ...defaultRunFormat(settings),
       });
-      onPlaced(placedOrderFrom(submitted, describeOrderSkipped(skipped)), submitted.total);
+      onPlaced(placedOrderFrom(submitted, describeOrderSkipped(skipped), profile?.name ?? ''), submitted.total);
     } catch (caught) {
-      if (isSubscriptionTooLow(caught)) {
-        // The subscription changed under this page: the lock, in the refusal's words, and the account read again.
-        locked.open(describeTooLowRefusal());
-        void refresh();
-      } else if (isInsufficientCredits(caught)) {
+      if (isInsufficientCredits(caught)) {
         const needed = caught.number('neededMilli');
         const balance = caught.number('balanceMilli');
         setRefusal({
@@ -212,20 +209,20 @@ export default function OrderJobsDialog({
     }
   };
 
-  const targetProblem = targetBlocker(target, profiles, groups);
+  const profileProblem = profileBlocker(profileId, profiles);
   const blocker = loading
     ? 'Loading your profiles...'
     : jobs.length === 0
       ? 'None of the selected jobs has a stored analysis to build from.'
-      : targetProblem;
+      : profileProblem;
   // Said in the footer, where the cost line stands once there is an order to
   // price - the rest of the blockers the body says already.
-  const footerReason = !loading && !loadError && profiles.length > 0 && jobs.length > 0 ? targetProblem : null;
+  const footerReason = !loading && !loadError && profiles.length > 0 && jobs.length > 0 ? profileProblem : null;
 
   /** Place order: asked first, as every Order is, priced by the server's quote of this very order. */
   const placeOrder = () => {
     if (!request || blocker) {
-      setError(blocker ?? 'Choose who to build for.');
+      setError(blocker ?? 'Please select a profile.');
       return;
     }
     const body = request;
@@ -283,26 +280,29 @@ export default function OrderJobsDialog({
             </p>
           )}
           {profiles.length === 0 ? (
-            <p className="text-sm text-muted">You have no enabled profile to build for. Add one under Profiles first.</p>
+            <p className="text-sm text-muted">You have no profile with an enabled resume. Add one under Profiles first.</p>
           ) : (
-            <ProfileTargets
-              name="orderTargetMode"
-              idPrefix="order"
-              value={target.kind}
-              onChange={(kind: TargetKind) => setChoice((current) => ({ ...current, kind }))}
-              manyProfiles={manyProfiles}
-              lock={manyLock}
-              onLocked={locked.open}
-              profiles={profiles}
-              selectedProfileId={target.profileId}
-              onProfileChange={(profileId) => setChoice((current) => ({ ...current, profileId }))}
-              selectedProfileIds={target.profileIds ?? []}
-              onProfileIdsChange={(profileIds) => setChoice((current) => ({ ...current, profileIds }))}
-              groups={groups}
-              selectedGroupId={target.groupId}
-              onGroupChange={(groupId) => setChoice((current) => ({ ...current, groupId }))}
-              disabled={busy}
-            />
+            <>
+              <ProfileSelector
+                id="order-profile"
+                profiles={profiles}
+                selectedId={profileId}
+                onChange={setProfileId}
+                disabled={busy}
+              />
+              <div>
+                <BuildModeChoice
+                  name="orderBuildMode"
+                  value={buildMode}
+                  onChange={setBuildMode}
+                  prices={prices}
+                  disabled={busy}
+                />
+                <p className="mt-2 text-sm text-subtle" data-build-mode-note>
+                  {buildModeNote(buildMode, profile, defaultResume ? resumeLabel(defaultResume) : null)}
+                </p>
+              </div>
+            </>
           )}
           <div>
             <AiPreferenceFields
@@ -311,21 +311,20 @@ export default function OrderJobsDialog({
               onChange={setAiOverrides}
               models={settings.models}
               modelsLoaded={modelsLoaded}
-              inheritedFrom={single ? "profile's setting" : 'app default'}
+              inheritedFrom={single ? "resume's setting" : 'app default'}
               inherited={{ modelLabel: inheritedModel?.name || 'the first enabled model' }}
               disabled={busy}
             />
             <p className="mt-2 text-sm text-subtle">
               {single
-                ? `Defaults come from ${single.name}. A model chosen here applies to this order only.`
-                : 'Each profile uses its own model; one chosen here applies to this order only.'}
+                ? `Defaults come from ${resumeLabel(single)}, the profile's default resume. A model chosen here applies to this order only.`
+                : 'Each resume uses its own model; one chosen here applies to this order only.'}
             </p>
           </div>
           <ErrorNotice error={error} fallback="The order could not be placed" onDismiss={() => setError(null)} />
         </div>
       )}
       {spend.dialog}
-      {locked.dialog}
     </Dialog>
   );
 }

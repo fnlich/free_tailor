@@ -1046,7 +1046,7 @@ test('a Build Resumes run names the company on the analysis it was handed, and t
   // ...then each job of the batch with its company and that analysisId. A
   // task that is handed an analysisId never reaches the gate, so the
   // submission is the one place this build names the company.
-  const batch = (jobs) => h.post('/generation/batches', { mode: 'order', format: 'pdf', includeCoverLetterDocx: false, profileIds: ['p-claude'], jobs });
+  const batch = (jobs) => h.post('/generation/batches', { mode: 'order', format: 'pdf', includeCoverLetterDocx: false, profileId: h.profileOf('p-claude'), jobs });
   const submitted = await batch([{ companyName: 'Builder Co', role: 'Engineer', jobDescription: posting(50), analysisId: id }]);
   assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
   assert.equal(analyses.getJobAnalysisById(id).companyName, 'Builder Co');

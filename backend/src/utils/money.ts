@@ -99,7 +99,7 @@ export function parseDollars(value: unknown, options: { allowNegative?: boolean 
  * The sentence for a refused amount, naming what was being typed.
  *
  * Every refusal reads the same way wherever it happens, so an administrator
- * who meets "can have at most three decimal places" on a model's price meets
+ * who meets "can have at most three decimal places" on a build mode's price meets
  * the same words on a balance.
  */
 export function describeDollarProblem(problem: DollarProblem, label: string): string {

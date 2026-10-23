@@ -36,7 +36,7 @@ function readOutputPath(account: Partial<AccountOutputPath>): AccountOutputPath 
 }
 
 /**
- * Settings -> Profile -> Resume files (owner decisions O3, O5): where the
+ * Settings -> Account -> Resume files (owner decisions O3, O5): where the
  * resumes this account builds are filed - the folder path after the
  * administrator's prefix, which may use {{date}}, {{profile_name}},
  * {{company_name}}, {{role}} and {{row_number}} with text around them.
@@ -166,7 +166,7 @@ export default function ResumeFilesSection() {
         placeholder={path.defaultOutputPathSuffix}
         disabled={saving}
         refusal={refusal}
-        hint="The preview uses your email, a sample order and today's date, your first profile and a made-up job. A run keeps the folder it was placed in: a change reaches only the runs you place after it."
+        hint="The preview uses your email, a sample order and today's date, your first resume and a made-up job. A run keeps the folder it was placed in: a change reaches only the runs you place after it."
         source={
           <p className="mt-2 text-xs text-subtle" data-suffix-source>
             <span className="font-medium text-muted">{suffixSourceLabel(path.outputPathSuffixSource)}</span>

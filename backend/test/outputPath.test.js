@@ -198,14 +198,14 @@ async function serve(name) {
   const config = loadFresh('../dist/config/aiModelConfig');
   loadFresh('../dist/services/outputPath');
   const { attachUser } = loadFresh('../dist/middleware/auth');
-  const { saveProfile } = loadFresh('../dist/database/profileRepository');
-  const { buildNewProfile } = loadFresh('../dist/services/profileService');
+  const { saveResume } = loadFresh('../dist/database/resumeRepository');
+  const { buildNewResume } = loadFresh('../dist/services/resumeDocument');
 
   const boss = users.createUser({ email: 'boss@example.com' });
   const jane = users.createUser({ email: 'Jane.Doe@Example.com' });
   const reporter = users.createUser({ email: 'reporter@example.com', role: 'reporter' });
-  saveProfile({
-    ...buildNewProfile(
+  saveResume({
+    ...buildNewResume(
       {
         name: 'Jane Main',
         title: 'Engineer',
@@ -346,7 +346,7 @@ test("the preview draws the asker's own folder with the run's function, and says
       const reset = await server.call('jane', 'POST', '/auth/output-path/preview', { outputPathSuffix: '' });
       assert.equal(reset.body.path, `/${today()}/${number}/${today()}/jane_main/acme/software_engineer`);
 
-      // A builder without a profile sees the sample name.
+      // A builder without a resume sees the sample name.
       const boss = await server.call('boss', 'POST', '/auth/output-path/preview', {});
       assert.match(boss.body.path, /\/sample_profile\/acme\/software_engineer$/);
     } finally {
@@ -462,11 +462,11 @@ test('migration 10 gives every older run the folder its recorded files name, onc
        VALUES (?, ?, 'u1', '', 1, 'done', 'x', 'x', 'x', 'order')`
     ).run(id, number);
     db.prepare(
-      `INSERT INTO order_items (id, order_id, seq, profile_id, profile_name, company_name, role, state, files, created_at, updated_at)
+      `INSERT INTO order_items (id, order_id, seq, resume_id, resume_name, company_name, role, state, files, created_at, updated_at)
        VALUES (?, ?, 0, 'p', 'P', 'C', 'R', 'done', ?, 'x', 'x')`
     ).run(`${id}-item`, id, JSON.stringify(files));
   };
-  // The old fixed tree: <account>/<date>/<order number>/<profile>/<company>/<file>.
+  // The old fixed tree: <account>/<date>/<order number>/<resume>/<company>/<file>.
   order('o-old', 'FT-20260920-0001', [{ kind: 'resume-pdf', path: 'bob_example_com/2026_09_20/ft_20260920_0001/bob/acme/Bob.pdf' }]);
   order('o-run', 'FT-RUN-20260920-0002', [{ kind: 'resume-pdf', path: 'bob_example_com/2026_09_20/ft_run_20260920_0002/bob/acme/Bob.pdf' }]);
   order('o-none', 'FT-20260920-0003', []);
@@ -535,7 +535,7 @@ test('a task that carries no place is filed in its run folder, worked out from i
     await config.updateAppSettings({ outputBaseDir: base });
     const bob = users.createUser({ email: 'bob@example.com' });
     users.setOutputPathSuffix(bob.id, '/{{company_name}}');
-    const item = [{ seq: 0, profileId: 'p', profileName: 'Bob', companyName: 'Acme', role: 'SWE' }];
+    const item = [{ seq: 0, resumeId: 'p', resumeName: 'Bob', companyName: 'Acme', role: 'SWE' }];
     const at = new Date('2026-09-20T12:00:00');
 
     // A run whose folder is recorded - by migration 10, from the old tree -

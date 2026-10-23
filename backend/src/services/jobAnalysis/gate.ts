@@ -56,7 +56,7 @@ export type { StoredJobAnalysis } from '../../database/jobAnalysisRepository';
  *      back - so even a race lost between two processes keeps one row, and
  *      both get it.
  *
- * Nothing about a model, a prompt, a profile or an account is part of what
+ * Nothing about a model, a prompt, a resume or an account is part of what
  * identifies a posting: editing either prompt or switching the analysis model
  * reaches only postings never analysed before, and there is no re-analyse.
  * A call that FAILS - a timeout, a seat down, an answer that does not parse -
@@ -189,7 +189,7 @@ type InFlight = {
  * for the first one's call instead of starting another.
  *
  * Process-wide, not per batch or per request: two pages pressing Generate on
- * one posting at once, or a batch's tasks for three profiles on three
+ * one posting at once, or a batch's tasks for three resumes on three
  * models, all end up here.
  */
 const inFlight = new Map<string, InFlight>();

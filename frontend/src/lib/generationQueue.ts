@@ -5,7 +5,9 @@ import {
   getPreferredApiBase,
   getToken,
   type AiRequestOverrides,
+  type TaskMatch,
 } from './api';
+import { BUILD_MODE_LABELS, isBuildMode, type BuildMode } from './buildModes';
 import { formatMoney } from './format';
 import type { OrderFileKind } from './orders';
 import type { SpendEstimate } from './spendConfirm';
@@ -33,8 +35,16 @@ export type BatchTask = {
   id: string;
   seq: number;
   state: BatchTaskState;
-  profileId: string;
-  profileName: string;
+  /** The resume chosen for this job (fixed at submit). */
+  resumeId: string;
+  /** The resume's own name: the person's. */
+  resumeName: string;
+  /** The chosen resume's headline label, which tells two resumes of one person apart. */
+  resumeLabel?: string;
+  /** The profile's name when the run was submitted. */
+  profileLabel?: string;
+  /** Why this resume was chosen for this job; absent on a task queued before v4.2. */
+  match?: TaskMatch;
   companyName: string;
   role: string;
   sourceRowNumber?: number;
@@ -66,8 +76,8 @@ export type BatchTask = {
 export type BatchKind = 'immediate' | 'order';
 
 export type BatchResult = {
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   role: string;
   pdf?: string;
@@ -95,7 +105,7 @@ export type BatchSnapshot = {
   finishedAt?: string;
   tasks: BatchTask[];
   results?: BatchResult[];
-  failures?: Array<{ profileId: string; profileName: string; companyName: string; error: string }>;
+  failures?: Array<{ resumeId: string; resumeName: string; companyName: string; error: string }>;
   failedCompanies?: string[];
   tailored?: boolean;
 };
@@ -105,7 +115,21 @@ export type SubmitBatchRequest = AiRequestOverrides & {
   templateId?: string;
   format?: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx?: boolean;
-  profileIds?: string[];
+  /**
+   * The ONE profile (a person of the caller's) the run builds, on every
+   * subscription: the server refuses no profile, a list, or `resumeIds`
+   * (400 `one-profile-per-run`).
+   */
+  profileId: string;
+  /** Left out, the administrator's default mode (`UserAppSettings.defaultBuildMode`). */
+  buildMode?: BuildMode;
+  /**
+   * The resume a preview showed. When this or any previewed content is sent,
+   * the resumes the run would build must be that one (or keys of the content);
+   * otherwise 409 `preview-changed`. Not allowed with Choose Suitable Resume's
+   * previewed content (400 `suitable-takes-no-content`).
+   */
+  previewedResumeId?: string;
   jobs: Array<{
     companyName: string;
     role?: string;
@@ -116,7 +140,7 @@ export type SubmitBatchRequest = AiRequestOverrides & {
      * The posting's stored analysis, when the page holds it (from
      * /resume/analyze or a preview). Never the analysis itself - the server
      * builds only on analyses it stored. Left out, the server finds the
-     * posting's own, or its first task makes it - once, for every profile.
+     * posting's own, or its first task makes it - once, for every resume.
      */
     analysisId?: string;
     sourceRowNumber?: number;
@@ -126,16 +150,17 @@ export type SubmitBatchRequest = AiRequestOverrides & {
    * is its row. The server reads those rows' Analysis cells itself, in one
    * batched call, and a row that already holds its analysis skips analysis;
    * a row without is written back once its posting is analysed. Only the
-   * account's own sheet (`spreadsheetId` left out) has those cells; an
-   * administrator's shared source is named by its id.
+   * account's own sheet has those cells, and the server reads no other
+   * (a `spreadsheetId`, when sent, must name it).
    */
   sheet?: { spreadsheetId?: string; tabName: string };
-  tailoredContentByProfileId?: Record<string, unknown>;
+  tailoredContentByResumeId?: Record<string, unknown>;
   /**
-   * Each preview's token, by profile id: the model that wrote that profile's
-   * content, which the server prices it at. The quote takes these alone.
+   * Each preview's token, by resume id: the build mode that wrote that
+   * resume's content, which the server prices it at. Content without a valid
+   * token costs the floor, the dearest mode's price. The quote takes these alone.
    */
-  previewTokenByProfileId?: Record<string, string>;
+  previewTokenByResumeId?: Record<string, string>;
   /**
    * `immediate` (Generate Immediately: built while this tab follows it, each
    * resume downloaded as it lands, stopped when the tab goes) or `order`
@@ -150,24 +175,29 @@ export type SubmitBatchRequest = AiRequestOverrides & {
 export type SubmitBatchResponse = {
   batchId: string;
   kind?: BatchKind;
+  /** The resumes queued: one per job. */
   total: number;
   jobCount: number;
-  profileCount: number;
+  /** The mode the run builds in: the request's, else the administrator's default. */
+  buildMode: BuildMode;
   /** Present only for an order: an immediate run's row is never listed, so never named. */
   orderId?: string;
   orderNumber?: string;
+  /** The lanes and how busy they are; an administrator's eyes only. */
+  queues?: unknown;
 };
 
 /**
  * What a submission would cost, from `POST /generation/quote`.
  *
- * A count and money only - the server resolves each profile's model exactly as
- * it would for the real submission, and keeps which models those are to
- * itself. Money is thousandths of a dollar. `pricePerResumeMilli` is the one
- * price every resume in the run costs, or null when they differ (profiles in a
- * group can resolve to different models) - so the cost line can show
- * `7 resumes × $0.023 = $0.161` when that is true and the total alone when it
- * is not. `exempt` is an administrator, who is never charged.
+ * A count and money only. Money is thousandths of a dollar. A resume costs
+ * the price of the run's build mode, whatever model runs it, so every resume
+ * of a run costs the same and the cost is exactly `resumes x price`:
+ * `pricePerResumeMilli` is that one price, null only when there is nothing to
+ * price (no resumes). The cost line shows `7 resumes × $0.023 = $0.161`.
+ * `exempt` is an administrator, who is quoted the full amount and never
+ * charged. `buildMode` is the mode the quote was worked out in (a known mode,
+ * or absent).
  */
 export type GenerationQuote = {
   resumes: number;
@@ -175,6 +205,7 @@ export type GenerationQuote = {
   pricePerResumeMilli: number | null;
   balanceMilli: number;
   exempt: boolean;
+  buildMode?: BuildMode;
 };
 
 /**
@@ -271,7 +302,7 @@ export function releaseRun(batchId: string, tabId: string): void {
  */
 export async function saveTaskFile(
   batchId: string,
-  task: { taskId: string; companyName: string; profileName: string },
+  task: { taskId: string; companyName: string; resumeName: string },
   kind: OrderFileKind,
   signal?: AbortSignal
 ): Promise<void> {
@@ -279,7 +310,7 @@ export async function saveTaskFile(
     `/generation/batches/${encodeURIComponent(batchId)}/tasks/${encodeURIComponent(task.taskId)}/${kind}`,
     signal
   );
-  const name = contentDispositionName(disposition) ?? downloadName(task.companyName, task.profileName, kind);
+  const name = contentDispositionName(disposition) ?? downloadName(task.companyName, task.resumeName, kind);
   const href = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = href;
@@ -314,12 +345,14 @@ export const generationApi = {
       body: JSON.stringify(body),
     });
     const price = raw?.pricePerResumeMilli;
+    const mode = raw?.buildMode;
     return {
       resumes: readWhole(raw?.resumes),
       costMilli: readWhole(raw?.costMilli),
       pricePerResumeMilli: typeof price === 'number' && Number.isSafeInteger(price) && price >= 0 ? price : null,
       balanceMilli: readWhole(raw?.balanceMilli),
       exempt: raw?.exempt === true,
+      ...(isBuildMode(mode) ? { buildMode: mode } : {}),
     };
   },
 
@@ -365,12 +398,19 @@ export const generationApi = {
     ),
 };
 
-/** What the spend confirm says a run is: `7 resumes at $0.023 each`, or `7 resumes` when they cost different amounts. */
-function describeRunSpend(quote: GenerationQuote): string {
+/**
+ * What the spend confirm says a run is, with the mode it builds in:
+ * `7 resumes at $0.023 each (Partial Tailor)`, or `1 resume (Partial Tailor)`
+ * for one resume or when there is no single price. A quote that names no
+ * mode says no mode.
+ */
+export function describeRunSpend(quote: GenerationQuote): string {
   const resumes = `${quote.resumes} resume${quote.resumes === 1 ? '' : 's'}`;
-  return quote.pricePerResumeMilli !== null && quote.resumes > 1
-    ? `${resumes} at ${formatMoney(quote.pricePerResumeMilli)} each`
-    : resumes;
+  const priced =
+    quote.pricePerResumeMilli !== null && quote.resumes > 1
+      ? `${resumes} at ${formatMoney(quote.pricePerResumeMilli)} each`
+      : resumes;
+  return quote.buildMode ? `${priced} (${BUILD_MODE_LABELS[quote.buildMode]})` : priced;
 }
 
 /**

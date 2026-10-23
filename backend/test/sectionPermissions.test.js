@@ -13,10 +13,12 @@ const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
  *
  * Two separate rules, deliberately not conflated:
  *   - templates are shared by the installation, so writing one is ADMIN work;
- *   - groups are an entitlement, so using them is a SUBSCRIPTION question.
- * They meet in one place: an administrator is exempt from the subscription
- * check (owner decision B1), so an administrator on the Default subscription
- * is let through both - see `hasSubscription`.
+ *   - profiles (people, each holding resumes) are open to every signed-in
+ *     builder on every subscription: the subscription's cap is on HOW MANY
+ *     profiles an account may make (402 `profile-limit`, test/profileTree.test.js),
+ *     not on using them.
+ * An administrator is exempt from a subscription check where one still exists
+ * (owner decision B1) - see `hasSubscription`.
  */
 
 async function serve() {
@@ -28,7 +30,7 @@ async function serve() {
   const users = loadFresh('../dist/database/userRepository');
   const { attachUser } = loadFresh('../dist/middleware/auth');
   const templateRoutes = loadFresh('../dist/routes/templates');
-  const groupRoutes = loadFresh('../dist/routes/groups');
+  const profileRoutes = loadFresh('../dist/routes/profiles');
 
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
@@ -37,7 +39,7 @@ async function serve() {
   app.use(express.json());
   app.use(attachUser);
   app.use('/api/templates', templateRoutes.default);
-  app.use('/api/groups', groupRoutes.default);
+  app.use('/api/profiles', profileRoutes.default);
   const server = app.listen(0);
   const port = server.address().port;
 
@@ -114,76 +116,70 @@ test('an administrator is refused none of the template writes', async () => {
   }
 });
 
-test('groups need Premium, and the Default subscription is refused', async () => {
+test('profiles are open on the Default subscription: no tier is asked for', async () => {
   const server = await serve();
   try {
-    const response = await server.call(server.aliceToken, 'GET', '/api/groups');
-    assert.equal(response.status, 403);
-    const body = await response.json();
-    assert.equal(body.code, 'subscription-too-low');
-    assert.equal(body.requiredSubscription, 'premium');
-    // Named in the sentence, so somebody reading it knows what to ask for.
-    assert.match(body.error, /Premium subscription/);
-    assert.doesNotMatch(body.error, /\bplan\b/i);
+    const response = await server.call(server.aliceToken, 'GET', '/api/profiles');
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), []);
   } finally {
     server.close();
   }
 });
 
-test('every subscription from Premium upwards is let through', async () => {
+test('every subscription is let through, and moving down never closes them', async () => {
   const server = await serve();
   try {
-    for (const subscription of ['premium', 'premium-plus', 'premium-max']) {
+    for (const subscription of ['default', 'premium', 'premium-plus', 'premium-max']) {
       const token = server.onSubscription(server.alice, subscription);
-      assert.equal((await server.call(token, 'GET', '/api/groups')).status, 200, subscription);
+      assert.equal((await server.call(token, 'GET', '/api/profiles')).status, 200, subscription);
     }
-    // And moving back down closes it again.
+    // Moved back down to Default, it is still open.
     const back = server.onSubscription(server.alice, 'default');
-    assert.equal((await server.call(back, 'GET', '/api/groups')).status, 403);
+    assert.equal((await server.call(back, 'GET', '/api/profiles')).status, 200);
   } finally {
     server.close();
   }
 });
 
-test('the subscription gate covers writes as well as reads', async () => {
+test('writes are open too: a Default account makes, reads, renames and deletes a profile', async () => {
   const server = await serve();
   try {
-    // At the router, so a route added later is covered by default. A read-only
-    // gate would let a Default-subscription account create groups it could not see.
-    for (const [method, path] of [
-      ['POST', '/api/groups'],
-      ['PUT', '/api/groups/anything'],
-      ['DELETE', '/api/groups/anything'],
-      ['GET', '/api/groups/anything'],
+    assert.equal(server.users.getUserById(server.alice.id).subscription, 'default');
+    const made = await server.call(server.aliceToken, 'POST', '/api/profiles', { name: 'Mine' });
+    assert.equal(made.status, 201);
+    const { id } = await made.json();
+    assert.equal((await server.call(server.aliceToken, 'GET', `/api/profiles/${id}`)).status, 200);
+    assert.equal((await server.call(server.aliceToken, 'PUT', `/api/profiles/${id}`, { name: 'Renamed' })).status, 200);
+    assert.equal((await server.call(server.aliceToken, 'DELETE', `/api/profiles/${id}`)).status, 200);
+    // What a Default account is held to is how MANY it makes, not whether it may.
+    for (const [method, path, body] of [
+      ['PUT', '/api/profiles/anything', { name: 'x' }],
+      ['DELETE', '/api/profiles/anything', undefined],
+      ['GET', '/api/profiles/anything', undefined],
     ]) {
-      // No body on a GET - fetch refuses to send one, which is a failure about
-      // the test rather than about the guard.
-      const body = method === 'GET' || method === 'DELETE' ? undefined : { name: 'x' };
       const response = await server.call(server.aliceToken, method, path, body);
-      assert.equal(response.status, 403, `${method} ${path}`);
-      assert.equal((await response.json()).code, 'subscription-too-low');
+      assert.equal(response.status, 404, `${method} ${path}`);
+      assert.equal((await response.json()).code, 'profile-not-found');
     }
   } finally {
     server.close();
   }
 });
 
-test('an administrator is exempt from the subscription, whatever their own', async () => {
+test('an administrator reaches profiles on Default, and the role is not what opens them', async () => {
   const server = await serve();
   try {
-    // Owner decision B1: administrators are exempt, as they are from credits
-    // and the profile cap. Every account starts on Default, and the first
-    // administrator used to be refused Groups until somebody moved them up -
-    // a refusal that protected nothing, since they can change it themselves.
+    // Owner decision B1 still exempts an administrator wherever a subscription
+    // is checked (credits, the multi-profile build gate). Profiles check none.
     assert.equal(server.users.getUserById(server.admin.id).subscription, 'default');
-    assert.equal((await server.call(server.adminToken, 'GET', '/api/groups')).status, 200);
-    assert.equal((await server.call(server.adminToken, 'POST', '/api/groups', { name: 'x', profileIds: [] })).status !== 403, true);
+    assert.equal((await server.call(server.adminToken, 'GET', '/api/profiles')).status, 200);
+    assert.equal((await server.call(server.adminToken, 'POST', '/api/profiles', { name: 'x', resumeIds: [] })).status, 201);
 
-    // And it is the ROLE that exempts: the same account demoted to a user on
-    // Default is refused like anybody else.
+    // The same account demoted to a user on Default is let through like anybody else.
     server.users.updateUser(server.admin.id, { role: 'user' });
     const demoted = server.users.createSession(server.admin.id);
-    assert.equal((await server.call(demoted, 'GET', '/api/groups')).status, 403);
+    assert.equal((await server.call(demoted, 'GET', '/api/profiles')).status, 200);
   } finally {
     server.close();
   }
@@ -203,7 +199,7 @@ test('hasSubscription: the role exempts, the tier decides for everybody else', (
 test('signing out closes both sections', async () => {
   const server = await serve();
   try {
-    assert.equal((await server.call(null, 'GET', '/api/groups')).status, 401);
+    assert.equal((await server.call(null, 'GET', '/api/profiles')).status, 401);
     assert.equal((await server.call(null, 'GET', '/api/templates')).status, 401);
     assert.equal((await server.call(null, 'POST', '/api/templates/create-manual', {})).status, 401);
   } finally {

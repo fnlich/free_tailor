@@ -1,7 +1,7 @@
 import { PublicError } from '../middleware/publicError';
 
 /**
- * The one sentence anybody gets when a run, a quote or a profile names a model
+ * The one sentence anybody gets when a run, a quote or a resume names a model
  * it may not use.
  *
  * Deliberately the same sentence whatever the cause. The causes - a model
@@ -14,7 +14,7 @@ export const MODEL_UNAVAILABLE_MESSAGE =
   "That model isn't available. Choose another, or contact your administrator.";
 
 /**
- * A model somebody picked for THIS request (or is saving onto a profile) that
+ * A model somebody picked for THIS request (or is saving onto a resume) that
  * cannot run.
  *
  * Refused rather than swapped for the default, unlike a STORED preference that

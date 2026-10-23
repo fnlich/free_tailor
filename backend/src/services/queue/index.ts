@@ -6,7 +6,7 @@ import {
   saveBatchWithTasks,
   saveTaskRow,
 } from '../../database/generationRepository';
-import { getProfile } from '../../database/profileRepository';
+import { getResume } from '../../database/resumeRepository';
 import { getAppSettings, isProviderEnabled } from '../../config/aiModelConfig';
 import {
   currentProviders,
@@ -273,7 +273,7 @@ export function getGenerationQueue(): TaskQueue {
        *  which provider builds it - an administrator's to read on the order. */
       taskStarted: (task) => {
         console.log(
-          `[queue] ${task.label.profileName} / ${task.label.companyName} (task ${task.id}) is running on ` +
+          `[queue] ${task.label.resumeName} / ${task.label.companyName} (task ${task.id}) is running on ` +
             `${describeProvider(task.queue)}${(task.attempts ?? 1) > 1 ? `, attempt ${task.attempts}` : ''}.`
         );
         recordTaskStarted(task);
@@ -287,8 +287,9 @@ export function getGenerationQueue(): TaskQueue {
        * a refund needs, it already has in `task.batchId`.
        *
        * What it gives back is the unit's own snapshotted price (`taskCostMilli`),
-       * not its model's price now - a batch can mix models at different prices,
-       * and an administrator can reprice one while the batch runs.
+       * not its build mode's price now - an administrator can change a mode's
+       * price while the batch runs, and a price edit applies to the next run,
+       * never to one already queued.
        *
        * A task that reached 'done' wrote a file, so its credit is spent and
        * stays spent. Note the asymmetry with the line below: a unit that FAILED
@@ -308,7 +309,7 @@ export function getGenerationQueue(): TaskQueue {
             task.batchId,
             task.id,
             taskCostMilli(task.payload),
-            `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
+            `${task.label.resumeName} / ${task.label.companyName}: ${task.state}`
           );
         }
         // After the refund, and never before it: this writes to a different
@@ -340,7 +341,7 @@ export function getGenerationQueue(): TaskQueue {
       RESUME_TASK_KIND,
       makeResumeRunner(
         (batchId) => (queue?.getBatch(batchId)?.shared.jobs as ResumeJob[] | undefined) ?? undefined,
-        (profileId) => getProfile(profileId),
+        (resumeId) => getResume(resumeId),
         {
           ownerOf: (batchId) => {
             const owner = queue?.getBatch(batchId)?.shared.ownerId;
@@ -358,7 +359,7 @@ export function getGenerationQueue(): TaskQueue {
 /**
  * The first task of a job to obtain its analysis gives it to every task of
  * that job: `analysisId` on each payload, written to disk at once, so a
- * sibling profile's task, a retry and a task restored after a restart all
+ * sibling resume's task, a retry and a task restored after a restart all
  * skip the analysis step. Never fatal - a task without it finds the analysis
  * in the store by its posting, still without a model call.
  */
@@ -484,7 +485,7 @@ function restoredLane(stored: unknown, payload: unknown): QueueName {
  * silently dropped whatever happened to be running at the time. Requeueing
  * costs one repeated model call, which is the cheapest of the honest options.
  *
- * It is safe to repeat because the output path is derived from the profile, the
+ * It is safe to repeat because the output path is derived from the resume, the
  * company and the row - so a re-run overwrites the same files rather than adding
  * a second copy. The one exception worth knowing is a restart that crosses
  * midnight, where the date folder in the path changes and the earlier partial
@@ -558,8 +559,8 @@ export async function restoreGenerationQueue(): Promise<RestoreReport> {
           state: task.state as TaskState,
           queue: restoredLane(taskData.queue, taskData.payload),
           label: taskData.label ?? {
-            profileId: '',
-            profileName: 'Unknown',
+            resumeId: '',
+            resumeName: 'Unknown',
             companyName: 'Unknown',
             role: '',
           },
@@ -651,7 +652,7 @@ function settleRestoredBatch(batch: Batch): void {
         batch.id,
         task.id,
         taskCostMilli(task.payload),
-        `${task.label.profileName} / ${task.label.companyName}: ${task.state}`
+        `${task.label.resumeName} / ${task.label.companyName}: ${task.state}`
       );
     }
     closeIfSettled(batch.id, { queued: 0, running: 0 });

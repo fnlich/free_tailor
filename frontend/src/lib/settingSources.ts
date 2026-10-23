@@ -35,7 +35,10 @@ export const APP_SETTING_ENV_VARIABLES = {
   analysisModelId: ['ANALYSIS_MODEL'],
   defaultMode: ['DEFAULT_MODE'],
   defaultTheme: ['DEFAULT_THEME'],
-  defaultResumeSelection: ['DEFAULT_RESUME_SELECTION'],
+  defaultBuildMode: ['DEFAULT_TAILOR_MODE'],
+  suitablePriceMilli: ['RESUME_SUITABLE_PRICE_USD'],
+  partialPriceMilli: ['RESUME_PARTIAL_PRICE_USD'],
+  fullPriceMilli: ['RESUME_FULL_PRICE_USD'],
   defaultResumeDocxEnabled: ['DEFAULT_RESUME_DOCX'],
   defaultCoverLetterDocxEnabled: ['DEFAULT_COVER_LETTER_DOCX'],
   outputBaseDir: ['OUTPUT_BASE_DIR'],
@@ -64,6 +67,20 @@ export const SUBSCRIPTION_PRICE_REQUEST_FIELDS = {
 } as const satisfies Partial<Record<AppSettingKey, string>>;
 
 export type SubscriptionPriceKey = keyof typeof SUBSCRIPTION_PRICE_REQUEST_FIELDS;
+
+/**
+ * The field each build mode's price is SAVED under: dollars as typed, in a
+ * field ending `Usd`, though the payload serves it in thousandths
+ * (`...Milli`). A copy of the server's `BUILD_MODE_PRICE_FIELDS`, setting and
+ * request names; a save naming the `...Milli` field is refused.
+ */
+export const MODE_PRICE_REQUEST_FIELDS = {
+  suitablePriceMilli: 'suitablePriceUsd',
+  partialPriceMilli: 'partialPriceUsd',
+  fullPriceMilli: 'fullPriceUsd',
+} as const satisfies Partial<Record<AppSettingKey, string>>;
+
+export type ModePriceKey = keyof typeof MODE_PRICE_REQUEST_FIELDS;
 
 /** The contact list's one field - a copy of the server's `CONTACT_SETTING_ENV_VARIABLES`. */
 export const CONTACT_SETTING_ENV_VARIABLES = { channels: ['CONTACT_CHANNELS'] } as const;
@@ -142,12 +159,17 @@ export function lakeResetBody(key: LakeSettingKey): Record<string, null> {
 
 /**
  * An app setting's Reset to default, under the field it is saved by: a
- * subscription price under its `...Usd` name, every other field under its own.
+ * subscription or build mode price under its `...Usd` name, every other field
+ * under its own.
  */
 export function appSettingResetBody(key: AppSettingKey): Record<string, null> {
-  return Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PRICE_REQUEST_FIELDS, key)
-    ? resetBody(SUBSCRIPTION_PRICE_REQUEST_FIELDS[key as SubscriptionPriceKey])
-    : resetBody(key);
+  if (Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PRICE_REQUEST_FIELDS, key)) {
+    return resetBody(SUBSCRIPTION_PRICE_REQUEST_FIELDS[key as SubscriptionPriceKey]);
+  }
+  if (Object.prototype.hasOwnProperty.call(MODE_PRICE_REQUEST_FIELDS, key)) {
+    return resetBody(MODE_PRICE_REQUEST_FIELDS[key as ModePriceKey]);
+  }
+  return resetBody(key);
 }
 
 /**

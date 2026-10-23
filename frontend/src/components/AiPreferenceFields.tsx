@@ -19,13 +19,14 @@ type Props = {
   onChange: (next: AiPreferences) => void;
   /**
    * The models this account can run, by display name. Nothing else: which
-   * provider runs a model, what it is called on the server and what it costs
-   * are an administrator's business, and the cost of a run is shown as its own
-   * line by the builder rather than inside an option label.
+   * provider runs a model and what it is called on the server are an
+   * administrator's business. A model has no price: a run costs its build
+   * mode's price per resume, shown as its own line by the builder rather than
+   * inside an option label.
    */
   models: PublicModelOption[];
   inherited: InheritedAiChoice;
-  /** Where an unset field falls back to: "app default", "profile", ... */
+  /** Where an unset field falls back to, as the page words it: "app default", or the chosen resume's setting. */
   inheritedFrom: string;
   /**
    * Whether `models` is the server's answer yet. Until it is, a saved choice is
@@ -41,7 +42,7 @@ type Props = {
  * The kit's field, label and hint (globals.css .tl-input / .tl-label, and the
  * subtle token), with no `dark:` variants: the html.dark shim beats every one
  * of them, and the kit's names are ones it never touches, so these read the
- * same in both themes on the profile form and in the builder.
+ * same in both themes on the resume form and in the builder.
  */
 const SELECT_CLASS = 'tl-input';
 
@@ -51,7 +52,7 @@ const HINT_CLASS = 'mt-2 text-sm text-subtle';
 /**
  * The model select.
  *
- * One component for both places it appears - the profile, where it sets a
+ * One component for both places it appears - the resume, where it sets a
  * default, and the builder, where it overrides that for a single run - so the
  * two cannot drift into offering different options or different wording for
  * the same setting.
@@ -71,7 +72,7 @@ export default function AiPreferenceFields({
   const inheritOption = (what: string) => `Use the ${inheritedFrom} (${what})`;
   /*
    * A saved choice that is no longer on offer - the model was disabled, removed
-   * or can no longer run here. The server already runs such a profile on the
+   * or can no longer run here. The server already runs such a resume on the
    * app default, so that is what the option says, and it is kept as the
    * selected row: a controlled select whose value matches nothing silently
    * shows its first option, which would claim the choice was "inherit" while

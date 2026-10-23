@@ -1,10 +1,10 @@
 /**
- * The width the profile editor's preview scales its page to.
+ * The width the resume editor's preview scales its page to.
  *
  * Its own module, with no React and no DOM in it, so the one rule that stops
  * the preview shaking can be tested without a browser
  * (backend/test/frontendEditorHelpers.test.js transpiles it and refuses any
- * runtime import). ProfilePreview reads the numbers off the well and hands
+ * runtime import). ResumeDraftPreview reads the numbers off the well and hands
  * them in.
  *
  * The shake it prevents is a feedback loop through a scrollbar. The page is
@@ -20,7 +20,7 @@
  * it gone.
  */
 
-/** What ProfilePreview reads off the well and the window, in CSS px. */
+/** What ResumeDraftPreview reads off the well and the window, in CSS px. */
 export interface WellBox {
   /** The well's border box width - the same with its scrollbar or without. */
   outerWidth: number;

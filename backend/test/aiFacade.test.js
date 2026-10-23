@@ -363,7 +363,7 @@ test("a prompt's override does not move a resume off the model it is charged at"
 
   const resumeService = loadFresh('../dist/services/resumeService');
   const choice = { provider: 'claude-cli', modelName: 'opus', modelId: 'claude-cli-opus', modelLabel: 'Claude Opus' };
-  const profile = { id: 'p1', name: 'Jane', experience: [], skills: [], education: [] };
+  const resume = { id: 'p1', name: 'Jane', experience: [], skills: [], education: [] };
   const analysis = {
     jobMeta: { title: 'Engineer', seniority: '', industry: '', department: '' },
     skills: { technical: [], required: [], preferred: [], tools: [], soft: [], technologies: [] },
@@ -377,8 +377,8 @@ test("a prompt's override does not move a resume off the model it is charged at"
     keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
   };
 
-  await resumeService.tailorResume(profile, analysis, choice);
-  await resumeService.generateCoverLetter(profile, 'Acme', 'Engineer', choice);
+  await resumeService.tailorResume(resume, analysis, choice);
+  await resumeService.generateCoverLetter(resume, 'Acme', 'Engineer', choice);
   // The analysis is not the resume's work any more: it runs once per posting
   // on the administrator's analysis model, whatever the prompt record names
   // (test/analysisGate.test.js).
@@ -527,12 +527,12 @@ test('an explicitly registered adapter wins, and the other providers still exist
 
 test('the call site can be named separately from the prompt record', async () => {
   // Timeouts and usage buckets key on callSite. Defaulting it to the prompt id
-  // meant a profile with a CUSTOM resume prompt silently got the short default
+  // meant a resume whose settings name a CUSTOM prompt silently got the short default
   // budget instead of the long tailor-resume one.
   const { staticDir } = useTempStorage('facade-callsite');
   writePrompt(staticDir, 'tailor-resume', 'Tailor.\n[[profileJson]]');
 
-  // A per-profile custom prompt is a database record, which is exactly why its
+  // A per-resume custom prompt is a database record, which is exactly why its
   // id is a bad key for a feature-level timeout.
   const promptService = loadFresh('../dist/services/promptService');
   const custom = await promptService.createPrompt({

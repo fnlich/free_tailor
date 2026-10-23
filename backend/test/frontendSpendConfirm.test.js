@@ -196,15 +196,16 @@ test('every way to spend credit asks first: Build Resumes runs and orders, and s
   assert.doesNotMatch(read('lib/immediateRun.ts'), /SKIP_IMMEDIATE_CONFIRM_KEY|confirmsImmediate|skipImmediateConfirm/);
 
   // One gate, and every run handler goes through it: the header's Generate
-  // Immediately and Order, the single preview, the multi-profile preview, the
-  // sheet panel. Nothing calls a run straight from a press.
+  // Immediately and Order, the one preview, the sheet panel. Nothing calls a
+  // run straight from a press. (A run builds one profile, so there is no
+  // multi-profile preview to finalise any more.)
   assert.match(builder, /const spend = useSpendConfirm\(\);/);
   assert.match(builder, /void spend\.ask\(/);
+  assert.doesNotMatch(builder, /handleFinalizeGenerateMultiple|finalizeMultiple/);
   for (const [handler, run] of [
     ['handleGenerate', "runManual('immediate')"],
     ['handleOrderManual', "runManual('order')"],
     ['handleFinalizeGenerate', 'finalizeSingle()'],
-    ['handleFinalizeGenerateMultiple', 'finalizeMultiple(kind)'],
     ['handleSheetRun', 'runSheet(kind, request, skippedNote, jobs.length)'],
   ]) {
     const source = handlerSource(builder, handler);
@@ -217,20 +218,26 @@ test('every way to spend credit asks first: Build Resumes runs and orders, and s
 
   // Finalising previews is quoted as it will be charged: with the content
   // the submission carries as well as each token. The server charges content
-  // whose token has expired (a day on) at least the profile's own model, so a
-  // quote sent the tokens alone priced the cheaper model the page names.
-  for (const handler of ['handleFinalizeGenerate', 'handleFinalizeGenerateMultiple']) {
+  // whose token has expired (a day on), or has none, at least the dearer
+  // tailoring mode (the floor), so a quote sent the tokens alone priced the
+  // cheaper mode the page names.
+  for (const handler of ['handleFinalizeGenerate']) {
     const source = handlerSource(builder, handler);
-    assert.match(source, /tailoredContentByProfileId:/, `${handler} quotes with the previewed content`);
-    assert.match(source, /previewTokenByProfileId:/, `${handler} quotes with the preview tokens`);
+    assert.match(source, /tailoredContentByResumeId:/, `${handler} quotes with the previewed content`);
+    assert.match(source, /previewTokenByResumeId:/, `${handler} quotes with the preview tokens`);
   }
+
+  // The confirm's "could not be worked out" sentence names the builder mode
+  // whose price a resume is taken at, and no model: a model has no price.
+  const confirmSource = read('components/SpendConfirm.tsx');
+  const unknownCase = confirmSource.slice(confirmSource.indexOf("case 'unknown':"), confirmSource.indexOf("case 'later':"));
+  assert.ok(unknownCase.includes('price per resume of the builder mode you chose'), 'the unknown-cost sentence names the mode');
+  assert.doesNotMatch(unknownCase, /\bmodel\b/i, 'the unknown-cost sentence names no model');
 
   // While the confirm prices a run nothing is open yet: the run buttons wait,
   // and say why, rather than ignore a press in silence.
   assert.match(builder, /const runBusy = isGenerating \|\| spend\.pending;/);
   for (const button of [
-    "onClick={() => handleFinalizeGenerateMultiple('order')}\n                    disabled={runBusy}",
-    "onClick={() => handleFinalizeGenerateMultiple('immediate')}\n                    disabled={runBusy}",
     'onClick={handleGenerate}\n                    disabled={runBusy}',
     'onClick={handleOrderManual}\n                    disabled={spend.pending}',
   ]) {

@@ -17,11 +17,11 @@ const {
   stubOutputs,
   untilFinished,
 } = require('./analysisHarness');
-const { useAdminEmails } = require('./helpers');
+const { seedProfileWithResumes, useAdminEmails } = require('./helpers');
 
 /**
  * The tailoring cache (owner decision P6): generating again for the same
- * unchanged profile, posting, model and prompt reuses the stored tailoring -
+ * unchanged resume, posting, model and prompt reuses the stored tailoring -
  * no model call - and is CHARGED AS USUAL; any of those changing, by a single
  * character, is a miss. Through the real routes, the real queue and a
  * counting stub seat, plus the key, the table's one-seek lookup and the prune.
@@ -35,13 +35,13 @@ const credits = require('../dist/services/credits');
 const users = require('../dist/database/userRepository');
 const queue = require('../dist/services/queue/index');
 const gate = require('../dist/services/jobAnalysis/gate');
-const profiles = require('../dist/database/profileRepository');
-const { buildNewProfile } = require('../dist/services/profileService');
+const resumes = require('../dist/database/resumeRepository');
+const { buildNewResume } = require('../dist/services/resumeDocument');
 const cache = require('../dist/services/tailorCache');
 const repository = require('../dist/database/tailorCacheRepository');
 const sqlite = require('../dist/database/sqlite');
 
-function profileInput(name, extra = {}) {
+function resumeInput(name, extra = {}) {
   return {
     name,
     title: 'Engineer',
@@ -55,7 +55,10 @@ function profileInput(name, extra = {}) {
   };
 }
 
-/** An install with Alice - not an administrator, so she is charged - and a priced Sonnet. */
+/**
+ * An install with Alice - not an administrator, so she is charged - and Partial
+ * Tailor priced at one cent (a mode has a price now, a model has none).
+ */
 async function serve(name) {
   const storage = freshInstall(`tailor-cache-${name}`);
   useAdminEmails('admin@example.com');
@@ -67,12 +70,11 @@ async function serve(name) {
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
   const token = users.createSession(alice.id);
-  profiles.saveProfile({
-    ...buildNewProfile(profileInput('Ada', { profileSettings: { ai: { modelId: 'claude-cli-sonnet' } } }), 'p-ada'),
-    ownerId: alice.id,
-  });
-  await config.updateAIModel('claude-cli-sonnet', { pricePerResumeUsd: '0.010' });
-  await config.updateAIModel('claude-cli-opus', { pricePerResumeUsd: '0.023' });
+  // A run builds ONE profile (a person): Ada, holding the one resume.
+  const { profileId } = seedProfileWithResumes(alice, 'Ada', [
+    { id: 'p-ada', ...resumeInput('Ada', { resumeSettings: { ai: { modelId: 'claude-cli-sonnet' } } }) },
+  ]);
+  await config.updateAppSettings({ partialPriceUsd: '0.010' });
   credits.setBalance(alice.id, 1_000, admin.id);
 
   const restoreOutputs = stubOutputs(storage.rootDir);
@@ -92,7 +94,7 @@ async function serve(name) {
         mode: 'order',
         format: 'pdf',
         includeCoverLetterDocx: false,
-        profileIds: ['p-ada'],
+        profileId,
         jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(7) }],
         ...extra,
       }),
@@ -132,28 +134,28 @@ test('the same resume generated again reuses its tailoring - no model call - and
   assert.equal(h.seats.tailorings().length, 1, 'the second asks it nothing: the tailoring comes from the cache');
   assert.equal(h.seats.revisions().length, 1, 'nor revises it again: what is kept is the resume as it ended');
   assert.equal(h.seats.analyses().length, 1, 'and the posting was analysed once, as always');
-  // Charged as usual: a resume costs its model's price whether or not a
+  // Charged as usual: a resume costs its build mode's price whether or not a
   // model call happened.
   assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10]);
   assert.equal(h.balance(), 980);
   assert.equal(repository.countTailorCacheRows(), 1, 'one stored tailoring, under one key');
 });
 
-test('a one-character change to the profile is a miss, and asks the model once', async (t) => {
-  const h = await serve('profile-change');
+test('a one-character change to the resume is a miss, and asks the model once', async (t) => {
+  const h = await serve('resume-change');
   t.after(h.close);
 
   await h.build();
-  const stored = profiles.getProfile('p-ada');
-  profiles.saveProfile({ ...stored, summary: `${stored.summary}!` });
+  const stored = resumes.getResume('p-ada');
+  resumes.saveResume({ ...stored, summary: `${stored.summary}!` });
   await h.build();
-  assert.equal(h.seats.tailorings().length, 2, 'the changed profile is tailored afresh');
+  assert.equal(h.seats.tailorings().length, 2, 'the changed resume is tailored afresh');
 
   // And the change is what made the difference: saving it again unchanged -
   // which moves only its timestamp - is a hit.
-  profiles.saveProfile({ ...profiles.getProfile('p-ada'), updatedAt: new Date(Date.now() + 60_000).toISOString() });
+  resumes.saveResume({ ...resumes.getResume('p-ada'), updatedAt: new Date(Date.now() + 60_000).toISOString() });
   await h.build();
-  assert.equal(h.seats.tailorings().length, 2, 'a save that changes nothing is still the same profile');
+  assert.equal(h.seats.tailorings().length, 2, 'a save that changes nothing is still the same resume');
 });
 
 test('another model, or an edited tailoring prompt, is a miss', async (t) => {
@@ -170,14 +172,15 @@ test('another model, or an edited tailoring prompt, is a miss', async (t) => {
   await promptService.updatePrompt('tailor-resume', { content: `${record.content}\nBe brief.` });
   await h.build();
   assert.equal(h.seats.tailorings().length, 3, 'the edited prompt is asked again');
-  // Charged for every one of them, at its own model's price.
-  assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -23, -10]);
+  // Charged for every one of them, at the build mode's price: a model has none
+  // now, so Opus costs what Sonnet does.
+  assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10, -10]);
 });
 
 test('the key covers everything the answer was made from, and nothing a save moves without changing it', () => {
   const base = {
     kind: 'resume',
-    profile: { id: 'p1', name: 'Ada', summary: 'Ships.', profileSettings: { includeStrengths: true }, createdAt: 'a', updatedAt: 'b' },
+    resume: { id: 'p1', name: 'Ada', summary: 'Ships.', resumeSettings: { includeStrengths: true }, createdAt: 'a', updatedAt: 'b' },
     context: { analysisId: 'an-1', templateId: 'default' },
     choice: { provider: 'claude-cli', modelId: 'claude-cli-sonnet', modelName: 'sonnet' },
     promptId: 'tailor-resume',
@@ -188,12 +191,47 @@ test('the key covers everything the answer was made from, and nothing a save mov
   };
   const key = cache.tailorCacheKey(base);
   assert.match(key, /^[0-9a-f]{64}$/);
-  assert.equal(cache.tailorCacheKey({ ...base, profile: { ...base.profile, updatedAt: 'later', createdAt: 'z' } }), key);
+  assert.equal(cache.tailorCacheKey({ ...base, resume: { ...base.resume, updatedAt: 'later', createdAt: 'z' } }), key);
   assert.equal(
-    cache.tailorCacheKey({ ...base, profile: { summary: 'Ships.', name: 'Ada', id: 'p1', profileSettings: { includeStrengths: true } } }),
+    cache.tailorCacheKey({ ...base, resume: { summary: 'Ships.', name: 'Ada', id: 'p1', resumeSettings: { includeStrengths: true } } }),
     key,
-    'key order inside the profile does not matter'
+    'key order inside the resume does not matter'
   );
+  // Which profile (person) a resume is filed under is the server's bookkeeping:
+  // it is written when old resumes are filed lazily and when one is moved, and
+  // neither changes a word the model is told. Filing or moving is a hit, not a
+  // fresh question for every cached tailoring.
+  assert.equal(
+    cache.tailorCacheKey({ ...base, resume: { ...base.resume, profileId: 'person-a' } }),
+    key,
+    'a resume filed under a profile is the same question'
+  );
+  assert.equal(
+    cache.tailorCacheKey({ ...base, resume: { ...base.resume, profileId: 'person-b', updatedAt: 'moved' } }),
+    key,
+    'and so is one moved to another'
+  );
+  // A resume's keywords (services/resumeKeywords.ts) are derived for the matcher
+  // that chooses among a profile's resumes, served on GET /api/resumes, and no
+  // word of what the model is told: a resume that carries them (one read from
+  // the GET, or a hand-planted copy) is the same question as one that does not.
+  const keywordsCopy = { version: 1, vocabulary: 'v', basedOn: 'b', headline: ['Engineer'], roleTitles: [], terms: ['Go', 'Kafka'] };
+  assert.equal(
+    cache.tailorCacheKey({ ...base, resume: { ...base.resume, matchKeywords: keywordsCopy } }),
+    key,
+    'a resume carrying its keywords is the same question'
+  );
+  assert.equal(
+    cache.tailorCacheKey({ ...base, resume: { ...base.resume, matchKeywords: { ...keywordsCopy, terms: ['COBOL'] } } }),
+    key,
+    'and whatever the keywords say'
+  );
+  assert.equal(
+    cache.resumeFingerprint({ ...base.resume, matchKeywords: keywordsCopy }),
+    cache.resumeFingerprint(base.resume),
+    'the fingerprint ignores them'
+  );
+
   // The settings are how the answer is DRAWN, which prompt and model run it,
   // and whether strengths are sent - each of which reaches the key another
   // way (the prompt id and text, the choice, profileJson). A layout or a Soft
@@ -201,16 +239,16 @@ test('the key covers everything the answer was made from, and nothing a save mov
   assert.equal(
     cache.tailorCacheKey({
       ...base,
-      profile: { ...base.profile, profileSettings: { includeStrengths: false, technicalSkillsLayout: 'flat', includeSoftSkills: true } },
+      resume: { ...base.resume, resumeSettings: { includeStrengths: false, technicalSkillsLayout: 'flat', includeSoftSkills: true } },
     }),
     key,
-    'the settings are not the profile\'s part of the key'
+    'the settings are not the resume\'s part of the key'
   );
 
   const variants = {
-    'one character of the profile': { profile: { ...base.profile, summary: 'Ships!' } },
+    'one character of the resume': { resume: { ...base.resume, summary: 'Ships!' } },
     // The Strengths switch, as it reaches the model: her strengths in profileJson.
-    'the profile as sent': { promptValues: { ...base.promptValues, profileJson: '{"name":"Ada","strengths":[]}' } },
+    'the resume as sent': { promptValues: { ...base.promptValues, profileJson: '{"name":"Ada","strengths":[]}' } },
     'the template': { context: { ...base.context, templateId: 'navy-rule' } },
     'the posting': { context: { ...base.context, analysisId: 'an-2' } },
     'the model record': { choice: { ...base.choice, modelId: 'claude-cli-opus' } },
@@ -235,27 +273,67 @@ test('the key covers everything the answer was made from, and nothing a save mov
   }
 });
 
+test('the key still hashes the resume under the field name "profile", so every stored tailoring stays a hit', () => {
+  // Owner decision D8. The field's NAME is part of what v4.1 hashed: calling it
+  // "resume" here would turn every cached answer into a miss, and every one of
+  // them a model call. So the key is built by hand, with the name as it was.
+  const crypto = require('node:crypto');
+  const sha256 = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+  const content = { id: 'p1', name: 'Ada', summary: 'Ships.' };
+  const input = {
+    kind: 'resume',
+    resume: { ...content, resumeSettings: { includeStrengths: true }, createdAt: 'a', updatedAt: 'b' },
+    context: { analysisId: 'an-1', templateId: 'default' },
+    choice: { provider: 'claude-cli', modelId: 'claude-cli-sonnet', modelName: 'sonnet' },
+    promptId: 'tailor-resume',
+    promptText: 'Tailor [[profileJson]]',
+    promptValues: { profileJson: '{"name":"Ada"}' },
+    appendToUserBody: 'Strengths: no.',
+    extra: { revisePass: 'on' },
+  };
+  const byHand = (field) =>
+    sha256(
+      cache.canonicalJson({
+        v: 2,
+        kind: 'resume',
+        [field]: sha256(cache.canonicalJson(content)),
+        template: 'default',
+        analysis: 'an-1',
+        provider: 'claude-cli',
+        modelId: 'claude-cli-sonnet',
+        modelName: 'sonnet',
+        promptId: 'tailor-resume',
+        prompt: sha256('Tailor [[profileJson]]'),
+        inputs: sha256(cache.canonicalJson({ values: input.promptValues, appended: 'Strengths: no.' })),
+        extra: { revisePass: 'on' },
+      })
+    );
+
+  assert.equal(cache.tailorCacheKey(input), byHand('profile'));
+  assert.notEqual(cache.tailorCacheKey(input), byHand('resume'));
+});
+
 test('a cover letter is cached under its own key: company and role included', async () => {
   freshInstall('tailor-cache-cover');
   config.invalidateSettingsCache();
   const seats = countingSeats(ai);
   const { generateCoverLetter } = require('../dist/services/resumeService');
   try {
-    const profile = buildNewProfile(profileInput('Ada'), 'p-cover');
+    const resume = buildNewResume(resumeInput('Ada'), 'p-cover');
     const choice = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'claude-cli-sonnet', modelLabel: 'Sonnet' };
     const context = { analysisId: null, templateId: 'default' };
-    const first = await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
-    const again = await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
+    const first = await generateCoverLetter(resume, 'Acme', 'Engineer', choice, undefined, context);
+    const again = await generateCoverLetter(resume, 'Acme', 'Engineer', choice, undefined, context);
     assert.equal(again, first);
     const letters = () => seats.calls.filter((call) => call.callSite === 'generate-cover-letter');
     assert.equal(letters().length, 1, 'the same letter is not written twice');
 
-    await generateCoverLetter(profile, 'Acme', 'Lead', choice, undefined, context);
-    await generateCoverLetter(profile, 'Globex', 'Engineer', choice, undefined, context);
+    await generateCoverLetter(resume, 'Acme', 'Lead', choice, undefined, context);
+    await generateCoverLetter(resume, 'Globex', 'Engineer', choice, undefined, context);
     assert.equal(letters().length, 3, 'another role or company is another letter');
 
     // Without a context - a caller that does not key one - nothing is cached.
-    await generateCoverLetter(profile, 'Acme', 'Engineer', choice);
+    await generateCoverLetter(resume, 'Acme', 'Engineer', choice);
     assert.equal(letters().length, 4);
   } finally {
     ai.resetRegistryForTests();
@@ -296,8 +374,8 @@ test('the lookup is one seek on the unique key index', () => {
   assert.match(prunePlan, /idx_tailor_cache_created/, 'the prune is a range on created_at, not a scan');
 
   // Two answers for one key keep the first.
-  repository.storeTailorCache({ cacheKey: 'k', kind: 'resume', content: 'first', modelId: 'm', analysisId: null, profileId: null });
-  repository.storeTailorCache({ cacheKey: 'k', kind: 'resume', content: 'second', modelId: 'm', analysisId: null, profileId: null });
+  repository.storeTailorCache({ cacheKey: 'k', kind: 'resume', content: 'first', modelId: 'm', analysisId: null, resumeId: null });
+  repository.storeTailorCache({ cacheKey: 'k', kind: 'resume', content: 'second', modelId: 'm', analysisId: null, resumeId: null });
   assert.equal(repository.findTailorCache('k'), 'first');
 });
 
@@ -307,7 +385,7 @@ test('rows older than TAILOR_CACHE_DAYS are pruned; newer ones stay', () => {
   const now = Date.parse('2026-10-01T00:00:00.000Z');
   const at = (daysAgo) => new Date(now - daysAgo * day).toISOString();
   for (const [key, daysAgo] of [['old', 31], ['edge', 29], ['new', 1]]) {
-    repository.storeTailorCache({ cacheKey: key, kind: 'resume', content: key, modelId: 'm', analysisId: null, profileId: null, createdAt: at(daysAgo) });
+    repository.storeTailorCache({ cacheKey: key, kind: 'resume', content: key, modelId: 'm', analysisId: null, resumeId: null, createdAt: at(daysAgo) });
   }
 
   assert.equal(cache.pruneTailorCacheNow(now, {}), 1, 'thirty days by default');
@@ -371,7 +449,7 @@ test('an answer a fallback model wrote is used for its build, never kept, and th
 
   // A cover letter is held to the same rule.
   const { generateCoverLetter } = require('../dist/services/resumeService');
-  const profile = profiles.getProfile('p-ada');
+  const resume = resumes.getResume('p-ada');
   const choice = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'claude-cli-sonnet', modelLabel: 'Sonnet' };
   const context = { analysisId: null, templateId: 'default' };
   let letterFallsBack = true;
@@ -380,9 +458,9 @@ test('an answer a fallback model wrote is used for its build, never kept, and th
     letterFallsBack = false;
     return { ...result, fellBack: true };
   });
-  await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
-  await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
-  await generateCoverLetter(profile, 'Acme', 'Engineer', choice, undefined, context);
+  await generateCoverLetter(resume, 'Acme', 'Engineer', choice, undefined, context);
+  await generateCoverLetter(resume, 'Acme', 'Engineer', choice, undefined, context);
+  await generateCoverLetter(resume, 'Acme', 'Engineer', choice, undefined, context);
   assert.equal(letters(h.seats).length, 2, 'a fallback letter is written once more, then the kept one is reused');
 });
 
@@ -408,25 +486,21 @@ test('a skill added to the library changes no resume\'s question: a hit', async 
   assert.deepEqual(h.charges().map((entry) => entry.deltaMilli), [-10, -10]);
 });
 
-test('the same resume built again reuses its tailoring from /resume/preview and /resume/preview-all too', async (t) => {
-  // The queue is not the only caller with an analysis: each route passes the
-  // cache its context (CLAUDE.md, "The tailoring cache").
+test('the same resume built again reuses its tailoring from /resume/preview too', async (t) => {
+  // The queue is not the only caller with an analysis: the route passes the
+  // cache its context (CLAUDE.md, "The tailoring cache"). /resume/preview-all
+  // is gone (F2 contract section 0.2), so /resume/preview is the one route.
   const h = await serveInstall('tailor-cache-routes');
   t.after(h.close);
   wrapClaude(withoutLetter);
 
-  const preview = { profileId: 'p-claude', jobDescription: posting(41) };
-  assert.equal((await h.post('/resume/preview', preview)).status, 200);
-  assert.equal((await h.post('/resume/preview', preview)).status, 200);
+  const preview = { profileId: h.profileOf('p-claude'), buildMode: 'partial', jobDescription: posting(41) };
+  const first = await h.post('/resume/preview', preview);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const second = await h.post('/resume/preview', preview);
+  assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(h.seats.tailorings().length, 1, '/resume/preview asked once');
   assert.equal(h.seats.revisions().length, 1, 'and revised once');
-
-  const previewAll = { profileIds: ['p-claude'], jobDescription: posting(42) };
-  const first = await h.post('/resume/preview-all', previewAll);
-  assert.equal(first.status, 200, JSON.stringify(first.body));
-  assert.equal((await h.post('/resume/preview-all', previewAll)).status, 200);
-  assert.equal(h.seats.tailorings().length, 2, '/resume/preview-all tailored its posting once');
-  assert.equal(h.seats.revisions().length, 2, 'and revised it once');
 });
 
 test('a queued build reuses its cover letter as well, and another template is a miss', async (t) => {
@@ -442,7 +516,7 @@ test('a queued build reuses its cover letter as well, and another template is a 
       mode: 'order',
       format: 'pdf',
       includeCoverLetterDocx: true,
-      profileIds: ['p-claude'],
+      profileId: h.profileOf('p-claude'),
       jobs: [{ companyName: 'Acme', role: 'Engineer', jobDescription: posting(43) }],
       ...extra,
     });
@@ -457,7 +531,7 @@ test('a queued build reuses its cover letter as well, and another template is a 
   assert.equal(h.seats.revisions().length, 1, 'one revision');
   assert.equal(letters(h.seats).length, 1, 'one cover letter, reused by the second build');
 
-  // The same profile, posting and model, drawn with another template.
+  // The same resume, posting and model, drawn with another template.
   await build({ templateId: 'navy-rule' });
   assert.equal(h.seats.tailorings().length, 2, 'the template is part of the key');
 });
@@ -474,21 +548,21 @@ test('nothing is cached without an analysis id, and an answer that does not pars
   });
   const { tailorResume } = require('../dist/services/resumeService');
   try {
-    const profile = buildNewProfile(profileInput('Ada'), 'p-direct');
+    const resume = buildNewResume(resumeInput('Ada'), 'p-direct');
     const analysis = JSON.parse(analysisAnswer());
     const choice = { provider: 'claude-cli', modelName: 'sonnet', modelId: 'claude-cli-sonnet', modelLabel: 'Sonnet' };
     const keyed = { analysisId: 'an-direct', templateId: 'default' };
 
-    await assert.rejects(tailorResume(profile, analysis, choice, undefined, keyed), /Failed to parse/);
+    await assert.rejects(tailorResume(resume, analysis, choice, 'partial', undefined, keyed), /Failed to parse/);
     assert.equal(repository.countTailorCacheRows(), 0, 'an unreadable answer is not kept - it would hold its key');
-    await tailorResume(profile, analysis, choice, undefined, keyed);
+    await tailorResume(resume, analysis, choice, 'partial', undefined, keyed);
     assert.equal(repository.countTailorCacheRows(), 1, 'the next, readable, answer is');
-    await tailorResume(profile, analysis, choice, undefined, keyed);
+    await tailorResume(resume, analysis, choice, 'partial', undefined, keyed);
     assert.equal(seats.tailorings().length, 2, 'and reused');
 
     const unkeyed = { analysisId: null, templateId: 'default' };
-    await tailorResume(profile, analysis, choice, undefined, unkeyed);
-    await tailorResume(profile, analysis, choice, undefined, unkeyed);
+    await tailorResume(resume, analysis, choice, 'partial', undefined, unkeyed);
+    await tailorResume(resume, analysis, choice, 'partial', undefined, unkeyed);
     assert.equal(seats.tailorings().length, 4, 'no analysis id: asked every time');
     assert.equal(repository.countTailorCacheRows(), 1, 'and nothing stored');
   } finally {

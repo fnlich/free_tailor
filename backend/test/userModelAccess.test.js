@@ -5,7 +5,7 @@ const express = require('express');
 /** Every seat is unlocked here, whatever the machine running this says. Set before any dist module loads. */
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli,codex-cli,gemini-cli';
 
-const { loadFresh, useAdminEmails, useTempStorage, writeStaticJson } = require('./helpers');
+const { loadFresh, seedProfileWithResumes, useAdminEmails, useTempStorage, writeStaticJson } = require('./helpers');
 
 /**
  * What an ordinary account may know about models, and how its choices resolve.
@@ -13,12 +13,12 @@ const { loadFresh, useAdminEmails, useTempStorage, writeStaticJson } = require('
  *   - `GET /api/resume/models` is ids and display names, the builder defaults,
  *     and nothing else: no provider, CLI model name, price, lock or the
  *     administrator's sheets.
- *   - A profile's STORED choice that cannot run falls back to the app default
+ *   - A resume's STORED choice that cannot run falls back to the app default
  *     with one log line; a choice named in the REQUEST is refused with one
  *     generic 400 - the cause is the `detail`, which only an administrator gets.
  *   - The bare-provider and `provider:modelName` request forms are an
  *     administrator's.
- *   - A profile save checks a CHANGED choice against the list its owner picks
+ *   - A resume save checks a CHANGED choice against the list its owner picks
  *     from.
  *   - The job filter and the Bid Assistant run on the app default model, and the
  *     filter names it by its display name.
@@ -43,7 +43,7 @@ function assertModelUnavailable(body) {
 const config = require('../dist/config/aiModelConfig');
 const preferences = require('../dist/config/aiPreferences');
 
-function profileInput(name, extra = {}) {
+function resumeInput(name, extra = {}) {
   return {
     name,
     title: 'Engineer',
@@ -72,16 +72,20 @@ async function serve(name) {
     bob: users.createSession(bob.id),
   };
 
-  const { saveProfile } = require('../dist/database/profileRepository');
-  const { buildNewProfile } = require('../dist/services/profileService');
-  saveProfile({ ...buildNewProfile(profileInput('Ada'), 'p-alice'), ownerId: alice.id });
+  const { saveResume } = require('../dist/database/resumeRepository');
+  const { buildNewResume } = require('../dist/services/resumeDocument');
+  saveResume({ ...buildNewResume(resumeInput('Ada'), 'p-alice'), ownerId: alice.id });
+  // The raw writer files a new resume under its person at once.
+  const aliceProfileId = require('../dist/database/resumeRepository').getResumeFor(alice, 'p-alice').profileId;
+  // A run and a preview name ONE profile of the caller's own, an administrator's included.
+  const adminProfileId = seedProfileWithResumes(admin, 'Cy', [{ ...resumeInput('Cy'), id: 'p-admin' }]).profileId;
 
   const { attachUser } = require('../dist/middleware/auth');
   const app = express();
   app.use(express.json());
   app.use(attachUser);
   app.use('/api/resume', require('../dist/routes/resume').default);
-  app.use('/api/profiles', require('../dist/routes/profiles').default);
+  app.use('/api/resumes', require('../dist/routes/resumes').default);
   const server = app.listen(0);
   const port = server.address().port;
 
@@ -100,7 +104,7 @@ async function serve(name) {
     }
     return { status: response.status, body: parsed, text };
   };
-  return { call, close: () => server.close(), admin, alice, bob };
+  return { call, close: () => server.close(), admin, alice, bob, aliceProfileId, adminProfileId };
 }
 
 function captureWarnings() {
@@ -120,25 +124,42 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
         { id: 's1', name: 'Shared applications', sheetId: 'SECRET-SHEET-ID', createdAt: 'x', updatedAt: 'x' },
       ],
     });
-    await config.updateAIModel('claude-cli-opus', { pricePerResumeUsd: '0.007', description: 'Hardest prompts.' });
+    await config.updateAIModel('claude-cli-opus', { description: 'Hardest prompts.' });
+    // The three prices are what the builder's mode cards show, the same
+    // figures a quote reveals - so, unlike a model's detail, everybody is told them.
+    await config.updateAppSettings({
+      defaultBuildMode: 'full',
+      suitablePriceUsd: '0.005',
+      partialPriceUsd: '0.010',
+      fullPriceUsd: '0.023',
+    });
 
     const { status, body, text } = await server.call('alice', 'GET', '/resume/models');
     assert.equal(status, 200);
     assert.deepEqual(Object.keys(body).sort(), [
+      'defaultBuildMode',
       'defaultCoverLetterDocxEnabled',
-      'defaultGroupId',
       'defaultMode',
       'defaultModelId',
       'defaultProfileId',
       'defaultResumeDocxEnabled',
-      'defaultResumeSelection',
-      // How a profile that chose no tailoring mode is tailored: the editor
-      // says what "the default" is. An .env value, not a secret.
-      'defaultTailorMode',
       'defaultTheme',
+      'fullPriceMilli',
       'models',
       'outputPathUsesJobTitle',
+      'partialPriceMilli',
+      'suitablePriceMilli',
     ]);
+    assert.equal(body.defaultBuildMode, 'full');
+    assert.deepEqual(
+      [body.suitablePriceMilli, body.partialPriceMilli, body.fullPriceMilli],
+      [5, 10, 23],
+      'in thousandths of a dollar'
+    );
+    // Gone with the per-resume mode and the builder's old target: not served, not aliased.
+    for (const retired of ['defaultTailorMode', 'defaultResumeSelection', 'defaultResumeId', 'defaultGroupId']) {
+      assert.equal(retired in body, false, retired);
+    }
     assert.deepEqual(body.models, [
       { id: 'claude-cli-sonnet', name: 'Claude Sonnet' },
       { id: 'claude-cli-opus', name: 'Claude Opus' },
@@ -150,9 +171,11 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
     for (const leak of [
       '"provider"',
       '"modelName"',
-      'pricePerResumeMilli',
+      'pricePerResume',
       'creditsPerResume',
       'freeEnabledModelIds',
+      'unreadableModePrices',
+      'settingSources',
       'Hardest prompts.',
       'providerLocks',
       'providersEnabled',
@@ -166,9 +189,17 @@ test('GET /api/resume/models is ids, display names and the builder defaults - no
 
     // The administrator's payload keeps the models' detail - and no saved
     // shared sheet any more: they are gone (owner decision S1), the save
-    // above that named one taken as a stale page.
+    // above that named one taken as a stale page. A model carries no price
+    // (a resume costs its build mode's), and nothing lists the free ones.
     const admin = await config.getAdminAppSettings();
-    assert.equal(admin.aiModels.find((model) => model.id === 'claude-cli-opus').pricePerResumeMilli, 7);
+    assert.equal(admin.aiModels.find((model) => model.id === 'claude-cli-opus').description, 'Hardest prompts.');
+    assert.equal(admin.aiModels.some((model) => 'pricePerResumeMilli' in model), false);
+    assert.equal('freeEnabledModelIds' in admin, false);
+    assert.deepEqual(
+      [admin.suitablePriceMilli, admin.partialPriceMilli, admin.fullPriceMilli, admin.defaultBuildMode],
+      [5, 10, 23, 'full']
+    );
+    assert.deepEqual(admin.unreadableModePrices, []);
     assert.equal('googleSheetsSources' in admin, false);
     assert.equal(JSON.stringify(admin).includes('SECRET-SHEET-ID'), false);
     assert.ok(Array.isArray(admin.providerModelOptions) && admin.providerModelOptions.length === 3);
@@ -208,8 +239,8 @@ test('a stored choice that cannot run falls back to the default, once in the log
   try {
     for (const modelId of ['claude-cli-haiku', 'codex-cli-default', 'deleted-model']) {
       for (let i = 0; i < 2; i += 1) {
-        const choice = await preferences.resolveAiChoice(undefined, { profileSettings: { ai: { modelId } } });
-        assert.equal(choice.modelId, 'claude-cli-sonnet', `a profile set to ${modelId} runs on the default`);
+        const choice = await preferences.resolveAiChoice(undefined, { resumeSettings: { ai: { modelId } } });
+        assert.equal(choice.modelId, 'claude-cli-sonnet', `a resume set to ${modelId} runs on the default`);
       }
     }
   } finally {
@@ -236,7 +267,7 @@ test('a requested model that cannot run is refused with one sentence, and the ca
     ['nothing-by-this-id', /was not found/],
   ]) {
     await assert.rejects(
-      () => preferences.resolveAiChoice({ modelId }, { profileSettings: { ai: { modelId: 'claude-cli-opus' } } }),
+      () => preferences.resolveAiChoice({ modelId }, { resumeSettings: { ai: { modelId: 'claude-cli-opus' } } }),
       (error) =>
         error instanceof ModelUnavailableError &&
         error.message === GENERIC &&
@@ -269,12 +300,16 @@ test("the provider forms are an administrator's: refused for anyone else, resolv
   for (const admin of [false, true]) {
     await assert.rejects(() => preferences.resolveAiChoice({ modelId: 'openai' }, null, { admin }), { message: GENERIC });
   }
-  // The priced form resolves the same way, with the model's own price.
-  await config.updateAIModel('codex-cli-default', { pricePerResumeUsd: '0.003' });
-  assert.deepEqual(await preferences.resolvePricedAiChoice({ modelId: 'codex-cli-default' }, null), {
-    choice: { provider: 'codex-cli', modelName: 'default', modelId: 'codex-cli-default', modelLabel: 'Codex' },
-    costMilli: 3,
+  // The model only: a price is no part of the choice any more.
+  assert.deepEqual(await preferences.resolveAiChoice({ modelId: 'codex-cli-default' }, null), {
+    provider: 'codex-cli',
+    modelName: 'default',
+    modelId: 'codex-cli-default',
+    modelLabel: 'Codex',
   });
+  for (const gone of ['resolvePricedAiChoice', 'resolveSuppliedContentChoice']) {
+    assert.equal(preferences[gone], undefined, `${gone} is gone`);
+  }
 });
 
 test('over HTTP, a refused model is a 400 with the generic sentence; only an administrator also gets why', async () => {
@@ -285,17 +320,24 @@ test('over HTTP, a refused model is a 400 with the generic sentence; only an adm
 
     // On a route that runs the request's model. /resume/analyze is not one any
     // more: every posting is analysed on the administrator's analysis model,
-    // and a `model` sent to it is not read.
-    const user = await server.call('alice', 'POST', '/resume/preview-all', { jobDescription, model: 'claude-cli-haiku' });
+    // and a `model` sent to it is not read. The preview names one profile
+    // (/resume/preview-all is gone) and refuses the model before the posting
+    // is analysed.
+    const aliceBody = { profileId: server.aliceProfileId, jobDescription };
+    const user = await server.call('alice', 'POST', '/resume/preview', { ...aliceBody, model: 'claude-cli-haiku' });
     assert.equal(user.status, 400);
     assertModelUnavailable(user.body);
 
-    const form = await server.call('alice', 'POST', '/resume/preview-all', { jobDescription, model: 'claude-cli' });
+    const form = await server.call('alice', 'POST', '/resume/preview', { ...aliceBody, model: 'claude-cli' });
     assert.equal(form.status, 400);
     assert.equal(form.body.code, 'model-unavailable');
     assert.equal('detail' in form.body, false);
 
-    const admin = await server.call('admin', 'POST', '/resume/preview-all', { jobDescription, model: 'claude-cli-haiku' });
+    const admin = await server.call('admin', 'POST', '/resume/preview', {
+      profileId: server.adminProfileId,
+      jobDescription,
+      model: 'claude-cli-haiku',
+    });
     assert.equal(admin.status, 400);
     assert.equal(admin.body.error, GENERIC);
     assert.match(admin.body.detail, /"Claude Haiku" is disabled/);
@@ -304,52 +346,52 @@ test('over HTTP, a refused model is a 400 with the generic sentence; only an adm
   }
 });
 
-/* -------------------------------------------------------- profile saves */
+/* --------------------------------------------------------- resume saves */
 
-test('a profile save checks a changed model against the list', async () => {
-  const server = await serve('profile-save');
+test('a resume save checks a changed model against the list', async () => {
+  const server = await serve('resume-save');
   try {
     await config.updateAIModel('claude-cli-haiku', { enabled: false });
 
-    const refused = await server.call('bob', 'POST', '/profiles', {
-      ...profileInput('Bo'),
-      profileSettings: { ai: { modelId: 'claude-cli-haiku' } },
+    const refused = await server.call('bob', 'POST', '/resumes', {
+      ...resumeInput('Bo'),
+      resumeSettings: { ai: { modelId: 'claude-cli-haiku' } },
     });
     assert.equal(refused.status, 400);
     assertModelUnavailable(refused.body);
 
-    const created = await server.call('bob', 'POST', '/profiles', {
-      ...profileInput('Bo'),
-      profileSettings: { ai: { modelId: 'claude-cli-opus' } },
+    const created = await server.call('bob', 'POST', '/resumes', {
+      ...resumeInput('Bo'),
+      resumeSettings: { ai: { modelId: 'claude-cli-opus' } },
     });
     assert.equal(created.status, 201);
-    assert.deepEqual(created.body.profileSettings.ai, { modelId: 'claude-cli-opus' });
+    assert.deepEqual(created.body.resumeSettings.ai, { modelId: 'claude-cli-opus' });
 
     for (const modelId of ['claude-cli', 'claude-cli:opus', 'no-such-model', 'free-hybrid']) {
-      const changed = await server.call('alice', 'PUT', '/profiles/p-alice', {
-        profileSettings: { ai: { modelId } },
+      const changed = await server.call('alice', 'PUT', '/resumes/p-alice', {
+        resumeSettings: { ai: { modelId } },
       });
       assert.equal(changed.status, 400, modelId);
       assert.equal(changed.body.code, 'model-unavailable');
     }
 
-    // Picked while it ran, switched off since: saving the rest of the profile
+    // Picked while it ran, switched off since: saving the rest of the resume
     // must still work, and keeps the choice - it falls back when it is used.
-    const picked = await server.call('alice', 'PUT', '/profiles/p-alice', {
-      profileSettings: { ai: { modelId: 'claude-cli-opus' } },
+    const picked = await server.call('alice', 'PUT', '/resumes/p-alice', {
+      resumeSettings: { ai: { modelId: 'claude-cli-opus' } },
     });
     assert.equal(picked.status, 200);
     await config.updateAIModel('claude-cli-opus', { enabled: false });
-    const renamed = await server.call('alice', 'PUT', '/profiles/p-alice', {
+    const renamed = await server.call('alice', 'PUT', '/resumes/p-alice', {
       name: 'Ada Lovelace',
-      profileSettings: { ai: { modelId: 'claude-cli-opus' } },
+      resumeSettings: { ai: { modelId: 'claude-cli-opus' } },
     });
     assert.equal(renamed.status, 200);
     assert.equal(renamed.body.name, 'Ada Lovelace');
-    assert.deepEqual(renamed.body.profileSettings.ai, { modelId: 'claude-cli-opus' });
+    assert.deepEqual(renamed.body.resumeSettings.ai, { modelId: 'claude-cli-opus' });
 
-    const admin = await server.call('admin', 'PUT', '/profiles/p-alice', {
-      profileSettings: { ai: { modelId: 'claude-cli-haiku' } },
+    const admin = await server.call('admin', 'PUT', '/resumes/p-alice', {
+      resumeSettings: { ai: { modelId: 'claude-cli-haiku' } },
     });
     assert.equal(admin.status, 400);
     assert.match(admin.body.detail, /disabled/, 'an administrator is told why');
@@ -408,7 +450,7 @@ test('the job filter names the analysis model, by its display name, and makes no
 
   assert.deepEqual(await jobFilter.describeJobFilterModel(), { modelLabel: 'Claude Sonnet' });
 
-  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna', pricePerResumeUsd: '0.010' });
+  const created = await config.createAIModel({ name: 'Luna', provider: 'codex-cli', modelName: 'gpt-6-luna' });
   const luna = created.aiModels.find((model) => model.modelName === 'gpt-6-luna');
   await config.updateAppSettings({ analysisModelId: luna.id });
   assert.deepEqual(await jobFilter.describeJobFilterModel(), { modelLabel: 'Luna' });

@@ -136,12 +136,17 @@ test('every column the guard asks for is one a database this build creates has',
   loadFresh('../dist/database/sqlite').getDb();
   loadFresh('../dist/bidAssistant/database');
   const { UPGRADE_ADDED_COLUMNS } = require('../dist/database/upgradeGuard');
+  const { RENAMED_TABLES } = require('../dist/database/glossaryRename');
 
   const raw = openTestDb(dbDir);
   try {
     const missing = Object.entries(UPGRADE_ADDED_COLUMNS).flatMap(([table, columns]) => {
-      const has = raw.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
-      assert.ok(has.length > 0, `${table} is a table this build creates`);
+      // The list is ac3df79's: it names a table as that build did, and the guard reads a database
+      // BEFORE glossaryRename renames it. A database this build creates has the table under its
+      // new name (the same columns), so ask for it there.
+      const current = Object.prototype.hasOwnProperty.call(RENAMED_TABLES, table) ? RENAMED_TABLES[table] : table;
+      const has = raw.prepare(`PRAGMA table_info(${current})`).all().map((column) => column.name);
+      assert.ok(has.length > 0, `${table} is a table this build creates (as ${current})`);
       return columns.filter((column) => !has.includes(column)).map((column) => `${table}.${column}`);
     });
     assert.deepEqual(missing, []);
@@ -152,6 +157,52 @@ test('every column the guard asks for is one a database this build creates has',
   } finally {
     raw.close();
   }
+});
+
+/**
+ * The list as build ac3df79 wrote it, copied here so that nobody "renames" it.
+ *
+ * It names tables as THAT build did - `profiles` (what v4.2 calls `resumes`)
+ * and `profile_groups` (what v4.2 calls `profiles`) - because the guard reads
+ * a database before glossaryRename.ts renames it: an unstamped database from
+ * ac3df79 has `profiles.owner_id`, and no `resumes` table for a renamed list to
+ * ask about.
+ * (test/glossaryRename.test.js drives such a database through the guard.) The
+ * test above translates the names for a database THIS build creates; this one
+ * holds the list itself.
+ */
+const AC3DF79_ADDED_COLUMNS = {
+  profiles: ['owner_id'],
+  profile_groups: ['owner_id'],
+  users: [
+    'sheet_id',
+    'sheet_url',
+    'sheet_shared_at',
+    'stripe_customer_id',
+    'notifications_seen_at',
+    'balance_milli',
+    'sheet_layout',
+    'sheet_all_gid',
+    'sheet_temp_gid',
+    'report_rate_milli',
+  ],
+  payments: ['fee_cents', 'credits_granted', 'credit_milli', 'credited_milli', 'refunded_milli', 'refund_cents'],
+  credit_ledger: ['delta_milli', 'balance_after_milli'],
+  credit_reservations: ['units_milli', 'refunded_milli'],
+  notifications: ['recipient_id', 'link'],
+  order_items: ['cost_milli', 'provider_id'],
+  refund_requests: ['hold_key'],
+  orders: ['kind'],
+  job_analyses: ['company_name'],
+  job_lake: ['job_type', 'clearance', 'industry'],
+  job_lake_history: ['job_type', 'clearance', 'industry'],
+  answers: ['question_order'],
+  google_sheets: ['account_id'],
+};
+
+test("the guard's list of columns is the one build ac3df79 wrote, in the names that build used", () => {
+  const { UPGRADE_ADDED_COLUMNS } = require('../dist/database/upgradeGuard');
+  assert.deepEqual(UPGRADE_ADDED_COLUMNS, AC3DF79_ADDED_COLUMNS);
 });
 
 test('its first stamp forgets a report record whose lake row an older build deleted, and only that', () => {

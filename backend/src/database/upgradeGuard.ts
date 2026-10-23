@@ -62,6 +62,11 @@ export const BASELINE_MARKER = 'baseline_build';
  * A table the database does not have yet is not asked about, as ac3df79 did
  * not ask: SCHEMA (or the Bid Assistant) creates it whole, and an empty lake
  * is right for a database that never had one.
+ *
+ * The keys are ac3df79's table names: the guard reads a database before
+ * glossaryRename renames it, so `profiles` here is the table of resumes it
+ * still is at that point. The list is frozen - it is the history of what that
+ * build added, not a description of this build's tables.
  */
 export const UPGRADE_ADDED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   profiles: ['owner_id'],

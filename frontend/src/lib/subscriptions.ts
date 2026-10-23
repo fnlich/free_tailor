@@ -75,46 +75,20 @@ export function hasSubscription(account: EntitledAccount, minimum: AccountSubscr
   return subscriptionAtLeast(account.subscription, minimum);
 }
 
-/**
- * The subscription that unlocks building for more than one profile at once:
- * Multiple, Several profiles, All profiles, Specific group and Select Group
- * (owner decisions B1, B3). The backend's MULTI_PROFILE_SUBSCRIPTION, which
- * is the real lock - a run, quote or preview-all for several profiles below
- * it is refused with 403 `subscription-too-low`.
- */
-export const MULTI_PROFILE_SUBSCRIPTION: AccountSubscriptionId = 'premium';
-
-/** Whether the builder offers the multi-profile choices to this account. */
-export function canBuildForManyProfiles(account: EntitledAccount): boolean {
-  return hasSubscription(account, MULTI_PROFILE_SUBSCRIPTION);
-}
-
-/**
- * The builder's starting target for this account.
- *
- * The administrator's "Default resume target" applies to everybody - except
- * that an account whose subscription supports one profile starts on Single,
- * whatever the default says: starting it on a choice it cannot take showed a
- * locked option selected and a run the server would refuse.
- */
-export function startingResumeSelection<T extends string>(selection: T, manyProfiles: boolean): T | 'single' {
-  return manyProfiles ? selection : 'single';
-}
-
 /* ------------------------------------------------------------------ locks */
 
 /**
- * What a subscription can lock: building for more than one profile at once
- * (Multiple, Several profiles, All profiles, Specific group, Select Group),
- * Groups, and a profile past the subscription's limit.
+ * What a subscription can lock: adding a profile (a person) past the
+ * subscription's limit. A run is never locked - it builds one profile on every
+ * subscription - and resumes are never counted.
  */
-export type LockedFeatureId = 'many-profiles' | 'groups' | 'more-profiles';
+export type LockedFeatureId = 'more-profiles';
 
 /**
  * A locked feature, as the lock's dialog and panel say it: "Locked: <title>",
  * the sentence under it, and the tier that unlocks it. The server is the real
- * lock every time (403 `subscription-too-low`, 402 `profile-limit`); this is
- * only the page saying so before it is asked.
+ * lock every time (402 `profile-limit`); this is only the page saying so
+ * before it is asked.
  */
 export type LockSpec = {
   feature: LockedFeatureId;
@@ -141,9 +115,8 @@ function tierAbove(used: number): AccountSubscriptionId {
 
 /**
  * The words of a lock, for the account it is shown to. `subscription` is the
- * account's tier as the session has it; `profilesUsed` matters only for
- * `more-profiles`, whose sentence names the cheapest tier with room for one
- * more.
+ * account's tier as the session has it; `profilesUsed` is the people it has,
+ * and the sentence names the cheapest tier with room for one more.
  */
 export function describeLock(
   feature: LockedFeatureId,
@@ -151,71 +124,34 @@ export function describeLock(
 ): LockSpec {
   const current = tierOf(account?.subscription);
   const currentLabel = SUBSCRIPTION_LABELS[current];
-
-  if (feature === 'more-profiles') {
-    const limit = SUBSCRIPTION_PROFILE_LIMITS[current];
-    const used =
-      typeof account?.profilesUsed === 'number' && Number.isSafeInteger(account.profilesUsed) && account.profilesUsed >= 0
-        ? account.profilesUsed
-        : limit ?? 0;
-    const needs = tierAbove(used);
-    const needsLimit = SUBSCRIPTION_PROFILE_LIMITS[needs];
-    const allows = limit === null ? 'has no limit on profiles' : `allows ${profileCount(limit)}`;
-    return {
-      feature,
-      title: 'More profiles',
-      needs,
-      needsLabel: SUBSCRIPTION_LABELS[needs],
-      body:
-        `The ${currentLabel} subscription ${allows}, and you have ${used}. ` +
-        (needsLimit === null
-          ? `${SUBSCRIPTION_LABELS[needs]} has no limit on profiles.`
-          : `${SUBSCRIPTION_LABELS[needs]} allows up to ${needsLimit}.`),
-    };
-  }
-
-  const needs = MULTI_PROFILE_SUBSCRIPTION;
-  const needsLabel = SUBSCRIPTION_LABELS[needs];
-  if (feature === 'groups') {
-    return {
-      feature,
-      title: 'Groups',
-      needs,
-      needsLabel,
-      body:
-        `Groups need a ${needsLabel} subscription or higher, and your account is on ${currentLabel}. ` +
-        'A group is a set of profiles you build for together.',
-    };
-  }
+  const limit = SUBSCRIPTION_PROFILE_LIMITS[current];
+  const used =
+    typeof account?.profilesUsed === 'number' && Number.isSafeInteger(account.profilesUsed) && account.profilesUsed >= 0
+      ? account.profilesUsed
+      : limit ?? 0;
+  const needs = tierAbove(used);
+  const needsLimit = SUBSCRIPTION_PROFILE_LIMITS[needs];
+  const allows = limit === null ? 'has no limit on profiles' : `allows ${profileCount(limit)}`;
   return {
     feature,
-    title: 'Building for several profiles',
+    title: 'More profiles',
     needs,
-    needsLabel,
+    needsLabel: SUBSCRIPTION_LABELS[needs],
     body:
-      `Your ${currentLabel} subscription builds for one profile at a time. ` +
-      `${needsLabel} and higher build for the profiles you choose, every profile, or a group of them, in one run.`,
+      `The ${currentLabel} subscription ${allows}, and you have ${used}. ` +
+      (needsLimit === null
+        ? `${SUBSCRIPTION_LABELS[needs]} has no limit on profiles.`
+        : `${SUBSCRIPTION_LABELS[needs]} allows up to ${needsLimit}.`),
   };
 }
 
 /*
- * The locks for what the SERVER refused, worded from the refusal rather than
+ * The lock for what the SERVER refused, worded from the refusal rather than
  * the session. A page that offered the thing believed the account could have
  * it, so a refusal means its session is behind the server - a tier that
  * lapsed at renewal under an open page, a profile added in another tab - and a
- * lock worded from that session named the tier the account no longer has:
- * "Your Premium subscription builds for one profile at a time. Premium and
- * higher build ...".
+ * lock worded from that session named the tier the account no longer has.
  */
-
-/**
- * A run for several profiles refused 403 `subscription-too-low`: the server
- * holds the account below MULTI_PROFILE_SUBSCRIPTION, and below Premium there
- * is only Default (an unknown tier ranks as Default too).
- */
-export function describeTooLowRefusal(): LockSpec {
-  return describeLock('many-profiles', { subscription: SUBSCRIPTION_ORDER[rank(MULTI_PROFILE_SUBSCRIPTION) - 1] });
-}
 
 /** The tier whose profile limit is `limit`, or null when no tier has it. */
 export function tierWithProfileLimit(limit: unknown): AccountSubscriptionId | null {

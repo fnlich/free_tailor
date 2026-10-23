@@ -2,10 +2,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import HTMLtoDOCX from 'html-to-docx';
-import { Profile } from '../types/profile';
+import { Resume } from '../types/resume';
 import type { TailoredContent, Template } from '../types/template';
 import { prepareResumeRenderData } from './pdfGenerator';
-import { profileForTemplate } from '../services/profileService';
+import { resumeForTemplate } from '../services/resumeDocument';
 import { customSectionByKey, type PreparedCustomSection } from '../services/extraSections';
 import {
   effectiveSectionOrder,
@@ -14,7 +14,7 @@ import {
   SECTION_KIND_IDS,
   sectionKindDefinition,
   type SectionKind,
-} from '../config/profileSections';
+} from '../config/sectionCatalogue';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getResumeOutputFilename } from '../utils/generatedPath';
 
@@ -41,16 +41,16 @@ const skillParagraph = (body: string, gap: string) =>
  * template - html-to-docx turns it into Word paragraphs.
  *
  * Built from the same render data as the PDF and the preview, so the sections
- * a profile switched off are already empty here (see `applySkillsLimit`).
- * `generateResumeDOCX` reads the profile through the template the PDF is
- * drawn with (`profileForTemplate`), so on a template with no Strengths or
+ * a resume switched off are already empty here (see `applySkillsLimit`).
+ * `generateResumeDOCX` reads the resume through the template the PDF is
+ * drawn with (`resumeForTemplate`), so on a template with no Strengths or
  * Soft Skills section those are off here too, and the optional sections
  * appear exactly when the PDF's do.
  *
- * The sections print in the profile's order (`effectiveSectionOrder`,
- * config/profileSections.ts): the stored one when the person arranged the
+ * The sections print in the resume's order (`effectiveSectionOrder`,
+ * config/sectionCatalogue.ts): the stored one when the person arranged the
  * cards, else the canonical order - which is the order this file always
- * printed, so a profile nobody arranged reads as it did. A kind with nothing
+ * printed, so a resume nobody arranged reads as it did. A kind with nothing
  * in it prints nothing: a heading over nothing takes a whole row of the page
  * in Word. The nine kinds beyond the classic six print here whether or not
  * the PDF's template carries the extra-sections macro, as Education prints
@@ -380,7 +380,7 @@ function customSectionBlock(section: PreparedCustomSection): string {
  * of a "both" download carry the same sections.
  */
 export async function generateResumeDOCX(
-  profile: Profile,
+  resume: Resume,
   template: Template,
   tailoredContent: TailoredContent | undefined,
   pathInfo: GeneratedPathInfo,
@@ -388,7 +388,7 @@ export async function generateResumeDOCX(
   role: string
 ): Promise<string> {
   const renderData = prepareResumeRenderData(
-    profileForTemplate(profile, template),
+    resumeForTemplate(resume, template),
     tailoredContent,
     companyName,
     role

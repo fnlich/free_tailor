@@ -23,13 +23,13 @@ function setup(name) {
   return loadFresh('../dist/database/orderRepository');
 }
 
-const ONE_ITEM = [{ seq: 0, profileId: 'p1', profileName: 'Ada', companyName: 'Acme', role: 'SWE' }];
+const ONE_ITEM = [{ seq: 0, resumeId: 'p1', resumeName: 'Ada', companyName: 'Acme', role: 'SWE' }];
 
 function itemsFor(count) {
   return Array.from({ length: count }, (_, seq) => ({
     seq,
-    profileId: 'p1',
-    profileName: 'Ada',
+    resumeId: 'p1',
+    resumeName: 'Ada',
     companyName: `Co${seq}`,
     role: 'SWE',
   }));
@@ -212,5 +212,50 @@ test('orders are listed newest first, and only the caller\'s own', () => {
     [second.id, first.id]
   );
   assert.equal(orders.listOrdersForUser('u3').length, 0);
+});
+
+test('a database that existed before the order items recorded their choice gets the three columns, and old items read null', () => {
+  // Contract 2.7: resume_label, profile_label and match_json are in SCHEMA and in ADDED_COLUMNS (not the frozen
+  // guard list). A fresh database has them from SCHEMA, so the test makes the old shape: it drops the three
+  // columns (as upgradeGuard.test.js does for provider_id), opens the database again, and asks for them.
+  const orders = setup('old-items');
+  const old = orders.createOrder({ userId: 'u1', retentionDays: 5 }, ONE_ITEM, new Date('2026-09-20T09:00:00Z'));
+  const sqlite = require('../dist/database/sqlite');
+  const db = sqlite.getDb();
+  for (const column of ['resume_label', 'profile_label', 'match_json']) {
+    db.exec(`ALTER TABLE order_items DROP COLUMN ${column}`);
+  }
+  assert.deepEqual(
+    db.prepare("SELECT name FROM pragma_table_info('order_items') WHERE name IN ('resume_label', 'profile_label', 'match_json')").all(),
+    [],
+    'the old shape has none of them'
+  );
+  db.close();
+
+  const reopenedSqlite = loadFresh('../dist/database/sqlite');
+  const reopened = loadFresh('../dist/database/orderRepository');
+  const columns = reopenedSqlite
+    .getDb()
+    .prepare("SELECT name FROM pragma_table_info('order_items') WHERE name IN ('resume_label', 'profile_label', 'match_json') ORDER BY name")
+    .all()
+    .map((row) => row.name);
+  assert.deepEqual(columns, ['match_json', 'profile_label', 'resume_label'], 'opening the database added them');
+
+  const [item] = reopened.listOrderItems(old.id);
+  assert.equal(item.resumeLabel, null);
+  assert.equal(item.profileLabel, null);
+  assert.equal(item.match, null);
+
+  // And a new order, with its choice recorded, inserts and reads back whole.
+  const match = { v: 1, mode: 'partial', reason: 'matched', candidates: 3 };
+  const fresh = reopened.createOrder(
+    { userId: 'u1', retentionDays: 5 },
+    [{ ...ONE_ITEM[0], resumeLabel: 'Backend Engineer', profileLabel: 'Ada', match }],
+    new Date('2026-09-20T10:00:00Z')
+  );
+  const [recorded] = reopened.listOrderItems(fresh.id);
+  assert.equal(recorded.resumeLabel, 'Backend Engineer');
+  assert.equal(recorded.profileLabel, 'Ada');
+  assert.deepEqual(recorded.match, match);
 });
 

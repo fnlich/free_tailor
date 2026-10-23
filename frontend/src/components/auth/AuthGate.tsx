@@ -5,11 +5,9 @@ import { useEffect, type ReactNode } from 'react';
 
 import ThemeToggle from '@/components/ThemeToggle';
 import { ContactAdminLink } from '@/components/contact/ContactAdminDialog';
-import { LockedPanel } from '@/components/subscription/LockedFeature';
 import { Notice, Spinner } from '@/components/ui/kit';
 import { useAuth } from '@/contexts/AuthContext';
 import { canOpenReportJobs, redirectFor } from '@/lib/roles';
-import { describeLock, hasSubscription, type LockedFeatureId } from '@/lib/subscriptions';
 import SignInPanel from './SignInPanel';
 
 /**
@@ -21,7 +19,7 @@ import SignInPanel from './SignInPanel';
  *
  * It is also where a REPORTER is kept to their own pages (owner decision A3):
  * on any path outside lib/roles.ts's allowlist - Report Jobs, Credits,
- * Settings -> Profile and Job Sheet - they are sent to Report Jobs, and the
+ * Settings -> Account and Job Sheet - they are sent to Report Jobs, and the
  * page they asked for is never mounted. Here rather than in each page because
  * every builder page fires requests the moment it mounts, and every one of
  * them answers a reporter 403 `role-not-allowed`: a reporter who followed an
@@ -143,46 +141,6 @@ export function AdminOnly({ children }: { children: ReactNode }) {
           administrator accounts. Ask an administrator here if you need something changed.{' '}
           <ContactAdminLink />
         </p>
-      </div>
-    );
-  }
-
-  return <>{children}</>;
-}
-
-/**
- * The same idea again, for a section an account's SUBSCRIPTION does not include.
- *
- * Separate from `AdminOnly` because the remedy is different: what is needed is
- * a higher subscription on your own account, which the account buys itself on
- * the Subscription page. So the section is drawn LOCKED (components/
- * subscription/LockedFeature.tsx `LockedPanel`): what it needs, in
- * lib/subscriptions.ts `describeLock`'s words, and Go to subscription.
- *
- * It lets administrators through, as the backend's `requireSubscription` does
- * (owner decision B1: an administrator is exempt from the tiers, as from
- * credits and the profile cap). A gate that disagreed with the backend either
- * shows somebody a page whose every request then fails, or hides one that
- * would have worked - `hasSubscription` is the shared rule, at the tier the
- * lock names.
- */
-export function RequiresSubscription({
-  feature,
-  children,
-}: {
-  /** What the section is, for the lock's words and the tier it needs. */
-  feature: Exclude<LockedFeatureId, 'more-profiles'>;
-  children: ReactNode;
-}) {
-  const { account, loading } = useAuth();
-
-  if (loading) return <p className="text-sm text-subtle">Loading...</p>;
-
-  const lock = describeLock(feature, account);
-  if (!hasSubscription(account, lock.needs)) {
-    return (
-      <div className="m-4 sm:m-8">
-        <LockedPanel lock={lock} />
       </div>
     );
   }

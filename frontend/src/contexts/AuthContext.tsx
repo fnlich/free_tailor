@@ -37,7 +37,7 @@ type AuthState = {
   isAdmin: boolean;
   /**
    * A reporter (owner decisions A3, A4): Report Jobs, Credits, Settings ->
-   * Profile / Job Sheet and nothing of the builder. AuthGate keeps them to
+   * Account / Job Sheet and nothing of the builder. AuthGate keeps them to
    * those pages; the shell and the account menu draw their own variant.
    */
   isReporter: boolean;

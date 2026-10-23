@@ -72,7 +72,7 @@ async function harness(name, { attempts = 1 } = {}) {
     // thousandths of a dollar, so every sum below is exact.
     task: (label) => ({
       queue: 'cli',
-      label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
+      label: { resumeId: label, resumeName: label, companyName: 'Acme', role: 'SWE' },
       kind,
       payload: { label, costMilli: PRICE },
     }),
@@ -317,16 +317,16 @@ test('retrying can be switched off, and then one failure is final', async () => 
   assert.equal(h.balance(h.alice.id), 1_000);
 });
 
-test('a resume whose profile was deleted fails once, in its owner\'s terms, and is refunded', async () => {
+test('a resume whose source was deleted fails once, in its owner\'s terms, and is refunded', async () => {
   // The owner deleted it while the task was queued. No retry can find it, and
   // "contact your administrator" would send them to someone with nothing to fix.
-  const h = await harness('profile-gone', { attempts: 3 });
+  const h = await harness('resume-gone', { attempts: 3 });
   const { makeResumeRunner } = require('../dist/services/queue/resumeTask');
   const { registerTaskRunner, newBatchId } = require('../dist/services/queue/taskQueue');
   const { publicStoredError } = require('../dist/middleware/publicError');
   const { captureErrorLog } = require('./helpers');
   let lookups = 0;
-  const kind = `${h.kind}-profile-gone`;
+  const kind = `${h.kind}-resume-gone`;
   registerTaskRunner(
     kind,
     makeResumeRunner(
@@ -343,7 +343,7 @@ test('a resume whose profile was deleted fails once, in its owner\'s terms, and 
   h.credits.reserveCredits(h.users.getUserById(h.alice.id), 46, { kind: 'batch', id: batchId });
   const { lines } = await captureErrorLog(async () => {
     h.queue.submit(
-      [{ ...h.task('gone'), kind, payload: { profileId: '7c9e6679-7425-40de-944b-e07fc1f90ae7', batchId, jobIndex: 0, costMilli: 46 } }],
+      [{ ...h.task('gone'), kind, payload: { resumeId: '7c9e6679-7425-40de-944b-e07fc1f90ae7', batchId, jobIndex: 0, costMilli: 46 } }],
       { id: batchId }
     );
     await h.queue.refreshCapacity();
@@ -351,8 +351,8 @@ test('a resume whose profile was deleted fails once, in its owner\'s terms, and 
   });
 
   const task = h.queue.snapshot(batchId).tasks[0];
-  assert.equal(lookups, 1, 'not retried: no later attempt would find the profile');
-  assert.match(task.error, /^The profile for this resume was deleted before it could be built\. \(Ref: ERR-[0-9A-F]{6}\)$/);
+  assert.equal(lookups, 1, 'not retried: no later attempt would find the resume');
+  assert.match(task.error, /^This resume was deleted before it could be built\. \(Ref: ERR-[0-9A-F]{6}\)$/);
   assert.doesNotMatch(task.error, /7c9e6679|administrator/);
   // Kept as written when an account holder reads it back...
   assert.equal(publicStoredError(task.error, 'This resume could not be built'), task.error);

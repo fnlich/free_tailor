@@ -58,7 +58,7 @@ function now(): string {
  * Every path in - Google's token, a typed address, an admin's invite - goes
  * through this, so "Alice@Example.com " and "alice@example.com" are one
  * account. Skipping it anywhere would create the second account silently, and
- * the person would simply find their profiles gone.
+ * the person would simply find their resumes gone.
  */
 export function normalizeEmail(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();

@@ -117,13 +117,14 @@ export default function AppSidebar({
   panelRef,
 }: Props) {
   // The role decides what is offered; the subscription only locks an entry (`isNavLocked`).
+  // No entry needs a tier today (Profiles is open to every builder), so no row is drawn locked.
   const offered = (item: NavItem) => canSee(item, role);
   const main = SIDEBAR_MAIN.filter(offered);
   const assistant = SIDEBAR_ASSISTANT.filter(offered);
   const bottom = SIDEBAR_BOTTOM.filter(offered);
   const locked = useLockedFeature();
   const lockOf = (item: NavItem): LockSpec | null =>
-    isNavLocked(item, role, subscription) ? describeLock(item.feature ?? 'many-profiles', { subscription }) : null;
+    item.feature && isNavLocked(item, role, subscription) ? describeLock(item.feature, { subscription }) : null;
 
   // Resolved across every entry at once, by longest match, so a route under
   // another entry's path lights only the row that is really its own.

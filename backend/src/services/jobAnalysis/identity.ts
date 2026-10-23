@@ -12,7 +12,7 @@ import { createHash } from 'crypto';
  *    a posting with no link at all, the manual builder's commonest case, is
  *    still recognised by its words.
  *
- * Neither key mentions a model, a prompt, a profile or an account: the
+ * Neither key mentions a model, a prompt, a resume or an account: the
  * analysis is a reading of the posting, and the posting is all that decides
  * whether it has been read.
  */

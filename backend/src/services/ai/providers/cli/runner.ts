@@ -362,7 +362,7 @@ export function createSpawnRunner(): CliRunner {
 
         // The prompt goes on STDIN, not in argv, and both halves matter.
         // A rendered tailor-resume prompt is tens of kilobytes of template
-        // plus full profile and job-analysis JSON, which has no business
+        // plus full resume and job-analysis JSON, which has no business
         // anywhere near the per-argument exec limit; and leaving stdin open
         // makes the CLI wait several seconds for input it is never given.
         child.stdin?.on('error', () => {
@@ -401,8 +401,8 @@ export function createSpawnRunner(): CliRunner {
  * A warm process pool was considered and rejected. `--input-format stream-json`
  * can keep one child alive across many prompts and saves the node boot, but the
  * conversation accumulates: a second turn can see the first turn's content, and
- * input tokens grow with every turn. In this app that would mean one profile's
- * job description reaching another profile's resume - a correctness and privacy
+ * input tokens grow with every turn. In this app that would mean one resume's
+ * job description reaching another resume's build - a correctness and privacy
  * defect that a few hundred milliseconds of saved boot cannot buy.
  */
 

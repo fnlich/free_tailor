@@ -380,7 +380,7 @@ test('a provider building a resume cannot be removed; switched off, its waiting 
   );
   const task = (label) => ({
     queue: 'claude-cli',
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: '' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: '' },
     kind,
     payload: { label },
   });

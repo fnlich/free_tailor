@@ -79,7 +79,7 @@ test('Settings > Subscription is a tab', () => {
   // And no page answers at the old address: it was a redirect while the name
   // was new, and every link to it is gone.
   assert.equal(fs.existsSync(path.join(FRONTEND_SRC, 'app/settings/plan')), false);
-  // Longest match: the subscription page lights its own tab, not Profile.
+  // Longest match: the subscription page lights its own tab, not Account.
   assert.equal(nav.activeHref('/settings/subscription', nav.SETTINGS_ACCOUNT_TABS), '/settings/subscription');
   assert.equal(nav.isSettingsRoute('/settings/subscription'), true);
 

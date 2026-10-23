@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { renameRetiredVocabulary } from './glossaryRename';
 import { runDataMigrations } from './migrations';
 import { assertUpgradeFinished, stampCurrentDatabase, tableExists } from './upgradeGuard';
 
@@ -49,19 +50,24 @@ const DATABASE_FILE_NAME = 'free_tailor.db';
  * Saved templates are files (templateFiles.ts), not a table; an upgraded
  * database may still hold the old templates table, unread, as it may the
  * retired chain_* tables below and users.sheet_tab_date / sheet_tab_gid.
+ *
+ * `profiles` (the people) must never gain a `disabled` column: build 4.1 kept
+ * its resumes in a table of that name WITH one, and glossaryRename.ts tells the
+ * two apart by that column alone.
  */
 const SCHEMA = `
-  CREATE TABLE IF NOT EXISTS profiles (
+  CREATE TABLE IF NOT EXISTS resumes (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     disabled   INTEGER NOT NULL DEFAULT 0,
     data       TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    owner_id   TEXT
+    owner_id   TEXT,
+    profile_id TEXT
   );
 
-  CREATE TABLE IF NOT EXISTS profile_groups (
+  CREATE TABLE IF NOT EXISTS profiles (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     data       TEXT NOT NULL,
@@ -194,7 +200,7 @@ const SCHEMA = `
     ON orders (batch_id);
 
   /*
-   * One row per resume the order asked for - one profile against one job.
+   * One row per resume the order asked for - one source resume against one job.
    *
    * cost_milli is what that resume was charged, in thousandths of a dollar,
    * copied from its task when the order is placed. The task and its batch are
@@ -214,8 +220,8 @@ const SCHEMA = `
     order_id          TEXT NOT NULL,
     seq               INTEGER NOT NULL,
     task_id           TEXT,
-    profile_id        TEXT NOT NULL DEFAULT '',
-    profile_name      TEXT NOT NULL DEFAULT '',
+    resume_id         TEXT NOT NULL DEFAULT '',
+    resume_name       TEXT NOT NULL DEFAULT '',
     company_name      TEXT NOT NULL DEFAULT '',
     role              TEXT NOT NULL DEFAULT '',
     source_row_number INTEGER,
@@ -224,6 +230,9 @@ const SCHEMA = `
     files             TEXT NOT NULL DEFAULT '[]',
     cost_milli        INTEGER,
     provider_id       TEXT,
+    resume_label      TEXT,
+    profile_label     TEXT,
+    match_json        TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
   );
@@ -750,7 +759,7 @@ const SCHEMA = `
    * Every job posting this install has analysed, once each, for ever
    * (owner decision J0). The ONLY source of truth for an analysis: no TTL, no
    * cap, no eviction and no overwrite - a posting is analysed again by
-   * nothing, whichever user, profile, model, prompt edit, retry or restart
+   * nothing, whichever user, resume, model, prompt edit, retry or restart
    * asks. Written by services/jobAnalysis/gate.ts alone.
    *
    * A posting is ONE row however it is reached: its whitespace-normalised
@@ -960,7 +969,7 @@ const SCHEMA = `
    * Tailored content kept for reuse (owner decision P6; services/tailorCache.ts,
    * database/tailorCacheRepository.ts its only reader and writer): the model's
    * answer to a tailoring or a cover-letter call, under a key that is the
-   * SHA-256 of everything that answer was made from - the profile as it was
+   * SHA-256 of everything that answer was made from - the resume as it was
    * (content, section switches, layout), the template, the posting's stored
    * analysis, the model record and model name, and the prompt's text. A
    * generation that would ask the same question again reads the answer here
@@ -968,7 +977,7 @@ const SCHEMA = `
    * key. cache_key is UNIQUE (the lookup is one seek on it, pinned by a test),
    * and rows older than TAILOR_CACHE_DAYS are pruned on created_at.
    *
-   * kind is 'resume' or 'cover-letter'. model_id, analysis_id and profile_id
+   * kind is 'resume' or 'cover-letter'. model_id, analysis_id and resume_id
    * say what a row was for - an audit, never part of how it is found.
    */
   CREATE TABLE IF NOT EXISTS tailor_cache (
@@ -978,7 +987,7 @@ const SCHEMA = `
     content      TEXT NOT NULL,
     model_id     TEXT NOT NULL DEFAULT '',
     analysis_id  TEXT,
-    profile_id   TEXT,
+    resume_id    TEXT,
     created_at   TEXT NOT NULL
   );
 
@@ -1033,6 +1042,17 @@ const ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; definition: 
   { table: 'users', column: 'subscription_period_price_milli', definition: 'INTEGER' },
   { table: 'users', column: 'subscription_renews', definition: 'INTEGER' },
   { table: 'users', column: 'subscription_next', definition: 'TEXT' },
+  // The profile (the person) a resume is filed under - the tree's one pointer,
+  // mirrored from the document (database/profileTree.ts). NULL on every resume
+  // an older build wrote: they are filed lazily, the first time their owner's
+  // resumes are read, so no migration touches them.
+  { table: 'resumes', column: 'profile_id', definition: 'TEXT' },
+  // What the run chose for an order item (v4.2): the chosen resume's headline
+  // label, the profile's (the person's) name at submit, and why this resume
+  // (`TaskMatch` as JSON). NULL on every item an older build wrote.
+  { table: 'order_items', column: 'resume_label', definition: 'TEXT' },
+  { table: 'order_items', column: 'profile_label', definition: 'TEXT' },
+  { table: 'order_items', column: 'match_json', definition: 'TEXT' },
 ];
 
 function addMissingColumns(db: Database.Database): void {
@@ -1217,6 +1237,24 @@ const INDEXES_AFTER_COLUMNS: ReadonlyArray<{ name: string; table: string; column
     columns: ['created_at'],
     sql: 'CREATE INDEX IF NOT EXISTS idx_tailor_cache_created ON tailor_cache (created_at)',
   },
+  // The tree (database/profileTree.ts; test/profileTree.test.js pins the
+  // plans). A profile's resumes, an account's unfiled resumes, the counts per
+  // profile and the cap on how many an account may keep all name the owner
+  // first - and neither table had an index on it, so each was a scan.
+  {
+    name: 'idx_resumes_owner_profile',
+    table: 'resumes',
+    columns: ['owner_id', 'profile_id'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_resumes_owner_profile ON resumes (owner_id, profile_id)',
+  },
+  // An account's profiles, oldest first: the placement rule's "the oldest
+  // profile named for this person", and the count behind the profile limit.
+  {
+    name: 'idx_profiles_owner',
+    table: 'profiles',
+    columns: ['owner_id', 'created_at'],
+    sql: 'CREATE INDEX IF NOT EXISTS idx_profiles_owner ON profiles (owner_id, created_at)',
+  },
 ];
 
 function addIndexesAfterColumns(db: Database.Database): void {
@@ -1267,19 +1305,25 @@ export function getDb(): Database.Database {
   // Without a timeout the loser of a write race throws SQLITE_BUSY immediately,
   // which would surface as a flaky test rather than as the refusal being tested.
   db.pragma('busy_timeout = 5000');
+  let renamed: string[] = [];
   try {
-    // The guard, the schema and a fresh database's stamp in ONE write
-    // transaction, taken before anything is read. Two openers of one new file
-    // are expected - a second server on the same DB_DIR, every test that
-    // loads this module afresh - and outside a lock the second could see the
-    // first's users table before its stamp, and refuse a database that is
-    // only seconds old.
+    // The guard, the vocabulary step, the schema and a fresh database's stamp
+    // in ONE write transaction, taken before anything is read. Two openers of
+    // one new file are expected - a second server on the same DB_DIR, every
+    // test that loads this module afresh - and outside a lock the second could
+    // see the first's users table before its stamp, and refuse a database that
+    // is only seconds old.
     db.transaction(() => {
       if (tableExists(db, 'users')) {
         // An existing database: refused unless every upgrade an older build
         // made to it finished (upgradeGuard.ts) - before SCHEMA, so not even
         // a CREATE TABLE touches one this build cannot read correctly.
         assertUpgradeFinished(db, filePath);
+        // Then the names v4.2 changed (glossaryRename.ts), still before
+        // SCHEMA: SCHEMA creates the new tables, and an empty `resumes` made
+        // beside the old table of resumes would hide every one of them, and
+        // an empty `profiles` the old table of groups.
+        renamed = renameRetiredVocabulary(db);
         db.exec(SCHEMA);
       } else {
         db.exec(SCHEMA);
@@ -1292,6 +1336,8 @@ export function getDb(): Database.Database {
     db.close();
     throw error;
   }
+  // After the COMMIT: a line for a rename that was rolled back would lie.
+  if (renamed.length > 0) console.log(`[db] Renamed for v4.2: ${renamed.join(', ')}.`);
   addMissingColumns(db);
   addIndexesAfterColumns(db);
   // The connection is registered BEFORE the migrations run. That ordering is

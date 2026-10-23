@@ -12,7 +12,9 @@
  *   - Subscribe asks first (the spend alert: the amount, the balance after,
  *     "Do not show again"); Cancel there moves nothing; Proceed charges
  *     exactly that, once, and the page says when it renews
- *   - the builder's Multiple opens with the tier
+ *   - the builder locks nothing on a run, at any tier: its three build modes
+ *     (Choose Suitable Resume, Partial Tailor, Fully Tailor) are open on
+ *     Premium and, once the subscription ends, on Default too
  *   - Upgrade charges what the card says, which is the server's own proration
  *   - an Upgrade the unused days cover ($0) still asks: nothing now, the
  *     price when its 30 days end, and the credit it gives up
@@ -23,8 +25,11 @@
  *   - the renewal sweep renews a subscription whose 30 days are up, with a
  *     ledger row and a notice - and, with no credit, ends it, with a notice,
  *     and the locks come back
- *   - at the profile limit the New profile tile is locked, its dialog leads to
- *     the Subscription page, and /admin/profiles/new is drawn locked
+ *   - at the profile limit the New profile tile is the one lock left: its dialog
+ *     ("Locked: More profiles") leads to the Subscription page - while a
+ *     Default account still keeps three resumes in its one profile, its New
+ *     resume tile is open and /admin/resumes/new is drawn (resumes are never
+ *     counted)
  *   - an administrator's page is read-only, and Settings -> General carries
  *     the three price boxes with their source lines and Reset to default
  *
@@ -47,8 +52,8 @@ const { getDb } = require(path.join(DIST, 'database', 'sqlite'));
 const { readBillingRow } = require(path.join(DIST, 'database', 'subscriptionRepository'));
 const billing = require(path.join(DIST, 'services', 'subscriptions', 'billing'));
 const { formatMoney } = require(path.join(DIST, 'utils', 'money'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
+const { saveResume } = require(path.join(DIST, 'database', 'resumeRepository'));
+const { buildNewResume } = require(path.join(DIST, 'services', 'resumeDocument'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -66,29 +71,48 @@ function check(name, ok, detail = '') {
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Build Resumes' manual builder, opened. Clicked until its generate modes are
+ * Build Resumes' manual builder, opened. Clicked until its build modes are
  * drawn: a click that lands before the production page has hydrated does
  * nothing, and the builder stays on its first screen.
  */
 const openManualBuilder = (page) =>
   until(page, () => {
-    if (document.querySelector('input[name="generateMode"]')) return true;
+    if (document.querySelector('input[name="manualBuildMode"]')) return true;
     Array.from(document.querySelectorAll('button')).find((b) => b.textContent.includes('Building Manually'))?.click();
     return false;
   });
 
-/** What Build Resumes draws for its two generate modes, for a failed check's detail. */
+/** What Build Resumes draws for its three build modes, for a failed check's detail. */
 const builderModes = (page) =>
   page.evaluate(() =>
     JSON.stringify({
-      modes: Array.from(document.querySelectorAll('input[name="generateMode"]')).map((input) => ({
+      modes: Array.from(document.querySelectorAll('input[name="manualBuildMode"]')).map((input) => ({
         value: input.value,
         disabled: input.disabled,
         locked: Boolean(input.closest('[data-locked-choice]')),
       })),
+      locks: document.querySelectorAll('[data-locked-choice], [data-locked-feature]').length,
       text: (document.querySelector('main')?.innerText ?? document.body.innerText).slice(0, 300),
     })
   );
+
+/**
+ * True once the builder draws the three build modes - in this order, every one
+ * enabled and none locked - and no lock of any kind is on the page. A run is
+ * locked for no subscription (one profile per run, on every tier), so this is
+ * what the page reads on Premium and on Default alike. Polled in the page:
+ * the cards are drawn from the first paint, but the account the old lock
+ * depended on is read after it, and "locked" was also how a choice was drawn
+ * before that - so the caller waits and asks again once the page has settled.
+ */
+const buildModesOpen = () => {
+  const radios = Array.from(document.querySelectorAll('input[name="manualBuildMode"]'));
+  return (
+    radios.map((radio) => radio.value).join() === 'suitable,partial,full' &&
+    radios.every((radio) => !radio.disabled && !radio.closest('[data-locked-choice]')) &&
+    document.querySelectorAll('[data-locked-choice], [data-locked-feature]').length === 0
+  );
+};
 
 /** A fetch against the API, signed in with `token`. */
 const apiAs = (token) => async (route, init = {}) => {
@@ -197,8 +221,8 @@ async function main() {
   users.updateUser(admin.id, { role: 'admin' });
   const user = users.createUser({ email: `e2e-sub-${stamp}@example.com`, name: 'Sub User' });
   // One profile: the Default subscription's limit.
-  saveProfile({
-    ...buildNewProfile(
+  saveResume({
+    ...buildNewResume(
       {
         name: 'Ada Sub',
         title: 'Engineer',
@@ -311,13 +335,10 @@ async function main() {
     await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
     await openManualBuilder(page);
     // Waited for, not slept on: the page draws Build options, and reads the
-    // account the lock depends on, after its first paint.
-    const multipleOpen = await until(page, () => {
-      const radio = document.querySelector('input[name="generateMode"][value="multiple"]');
-      return radio ? !radio.disabled && !radio.closest('[data-locked-choice]') : false;
-    });
-    if (!multipleOpen) await page.screenshot({ path: `${SHOTS}/subscription-builder-open.png` });
-    check("the builder's Multiple is open on Premium, with no lock", multipleOpen, multipleOpen ? '' : await builderModes(page));
+    // account and its profiles, after its first paint.
+    const modesOpen = await until(page, buildModesOpen);
+    if (!modesOpen) await page.screenshot({ path: `${SHOTS}/subscription-builder-open.png` });
+    check("the builder's three build modes are open on Premium, with no lock", modesOpen, modesOpen ? '' : await builderModes(page));
 
     /* ---------------------------------------------------------- move up */
     await openSubscriptionPage(page);
@@ -467,25 +488,29 @@ async function main() {
 
     await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
     await openManualBuilder(page);
-    const lockedNow = () => {
-      const radio = document.querySelector('input[name="generateMode"][value="multiple"]');
-      return Boolean(radio?.disabled && radio.closest('[data-locked-choice]')?.querySelector('[data-locked-feature]'));
-    };
-    // Locked is also how the choice is drawn before the account has loaded,
-    // so it must still be locked once the page has settled.
-    const lockedAgain = (await until(page, lockedNow)) && (await wait(1500), await page.evaluate(lockedNow));
-    if (!lockedAgain) await page.screenshot({ path: `${SHOTS}/subscription-builder-locked.png` });
-    check("the builder's Multiple is locked again", lockedAgain, lockedAgain ? '' : await builderModes(page));
+    // A run has no lock at any tier, so the modes stay open after the tier
+    // ends. Asked again once the account is in the top bar: a lock would
+    // depend on it, and one drawn "until the account is known" would be gone
+    // or still there by then.
+    const stillOpen =
+      (await until(page, buildModesOpen)) &&
+      (await until(page, () => Boolean(document.querySelector('.tl-topbar button[aria-label^="Account"]')))) &&
+      (await page.evaluate(buildModesOpen));
+    if (!stillOpen) await page.screenshot({ path: `${SHOTS}/subscription-builder-locked.png` });
+    check('back on Default, the builder still has its three build modes open - a run has no lock', stillOpen, stillOpen ? '' : await builderModes(page));
 
     /* ------------------------------------------------- the profile limit */
+    // A profile is a PERSON, and the Default subscription allows one: Ada's.
+    // The only thing locked at that limit is a second PERSON.
+    const NEW_PROFILE_TILE = '[data-new-tile="profile"][data-locked-feature="more-profiles"]';
     await page.goto(`${APP}/admin/profiles`, { waitUntil: 'networkidle2' });
-    await until(page, () => Boolean(document.querySelector('button[data-locked-feature="more-profiles"]')));
-    const tile = await page.evaluate(() => {
-      const button = document.querySelector('button[data-locked-feature="more-profiles"]');
+    await until(page, (selector) => Boolean(document.querySelector(selector)), 15_000, NEW_PROFILE_TILE);
+    const tile = await page.evaluate((selector) => {
+      const button = document.querySelector(selector);
       return button ? { disabled: button.disabled, text: button.innerText } : null;
-    });
-    check('at the limit, New profile is locked - pressable, "Needs Premium"', Boolean(tile) && !tile.disabled && /Needs Premium/.test(tile.text), JSON.stringify(tile));
-    await page.click('button[data-locked-feature="more-profiles"]');
+    }, NEW_PROFILE_TILE);
+    check('at the limit, the New profile tile is locked - pressable, "Needs Premium"', Boolean(tile) && !tile.disabled && /Needs Premium/.test(tile.text), JSON.stringify(tile));
+    await page.click(NEW_PROFILE_TILE);
     await until(page, () => Boolean(document.querySelector('[role="dialog"]')));
     const tileLock = await page.evaluate(() => {
       const panel = document.querySelector('[role="dialog"]');
@@ -500,9 +525,67 @@ async function main() {
       tileLock.title === 'Locked: More profiles' && /Premium allows up to 5\./.test(tileLock.text) && tileLock.go === '/settings/subscription',
       JSON.stringify(tileLock)
     );
-    await page.goto(`${APP}/admin/profiles/new`, { waitUntil: 'networkidle2' });
-    const newPage = await until(page, () => Boolean(document.querySelector('[data-locked-panel="more-profiles"]')));
-    check('/admin/profiles/new is drawn locked, with Go to subscription and Back to profiles', newPage && /Back to profiles/.test(await mainText(page)));
+    await page.keyboard.press('Escape');
+
+    // Resumes are never counted: a second and a third resume of the SAME
+    // person are filed under their one profile on Default, with no 402.
+    const profileList = await asUser('/profiles');
+    const adaProfile = Array.isArray(profileList.body) ? profileList.body[0] : null;
+    const moreResumes = [];
+    for (const title of ['Backend Engineer', 'Frontend Engineer']) {
+      moreResumes.push(
+        await asUser(`/resumes?profileId=${encodeURIComponent(adaProfile?.id ?? 'none')}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'Ada Sub',
+            title,
+            contact: { email: 'ada@example.com', phone: '1', location: 'Remote' },
+            summary: `${title}.`,
+            experience: [],
+            skills: ['TypeScript'],
+            education: [],
+          }),
+        })
+      );
+    }
+    const afterMore = (await asUser('/profiles')).body;
+    const me = (await asUser('/auth/me')).body;
+    check(
+      'on Default, three resumes stay open in one profile: two more are created (201), still one profile of three resumes',
+      moreResumes.every((response) => response.status === 201) &&
+        Array.isArray(afterMore) &&
+        afterMore.length === 1 &&
+        afterMore[0].resumeCount === 3 &&
+        me?.account?.profilesUsed === 1,
+      JSON.stringify({ created: moreResumes.map((r) => [r.status, r.body?.error]), profiles: afterMore, used: me?.account?.profilesUsed })
+    );
+
+    await page.goto(`${APP}/admin/profiles?tab=resumes`, { waitUntil: 'networkidle2' });
+    await until(page, () => document.querySelectorAll('[data-resume-card]').length === 3 && Boolean(document.querySelector('[data-new-tile="resume"]')));
+    const resumeTab = await page.evaluate(() => {
+      const newResume = document.querySelector('[data-new-tile="resume"]');
+      return {
+        tabs: Array.from(document.querySelectorAll('[role="tablist"] [role="tab"]')).map((tab) => tab.textContent.trim()),
+        cards: document.querySelectorAll('[data-resume-card]').length,
+        newResume: newResume ? { lock: newResume.getAttribute('data-locked-feature'), disabled: newResume.disabled } : null,
+      };
+    });
+    check(
+      'and the dashboard reads Profiles (1) and All resumes (3), with the New resume tile open - not locked, not disabled',
+      resumeTab.tabs.join(' / ') === 'Profiles (1) / All resumes (3)' &&
+        resumeTab.cards === 3 &&
+        Boolean(resumeTab.newResume) &&
+        resumeTab.newResume.lock === null &&
+        !resumeTab.newResume.disabled,
+      JSON.stringify(resumeTab)
+    );
+
+    await page.goto(`${APP}/admin/resumes/new`, { waitUntil: 'networkidle2' });
+    const newPage = await until(page, () =>
+      Array.from(document.querySelectorAll('h1')).some((h) => /^Start building a resume/.test(h.textContent.trim()))
+    );
+    const newLocks = await page.evaluate(() => document.querySelectorAll('[data-locked-feature]').length);
+    check('/admin/resumes/new is drawn - the template chooser, with no lock and no Go to subscription', newPage && newLocks === 0, `locks ${newLocks}`);
 
     /* ------------------------------------------------------------- 390px */
     await page.setViewport(PHONE);

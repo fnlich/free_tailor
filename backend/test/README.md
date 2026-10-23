@@ -14,6 +14,10 @@ npm run test --prefix backend
 
 The backend tests use Node's built-in `node:test` runner and require no extra test dependencies. The test script builds TypeScript first, then runs the compiled JavaScript from `backend/dist` through `backend/scripts/runTests.js`.
 
+**What a full run reports.** With v4.2 complete (see *The v4.2 vocabulary* below) the suite is 158 files and 2178 tests: 2158 pass, 4 are skipped and 16 fail. The 4 skipped say why - two tests of the frontend's launcher in `devServer.test.js` need POSIX signals (skipped on Windows), and two in `installCheck.test.js` need npm to have started the run (skipped when it is started as `node scripts/runTests.js`, as these counts were measured; `npm test` runs them). The 16 failures are the Windows 11 machine this was built on, not the code, and are the same 16 throughout v4.2, from the rename stages to the last count: `aiOperationalWiring` x2, `aiProviders` x2, `claudeCli`, `codexCli` x3, `geminiCli` x4, `jobLakeReport`, `orderFileAccess`, `providerSeats` and `sheetsDoctor` - Windows semantics (no executable bit, a symlink that needs a privilege, a drive letter in a path, CRLF checkouts), Windows' resolution of the `claude`, `codex` and `gemini` commands (`resolveBinary.ts`: the `.cmd` shims of the real CLIs installed on that machine are rewritten into `node <script>` arguments, and a stand-in path that does not exist reads as not installed), and the repository's root `.env` reaching the test process. Read a red run against them: a failure in any other file, or more in one of these than counted, is a regression.
+
+**Build from a clean `backend/dist`.** `tsc` writes compiled files and never deletes the ones whose source is gone, so after a pull or a change that moves, renames or deletes a `.ts` file, `dist` still holds the old module, and a test that still requires the old path passes against code the source no longer has. v4.2 retired `services/profileService`, `services/profileImport`, `services/sampleProfile`, `config/profileSections`, `types/group`, `database/groupRepository` and `routes/groups`; `glossaryRename.test.js` fails with *no compiled module of a retired path is left in backend/dist* while any of them is there. So `rm -rf backend/dist` (PowerShell: `Remove-Item -Recurse -Force backend/dist`) and `npm run build --prefix backend` before the run - `npm test` builds, but does not clean.
+
 The suite needs only the backend installed. Two tests in `installCheck.test.js` check this checkout's own install - every package the root, backend and frontend `package.json` files name is installed, and `scripts/checkInstall.mjs` prints nothing - and are skipped, saying why, where the root's or the frontend's `node_modules` was never made (a backend-only install such as `npm ci --prefix backend`). A `node_modules` that is there but short of a package still fails them; `npm run install:all` from the repository root puts it right.
 
 Storage tests point `DB_DIR` (SQLite database) and `TAILOR_STATIC_DIR` (default prompts, skill seed, built-in templates) at temporary folders under `os.tmpdir()`, so they never touch the real database or shipped assets.
@@ -26,7 +30,7 @@ TAILOR_KEEP_TEST_TMP=1 npm run test --prefix backend
 
 **No test uses a real Google credential.** The backend looks for one beside its own compiled code too, so on a checkout holding a real one (`backend/google-oauth-credentials.json` after `npm run sheets:login`, or `backend/service-account-key.json`) every test that signed an account in used to allocate a REAL spreadsheet in that Google account - one owner's Drive collected 440 named "Free Tailor - admin@example.com" and the like. `scripts/runTests.js` therefore sets `TAILOR_GOOGLE_CREDENTIAL_SEARCH=off` (only a file a variable names is read) and `GOOGLE_CREDENTIALS_PATH` / `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` to empty for the whole run, whatever the environment or `.env` says, and `test/helpers.js` sets the same three as it loads. A test of the search itself writes its own fake credential and turns the search on for its own scope with `withCredentialSearch`. The e2e backends get the same from `test/e2e/no-google.js`, which every e2e preload requires first. `testRunner.test.js` holds all of it, holds every `dist/index.js` command in the e2e README and in each e2e script's own comments to loading a preload, and fails on any line there that starts a backend another way - the root `npm run dev` and its kin, the backend's `npm start`, ts-node-dev - none of which loads one (shell.js said "`npm run dev`" until this release). Run test files through `scripts/runTests.js` only.
 
-To run one file the same way (after `npm run build --prefix backend`, since the tests load `dist/`):
+To run one file the same way (after `npm run build --prefix backend` - from a clean `dist`, as above - since the tests load `dist/`):
 
 ```sh
 cd backend && node scripts/runTests.js test/orderRoutes.test.js
@@ -51,8 +55,11 @@ Coverage currently focuses on:
   created and no stamp, every one of them in a single refusal; a template-move
   record nobody can parse read as complete; every column it asks for one this
   build makes; and the real server spawned on such a database printing that
-  one line and exiting 1, no stack trace, never listening; and the README's
-  quotes of that line held to the guard's own words
+  one line and exiting 1, no stack trace, never listening; the guard's list of
+  added columns held to the names build ac3df79 gave the tables (`profiles`,
+  `profile_groups`), which it reads a database by before the v4.2 rename
+  (`glossaryRename.test.js` reads an unstamped database through them too);
+  and the README's quotes of that line held to the guard's own words
 - the data-migration runner (`migrationRunner.test.js`), given steps of the
   test's own so it does not depend on what the shipped ones do: each step's
   version written as it finishes and nothing run twice, a step at or below the
@@ -61,6 +68,55 @@ Coverage currently focuses on:
   with the steps before it kept, and a database whose version cannot be read
   left alone; and the shipped steps, from 9, finding nothing to do on an empty
   database (step 10 is `outputPath.test.js`'s)
+- profiles (people) and the resumes filed under them (`profileTree.test.js`):
+  the tree and its invariant (no resume under a missing profile or another
+  account's, every default a member), placement by the person key (a name over
+  100 characters included), the limit counting people - raced from separate
+  threads on separate connections, since requests in one process only run one
+  after the other - move, delete and the default resume, the query plans
+  pinned off the exported statements, and the lazy filing of a database as
+  v4.1 left it (dangling and foreign pointers, edits, the Bid Assistant's PUT,
+  rows that are not documents, the session's count)
+- the Profiles pages' half (`frontendProfiles.test.js`), written from the
+  specification: the dashboard's decisions (`lib/profileDashboard.ts`, which
+  imports nothing at runtime) - its two tabs and their addresses (only
+  `resumes` opens All resumes), Grid / List kept under
+  `freeTailor.profiles.view` and Grid for a storage that is missing, throws or
+  holds junk, the route test that puts the profiles list, one profile and the
+  editor on the resume desk and nothing else, a profile's and a new resume's
+  encoded addresses (`?profile=`), a resume's label equal to the server's
+  `resumeLabelOf` over a table of headlines and names, profiles newest edit
+  first, the two searches (a profile by its name or the words of any of its
+  resumes, a resume by label, name or profile), the holdings line, the
+  search's count line, the delete warning in the owner's words (a profile
+  with no resume a plain delete, a blank name *Untitled Profile*) and the
+  keywords preview; the chooser's links, Duplicate keeping the template and
+  Download as a file Import JSON takes back; `describeChoice`, the one
+  wording of why a resume was chosen, for the order page, the receipt and the
+  preview; the build modes, their labels and price settings equal to the
+  server's, and the three mode cards read in the owner's words and never name
+  a subscription; the clients `profilesApi` and `resumesApi` against the real
+  routes - making, reading, renaming and re-defaulting a profile, a resume
+  filed where `?profileId=` says, Move all or nothing, Delete taking every
+  resume and answering how many, every refusal as the server made it, a
+  Default account keeping one profile while its resumes are never counted, an
+  import and an upload filed under the profile asked for and an upload for
+  another account's profile refused before the model is asked; and text pins
+  on the pages - the four pages of the desk exist,
+  the dashboard's tablist, `aria-pressed`, search and status line and the
+  `data-*` hooks the browser scripts use, the one lock (`more-profiles`), a
+  Suspense boundary around everything that reads the address, the editor
+  going back to the resume's profile and never to the bare list, a profile's
+  page handing an old resume bookmark to the editor, no template rule left in
+  the sources, no price file flooring or float-parsing, and the admin layout
+  asking `isProfilesDeskRoute` instead of keeping a pattern of its own
+- the v4.2 vocabulary (`glossaryRename.test.js`, in its own section below): a
+  database as v4.1 left it, stamped or not, opening with its tables, columns
+  and stored keys moved to the new words and then left alone, a stray table
+  dropped or two tables with rows refused by name, golden values holding what a
+  model reads and every tailoring cache key to v4.1's, the Bid Assistant still
+  reaching resumes, and scans of the whole source for any leftover of the old
+  words
 - the settings with a `.env` default (`settingDefaults.test.js`): for every
   one, the code default with nothing set, `.env`'s over it, an
   administrator's over `.env`, and `null` putting `.env`'s back - each with
@@ -99,24 +155,27 @@ Coverage currently focuses on:
   overrides, the admin payload that serves them, create and edit validation,
   Set Default refusing a model that cannot run, and prompt overrides checked
   against the same lists (`modelAdministration.test.js`)
-- the price per resume: `pricePerResumeMilli` on every record, in thousandths
-  of a dollar (every seed free until priced and named in the admin payload; a
-  record priced in credits, or with no price, read as free without a
-  write-back; junk or out of range clamped or free on read, warned once; a
-  dollar price refused by name on a save when missing or bad; kept by a
-  partial edit and by every settings save), the credit primitives taking an
-  amount, and the queue refunding each task's snapshotted `costMilli` -
-  restored tasks included (`modelPricing.test.js`); and through the routes, the
-  quote, a mixed-price
-  batch charged the sum and refunded per task, the 402, free models, the
-  exempt administrator, and finalised content priced at the model that wrote
-  it - a token that no longer holds pricing the named model when quoted
-  without the content, which is why the builder quotes with it
+- the price per resume, which is the build mode's (`modePricing.test.js`): the
+  three prices in thousandths of a dollar (every mode free until somebody
+  prices it; `.env` pricing each mode on its own, an administrator's price
+  beating it - $0 included - and `null` putting `.env` back; a price saved in
+  dollars and refused by its box and code when missing, bad or sent in
+  thousandths; a junk `.env` price read as $0, flagged unreadable and said
+  once; a stored price nobody could have written read past;
+  `getBuildModePrices` throwing rather than reading $0), a model carrying no
+  price (one an older build stored read past and dropped by the next write, a
+  create without one 201, a body's `pricePerResumeUsd` ignored), the credit
+  primitives taking an amount, the queue refunding each task's snapshotted
+  `costMilli` - restored tasks and a deleted pick included - and, through the
+  routes, the quote equal to the charge, the 402 naming the sum, free modes,
+  the exempt administrator, previews' tokens binding the mode and the floor
+  for content nobody vouches for; and the quote, a batch charged jobs x the
+  mode's price and broken down by mode, and a preview's token end to end
   (`generationPricing.test.js`)
 - what an ordinary account may know of models: the slim `GET
   /api/resume/models`, a stored choice falling back while a requested one is
   refused with one generic sentence, the provider request forms kept for
-  administrators, the profile-save check, the job filter naming the analysis
+  administrators, the resume-save check, the job filter naming the analysis
   model and the Bid Assistant on the app default model
   (`userModelAccess.test.js`)
 - job analysis runs once (PLAN check 1): the ten cases that used to re-run it,
@@ -179,9 +238,11 @@ Coverage currently focuses on:
   the required variables, what a text lacks or names that is not supplied,
   the *Needs update* note and the list's *Not run* line (an edit the server
   dates from an older version included), the single-prompt
-  features and each one's sentences, and the refusal of a save (an unknown
-  variable first, as the server does) in the server's sentence - each run
-  against the server's own code
+  features and each one's sentences (each still opening as it did; Fully
+  tailoring's names the profile's default resume, the cover letter's the
+  Choose Suitable Resume builds, and none says a model has a price) and the
+  refusal of a save (an unknown variable first, as the server does) in the
+  server's sentence - each run against the server's own code
 - the Job Data Lake: the company normalisation and the versioned hash
   (`jobLakeIdentity.test.js`); the tables and exactly the planned indexes -
   `job_reports`' two among them - with EXPLAIN QUERY PLAN on the duplicate
@@ -280,11 +341,18 @@ Coverage currently focuses on:
   (filtering, choosing past a cap, typed text split, the active option -
   still the one chosen once a filtered list is whole, and scrolled into the
   list's own view - what is announced) and its combobox markup; who an order
-  builds for, Several profiles among them, against the server's
-  `assertProfileScopeAllowed`; and the pieces Build Resumes and Find Jobs
-  share, the order dialog offering Several (Build Resumes not), saying why it
-  cannot be placed where the cost line stands, and sending an Order only
-  after the spend confirm, which starts nothing for a dialog closed meanwhile
+  builds for - ONE profile in one of the three build modes, all open to a
+  Default account: the request the dialog sends (the first profile offered,
+  the jobs that have a stored analysis, a mode) quoted by the real generation
+  route in each mode at that mode's price, a list of profiles or of resumes
+  refused (400 `one-profile-per-run`) and another account's profile a 404;
+  and the pieces Build Resumes and Find Jobs share, the cost line, the
+  receipt, `ProfileSelector` and `BuildModeChoice` - with no several-profile
+  target, no lock and no list of profile ids on either page - the order
+  dialog's ids (`order-profile`, `orderBuildMode`) and copy, its saying why
+  it cannot be placed where the cost line stands, and its sending an Order
+  only after the spend confirm, which starts nothing for a dialog closed
+  meanwhile
 - providers of one type and their queues (`providerQueues.test.js`): two
   Claude providers with limits 1 and 2 running six tasks at most three at once,
   each at its own limit, placed two and four; a held provider's waiting work,
@@ -329,12 +397,14 @@ Coverage currently focuses on:
   send read back whole; and no page outside the admin ones reaching the
   routes
 - the tailoring cache (`tailorCache.test.js`): a second identical build making
-  no tailoring or revise call and charged again, a one-character profile
+  no tailoring or revise call and charged again, a one-character resume
   change, another model, an edited prompt and another template each a miss, a
   skill added to the library not one, the key's parts (the revise prompt and
-  settings in, the profile's settings out), a cover letter's own key, every caller
-  passing its context (/resume/preview, /resume/preview-all and the queue's
-  tailoring and cover letter), nothing cached without an analysis id, an
+  settings in, the resume's settings out) and the key still built by hand with
+  the resume under the field name `profile`, as v4.1 hashed it, so every
+  stored tailoring stays a hit, a cover letter's own key, every caller
+  passing its context (/resume/preview and the queue's tailoring and cover
+  letter; /resume/preview-all is gone), nothing cached without an analysis id, an
   answer that does not parse or that a fallback model wrote never stored, an
   unreadable stored answer a miss, the one-seek lookup and the prune; the
   seats' `fellBack` is in `claudeCli.test.js` and `geminiCli.test.js`
@@ -353,9 +423,12 @@ Coverage currently focuses on:
 - whose Bid Assistant data is whose (`bidAssistantScoping.test.js`): a saved
   sheet source is its owner's, and a legacy owner-less one or a deleted
   account's an administrator's to change; answers are read and deleted
-  through the reader's own profiles, go with the profile - so an account that
+  through the reader's own resumes, go with the resume - so an account that
   later takes its id reads none - and are all a job's "Answered" flag counts;
-  and the shared job board's deletions are an administrator's
+  and the shared job board's deletions are an administrator's. The Bid
+  Assistant still calls a resume a profile, in its routes and its fields
+  (`/api/bid-assistant/profiles`, `profileId`, `focusProfileId`,
+  `targetProfileIds`, *Profile not found.*), and this test speaks its words
 - the batch progress stream's bare-newline heartbeat, which keeps a proxy's
   idle timeout from cutting a long batch (`batchStream.test.js`)
 - the account tier called a subscription everywhere
@@ -374,7 +447,15 @@ Coverage currently focuses on:
   truncates or float-parses an amount (`money.test.js`); a
   purchase crediting exactly what it charges, with no fee, and the payment
   limits in dollars (`paymentFees.test.js`); and the frontend's copies of all
-  of it run against the server's (`frontendMoney.test.js`)
+  of it run against the server's (`frontendMoney.test.js`), the price of each
+  build mode included: Admin -> Settings' three price boxes
+  (`modePriceDraft.ts`) refusing every input of a long list in
+  `parseBuildModePriceInput`'s own words and naming the box the server names,
+  filled with what is in effect and sending only what changed, as typed; the
+  spend confirm's line naming the build mode a run is priced in; no page that
+  shows or sends money flooring, truncating or float-parsing it; and no box
+  an amount is typed into a number box (the price boxes are text with
+  `inputMode="decimal"`, and a model has no price box at all)
 - subscriptions bought from the credit balance: the rules as tables - the
   days left and what they are worth, what moving up costs ($19.99 less 29
   unused days of $9.99 is $10.333), the period a renewal buys, every card's
@@ -405,18 +486,32 @@ Coverage currently focuses on:
   card's action and the "Current subscription" summary drawn from real
   answers as Default, paid, switching, cancelled, kept, set by an
   administrator and an administrator's own, a changed price and a short
-  balance read as the page reads them, a short renewal warned of, an *Upgrade
+  balance read as the page reads them (a short balance is only ever a 402
+  `insufficient-credits`: the client has no reader of a tier refusal any
+  more), a short renewal warned of, an *Upgrade
   · $0* the unused days cover still asked about (nothing now, the price at its
   first renewal), the cards four, two or one across and never three, and Admin
   -> Accounts' *Paid · renews* line and confirm (`frontendSubscription.test.js`)
-- the lock drawn where a subscription falls short: its words from
-  `describeLock` per feature and tier, a refusal's lock worded from the
-  refusal and never from a session behind it, the frontend's copies of the
-  tier names and profile limits, and the shared run choices - who a run builds for
-  (one profile, several chosen, all, or a group), the starting target below
-  and above Premium, the files - held to the server's
-  lock (`frontendHelpers.test.js`); the rail offering Groups to every builder,
-  locked below Premium and never hidden (`isNavLocked`,
+- the one lock drawn where a subscription falls short - adding a PROFILE past
+  the tier's limit (a run builds one profile on every subscription, so
+  nothing on a run is locked): `LockedFeatureId` has exactly one member,
+  `more-profiles`; its words from `describeLock` per tier, never a "plan"; a
+  refusal's lock worded from the 402 `profile-limit` and never from a session
+  behind it (there is no tier refusal left to read); the frontend's copies of
+  the tier names and profile limits and its entitlement helpers equal to the
+  backend's; and the multi-profile lock, the build target it capped and the
+  refusal that worded it present on neither side (`frontendHelpers.test.js`).
+  The same file holds the shared run choices - where a page starts (the
+  administrator's default profile while it is offered, else the first), what
+  blocks a run (three sentences, and *No profile has an enabled resume to
+  build.*), the mode it starts on (Partial Tailor for anything unknown), the
+  line under the mode cards in all four forms and the files, from a module
+  whose only runtime import is the build modes - the frontend's build modes
+  (their labels, the setting each price is served under, one card each, none
+  naming a tier) equal to the server's, and the Multiple flow's previews gone;
+  the builders' rail, with one Profiles entry that no tier locks, lit for the
+  dashboard, a profile's page and the
+  chooser and editor under `/admin/resumes` (`isNavLocked` and `activeHref`,
   `frontendRoles.test.js`); and the alert before anything spends credit
   (`frontendSpendConfirm.test.js`): *Do not show again* per kind of action
   under keys of its own (the old Generate Immediately key not read), unreadable
@@ -424,7 +519,8 @@ Coverage currently focuses on:
   subscription only when it takes credit, the amount, the balance after and a
   short balance blocking Proceed, and every Build Resumes run and Order and
   every subscription change going through it - a finalise quoted with its
-  content as well as its tokens, the run buttons waiting while it prices, and
+  content as well as its tokens, the run buttons waiting while it prices, its
+  "could not be worked out" sentence naming the build mode and no model, and
   the page read the same on a CRLF checkout
 - the admin pages' half of the settings with a `.env` default, the Models
   dialog and where resumes are filed (`frontendSettings.test.js`): the frontend's
@@ -439,9 +535,21 @@ Coverage currently focuses on:
   their source and Reset under their dollar name (`appSettingResetBody`), and
   General's price boxes sending only the box changed and refusing in the
   server's words before anything is sent (`subscriptionPriceDraft.ts`); the
+  price of each build mode the same way (`modePriceDraft.ts`) - three boxes
+  sent as typed under the mode's dollar name, $0 a price that beats `.env`,
+  the server's exact sentence and its `bad-price` code for what it refuses
+  (the empty box included), the refusal's `field` landing under the box it
+  names, a served `...Milli` name refused as `bad-price-field`, Reset sending
+  `null` under the dollar name, junk in `.env` read as $0 and listed as
+  unreadable - beside the builder's starting mode (`defaultBuildMode`, with
+  `DEFAULT_TAILOR_MODE` behind it) as a box of its own, and no build target,
+  free-model list or model price served or read any more; the
   dialog refusing what the server refuses in its words and pinning a refusal
   only the server can make (a name taken meanwhile, a pair another record
-  holds) under the box it names, an edit sending only what changed; Set
+  holds) under the box it names, an edit sending only what changed, and a
+  model carrying no price - no field in the draft, none in a create or an
+  edit, and one sentence on the page saying a resume's price is set per
+  builder mode; Set
   default, Use for analysis and "Use the default model"; the token chips
   inserting at the caret and a slow preview answer dropped; and Resume files'
   preview, save and Reset against the account routes, a reporter refused and
@@ -468,21 +576,30 @@ Coverage currently focuses on:
   server's words, Ask for Refund off exactly when and why the real payout
   route says, Record payout in the queue refusing what the real route refuses
   and a recorded payout reading *Paid out* - plus every sentence that asks for
-  an administrator followed by a Contact admin link (`frontendRefunds.test.js`)
+  an administrator followed by a Contact admin link, and the credits copy
+  saying a resume costs the price of the build mode it is built in and never
+  that a model has a price (`frontendRefunds.test.js`)
 - Generate Immediately and Order: the two kinds (`mode` alone decides; an old
   script's `asOrder: true` is not read), the tab lease through the
   stream, the release, the owner-checked per-file download and the deletion
   after the run (`immediateRuns.test.js`); the grace on a mock clock
   (`tabLease.test.js`); immediate work before orders on one lane
-  (`queuePriority.test.js`); one profile on every subscription, several only
-  from Premium, administrators exempt (`subscriptionGates.test.js`); the Tab
+  (`queuePriority.test.js`); one profile per run on every subscription - a
+  Default account building a profile of three resumes in every mode, as
+  Generate Immediately, as an Order, quoted and previewed, a body naming two
+  profiles, a `profileIds` list, resume ids or no profile refused 400
+  `one-profile-per-run` for every tier, administrators included, a profile
+  that is not the caller's a 404, one with no enabled resume 400
+  `no-profiles-to-build`, administrators exempt from charges and not from that
+  rule, and no scope gate left in the code (`subscriptionGates.test.js`); the Tab
   select's listing (`sheetTabs.test.js`); the builder's reattach seeing only
   the caller's own runs (`builderRunListing.test.js`); a restored run keeping
   its reservation (`restoreReconcile.test.js`); an untitled row built for its
   analysis's title (`queuedRole.test.js`); and the page's own decisions - a
-  tab's id, the downloads, the release request, how a run ended, the sheet
-  rows (`immediateRunHelpers.test.js`; the question asked before a run is
-  `frontendSpendConfirm.test.js`'s)
+  tab's id, the downloads (a finished resume naming which of the person's
+  resumes the run chose, only when the snapshot says so), the release
+  request, how a run ended, the sheet rows (`immediateRunHelpers.test.js`;
+  the question asked before a run is `frontendSpendConfirm.test.js`'s)
 - saved templates as files (`templateFiles.test.js`): import, extraction and
   the manual builder each writing `<id>.json` with its source (the import
   answering the list and its counts, nothing spread beside them), an edit
@@ -492,12 +609,19 @@ Coverage currently focuses on:
   written giving the generic error and leaving no `.tmp`, the startup line
   saying whether saved templates can be written, and a stale scratch file
   swept
-- the profile preview's sample person (`sampleDefaults.test.js`): an empty
+- the resume preview's sample person (`sampleDefaults.test.js`): an empty
   draft filled field by field and section by section, typed values winning,
   and the sample reaching nothing but the preview route - never a save, a PDF
   or a prompt; and the editor's helpers - the pane width that stops the
-  preview shaking, the "N kept" line, the sample-text notice and placeholders
-  (`frontendEditorHelpers.test.js`)
+  preview shaking, the "N kept" line, the sample-text notice and placeholders,
+  the chooser's links reading back as the same choice (the template, the
+  layout, then `&profile=<id>`, encoded and no part of the choice), any resume
+  offered any template (no picker or helper limits one to the templates the
+  other resumes have not used), and a card's Duplicate and Download -
+  Duplicate sends a resume's whole content as a new one on the same template,
+  without its id, times, switch, profile or keywords, and Download is a file
+  Import JSON takes back, without the keywords or the profile it was filed
+  under (`frontendEditorHelpers.test.js`)
 - what the pages send back of a tailoring (`frontendTailoring.test.js`): the
   builder's *Manual Edits (JSON)* box offering only what an edit can change,
   plus each role's company, title and dates to say which role its bullets are -
@@ -505,19 +629,53 @@ Coverage currently focuses on:
   through the server's own parse exactly as the whole content does, for every
   switch and layout and for two stints under one company and title listed in
   the other order; an edited bullet, summary, group or soft group surviving, a
-  role's place and dates the profile's whatever the edit says, an edited title
+  role's place and dates the resume's whatever the edit says, an edited title
   kept only without a headline, and the note under the box saying so; anything but
-  one JSON object refused before it is sent; and the profile editor saving and
+  one JSON object refused before it is sent; and the resume editor saving and
   previewing only settings the server reads (no skill ordering, no cover
-  letter prompt), its Experience section saying a tailored resume prints no
-  role description
-- a profile's two section switches and its own soft skills
+  letter prompt and, the mode being the run's, no tailoring mode: not in a
+  draft, a save or the defaults, and a stored one read past by the draft and
+  by the server alike), its Experience section saying a tailored resume
+  prints no role description
+- importing a resume from a JSON file (`resumeImport.test.js`): the gate more
+  than the happy path, since `resumeDocument` normalises anything it is handed
+  and never throws - the three shapes a file comes in (one record, a list, the
+  wrapper `resumes`), a file that is not a resume refused naming the entry, and
+  nothing imported when one entry in the middle is bad, a free id kept and a
+  taken one replaced rather than overwritten, one id twice in a file not
+  collapsing into one resume, a nonsense `createdAt` ignored, an oversized file
+  refused before anything is built, the error type the route maps to a 400, and
+  an import landing in the database whole or not at all; and v4.1's export
+  files still read - a record, a list or the wrappers `profiles`, `items` and
+  `data`, a record's `profileSettings` arriving as `resumeSettings` with the
+  values it held, either settings key enough to make a record a resume, and
+  this build's wrapper read first when a file carries both. That alias is the
+  one place the old spelling is still read; `glossaryRename.test.js` holds it
+  to the import and the rename step
+- the section catalogue and the order of sections (`sectionCatalogue.test.js`):
+  fifteen kinds in canonical order with the classic six first in the DOCX's, a
+  section ref only a kind id or `custom:<key>` and nothing trimmed or folded,
+  `presenceOf`, `cleanSectionOrder` and `sectionSortKey`, and
+  `effectiveSectionOrder` with nothing stored (the template's own order,
+  filtered to the default kinds and the kinds with content) and with an order
+  stored (that order, then the unlisted default kinds in the template's order,
+  then the unlisted kinds with content, then the custom sections); the nine
+  new kinds and the custom sections stored trimmed with blank entries dropped
+  and capped at fifty entries and ten custom sections, omitted keeping what is
+  stored and `[]` clearing; a stored order exactly what the person arranged -
+  never filled in, cleared by `[]`, re-cleaned when a custom section goes, an
+  absent one staying absent; the preview builder passing every list and the
+  order through; the tailoring cache ignoring the order and missing on a new
+  entry; and a file with a name and only projects being a resume. The
+  frontend's copy of the catalogue is held to it by
+  `frontendEditorHelpers.test.js`
+- a resume's two section switches and its own soft skills
   (`resumeSections.test.js`): off unless stored `true`, kept by a save that
   omits them; the soft-skill list cleaned, bounded and kept; the preview's
-  profile builder never throwing and taking only the settings that change the
+  resume builder never throwing and taking only the settings that change the
   render; the render gate - a switched-off section empty whatever the content
-  carries, Strengths always the profile's own, Soft Skills the content's list
-  or, when that is empty, the profile's own; no render padding the skills
+  carries, Strengths always the resume's own, Soft Skills the content's list
+  or, when that is empty, the resume's own; no render padding the skills
   block, the preview and generation alike, in the order the person keeps
   them; links reaching an `href` only as http(s); and the DOCX carrying
   Strengths and Soft Skills exactly when the PDF does, the model's soft-skill
@@ -526,8 +684,8 @@ Coverage currently focuses on:
   `skillGroups` verbatim when Grouped and flattened without repeats when
   Plain, nothing from the library added, filtered or reordered; the soft-skill
   group routed to the Soft Skills section only while the switch is on for the
-  template; the profile's own strengths; a block with nothing printable
-  falling back to the profile's own skills; older content's flat list printed
+  template; the resume's own strengths; a block with nothing printable
+  falling back to the resume's own skills; older content's flat list printed
   unpadded; the library filing and filtering only an untailored block and an
   older content's Grouped list - never the model's, never an older Plain list,
   never padding; no role description and no empty box where it was - and a
@@ -549,7 +707,7 @@ Coverage currently focuses on:
   (and dropped by the next write of a saved file), the admin edit taking a
   name, a description or disabled and refusing a body with none of them,
   the gallery preview's options and no-script policy, and the template
-  resolver's order - requested, the profile's own, `default`, any enabled
+  resolver's order - requested, the resume's own, `default`, any enabled
   template, null - whatever the layout. Its fixtures read the built-ins only
   (the files without a `source`)
 - the two skills layouts as rendered (`skillsLayoutRender.test.js`): Plain as
@@ -581,13 +739,13 @@ Coverage currently focuses on:
   attribute decides on its own; a template the finds would stop compiling
   drawn with less found and logged once, and one broken by itself failing with
   its own error; markup that only looks like a section left alone; and the
-  profile preview route and the render a PDF prints from agreeing, the stored
+  resume preview route and the render a PDF prints from agreeing, the stored
   file never rewritten
-- the live profile preview over HTTP (`profilePreview.test.js`), run with all
-  three seats locked so a 200 also proves no model was asked: nothing written
-  or charged even at the subscription's profile limit, the draft laid over the
-  caller's own
-  profile and somebody else's a 404, half-typed drafts rendering, nothing typed
+- the live resume preview over HTTP (`resumeDraftPreview.test.js`, `POST
+  /api/resumes/preview`), run with all three seats locked so a 200 also proves
+  no model was asked: nothing written or charged even at the subscription's
+  profile limit, the draft laid over the caller's own resume and somebody
+  else's a 404 (*Resume not found*), half-typed drafts rendering, nothing typed
   able to run, the layout and switches reaching the page, the template order
   (a Plain draft drawn on Burgundy Rule, its grid marked for the one group), a
   disabled template a 404 for a user only, and a 503 with a ref when no
@@ -595,31 +753,32 @@ Coverage currently focuses on:
 - tailoring by the switches (`resumeSectionPrompts.test.js`): no switch a
   prompt value - the strengths in `profileJson` only while on, her own soft
   skills never - the shipped prompt naming the drawn soft-skill heading, the
-  profile's own strengths while on, the model's soft-skill group in its
+  source resume's own strengths while on, the model's soft-skill group in its
   section while Soft Skills is on and in the block while off, Grouped and
   Plain the same content, nothing added to the summary, held content - a
-  builder preview, a queued task - finished against the profile as it is now
-  with no model call, an answer with no skill groups falling back to her own,
-  and a template with no section reading as off; and end to end, two profiles
-  on one analysis each drawn by their own switches through
-  `/api/resume/preview-all`, a repeat reusing the tailoring and its revision
+  builder preview, a queued task - finished against the source resume as it is
+  now with no model call, an answer with no skill groups falling back to her
+  own, and a template with no section reading as off; and end to end, two resumes
+  (each its own person's) on one analysis, previewed one after the other
+  through `/api/resume/preview` (a preview builds one profile) and each drawn by
+  its own switches, a repeat reusing the tailoring and its revision
   (`sectionSwitchesEndToEnd.test.js`)
 - the tailoring prompt's promises (`tailorContract.test.js`): its values
   exactly the declared variables, the posting's own lists (skills, prose
   keywords with the banned verbs out, concepts) read from either analysis
   shape, the five it leans on (requirements, must-include, early, Go as
   spelled, topped up), the concept tools and soft-skill heading seeded per
-  profile and posting, the title's kind (levels taken off its edges only,
+  resume and posting, the title's kind (levels taken off its edges only,
   never the kind alone as a headline) and its six shapes, roles restored,
   dropped and put back with no description, two stints at one company under
-  one title told apart by their dates (a profile typed oldest first, answered
+  one title told apart by their dates (a resume typed oldest first, answered
   newest first), the eight-bullet cap by checklist terms, numerals (a compound
   past twenty, hyphenated or spaced, left as written) and the
   dash backstop (a range beside a unit, a currency or a quarter kept a range;
   the cover letter's too), the soft
   group found by mark, heading or a soft heading last, and the parse
-  idempotent for every profile shape; the pure lists of
-  `profileExperienceSkills.test.js` alongside
+  idempotent for every resume shape; the pure lists of
+  `resumeExperienceSkills.test.js` alongside
 - the revise pass (`reviseCoverage.test.js`): the missing terms in priority
   order with banned words out and the cap, what counts as a figure, the
   figures sentence, the merge (summary, whole roles by the n-th company and
@@ -634,16 +793,42 @@ Coverage currently focuses on:
   provider pin is `providerQueues.test.js`
 - Partial and Fully tailor (`tailorModes.test.js`): what each mode sends
   (Fully: each role's title, company and dates, no summary, the rest alike),
-  the mode from the profile, else `DEFAULT_TAILOR_MODE` (junk warned once),
-  else partial; Fully running Tailor Resume (Fully) whatever the Building
-  prompt and Partial the profile's own; a bare profile printing the model's
+  the mode the RUN passes (no resume carries one: a stored `tailorMode` is read
+  past and dropped by the next save, and `DEFAULT_TAILOR_MODE` decides nothing
+  about how a resume is tailored), a task with no mode building Partial and
+  Choose Suitable Resume never tailoring - the resume printing as written, with
+  the cover letter alone asked for; Fully running Tailor Resume (Fully) whatever
+  the Building prompt and Partial the resume's own; a bare resume printing the model's
   bullets and skills with its own facts back; the revise pass after a Fully
   draft asked for every checklist term and no figure; the two modes never
   sharing a cached tailoring; the fallback cover letter told what the
   tailored resume says (two stints at one company and title kept apart by
-  their dates) and, untailored, the profile's own text in either mode; the
-  span of experience worked out from the role dates when the profile states
+  their dates) and, untailored, the resume's own text in either mode; the
+  span of experience worked out from the role dates when the resume states
   none; and the posting's banned opener verbs kept out of `jobAnalysisJson`
+- the three builder modes (`buildModes.test.js`), through the real routes and
+  queue with stub seats that count their calls per call site: Choose Suitable
+  Resume asking for no tailoring and one cover letter a resume, Partial
+  running the matched resume's Building prompt and the revise pass, Fully the
+  profile's effective default (a disabled chosen default skipped); the labels,
+  snapshots and order items carrying the resume, the profile and the match; a
+  restart keeping the choice and the mode; a task with no mode building
+  Partial; a deleted pick failing its task and refunded; a run naming one
+  profile and every other shape refused, a junk mode, Suitable with content, a
+  preview that no longer agrees (409, nothing reserved); a Default account
+  building in every mode; `/resume/preview` in each mode and drawing held
+  content again, and no `/resume/preview-all`
+- resume keywords (`resumeKeywords.test.js`): computed from the titles, the
+  curated skills and the prose against the SHIPPED vocabulary, never the live
+  library, with the class rules for everyday words ("Go-live", "Kind regards",
+  a lowercase "spring"), synonyms, the caps, determinism, the memo keyed by id
+  and time that writes nothing back, and keywords served derived on the two
+  GETs and never stored, read from a body, or let into a render, a prompt or a
+  cache key
+- choosing the suitable resume (`resumeMatch.test.js`): the score formula, the
+  factors, the tie order, each `TaskMatch` reason and its explanation, the
+  worked example on the analysis path and on the text path, and 500 jobs among
+  25 resumes in well under three seconds
 - prompt variables (`promptVariables.test.js`): every feature declaring
   exactly the variables its code supplies, a typo refused on save and named
   on validate (also through the routes), the shipped prompts validating
@@ -657,7 +842,7 @@ Coverage currently focuses on:
   place, said once, and the shipped text when the built-in's own edit needs
   updating too, by exact id, by runtime id and rendered by feature - nothing
   appended to a tailoring turn whichever record runs and the answer held to
-  the profile, through a stub seat, and a profile naming a deleted tailoring
+  the source resume, through a stub seat, and a resume naming a deleted tailoring
   prompt running the built-in, warned once, while a cover letter always runs
   its built-in
 - the three CLI seats, each with no binary, no subprocess and no network:
@@ -723,15 +908,21 @@ Coverage currently focuses on:
   the role catalog is the backend's; a reporter's Credits mounts no buyer's
   panel and reads only their own requests (for payouts) and the payout routes;
   of every App Router page, a reporter
-  opens exactly Report Jobs, Credits and Settings -> Profile / Job Sheet and is
-  sent to Report Jobs from the rest; the rail and Settings tabs offer them only
-  those (an entry naming no roles is a builder's); the rate per job box and
+  opens exactly Report Jobs, Credits and Settings -> Account / Job Sheet and is
+  sent to Report Jobs from the rest (a profile's page, the chooser and the
+  editor among the pages the walk finds); the rail and Settings tabs offer them only those (an entry naming
+  no roles is a builder's, and a builder's rail is one Profiles entry that
+  needs no tier, with no locked row); the rate per job box and
   Record payout say what `parseReportRateUsd` and the real payout route say,
   word for word; a 403 `role-not-allowed` re-reads the account rather than
   signing anybody out - from every place the frontend calls `fetch` itself,
   the Bid Assistant's client included, each of which is listed with why it
-  may; and a configured administrator's row names ADMIN_EMAILS or SMTP_USER as
-  the server says
+  may; a configured administrator's row names ADMIN_EMAILS or SMTP_USER as
+  the server says; and every address the code writes out as a link - an
+  `href`, a `router.push`, a `*_PATH` constant, a function named `...Href`, a
+  notice's `link` on the server - is a page of the App Router, so a page that
+  moved cannot leave a link on its old address (the scan itself pinned on
+  every shape a link is written in)
 - which dev server the root `npm run dev` starts: the frontend on Turbopack,
   with webpack's opt-in by name, because webpack's reloads every other open tab
   when a new one connects - measured by `e2e/dev-reload.js`
@@ -777,6 +968,191 @@ Coverage currently focuses on:
   person's own refused before anything is read, and the app's own All with
   its row 1 edited refused in words that say how to get it back - renamed,
   a new All takes the next export
+
+## The v4.2 vocabulary
+
+v4.1 called a resume a "profile" and a list of resumes a "group". v4.2 calls
+the first a **resume** in every name, path, id, SQL text, line of copy and
+comment, calls the second a **profile** (a person), and calls the Settings tab
+of the signed-in user's own account **Account** (it was "Profile"). Two stages
+made the change: Stage R (profile becomes resume, and the account's Profile
+becomes Account) and Stage G (group becomes profile). The test files that
+carried the old word moved with it (retired names): `profileExperienceSkills`, `profileImport`,
+`profilePreview` and `profileSections` (retired names) are now `resumeExperienceSkills`,
+`resumeImport`, `resumeDraftPreview` and `sectionCatalogue`
+(`resumeSections.test.js` was already taken, by the section switches).
+`database/glossaryRename.ts` brings a database written under the old words to
+the new ones once, in place, inside `getDb()`'s transaction, and
+`glossaryRename.test.js` holds all of it true.
+
+**The database.** A fresh database is born with the new names: `resumes`, and
+`profiles` for the people (what v4.1 stored as `profile_groups`). The people's
+table must never gain a `disabled` column: the step tells v4.1's `profiles`
+table of resumes from it by that column alone, so one that had it would be
+renamed over `resumes`. A database as v4.1 left it, stamped by that build or
+not yet, is made in raw SQL and opened the way the server opens it. Its tables
+are renamed (`profiles` to `resumes`, then `profile_groups` to `profiles`), and
+so are the `order_items` and `tailor_cache` columns and the stored JSON keys -
+a resume's `profileSettings`, the settings' `defaultProfileId` and then
+`defaultGroupId` (retired name; in that order, so the new key never reads a resume id), and
+five keys of a queued task, so that a task queued before the upgrade restores
+and builds - with every row intact, one `[db] Renamed for v4.2: ...` line, a
+Bid Assistant answer for a resume that is there kept through its sweep and the
+orphan removed, and a second open changing nothing. A database only the resume
+rename reached gets only the people's. A stray empty table (an older build
+makes one at every start) is dropped. Two tables that both hold rows are
+refused by name (`VocabularyConflictError`, ending *Restore the backup taken
+before upgrading, then start this build on it.*) with nothing touched, not
+even the startup guard's first stamp, and the real server, spawned on such a
+database, prints that sentence and exits 1 before any route loads. A default
+that is already there is never overwritten, and a key is never deleted. The
+startup guard's list of columns stays build ac3df79's, in its names, and the
+guard still reads an unstamped database by them.
+
+**What a model reads.** Golden values, computed from v4.1's build and not to be
+edited by hand, pin the tailoring prompt's values in both modes and every
+tailoring cache key (a resume's in both modes, and a cover letter's), so the
+rename changed no byte a model reads and every cached tailoring stays a hit. A
+second test names the literals themselves, so that a helpful rename is stopped
+at the word and not only at a hash: the hashed field `profile:`, the revise
+pass's *FIGURES THE PROFILE STATES AND THE DRAFT DROPPED*, the name
+`'Untitled Profile'`, and the prompt id `extract-profile-from-resume` with its
+file name.
+
+**The Bid Assistant** keeps its own words (see its bullet above) and still
+reaches resumes: it requires `resumeRepository` and `resumeDocument` (it is
+`@ts-nocheck`, so the compiler cannot say when a require goes stale), every
+member it calls on them is exported, the limit it checks comes from
+`database/profileLimit`, and its orphan sweep reads `resumes` while its answers
+stay keyed by `profile_id`.
+
+**Spellings that stay.** Some words still say "profile" on purpose, and no scan
+asks for them to change: the limit (`profileLimit`, `profilesUsed`,
+`orphanedProfiles`, `ProfileLimitError`, `assertCanAddProfile`, the code
+`profile-limit`), which counts people; the people themselves (a run's
+`profileId`, which names ONE profile, `ProfileSummary`, `ProfileSelector` and
+the Profiles desk at `/admin/profiles`, with a profile's page under it, which
+lists people and their resumes); and what is stored or sent to a model
+(`[[profileJson]]`, `{{profile_name}}` in folder paths and file names,
+`answers.profile_id`, `'Untitled Profile'`). The run's other names that once
+kept the word - a list of profile ids, the several-profile targets and the
+lock on a run - are retired, and the scan for retired names below fails on
+them.
+
+**The scans** read every script and stylesheet under `backend/src`,
+`backend/scripts`, `backend/test`, `frontend/src`, `frontend/scripts` and
+`scripts` (the Bid Assistant's files keep their own words and are read
+separately). R-4 and the retired-name scan blank the comments first, with the
+TypeScript parser, so that a hit keeps its line number; A-1 and the group
+scans read comments too, since a comment says where to click:
+
+- *The paths.* No compiled module of a retired path is left in `backend/dist`
+  (above), the retired source paths are gone (the frontend rewrite put the
+  Groups page, the several-profile targets, the Models price helper and the
+  Multiple flow's previews on that list), and the moved files are where they were put. *R-1*: no path in
+  the tree names a profile but the limit's file (`database/profileLimit.ts`),
+  the people's files (`types/profile.ts`, `database/profileRepository.ts`,
+  `database/profileTree.ts`, `routes/profiles.ts`, `services/profileRules.ts`
+  and `test/profileTree.test.js`), the prompt file
+  `extract-profile-from-resume.json`, whose name is its id, and the profiles
+  desk, which draws and tests people: the dashboard and a profile's page under
+  `app/admin/profiles/`, `ProfileSelector.tsx`, `components/profiles/*`,
+  `lib/profileDashboard.ts`, `test/frontendProfiles.test.js` and the browser
+  script `test/e2e/profiles.js`. A path about people added later is listed in
+  `PATHS_STILL_NAMED_PROFILE` in the test, with the reason.
+- *R-4*: no SQL text, bound parameter, route path, module name, DOM id or
+  stylesheet name still carries the old word, and no retired name of the
+  resume record is left (`ProfileSettings`, `profileForTemplate`,
+  `buildNewProfile` and the rest of the test's list); `profileSettings` itself
+  lives in the import and the step alone. The people's spellings - the
+  `profiles` table, `/api/profiles`, `profilesApi`, `defaultProfileId`,
+  `#default-profile` - stand only in the files that are about people
+  (`PEOPLE_FILES` in the test) and are a leak anywhere else, which is how the
+  scans go on working after a word has changed its meaning; even there, a
+  quoted (retired) `/profiles/preview`, `/profiles/import`, `/profiles/upload` or
+  `/profiles/entries` is a retired leftover of the resume router. A profile's
+  page address (`/admin/profiles/<id>`) is a person's too, while the old
+  chooser and editor addresses under it stay a leak (only the browser script
+  that checks they redirect may say one); and every allowance of this kind is
+  held to be used, so a file that no longer draws a `profile-` DOM id, calls
+  the people's routes or says a profile's page address comes off its list.
+- *A-1*: the Settings tab is Account, and nothing - comments included - says
+  "Settings > Profile" (retired name) or calls the page `ProfileSettingsPage`.
+- *G-1* and *G-2*: every `group` word left is another sense of it (skill
+  groups, the Grouped layout, `GROUP BY`, `role="group"` and
+  `role="radiogroup"`, a MultiSelect's option groups...) or sits in one of
+  the three BACKEND files that hold the key an older settings row may still
+  carry (`defaultGroupId` (retired name) in `config/aiModelConfig.ts` and in
+  the two tests that assert it is read past and not served), each of which
+  lists the group words it holds, so that a new one in it fails, and so does
+  a word the list keeps after the file has lost it. The frontend rewrite
+  emptied the rest of that list: the Groups page, its rail row, lock and icon, the Specific group
+  target and the tier copy that named groups are gone, so no file of the
+  frontend, of the e2e scripts or of the frontend tests may be listed (G-1
+  fails if one comes back), and the test checks that each file the surface
+  once held says no group word of the retired sense, the capitalised bare
+  words included. A few browser scripts and tests still say some, to assert
+  that the old rail row, the lock's id and the setting's box are absent, and
+  nothing else. The retired group
+  strings (retired: `/api/groups`, `groupRepository`, `groupsApi`, `defaultGroupId`,
+  `Untitled Group`, and the `Group` type declared, annotated, cast or
+  imported) are gone, but for the step and the guard, which name the old table
+  and key on purpose; the frontend rewrite added the Groups page's address,
+  the lock id `many-profiles`, the `data-locked-panel` attribute, *Select Group* and
+  *Specific group* to them, and nothing may say any of them. (The browser
+  scripts and the page tests no longer probe that the Groups page or its ids
+  stay away - owner's decision - so no file is allowed one of these words;
+  this scan still fails on any source or test file that says one.)
+- *The run and frontend rewrites*: the names the run, price and mode rewrite
+  and the frontend rewrite retired are gone from the WHOLE tree - the backend,
+  the frontend, the e2e scripts and the frontend tests alike: the
+  several-profile run (`ProfileTargets` (retired name), the builder's target
+  helpers, `canBuildForManyProfiles`, `describeTooLowRefusal`), the template
+  rule (`templatesUsedByOthers`, `templateOptions`), the resume's tailoring
+  mode (`TAILOR_MODE_CHOICES`), the model's price (`formatPricePerResume`),
+  the Multiple flow's previews and the locked panel and subscription gate
+  components. The only files that may still say one are the tests that assert
+  it is gone, each allowance naming the file and why, and the scan fails on
+  an allowance a file no longer uses; a few narrow ones stay for names that
+  are the quote's own (`pricePerResumeMilli` in the client's quote, in
+  `lib/generationQueue.ts` and `lib/format.ts`). Every pattern is proven to
+  catch its shapes in a backend file, a frontend one, an e2e script and a
+  frontend test.
+- The clients ask `/resumes` for the record and `/resume/` for the tailoring
+  and the server mounts both, and the main routes say *Resume not found* where
+  the Bid Assistant keeps *Profile not found.*
+- The patterns are tested too: each runs against samples it must catch and
+  against the spellings that stay (`[[profileJson]]`, `{{profile_name}}`,
+  `role="group"`, `GROUP BY`, `profileLimit`, `ProfileSelector`,
+  `BuildModeChoice`...), and the
+  comment stripper against a `/*` that is not a comment, so that a scan that
+  stopped working fails instead of passing the tree for nothing.
+
+The one scan that is not automated is the bare word "profile" in copy and
+comments: each such line is the limit, a person (a profile since Stage G, a
+run's `profileId` among them), a word a model or a stored value reads, or the
+printed section heading, which only a reader can tell from a leftover.
+
+**G-3 needs the files as they were before Stage G.** It checks that Stage G
+edited no line that already said "profile". That state is not in git (the
+stages were applied before anything was committed), so the test compares only
+when `V42_PRE_G_FILES` names a folder holding the files Stage G changed as they
+were before it, at their repository-relative paths: 23 files, three of them the
+group files Stage G moved, under their old names, which are skipped. The
+snapshot taken when Stage G was applied is `snap-pre-G/files` in the v4.2
+working materials, outside the repository:
+
+```sh
+cd backend && V42_PRE_G_FILES=/path/to/snap-pre-G/files node scripts/runTests.js test/glossaryRename.test.js
+```
+
+(In PowerShell set `$env:V42_PRE_G_FILES` first. `runTests.js` passes the
+environment through, so the same variable serves `npm test`.) Without it the
+test still passes, after running its comparison over samples, and says so:
+*G-3 compared no files: V42_PRE_G_FILES does not name the folder of the files as
+they were before Stage G.* Read the run's output, not the tick: G-3 has
+checked the tree only when the run prints *G-3 compared 20 files against*
+and the folder.
 
 ## Testing the CLI providers
 

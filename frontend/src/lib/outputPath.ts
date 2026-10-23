@@ -2,7 +2,7 @@
  * Where resumes are filed, as the two boxes that decide it see it (owner
  * decisions O1-O5): the administrator's PREFIX on Admin -> Settings ->
  * General and each account's own folder path - the SUFFIX - on Settings ->
- * Profile -> Resume files. `<output folder>/<prefix>/<suffix>/<file name>`.
+ * Account -> Resume files. `<output folder>/<prefix>/<suffix>/<file name>`.
  *
  * The rules and the rendering are the server's alone
  * (utils/outputStorage.ts): a page never renders a path, it asks the preview
@@ -30,7 +30,7 @@ export const OUTPUT_PREFIX_TOKEN_CHIPS: readonly OutputPathTokenChip[] = [
 /** An account's folder path's tokens, in the server's order (`OUTPUT_SUFFIX_TOKENS`). */
 export const OUTPUT_SUFFIX_TOKEN_CHIPS: readonly OutputPathTokenChip[] = [
   chip('date', 'the day the run was placed'),
-  chip('profile_name', "the profile's name"),
+  chip('profile_name', "the person's name on the resume"),
   chip('company_name', 'the company'),
   chip('role', 'the role, else the posting\'s job title'),
   chip('row_number', 'the sheet row the job came from'),

@@ -38,9 +38,11 @@ test('app settings persist in the SQLite settings table', async () => {
     },
     defaultMode: 'generate',
     defaultTheme: 'dark',
-    defaultResumeSelection: 'group',
-    defaultGroupId: 'group-1',
+    defaultBuildMode: 'full',
     defaultProfileId: 'profile-1',
+    // A stale page still sending the builder's old target: not a setting any more.
+    defaultResumeSelection: 'group',
+    defaultResumeId: 'resume-1',
     defaultResumeDocxEnabled: false,
     defaultCoverLetterDocxEnabled: false,
     outputBaseDir: outputDir,
@@ -65,6 +67,11 @@ test('app settings persist in the SQLite settings table', async () => {
   assert.equal(typeof config.getProviderApiKey, 'undefined');
   assert.equal(updated.defaultMode, 'generate');
   assert.equal(updated.defaultTheme, 'dark');
+  assert.equal(updated.defaultBuildMode, 'full');
+  assert.equal(updated.defaultProfileId, 'profile-1');
+  for (const retired of ['defaultResumeSelection', 'defaultResumeId', 'freeEnabledModelIds']) {
+    assert.equal(retired in updated, false, retired);
+  }
   assert.equal(updated.outputBaseDir, outputDir);
   // The saved shared sheets are gone from every payload (owner decision S1)...
   assert.equal('googleSheetsSources' in updated, false);
@@ -74,6 +81,11 @@ test('app settings persist in the SQLite settings table', async () => {
 
   const stored = JSON.parse(readSettingRaw(dbDir, APP_SETTINGS_KEY));
   assert.equal('apiKeys' in stored, false, 'no credential may be written to the database');
+  assert.equal(stored.defaultBuildMode, 'full');
+  assert.equal(stored.defaultProfileId, 'profile-1');
+  for (const retired of ['defaultResumeSelection', 'defaultResumeId']) {
+    assert.equal(retired in stored, false, `${retired} is not written`);
+  }
   // ...and from the row: the save writes the settings this build reads, field by field.
   assert.equal('googleSheetsSources' in stored, false);
 });
@@ -94,8 +106,8 @@ test('reading settings does not rewrite an existing settings record', async () =
   "defaultMode": "preview",
   "defaultTheme": "light",
   "defaultResumeSelection": "single",
-  "defaultGroupId": "",
   "defaultProfileId": "",
+  "defaultResumeId": "",
   "defaultResumeDocxEnabled": true,
   "defaultCoverLetterDocxEnabled": true,
   "outputBaseDir": "${path.join(rootDir, 'generated-output').replace(/\\/g, '\\\\')}",
@@ -112,6 +124,10 @@ test('reading settings does not rewrite an existing settings record', async () =
   // its place, and its default is in effect) - and not rewritten either.
   assert.equal('outputPathTemplate' in loaded, false);
   assert.equal(loaded.outputPathPrefix, '/{{user_email}}/{{order_number}}');
+  // The builder's old target (`defaultResumeSelection`, `defaultResumeId`) is read past, never an error.
+  assert.equal('defaultResumeSelection' in loaded, false);
+  assert.equal('defaultResumeId' in loaded, false);
+  assert.equal(loaded.defaultBuildMode, 'partial');
   // Keys for anything but the catalog's seats are ignored, and a read
   // rewrites nothing.
   assert.deepEqual(Object.keys(loaded.providersEnabled).sort(), ['claude-cli', 'codex-cli', 'gemini-cli']);
@@ -192,7 +208,7 @@ test("generated path helpers file a run under its own place, and anything else u
     placed.absoluteDir,
     path.join(rootDir, 'then', 'jane_example_com', 'ft_20261015_0001', 'jane_doe', 'acme_inc', 'senior_engineer')
   );
-  assert.equal(placed.profileSlug, 'jane_doe');
+  assert.equal(placed.resumeSlug, 'jane_doe');
 
   // Without one (a script, a test): the prefix and the default folder path in
   // effect, `unknown` for the account and the order.
@@ -215,8 +231,8 @@ test('a folder path renders text around tokens as one folder, a row number, and 
   };
 
   const result = await generatedPath.getGeneratedOutputPath(
-    // A folder template an older profile stored is not read.
-    { name: 'Jane Doe', profileSettings: { companyFolderNameTemplate: '{{company name}}_row_{{row number}}' } },
+    // A folder template an older resume stored is not read.
+    { name: 'Jane Doe', resumeSettings: { companyFolderNameTemplate: '{{company name}}_row_{{row number}}' } },
     'Acme Inc',
     'Senior Engineer',
     { sourceRowNumber: 12, output }
@@ -229,7 +245,7 @@ test('a folder path renders text around tokens as one folder, a row number, and 
   assert.equal(bare.storagePathBase, 'jane_example_com/ft_20261015_0001/2026_10_15jane_doe/acme_inc/unknown');
 });
 
-test('generated path helpers apply per-profile output file name templates', async () => {
+test('generated path helpers apply per-resume output file name templates', async () => {
   const { rootDir } = useTempStorage('generated-file-names');
   const outputDir = path.join(rootDir, 'output');
   const config = loadFresh('../dist/config/aiModelConfig');
@@ -240,7 +256,7 @@ test('generated path helpers apply per-profile output file name templates', asyn
   const result = await generatedPath.getGeneratedOutputPath(
     {
       name: 'Jane Doe',
-      profileSettings: {
+      resumeSettings: {
         resumeFileNameTemplate: '{{profile name}} Resume for {{company name}}',
         coverLetterFileNameTemplate: '{{profile name}} Cover Letter for {{job title}}',
       },

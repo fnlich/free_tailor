@@ -1017,3 +1017,12 @@ test('a sentence written into a page that asks for an administrator carries its 
   assert.ok(checked >= 4, `found only ${checked} such sentences - is the parser reading the pages?`);
   assert.deepEqual(offenders, [], 'these ask for an administrator with no Contact admin link after them');
 });
+
+test("the credits copy says a resume costs the price of its build mode, and never that a model has a price", () => {
+  // Owner decision D21: the price belongs to the mode a run is built in (Settings > General > Price per resume).
+  for (const file of ['components/credits/AmountStep.tsx', 'components/credits/PolicyPanels.tsx']) {
+    const text = fs.readFileSync(path.join(SRC, file), 'utf8').replace(/\s+/g, ' ');
+    assert.match(text, /Each resume costs the price of the build mode it is built in/, file);
+    assert.doesNotMatch(text, /model's price|price of (the|its|a) model|per-model|the model it is built with/i, file);
+  }
+});

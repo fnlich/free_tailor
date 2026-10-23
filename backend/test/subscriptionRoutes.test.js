@@ -136,7 +136,7 @@ test("the view: the tier, where it came from, every tier's price and offer, and 
         ['premium-max', 'Premium Max', null, 'not-offered', null],
       ]
     );
-    assert.deepEqual(body.tiers[0].features, ['1 profile', 'Builds for one profile at a time', 'Everything else in the app']);
+    assert.deepEqual(body.tiers[0].features, ['1 profile', 'Any number of resumes in each', 'Everything else in the app']);
     assert.equal(body.tiers[3].profileLimit, null, 'Premium Max: unlimited');
 
     // An administrator reads it, and is offered nothing.

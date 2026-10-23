@@ -11,11 +11,11 @@ const { useTempStorage } = require('./helpers');
  * - its lists are the posting's own - skills, the five it leans on, prose
  *   keywords, concepts and the tools they are built with - in its spelling;
  * - what is "drawn per resume" (the soft-skill heading, the concept tools'
- *   order, the title's shape) is seeded by the profile and the posting, so
+ *   order, the title's shape) is seeded by the resume and the posting, so
  *   the same resume asked again is the same question;
  * - "the application ... appends the KIND of role" to the headline, in one
  *   of six shapes, and leaves it alone when the headline already says it;
- * - the roles' facts are the profile's, a role the profile lacks is dropped
+ * - the roles' facts are the resume's, a role the resume lacks is dropped
  *   and one the answer left out is put back; descriptions are discarded;
  * - "anything past the eighth bullet is DISCARDED ... the eight that survive
  *   are the ones carrying the most checklist terms";
@@ -79,7 +79,7 @@ function analysis(overrides = {}, posting = POSTING) {
   };
 }
 
-function profile(extra = {}) {
+function resumeRecord(extra = {}) {
   return {
     id: 'p-ada',
     name: 'Ada',
@@ -93,7 +93,7 @@ function profile(extra = {}) {
     strengths: [],
     softSkills: [],
     education: [],
-    profileSettings: {},
+    resumeSettings: {},
     ...extra,
   };
 }
@@ -101,15 +101,45 @@ function profile(extra = {}) {
 /* ======================================================== the prompt values */
 
 test('the values are exactly the variables the prompt declares, every one a string', () => {
-  const values = resumeService.buildTailorResumePromptValues(profile(), analysis());
+  const values = resumeService.buildTailorResumePromptValues(resumeRecord(), analysis());
   assert.deepEqual(Object.keys(values).sort(), listPromptFeatureVariableNames('tailor-resume').sort());
   for (const [name, value] of Object.entries(values)) assert.equal(typeof value, 'string', name);
   assert.equal(values.targetRoleTitle, 'Senior Data & AI Engineer - AWS, Java & Python');
   assert.equal(values.jobTitle, values.targetRoleTitle);
 });
 
+test('postingTermLists is the part of the lists the matcher shares: exactly what buildTailorLists is made of, and isCompanyDescriptionLike and words are exported', () => {
+  const a = analysis();
+  const shared = contract.postingTermLists(a);
+  const lists = contract.buildTailorLists(a, 'seed-1');
+  assert.deepEqual(Object.keys(shared).sort(), ['concepts', 'posting', 'skills', 'topSkills']);
+  assert.deepEqual(shared.skills, lists.skills);
+  assert.deepEqual(shared.concepts, lists.concepts);
+  assert.deepEqual(shared.topSkills, lists.topSkills);
+  assert.deepEqual(shared.posting, lists.posting);
+  // The lists the model is sent are the same as before the part was lifted out (the golden literals in
+  // glossaryRename.test.js pin the whole payload; these are the pieces this file already knows).
+  const values = resumeService.buildTailorResumePromptValues(
+    { name: 'A', title: 'Engineer', summary: 'x', experience: [], skills: [], education: [], strengths: [] },
+    a
+  );
+  assert.deepEqual(JSON.parse(values.skillsJSON), shared.skills);
+  assert.deepEqual(JSON.parse(values.topSkillsJson), shared.topSkills);
+  assert.deepEqual(JSON.parse(values.conceptKeywordsJson), shared.concepts);
+
+  // Moved from resumeService.ts unchanged: the tailoring's companyContext and the resume's keywords both use it.
+  assert.equal(typeof contract.isCompanyDescriptionLike, 'function');
+  assert.equal(contract.isCompanyDescriptionLike('Acme is a fintech platform built on Kafka.', 'Acme'), true);
+  assert.equal(contract.isCompanyDescriptionLike('Acme builds payment software.', 'Acme'), true);
+  assert.equal(contract.isCompanyDescriptionLike('Built the ledger in Go.', 'Acme'), false);
+  assert.equal(contract.isCompanyDescriptionLike('Acme is a fintech platform built on Kafka.', 'Other'), false);
+  assert.equal(contract.isCompanyDescriptionLike('Acme is a fintech platform.'), false, 'no company, nothing to compare');
+  assert.equal(typeof contract.words, 'function');
+  assert.deepEqual(contract.words('Senior Backend Engineer, C++ & C#'), ['Senior', 'Backend', 'Engineer', 'C++', 'C#']);
+});
+
 test("the lists are the posting's own: skills, prose keywords and concepts each in one place", () => {
-  const values = resumeService.buildTailorResumePromptValues(profile(), analysis());
+  const values = resumeService.buildTailorResumePromptValues(resumeRecord(), analysis());
   assert.deepEqual(JSON.parse(values.skillsJSON), [
     'system design', 'code review', 'Docker', 'Terraform', 'Kubernetes', 'Java', 'Python', 'AWS', 'Kafka', 'PostgreSQL', 'Go', 'REST',
   ]);
@@ -129,7 +159,7 @@ test("the lists are the posting's own: skills, prose keywords and concepts each 
 });
 
 test('the five the posting leans on: named in its requirements, must-include, early and repeated', () => {
-  const top = JSON.parse(resumeService.buildTailorResumePromptValues(profile(), analysis()).topSkillsJson);
+  const top = JSON.parse(resumeService.buildTailorResumePromptValues(resumeRecord(), analysis()).topSkillsJson);
   assert.equal(top.length, 5);
   // PostgreSQL is must-include and in the requirements; Python, Java, Kafka
   // and AWS are in the requirements and named early. Docker, Terraform and
@@ -174,7 +204,7 @@ test('an older analysis is read the same way: its duplicate lists once, its infi
     keywords: { actionVerbs: ['led', 'build'], buzzwords: ['cloud-native'], mustInclude: ['C#'] },
     sourceJobDescription: 'Staff Engineer. C#, Python, Azure, Kafka and Docker.',
   };
-  const values = resumeService.buildTailorResumePromptValues(profile(), older);
+  const values = resumeService.buildTailorResumePromptValues(resumeRecord(), older);
   assert.deepEqual(JSON.parse(values.skillsJSON), ['C#', 'Python', 'Docker', 'Azure', 'Kafka', 'gRPC']);
   assert.deepEqual(JSON.parse(values.keywordsJson), ['Communication']);
   assert.deepEqual(JSON.parse(values.conceptKeywordsJson), ['Microservices', 'Scrum', 'cloud-native']);
@@ -183,7 +213,7 @@ test('an older analysis is read the same way: its duplicate lists once, its infi
 /* ============================================================= the draws */
 
 test('concept tools: the rows the posting names, spelled as it spells them, their tools shuffled per resume', () => {
-  const rows = (id) => JSON.parse(resumeService.buildTailorResumePromptValues(profile({ id }), analysis()).conceptToolsJson);
+  const rows = (id) => JSON.parse(resumeService.buildTailorResumePromptValues(resumeRecord({ id }), analysis()).conceptToolsJson);
   const ada = rows('p-ada');
   // In the order the posting's terms name them - a responsibility can name
   // one ("incident response" out of "incident response ownership").
@@ -211,7 +241,7 @@ test('concept tools: the rows the posting names, spelled as it spells them, thei
 });
 
 test("the soft-skill heading is one of the six, the same for the same resume, and not every candidate's", () => {
-  const heading = (id) => resumeService.buildTailorResumePromptValues(profile({ id }), analysis()).softSkillGroupHeading;
+  const heading = (id) => resumeService.buildTailorResumePromptValues(resumeRecord({ id }), analysis()).softSkillGroupHeading;
   const drawn = new Set();
   for (let index = 0; index < 60; index += 1) drawn.add(heading(`p-${index}`));
   assert.deepEqual([...drawn].sort(), [...SOFT_SKILL_GROUP_HEADINGS].sort(), 'every heading is drawn for someone');
@@ -225,7 +255,7 @@ test("the soft-skill heading is one of the six, the same for the same resume, an
 
 /* ============================================================= the title */
 
-test('the title: the profile headline with the kind of role composed on, in one of six shapes', () => {
+test('the title: the source headline with the kind of role composed on, in one of six shapes', () => {
   assert.equal(contract.roleKind('Senior Data & AI Engineer - AWS, Java & Python'), 'Data & AI Engineer');
   assert.equal(contract.roleKind('Sr. Site Reliability Engineer II (Remote)'), 'Site Reliability Engineer');
   assert.equal(contract.roleKind('Staff Backend Engineer | Payments'), 'Backend Engineer');
@@ -269,9 +299,9 @@ test('the title: the profile headline with the kind of role composed on, in one 
   assert.equal(contract.composeTailoredTitle('', 'Senior Site Reliability Engineer', 'x'), '');
   assert.equal(contract.composeTailoredTitle('  ', 'Senior Site Reliability Engineer', 'x'), '');
 
-  // Through the parse: the profile's headline is the base, whatever the model wrote.
+  // Through the parse: the resume's headline is the base, whatever the model wrote.
   const parse = (extra = {}, answer = {}) =>
-    resumeService.parseTailoredResumeContent(JSON.stringify({ title: 'Data Wizard', summary: 'S.', ...answer }), profile(extra), analysis());
+    resumeService.parseTailoredResumeContent(JSON.stringify({ title: 'Data Wizard', summary: 'S.', ...answer }), resumeRecord(extra), analysis());
   const titled = parse();
   assert.match(titled.title, /^Senior Software Engineer\W+Data & AI Engineer\)?$/);
   assert.equal(parse().title, titled.title, 'the same shape for the same resume');
@@ -279,7 +309,7 @@ test('the title: the profile headline with the kind of role composed on, in one 
   assert.match(parse({ title: '' }).title, /^Data Wizard\W+Data & AI Engineer\)?$/);
   // Re-parsed, nothing is appended twice.
   assert.equal(
-    resumeService.parseTailoredResumeContent(JSON.stringify(parse({ title: '' })), profile({ title: '' }), analysis()).title,
+    resumeService.parseTailoredResumeContent(JSON.stringify(parse({ title: '' })), resumeRecord({ title: '' }), analysis()).title,
     parse({ title: '' }).title
   );
   // No headline of their own and none from the model: their latest role's
@@ -288,7 +318,7 @@ test('the title: the profile headline with the kind of role composed on, in one 
   assert.match(untitled.title, /^Senior Engineer\W+Data & AI Engineer\)?$/);
   assert.notEqual(untitled.title, 'Data & AI Engineer');
   assert.equal(
-    resumeService.parseTailoredResumeContent(JSON.stringify(untitled), profile({ title: '' }), analysis()).title,
+    resumeService.parseTailoredResumeContent(JSON.stringify(untitled), resumeRecord({ title: '' }), analysis()).title,
     untitled.title,
     'and a re-parse keeps it'
   );
@@ -298,26 +328,26 @@ test('the title: the profile headline with the kind of role composed on, in one 
 
 /* ============================================================= the roles */
 
-test("roles: the model's order, the profile's facts, a stranger dropped, an omitted one put back, no description", () => {
+test("roles: the model's order, the source's facts, a stranger dropped, an omitted one put back, no description", () => {
   const answer = {
     summary: 'S.',
     experience: [
       // Gamma first (the model's order is kept), its facts edited.
       { title: 'junior engineer', company: 'GAMMA', startDate: '2001', endDate: 'now', location: 'Mars', description: 'Gamma is a company.', achievements: ['Wrote the billing reports in Python.'] },
-      // A company the profile never had.
+      // A company the resume never had.
       { title: 'CTO', company: 'Imaginary Corp', achievements: ['Invented it.'] },
       // Acme, matched by company alone (its title differs and it is unique).
       { title: 'Principal Engineer', company: 'Acme', achievements: ['Rebuilt the ledger on PostgreSQL.'] },
     ],
   };
-  const parsed = resumeService.parseTailoredResumeContent(JSON.stringify(answer), profile(), analysis());
+  const parsed = resumeService.parseTailoredResumeContent(JSON.stringify(answer), resumeRecord(), analysis());
   assert.deepEqual(
     parsed.experience.map((role) => [role.company, role.title, role.startDate, role.location]),
     [
       ['Gamma', 'Junior Engineer', '01/2016', 'Paris'],
       ['Acme', 'Senior Engineer', '01/2022', 'Remote'],
       // Beta was left out: put back after the nearest role before it in the
-      // profile (Acme), with its own bullets.
+      // resume (Acme), with its own bullets.
       ['Beta', 'Engineer', '01/2019', 'Berlin'],
     ]
   );
@@ -326,7 +356,7 @@ test("roles: the model's order, the profile's facts, a stranger dropped, an omit
   assert.equal(JSON.stringify(parsed).includes('Imaginary'), false);
 
   // Two stints at one company under one title stay apart, in order.
-  const twice = profile({
+  const twice = resumeRecord({
     experience: [
       { title: 'Engineer', company: 'Acme', startDate: '2022', endDate: 'Now', location: '', description: '', achievements: ['Second stint.'], skills: [] },
       { title: 'Engineer', company: 'Acme', startDate: '2018', endDate: '2020', location: '', description: '', achievements: ['First stint.'], skills: [] },
@@ -339,10 +369,10 @@ test("roles: the model's order, the profile's facts, a stranger dropped, an omit
   );
   assert.deepEqual(both.experience.map((role) => [role.startDate, role.achievements[0]]), [['2022', 'A.'], ['2018', 'B.']]);
 
-  // A profile typed oldest first, answered newest first as the prompt asks:
+  // A resume typed oldest first, answered newest first as the prompt asks:
   // each stint is known by the dates the model was given, so its bullets stay
   // under its own dates - and the model's order is kept.
-  const oldestFirst = profile({
+  const oldestFirst = resumeRecord({
     experience: [
       { title: 'Engineer', company: 'Acme', startDate: '01/2016', endDate: '12/2018', location: 'Berlin', description: '', achievements: ['Old work.'], skills: [] },
       { title: 'Engineer', company: 'Acme', startDate: '01/2020', endDate: 'Present', location: 'Remote', description: '', achievements: ['Recent work.'], skills: [] },
@@ -375,7 +405,7 @@ test("roles: the model's order, the profile's facts, a stranger dropped, an omit
   ]) {
     assert.deepEqual(shape(stints(answered)).map((role) => [role[0], role[3][0]]), [['01/2020', 'R.'], ['01/2016', 'O.']]);
   }
-  // No date at all agrees: profile order, as before.
+  // No date at all agrees: resume order, as before.
   assert.deepEqual(
     shape(stints([
       { title: 'Engineer', company: 'Acme', achievements: ['First.'] },
@@ -411,7 +441,7 @@ test('eight bullets a role: the eight carrying the most distinct checklist terms
   // Through the parse, with the posting's own checklist.
   const parsed = resumeService.parseTailoredResumeContent(
     JSON.stringify({ experience: [{ title: 'Senior Engineer', company: 'Acme', achievements: bullets }] }),
-    profile(),
+    resumeRecord(),
     analysis()
   );
   assert.equal(parsed.experience[0].achievements.length, 8);
@@ -468,10 +498,10 @@ test('a spelled-out span of years is a numeral, and no em or en dash survives', 
       experience: [{ title: 'Senior Engineer', company: 'Acme', achievements: ['Cut settlement from 9s – 1.4s — twice.'] }],
       coverLetter: 'I build ledgers — carefully.\n\nI also — rarely — rest.',
     }),
-    // A role the answer left out is put back with the profile's own bullets,
+    // A role the answer left out is put back with the resume's own bullets,
     // finished the same way: a range the person typed stays a range.
-    profile({
-      experience: profile().experience.map((role) =>
+    resumeRecord({
+      experience: resumeRecord().experience.map((role) =>
         role.company === 'Beta' ? { ...role, achievements: ['Cut latency 50%–80% on search.'] } : role
       ),
     }),
@@ -505,7 +535,7 @@ test("the cover letter written on its own has its dashes taken out too, and is k
     },
   }));
   const service = loadFresh('../dist/services/resumeService');
-  const letter = await service.generateCoverLetter(profile(), 'Acme', 'Engineer', { provider: 'claude-cli', modelName: 'sonnet', modelId: 'm', modelLabel: 'S' });
+  const letter = await service.generateCoverLetter(resumeRecord(), 'Acme', 'Engineer', { provider: 'claude-cli', modelName: 'sonnet', modelId: 'm', modelLabel: 'S' });
   assert.equal(letter, 'I build, and ship.');
   ai.resetRegistryForTests();
 });
@@ -513,10 +543,10 @@ test("the cover letter written on its own has its dashes taken out too, and is k
 /* ============================================================ the block */
 
 test('the soft-skill group is found by its mark, the drawn heading, or a soft heading last - never a technical group', () => {
-  const values = resumeService.buildTailorResumePromptValues(profile(), analysis());
+  const values = resumeService.buildTailorResumePromptValues(resumeRecord(), analysis());
   const drawn = values.softSkillGroupHeading;
   const parse = (groups, settings = {}) =>
-    resumeService.parseTailoredResumeContent(JSON.stringify({ skillGroups: groups }), profile({ profileSettings: settings }), analysis());
+    resumeService.parseTailoredResumeContent(JSON.stringify({ skillGroups: groups }), resumeRecord({ resumeSettings: settings }), analysis());
   const ON = { includeSoftSkills: true };
 
   // The drawn heading, wherever it sits.
@@ -534,12 +564,12 @@ test('the soft-skill group is found by its mark, the drawn heading, or a soft he
   assert.equal(none.skillGroups.some((group) => group.soft), false);
   // The mark survives the person renaming the group in the builder's JSON box.
   const renamed = { ...named, skillGroups: named.skillGroups.map((group) => (group.soft ? { ...group, category: 'People' } : group)) };
-  assert.deepEqual(resumeService.parseTailoredResumeContent(JSON.stringify(renamed), profile({ profileSettings: ON }), analysis()).softSkills, ['Ownership']);
+  assert.deepEqual(resumeService.parseTailoredResumeContent(JSON.stringify(renamed), resumeRecord({ resumeSettings: ON }), analysis()).softSkills, ['Ownership']);
 });
 
 /* ======================================================= idempotence */
 
-test('the parse is idempotent on its own output, for every profile shape', () => {
+test('the parse is idempotent on its own output, for every resume shape', () => {
   const answer = JSON.stringify({
     title: 'Data Engineer',
     summary: 'Seven years — payments. This background maps to the target role.',
@@ -553,7 +583,7 @@ test('the parse is idempotent on its own output, for every profile shape', () =>
   });
   for (const settings of [{}, { includeSoftSkills: true, includeStrengths: true, technicalSkillsLayout: 'flat' }]) {
     for (const extra of [{}, { title: '' }, { experience: [] }, { skillCategories: [{ category: 'Web', skills: ['React'] }] }]) {
-      const who = profile({ ...extra, profileSettings: settings });
+      const who = resumeRecord({ ...extra, resumeSettings: settings });
       const once = resumeService.parseTailoredResumeContent(answer, who, analysis());
       const twice = resumeService.parseTailoredResumeContent(JSON.stringify(once), who, analysis());
       assert.deepEqual(twice, once, JSON.stringify({ settings, extra }));

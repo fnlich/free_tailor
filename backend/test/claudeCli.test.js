@@ -1484,7 +1484,7 @@ test('a failed resolution is not cached, so installing the CLI needs no restart'
 /**
  * `AI_CLI_EFFORT` is the whole of the effort story now.
  *
- * There is no per-profile or per-run control, deliberately: a select that
+ * There is no per-resume or per-run control, deliberately: a select that
  * reached one provider out of six showed a knob that did nothing on every other
  * model in the menu. What remains is one operator setting, and the two things
  * worth pinning about it are that it DEFAULTS to low and that a typo cannot

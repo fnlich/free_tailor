@@ -60,8 +60,8 @@ export function blankDraftChoice(settings: DraftSettings | null): { provider: AI
 /**
  * Another record that already goes by this display name, compared the way
  * people read it - trimmed, any case. Users see display names and nothing
- * else, so two records sharing one are two identical choices at different
- * prices; the server refuses it, and the form says so first.
+ * else, so two records sharing one are two identical choices on the page;
+ * the server refuses it, and the form says so first.
  */
 export function displayNameOwner(
   settings: Pick<AdminAppSettings, 'aiModels'>,

@@ -57,11 +57,13 @@ test('the catalogue: the ids and labels as they were, what each tier includes, a
     assert.ok(tier.features.length > 0, `${tier.id} says what it includes`);
     assert.ok(tier.features.every((line) => typeof line === 'string' && line.length > 0));
   }
-  assert.deepEqual([...catalogue.SUBSCRIPTIONS.premium.features], [
-    'Up to 5 profiles',
-    'Builds for every profile, or a group, in one run',
-    'Groups',
-  ]);
+  // Each tier says how many PROFILES (people) it keeps, and that each holds any number of resumes.
+  assert.deepEqual([...catalogue.SUBSCRIPTIONS.premium.features], ['Up to 5 profiles', 'Any number of resumes in each']);
+  assert.equal(catalogue.SUBSCRIPTIONS.premium.summary, 'Up to five profiles, each with any number of resumes.');
+  assert.equal(
+    catalogue.SUBSCRIPTIONS.default.summary,
+    'One profile, with any number of resumes. Everything else in the app is included.'
+  );
   assert.equal(catalogue.SUBSCRIPTION_PERIOD_DAYS, 30);
   assert.equal(catalogue.MAX_SUBSCRIPTION_PRICE_MILLI, 10_000_000, '$10,000');
   assert.deepEqual(catalogue.SUBSCRIPTION_PRICE_FIELDS['premium-plus'], {

@@ -17,18 +17,20 @@ import css from './subscription.module.css';
  * subscription**, where the account can buy it (Settings -> Subscription).
  * The words are lib/subscriptions.ts `describeLock`'s.
  *
- * The server is the real lock every time (403 `subscription-too-low`, 402
- * `profile-limit`); this only stops a page offering a door it would refuse.
+ * The server is the real lock every time (402 `profile-limit`; 403
+ * `subscription-too-low` for a future tiered route); this only stops a page
+ * offering a door it would refuse. Today the one lock is More profiles: adding
+ * a profile past the subscription's count. Resumes are never counted.
  *
  *   const locked = useLockedFeature();
- *   <LockButton lock={describeLock('groups', account)} onOpen={locked.open} />
+ *   <LockButton lock={describeLock('more-profiles', account)} onOpen={locked.open} />
  *   {locked.dialog}
  */
 
 /** Where every lock leads. */
 export const SUBSCRIPTION_PAGE = '/settings/subscription';
 
-/** A lock's name for a screen reader and a tooltip: "Locked: Groups. Needs Premium." */
+/** A lock's name for a screen reader and a tooltip: "Locked: More profiles. Needs Premium." */
 export function lockLabel(lock: LockSpec): string {
   return `Locked: ${lock.title}. Needs ${lock.needsLabel}.`;
 }
@@ -111,7 +113,23 @@ export function LockButton({
  * disabled, pressing anywhere on the card opens the lock, and a LockButton
  * sits beside the label - outside it, since a button inside a <label> is not
  * valid HTML - for the keyboard. `data-locked-choice` marks the pair.
+ *
+ * `onLocked` is needed only with a `lock`; an open card (the builder's three
+ * build modes, which every tier may choose) passes neither. `hint` is muted
+ * text under the label, for a card that explains itself; it never says which
+ * subscription a thing needs - that is the lock's dialog's job.
  */
+type ChoiceCardLock =
+  | {
+      /** Set while the subscription does not include this choice. */
+      lock: LockSpec;
+      onLocked: (lock: LockSpec) => void;
+    }
+  | {
+      lock?: null;
+      onLocked?: (lock: LockSpec) => void;
+    };
+
 export function ChoiceCard({
   name,
   value,
@@ -120,6 +138,7 @@ export function ChoiceCard({
   disabled = false,
   lock = null,
   onLocked,
+  hint,
   children,
 }: {
   name: string;
@@ -127,13 +146,11 @@ export function ChoiceCard({
   checked: boolean;
   onSelect: () => void;
   disabled?: boolean;
-  /** Set while the subscription does not include this choice. */
-  lock?: LockSpec | null;
-  onLocked: (lock: LockSpec) => void;
+  hint?: ReactNode;
   children: ReactNode;
-}) {
+} & ChoiceCardLock) {
   const card = (
-    <label className="tl-choice" data-on={checked} onClick={lock ? () => onLocked(lock) : undefined}>
+    <label className="tl-choice" data-on={checked} onClick={lock && onLocked ? () => onLocked(lock) : undefined}>
       <input
         type="radio"
         name={name}
@@ -142,43 +159,28 @@ export function ChoiceCard({
         onChange={onSelect}
         disabled={disabled || lock !== null}
       />
-      <span className="text-sm font-medium text-ink">{children}</span>
+      {hint ? (
+        <span className="min-w-0">
+          <span className="text-sm font-medium text-ink">{children}</span>
+          <span className="mt-1 block text-sm text-muted" data-choice-hint>
+            {hint}
+          </span>
+        </span>
+      ) : (
+        <span className="text-sm font-medium text-ink">{children}</span>
+      )}
     </label>
   );
   if (!lock) return card;
   return (
     <div className={css.lockedChoice} data-locked-choice={value}>
       {card}
-      <LockButton lock={lock} onOpen={onLocked} />
+      <LockButton lock={lock} onOpen={onLocked ?? noop} />
     </div>
   );
 }
 
-/**
- * The same, standing in for a page or a part of one that the subscription
- * does not include - the Groups page, a new profile past the limit: the lock,
- * what it needs, Go to subscription, and whatever the page adds after it
- * (`children`: Back to profiles).
- */
-export function LockedPanel({ lock, children }: { lock: LockSpec; children?: ReactNode }) {
-  return (
-    <section className={css.panel} aria-label={`Locked: ${lock.title}`} data-locked-panel={lock.feature}>
-      <span className={css.panelIcon} aria-hidden>
-        <IconLock className="h-5 w-5" />
-      </span>
-      <div className="min-w-0">
-        <p className="text-lg font-semibold text-ink">Locked: {lock.title}</p>
-        <p className="mt-1 text-sm text-muted">{lock.body}</p>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Link href={SUBSCRIPTION_PAGE} className="tl-button">
-            Go to subscription
-          </Link>
-          {children}
-        </div>
-      </div>
-    </section>
-  );
-}
+function noop(): void {}
 
 /**
  * After a save or an import refused at the subscription's profile limit (402
@@ -195,6 +197,3 @@ export function ProfileLimitLink({ error }: { error: unknown }) {
     </p>
   );
 }
-
-/** The class of the locked Select Group button (components/builder/ProfileTargets.tsx). */
-export const LOCKED_INPUT_CLASS = css.lockedInput;

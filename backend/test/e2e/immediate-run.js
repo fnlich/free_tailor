@@ -8,9 +8,12 @@
  * up, the part no unit test reaches:
  *
  *   - the first Generate Immediately asks first, with the owner's sentence
- *     and what the run takes from the credit balance - nothing, for the stub
- *     seat's free model - and "Do not show again" stops it asking in this
- *     browser
+ *     and what the run takes from the credit balance - nothing, for Partial
+ *     Tailor left at its unpriced $0 - and "Do not show again" stops it
+ *     asking in this browser
+ *   - every run names ONE profile and one build mode (`{ profileId,
+ *     buildMode }`), the resume made through the API so the server files it
+ *     under its person; the builder starts on that profile (#manual-profile)
  *   - each finished resume reaches the browser's download folder by itself,
  *     and is listed under the progress to download again
  *   - a run queued for this tab is picked back up by this tab after a
@@ -48,8 +51,6 @@ const users = require(path.join(DIST, 'database', 'userRepository'));
 const orders = require(path.join(DIST, 'database', 'orderRepository'));
 const { getDb } = require(path.join(DIST, 'database', 'sqlite'));
 const { outputDateText, sanitizePathSegment } = require(path.join(DIST, 'utils', 'outputStorage'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -61,12 +62,12 @@ const CONFIRM_SENTENCE =
   'If you close the tab or the network drops, the run can be stopped. Would you like to proceed?';
 const POSTING =
   'Senior engineer wanted to ship TypeScript services packaged with Docker, for a small platform team.';
-/** The account's own folder path for this run: the owner's example, a date and a profile in one folder. */
+/** The account's own folder path for this run: the owner's example, a date and a resume in one folder. */
 const SUFFIX = '/{{date}}{{profile_name}}/{{company_name}}/{{role}}';
 
 /*
  * Every queued job gets a posting of its own. The stored analysis and the
- * tailoring cache answer a repeat of the same posting and profile with no
+ * tailoring cache answer a repeat of the same posting and resume with no
  * model call, so a run of repeats finishes in PDF time - before this script
  * can Stop it, leave it or cancel it - and the stub's delay, which those
  * checks need, never applies. Per JOB, not per submission: jobs 2..N of a run
@@ -139,11 +140,17 @@ async function pressButton(page, text) {
   }, text);
 }
 
-/** Opens manual mode with the job typed in and Auto-generate on. */
+/**
+ * Opens manual mode with the job typed in and Auto-generate on, the account's
+ * one profile chosen (#manual-profile starts on it once the profiles are
+ * read) and Partial Tailor - the mode these runs are built in - picked.
+ */
 async function openManual(page, company) {
   await page.goto(`${APP}/`, { waitUntil: 'networkidle2' });
   await pressButton(page, 'Building Manually');
   await page.waitForSelector('input[placeholder="Enter company name"]');
+  await until(page, () => Boolean(document.getElementById('manual-profile')?.value), 15_000);
+  await page.evaluate(() => document.querySelector('input[name="manualBuildMode"][value="partial"]')?.click());
   await page.type('input[placeholder="Enter company name"]', company);
   await page.type('textarea[placeholder^="Paste the job description"]', POSTING);
   const auto = await page.evaluate(() => document.body.innerText.includes('Auto-generate (On)'));
@@ -184,46 +191,51 @@ const handed = [];
 
 async function main() {
   const stamp = Date.now().toString(36);
-  // Default subscription: one profile, which is all Generate Immediately needs.
+  // Default subscription: one profile (a person), which is all a run needs -
+  // a run builds exactly one. The resume is made through the API, as a
+  // builder makes it: the server files it under its person, and that profile
+  // is what every run below names.
   const user = users.createUser({ email: `e2e-run-${stamp}@example.com`, name: 'Run User' });
-  const profileId = `p-run-${stamp}`;
-  saveProfile({
-    ...buildNewProfile(
-      {
-        name: 'Ada Run',
-        title: 'Senior Engineer',
-        contact: { email: 'ada@example.com', phone: '1', location: 'Remote' },
-        summary: 'Engineer who ships.',
-        experience: [
-          {
-            title: 'Engineer',
-            company: 'Acme',
-            startDate: '01/2020',
-            endDate: 'Present',
-            location: 'Remote',
-            description: 'Built product services.',
-            achievements: ['Cut build time by 37%.'],
-            skills: [],
-          },
-        ],
-        skills: ['TypeScript', 'Docker'],
-        education: [],
-      },
-      profileId
-    ),
-    ownerId: user.id,
-  });
   const token = users.createSession(user.id);
   const api = apiAs(token);
+  const seeded = await api('/resumes', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'Ada Run',
+      title: 'Senior Engineer',
+      contact: { email: 'ada@example.com', phone: '1', location: 'Remote' },
+      summary: 'Engineer who ships.',
+      experience: [
+        {
+          title: 'Engineer',
+          company: 'Acme',
+          startDate: '01/2020',
+          endDate: 'Present',
+          location: 'Remote',
+          description: 'Built product services.',
+          achievements: ['Cut build time by 37%.'],
+          skills: [],
+        },
+      ],
+      skills: ['TypeScript', 'Docker'],
+      education: [],
+    }),
+  });
+  const profileId = seeded.body?.profileId;
+  // Not a claim of its own (every run below names this profile): a setup that failed ends the script here.
+  if (seeded.status !== 201 || typeof profileId !== 'string' || !profileId) {
+    throw new Error(`setup: the resume was not filed under a profile: ${seeded.status} ${JSON.stringify(seeded.body)}`);
+  }
 
-  /** Queues an immediate run for `tabId` the way the page does, with `jobs` postings. */
+  /** Queues an immediate run for `tabId` the way the page does, with `jobs` postings: one profile, one mode. */
   const submitFor = (tabId, jobs) =>
     api('/generation/batches', {
       method: 'POST',
       body: JSON.stringify({
         mode: 'immediate',
         tabId,
-        profileIds: [profileId],
+        profileId,
+        buildMode: 'partial',
         jobs: postingsFor(jobs).map((jobDescription, index) => ({
           companyName: `Queued ${index + 1}`,
           jobDescription,
@@ -279,7 +291,7 @@ async function main() {
       confirmText.includes(CONFIRM_SENTENCE) && /Do not show again/.test(confirmText),
       confirmText
     );
-    // The model is free here: the confirm says so, and names no amount to be taken.
+    // Partial Tailor is unpriced here (a mode nobody priced is free): the confirm says so, and names no amount to be taken.
     check(
       "a free run's confirm names no charge",
       /nothing is taken from your credit/.test(confirmText) && !/\$\d/.test(confirmText),
@@ -473,7 +485,8 @@ async function main() {
       method: 'POST',
       body: JSON.stringify({
         mode: 'order',
-        profileIds: [profileId],
+        profileId,
+        buildMode: 'partial',
         jobs: postingsFor(8).map((jobDescription, index) => ({ companyName: `Ordered ${index + 1}`, jobDescription })),
       }),
     });

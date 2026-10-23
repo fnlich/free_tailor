@@ -20,14 +20,14 @@ import { attachCompanyName, getJobAnalysisById } from '../../database/jobAnalysi
 
 /**
  * A batch's analyses, resolved ONCE PER JOB at submission - before the jobs
- * are fanned out into one task per profile - so every profile's task carries
+ * are fanned out into one task per resume - so every resume's task carries
  * the same `analysisId` (PLAN check 1, rows 2 and 7).
  *
  * Nothing here asks a model: a submission answers at once. A job is given the
  * analysis it already has - the stored analysis its sheet row's Analysis cell
  * names, when that one is this posting's (sheet first, P7), the one the page
  * named, or the stored one of its posting - and a job with none is analysed
- * by its first task through the same gate, the other profiles' tasks waiting
+ * by its first task through the same gate, the other resumes' tasks waiting
  * for that one call (services/queue/resumeTask.ts).
  *
  * A cell is trusted for nothing but the id it names: a cell naming no stored

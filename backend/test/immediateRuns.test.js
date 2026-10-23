@@ -9,7 +9,7 @@ process.env.GENERATION_MAX_ATTEMPTS = '1';
 // One slot, so "one running, the rest queued" is a fact rather than a race.
 process.env.AI_CLI_CONCURRENCY = '1';
 
-const { useAdminEmails, useTempStorage, writeSettingRaw } = require('./helpers');
+const { seedProfileWithResumes, useAdminEmails, useTempStorage, writeSettingRaw } = require('./helpers');
 
 /**
  * Generate Immediately, through the routes (owner decisions B4 and M4).
@@ -44,7 +44,7 @@ const sqlite = require('../dist/database/sqlite');
 const { seedRefundRequest } = require('./refundSeed');
 const { LEASE_READER_LIFETIME_MS } = require('../dist/services/queue/tabLease');
 
-function profileInput(name) {
+function resumeInput(name) {
   return {
     name,
     title: 'Engineer',
@@ -86,12 +86,14 @@ async function serve(name) {
   const admin = users.createUser({ email: 'admin@example.com' });
   const alice = users.createUser({ email: 'alice@example.com' });
   const bob = users.createUser({ email: 'bob@example.com' });
-  const { saveProfile } = require('../dist/database/profileRepository');
-  const { buildNewProfile } = require('../dist/services/profileService');
-  saveProfile({ ...buildNewProfile(profileInput('Ada'), 'p-alice'), ownerId: alice.id });
-  saveProfile({ ...buildNewProfile(profileInput('Bo'), 'p-bob'), ownerId: bob.id });
-  // $0.010 a resume, from $1.000: every refund below is an exact figure.
-  await config.updateAIModel('claude-cli-sonnet', { pricePerResumeUsd: '0.010' });
+  // A run builds one profile (a person): each account has one, holding one resume.
+  const profiles = {
+    alice: seedProfileWithResumes(alice, 'Ada', [{ ...resumeInput('Ada'), id: 'p-alice' }]).profileId,
+    bob: seedProfileWithResumes(bob, 'Bo', [{ ...resumeInput('Bo'), id: 'p-bob' }]).profileId,
+  };
+  // $0.010 a resume (the build mode's price, not the model's), from $1.000:
+  // every refund below is an exact figure.
+  await config.updateAppSettings({ partialPriceUsd: '0.010' });
   credits.setBalance(alice.id, 1_000, admin.id);
   credits.setBalance(bob.id, 1_000, admin.id);
 
@@ -117,8 +119,8 @@ async function serve(name) {
     fs.writeFileSync(path.join(outputBaseDir, folder, 'Ada.pdf'), `resume ${jobIndex}`);
     fs.writeFileSync(path.join(outputBaseDir, folder, 'Ada_cover_letter.pdf'), `letter ${jobIndex}`);
     entry.resolve({
-      profileId: 'p-alice',
-      profileName: 'Ada',
+      resumeId: 'p-alice',
+      resumeName: 'Ada',
       companyName: `Company ${jobIndex}`,
       role: 'Engineer',
       pdf: `${folder}/Ada.pdf`,
@@ -161,6 +163,7 @@ async function serve(name) {
     admin,
     alice,
     bob,
+    profiles,
     tokens,
     outputBaseDir,
     call,
@@ -194,7 +197,7 @@ async function serve(name) {
 test('a run is Generate Immediately unless it says it is an order, and only an order is listed', async () => {
   const server = await serve('kinds');
   try {
-    const immediate = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const immediate = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, tabId: 'tab-a' });
     assert.equal(immediate.status, 202, JSON.stringify(immediate.body));
     assert.equal(immediate.body.kind, 'immediate');
     assert.equal(immediate.body.orderId, undefined, 'nobody ordered it, so nothing names an order');
@@ -216,7 +219,7 @@ test('a run is Generate Immediately unless it says it is an order, and only an o
 
     // `mode: 'order'` places an order, with or without a tab id.
     for (const asked of [{ mode: 'order' }, { mode: 'order', tabId: 'ignored' }]) {
-      const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], ...asked });
+      const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, ...asked });
       assert.equal(ordered.status, 202);
       assert.equal(ordered.body.kind, 'order', JSON.stringify(asked));
       assert.match(ordered.body.orderNumber, /^FT-\d{8}-\d{4}$/);
@@ -232,19 +235,19 @@ test('a run is Generate Immediately unless it says it is an order, and only an o
     // refused, not guessed.
     const retired = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(1),
-      profileIds: ['p-alice'],
+      profileId: server.profiles.alice,
       asOrder: true,
     });
     assert.equal(retired.status, 202);
     assert.equal(retired.body.kind, 'immediate');
     assert.equal(retired.body.orderNumber, undefined);
     assert.equal(orders.listOrdersForUser(server.alice.id).length, 2);
-    const junk = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], mode: 'later' });
+    const junk = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, mode: 'later' });
     assert.equal(junk.status, 400);
     assert.match(junk.body.error, /mode must be "immediate" or "order"/);
     const badTab = await server.post('alice', '/generation/batches', {
       jobs: jobsFor(1),
-      profileIds: ['p-alice'],
+      profileId: server.profiles.alice,
       tabId: 'not a tab id!',
     });
     assert.equal(badTab.status, 400);
@@ -257,7 +260,7 @@ test('a run is Generate Immediately unless it says it is an order, and only an o
 test('the lease is armed at submit, held by the run\'s own tab, and by nobody else', async () => {
   const server = await serve('holders');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
     // A tab that never attaches must not leave the run building for nobody.
     assert.deepEqual(server.leases().state(id), { readers: 0, armed: true });
@@ -296,14 +299,14 @@ test('the lease is armed at submit, held by the run\'s own tab, and by nobody el
 test('an order, or a run from before kinds, is never held by its stream - leaving it stops nothing', async (t) => {
   const server = await serve('order-readers');
   try {
-    const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileIds: ['p-alice'], mode: 'order' });
+    const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileId: server.profiles.alice, mode: 'order' });
     const orderId = ordered.body.batchId;
     await until(() => server.queue().getBatch(orderId).tasks[0].state === 'running', 'the order to start');
 
     // A run queued by a build from before kinds - neither an order nor an
     // immediate run, and never armed by the restore. Made by taking the kind
     // off a fresh run (and its submit-time timer with it).
-    const older = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'] });
+    const older = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice });
     const olderId = older.body.batchId;
     delete server.queue().getBatch(olderId).shared.kind;
     server.leases().forget(olderId);
@@ -339,7 +342,7 @@ test('an order, or a run from before kinds, is never held by its stream - leavin
 test('a tab whose connection vanished without closing is counted out by the clock, and its run stops', async (t) => {
   const server = await serve('silent-drop');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
     assert.equal(server.balance(server.alice), 980);
     await until(() => server.queue().getBatch(id).tasks[0].state === 'running', 'the first resume to start');
@@ -383,7 +386,7 @@ test('a tab whose connection vanished without closing is counted out by the cloc
 test("a stream that ended on its own unsubscribing again never takes a newer reader's updates", async () => {
   const server = await serve('unsubscribe-twice');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
     await until(() => server.queue().getBatch(id).tasks[0].state === 'running', 'the first resume to start');
 
@@ -409,7 +412,7 @@ test("a stream that ended on its own unsubscribing again never takes a newer rea
 test('a tab gone past the grace stops the run, and what had not started is refunded exactly', async (t) => {
   const server = await serve('grace');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(3), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(3), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
     assert.equal(server.balance(server.alice), 970, 'three resumes at $0.010 reserved');
     await until(() => server.queue().getBatch(id).tasks[0].state === 'running', 'the first resume to start');
@@ -445,9 +448,9 @@ test('a tab gone past the grace stops the run, and what had not started is refun
 test('release stops the run at once - the owner\'s own tab only, with the cookie alone', async () => {
   const server = await serve('release');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
-    const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], mode: 'order' });
+    const ordered = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, mode: 'order' });
     await until(() => server.queue().getBatch(id).tasks[0].state === 'running', 'the run to start');
     assert.equal(server.balance(server.alice), 970);
 
@@ -490,7 +493,7 @@ test('release stops the run at once - the owner\'s own tab only, with the cookie
 test('each finished resume is downloaded through an owner-checked route, and deleted after the run, downloaded or not', async () => {
   const server = await serve('downloads');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(2), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
     await until(() => server.queue().getBatch(id).tasks[0].state === 'running', 'the first resume to start');
     server.deliver(id, 0);
@@ -558,7 +561,7 @@ test('each finished resume is downloaded through an owner-checked route, and del
 test('a delivered immediate resume is refundable by its order item', async () => {
   const server = await serve('refunds');
   try {
-    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], tabId: 'tab-a' });
+    const { body } = await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, tabId: 'tab-a' });
     const id = body.batchId;
     await until(() => server.queue().getBatch(id).tasks[0].state === 'running', 'the resume to start');
     server.deliver(id, 0);
@@ -590,9 +593,9 @@ test('a delivered immediate resume is refundable by its order item', async () =>
 test('a reloaded tab finds its own run by tab id, never another tab\'s or an order', async () => {
   const server = await serve('active-tab');
   try {
-    const a = (await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], tabId: 'tab-a' })).body.batchId;
-    const b = (await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], tabId: 'tab-b' })).body.batchId;
-    await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileIds: ['p-alice'], mode: 'order' });
+    const a = (await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, tabId: 'tab-a' })).body.batchId;
+    const b = (await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, tabId: 'tab-b' })).body.batchId;
+    await server.post('alice', '/generation/batches', { jobs: jobsFor(1), profileId: server.profiles.alice, mode: 'order' });
     const ids = async (query) =>
       (await (await server.call('alice', `/generation/batches?${query}`)).json()).batches.map((batch) => batch.batchId).sort();
 
@@ -624,7 +627,7 @@ test('after a restart an immediate run gets the grace to be reattached; an order
     batchId,
     seq: 0,
     state: 'queued',
-    data: { queue: 'cli', label: { profileId: 'p', profileName: 'P', companyName: 'Acme', role: '' }, kind: 'resume', payload: { batchId, costMilli: 0 } },
+    data: { queue: 'cli', label: { resumeId: 'p', resumeName: 'P', companyName: 'Acme', role: '' }, kind: 'resume', payload: { batchId, costMilli: 0 } },
   });
   generationStore.saveBatchWithTasks(batch('bat_now', { kind: 'immediate', tabId: 'tab-a' }), [task('bat_now')]);
   generationStore.saveBatchWithTasks(batch('bat_order', { kind: 'order' }), [task('bat_order')]);

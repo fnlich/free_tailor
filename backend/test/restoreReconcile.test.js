@@ -43,9 +43,9 @@ function taskRow(batchId, seq, state, costMilli = 2_000) {
     state,
     data: {
       queue: 'cli',
-      label: { profileId: 'p1', profileName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
+      label: { resumeId: 'p1', resumeName: 'Ada', companyName: `Co ${seq}`, role: 'SWE' },
       kind: 'resume',
-      payload: { batchId, profileId: 'p1', jobIndex: 0, costMilli, choice: { provider: 'claude-cli', modelName: 'sonnet' } },
+      payload: { batchId, resumeId: 'p1', jobIndex: 0, costMilli, choice: { provider: 'claude-cli', modelName: 'sonnet' } },
     },
   };
 }

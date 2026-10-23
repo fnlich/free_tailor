@@ -14,6 +14,9 @@ const { loadFresh, useAdminEmails, useTempStorage } = require('./helpers');
  * one Ask AI template every account uses, and delete a job off the shared
  * board together with everybody's answers for it.
  *
+ * (The Bid Assistant still calls a saved resume a "profile"; the lines below
+ * that speak for it keep its word.)
+ *
  * Now: a source belongs to the account that saved it, and one saved before
  * sources had owners is listed for everybody and changed only by an
  * administrator, as is one whose account was deleted, listed to administrators
@@ -47,8 +50,10 @@ async function serve() {
   app.use(express.json());
   app.use(attachUser);
   app.use('/api/bid-assistant', routes.default ?? routes);
-  // The profiles page's own door into the same table, for deleting and
-  // importing a profile the other way.
+  // The resumes route's own door into the same table, for deleting and
+  // importing a resume the other way.
+  app.use('/api/resumes', require('../dist/routes/resumes').default);
+  // And the profiles route, whose delete takes a person's resumes - and their answers - together.
   app.use('/api/profiles', require('../dist/routes/profiles').default);
   app.use(publicErrorHandler);
   const server = app.listen(0);
@@ -171,9 +176,9 @@ test("saved answers are read and deleted through the reader's own profiles", asy
   bidDb.importJobs([{ company_name: 'Acme', job_title: 'Engineer', job_url: 'https://example.com/jobs/answers' }]);
   const job = bidDb.getJobs('Acme', '').find((row) => row.job_url === 'https://example.com/jobs/answers');
 
-  const aliceProfile = (await call('alice', 'POST', '/profiles', { name: 'Alice' })).body;
-  const bobProfile = (await call('bob', 'POST', '/profiles', { name: 'Bob' })).body;
-  assert.ok(aliceProfile.id && bobProfile.id);
+  const aliceResume = (await call('alice', 'POST', '/profiles', { name: 'Alice' })).body;
+  const bobResume = (await call('bob', 'POST', '/profiles', { name: 'Bob' })).body;
+  assert.ok(aliceResume.id && bobResume.id);
 
   // Typed answers ("MA"), so nothing reaches a model.
   const answer = (who, profileId, text) =>
@@ -183,26 +188,26 @@ test("saved answers are read and deleted through the reader's own profiles", asy
       targetProfileIds: [profileId],
       questions: [{ question: 'Why us?', isManualAnswer: true, manualAnswer: text, charLimit: 200 }],
     });
-  assert.equal((await answer('alice', aliceProfile.id, "Alice's answer")).status, 200);
-  assert.equal((await answer('bob', bobProfile.id, "Bob's answer")).status, 200);
+  assert.equal((await answer('alice', aliceResume.id, "Alice's answer")).status, 200);
+  assert.equal((await answer('bob', bobResume.id, "Bob's answer")).status, 200);
   // Nor can an answer be written for somebody else's profile.
-  assert.equal((await answer('bob', aliceProfile.id, 'Bob, as Alice')).status, 404);
+  assert.equal((await answer('bob', aliceResume.id, 'Bob, as Alice')).status, 404);
 
   const forBob = (await call('bob', 'GET', `/answers/${job.id}`)).body;
-  assert.deepEqual(Object.keys(forBob), [bobProfile.id], "Alice's profile id and answer are not his to read");
-  assert.equal(forBob[bobProfile.id][0].answer, "Bob's answer");
+  assert.deepEqual(Object.keys(forBob), [bobResume.id], "Alice's profile id and answer are not his to read");
+  assert.equal(forBob[bobResume.id][0].answer, "Bob's answer");
   const forAlice = (await call('alice', 'GET', `/answers/${job.id}`)).body;
-  assert.deepEqual(Object.keys(forAlice), [aliceProfile.id]);
+  assert.deepEqual(Object.keys(forAlice), [aliceResume.id]);
 
-  const refused = await call('bob', 'DELETE', `/answers/${job.id}?profileId=${encodeURIComponent(aliceProfile.id)}&question=${encodeURIComponent('Why us?')}`);
+  const refused = await call('bob', 'DELETE', `/answers/${job.id}?profileId=${encodeURIComponent(aliceResume.id)}&question=${encodeURIComponent('Why us?')}`);
   assert.equal(refused.status, 404);
   assert.deepEqual(refused.body, { error: 'Profile not found.' });
-  assert.equal((await call('alice', 'GET', `/answers/${job.id}`)).body[aliceProfile.id][0].answer, "Alice's answer", 'it survived');
+  assert.equal((await call('alice', 'GET', `/answers/${job.id}`)).body[aliceResume.id][0].answer, "Alice's answer", 'it survived');
 
-  const deleted = await call('alice', 'DELETE', `/answers/${job.id}?profileId=${encodeURIComponent(aliceProfile.id)}&question=${encodeURIComponent('Why us?')}`);
+  const deleted = await call('alice', 'DELETE', `/answers/${job.id}?profileId=${encodeURIComponent(aliceResume.id)}&question=${encodeURIComponent('Why us?')}`);
   assert.equal(deleted.status, 200);
   assert.deepEqual((await call('alice', 'GET', `/answers/${job.id}`)).body, {});
-  assert.equal((await call('bob', 'GET', `/answers/${job.id}`)).body[bobProfile.id].length, 1, "Bob's is untouched");
+  assert.equal((await call('bob', 'GET', `/answers/${job.id}`)).body[bobResume.id].length, 1, "Bob's is untouched");
 });
 
 test('the job board stays shared; deleting a job, and everybody\'s answers with it, is an administrator\'s', async () => {
@@ -249,11 +254,12 @@ function answerRowsFor(profileId) {
   return getDb().prepare('SELECT COUNT(*) AS n FROM answers WHERE profile_id = ?').get(profileId).n;
 }
 
-test("a profile's answers go with it, so an account that takes its id later reads none of them", async () => {
-  // Answers are keyed by profile id alone, and an id comes back: the Bid
-  // Assistant creates a profile with the id the client chose, and an import
-  // keeps any free one. They used to outlive the profile, and whoever took
-  // the id next read - and could delete - them as their own.
+test("a resume's answers go with it, so an account that takes its id later reads none of them", async () => {
+  // Answers are keyed by resume id alone (the Bid Assistant's profile_id), and
+  // an id comes back: the Bid Assistant creates a resume (its "profile") with
+  // the id the client chose, and an import keeps any free one. They used to
+  // outlive the resume, and whoever took the id next read - and could delete -
+  // them as their own.
   const { call, addAccount } = await server();
   for (const who of ['carol', 'dave', 'erin']) addAccount(who);
   const job = importJob('Initech', 'https://example.com/jobs/reused-id');
@@ -262,24 +268,24 @@ test("a profile's answers go with it, so an account that takes its id later read
   assert.equal((await call('carol', 'POST', '/profiles', { id: 'reused-profile-id', name: 'Carol' })).status, 200);
   assert.equal((await answerAs(call, 'carol', job.id, 'reused-profile-id', "Carol's answer")).status, 200);
   assert.equal((await call('carol', 'DELETE', '/profiles/reused-profile-id')).status, 200);
-  assert.equal(answerRowsFor('reused-profile-id'), 0, 'deleted with the profile');
+  assert.equal(answerRowsFor('reused-profile-id'), 0, 'deleted with the resume');
 
   assert.equal((await call('dave', 'POST', '/profiles', { id: 'reused-profile-id', name: 'Dave' })).status, 200);
   assert.deepEqual((await call('dave', 'GET', `/answers/${job.id}`)).body, {});
 
-  // And through the profiles page's, then an import that keeps the id.
+  // And through the resumes route's, then an import that keeps the id.
   assert.equal((await call('carol', 'POST', '/profiles', { id: 'imported-profile-id', name: 'Carol' })).status, 200);
   assert.equal((await answerAs(call, 'carol', job.id, 'imported-profile-id', "Carol's other answer")).status, 200);
-  assert.equal((await call('carol', 'DELETE', '/api/profiles/imported-profile-id')).status, 200);
-  assert.equal(answerRowsFor('imported-profile-id'), 0, 'deleted with the profile');
+  assert.equal((await call('carol', 'DELETE', '/api/resumes/imported-profile-id')).status, 200);
+  assert.equal(answerRowsFor('imported-profile-id'), 0, 'deleted with the resume');
 
-  const imported = await call('erin', 'POST', '/api/profiles/import', { id: 'imported-profile-id', name: 'Erin', summary: 'x' });
+  const imported = await call('erin', 'POST', '/api/resumes/import', { id: 'imported-profile-id', name: 'Erin', summary: 'x' });
   assert.equal(imported.status, 201);
   assert.equal(imported.body.keptIds, 1, 'the id was free, so the import kept it');
   assert.deepEqual((await call('erin', 'GET', `/answers/${job.id}`)).body, {});
 });
 
-test('answers an earlier build left behind a deleted profile are swept when the Bid Assistant loads', async () => {
+test('answers an earlier build left behind a deleted resume are swept when the Bid Assistant loads', async () => {
   const { call, addAccount } = await server();
   addAccount('frank');
   const job = importJob('Hooli', 'https://example.com/jobs/orphans');
@@ -289,7 +295,7 @@ test('answers an earlier build left behind a deleted profile are swept when the 
   const { getDb } = require('../dist/database/sqlite');
   getDb()
     .prepare('INSERT INTO answers (job_id, profile_id, question, answer, char_limit, question_order, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(job.id, 'profile-deleted-long-ago', 'Why us?', 'Left behind', 200, 0, new Date().toISOString());
+    .run(job.id, 'resume-deleted-long-ago', 'Why us?', 'Left behind', 200, 0, new Date().toISOString());
 
   const realLog = console.log;
   const logged = [];
@@ -299,8 +305,8 @@ test('answers an earlier build left behind a deleted profile are swept when the 
   } finally {
     console.log = realLog;
   }
-  assert.equal(answerRowsFor('profile-deleted-long-ago'), 0);
-  assert.equal(answerRowsFor(kept.id), 1, "a live profile's answer stays");
+  assert.equal(answerRowsFor('resume-deleted-long-ago'), 0);
+  assert.equal(answerRowsFor(kept.id), 1, "a live resume's answer stays");
   assert.ok(logged.some((line) => /Removed 1 saved answer\(s\) whose profile no longer exists/.test(line)), logged.join('\n'));
 });
 
@@ -312,8 +318,8 @@ test("a job reads as answered only to an account that answered it, on the board 
   addAccount('gina');
   addAccount('hugo');
   const job = importJob('Vandelay', 'https://example.com/jobs/answered-flag');
-  const profile = (await call('gina', 'POST', '/profiles', { name: 'Gina' })).body;
-  assert.equal((await answerAs(call, 'gina', job.id, profile.id, "Gina's answer")).status, 200);
+  const resume = (await call('gina', 'POST', '/profiles', { name: 'Gina' })).body;
+  assert.equal((await answerAs(call, 'gina', job.id, resume.id, "Gina's answer")).status, 200);
 
   const flagFor = async (who) =>
     (await call(who, 'GET', '/jobs?search=Vandelay')).body.find((row) => row.id === job.id).has_answers;
@@ -329,7 +335,7 @@ test("a job reads as answered only to an account that answered it, on the board 
 });
 
 test("a deleted account's sources are the administrator's to see and free, and nobody else's", async () => {
-  // Deleting an account leaves its sources, as it leaves its profiles. Listed
+  // Deleting an account leaves its sources, as it leaves its resumes. Listed
   // only to their owner, they were in nobody's list - the administrator's
   // included - while their labels, unique across the table, stayed taken.
   const { call, addAccount, users } = await server();
@@ -352,4 +358,46 @@ test("a deleted account's sources are the administrator's to see and free, and n
   const reused = await call('alice', 'POST', '/google-sheets', { label: 'Ivan jobs', sheetId: 'shared-sheet-alice' });
   assert.equal(reused.status, 200);
   assert.equal((await call('alice', 'DELETE', `/google-sheets/${reused.body.id}`)).status, 200);
+});
+
+test("a create here is placed like any other, and a profile's delete takes its resumes' answers with it", async () => {
+  // The Bid Assistant's create goes through the same repository call as the
+  // resumes page's (createResumes): filed under the account's profile for that
+  // person, or a new one - and the subscription's cap counts only a NEW profile,
+  // so a second resume of a person who has one is allowed on the Default
+  // subscription (the old cap counted every resume).
+  const { call, addAccount } = await server();
+  addAccount('jon');
+  const job = importJob('Cyberdyne', 'https://example.com/jobs/profile-delete');
+
+  const first = await call('jon', 'POST', '/profiles', { name: 'Jon Snow' });
+  assert.equal(first.status, 200);
+  assert.ok(first.body.profileId, 'the new resume carries the profile it was filed under');
+  const second = await call('jon', 'POST', '/profiles', { name: 'jon  SNOW' });
+  assert.equal(second.status, 200, 'the same person: no new profile, so the cap is not asked');
+  assert.equal(second.body.profileId, first.body.profileId);
+
+  // A different person would be a second profile: over the Default cap of one.
+  const refused = await call('jon', 'POST', '/profiles', { name: 'Someone Else' });
+  assert.equal(refused.status, 402);
+  assert.equal(refused.body.code, 'profile-limit');
+
+  // The whole-record edit keeps the placement, whatever the record says.
+  const edited = await call('jon', 'PUT', `/profiles/${second.body.id}`, { ...second.body, name: 'Jon Snow', profileId: 'somewhere-else' });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.profile.profileId, first.body.profileId);
+
+  for (const id of [first.body.id, second.body.id]) {
+    assert.equal((await answerAs(call, 'jon', job.id, id, `Answer for ${id}`)).status, 200);
+    assert.equal(answerRowsFor(id), 1);
+  }
+
+  // Deleting the person deletes both resumes, and their answers, together.
+  const deleted = await call('jon', 'DELETE', `/api/profiles/${first.body.profileId}`);
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(deleted.body, { deleted: true, deletedResumes: 2 });
+  for (const id of [first.body.id, second.body.id]) {
+    assert.equal(answerRowsFor(id), 0, 'the answers went with the resume');
+    assert.equal((await call('jon', 'GET', `/profiles/${id}`)).status, 404);
+  }
 });

@@ -15,7 +15,7 @@ const { useTempStorage, writeSettingRaw } = require('./helpers');
  * the URL' is not a control".
  *
  * Every resume is filed by a queued run now, under the administrator's prefix
- * and the account's own folder path - email, order number, date, profile,
+ * and the account's own folder path - email, order number, date, resume,
  * company - so its path is DERIVABLE rather than guessable. Somebody who knows
  * a colleague's email address could otherwise walk straight past the whole
  * carefully-404'd `/api/orders` authorization layer and read their resumes.
@@ -76,9 +76,9 @@ async function serve() {
     const plan = await planRunOutput(bob);
     const order = orders.createOrder(
       { userId: bob.id, batchId, retentionDays: 5, kind, ...(folder ? { outputRootFor: plan.rootFor } : {}) },
-      [{ seq: 0, profileId: 'p1', profileName: 'Bob Smith', companyName: 'Stripe', role: 'SWE' }]
+      [{ seq: 0, resumeId: 'p1', resumeName: 'Bob Smith', companyName: 'Stripe', role: 'SWE' }]
     );
-    const { storagePathBase } = await getGeneratedOutputPath({ name: 'Bob Smith', profileSettings: {} }, 'Stripe', 'SWE', {
+    const { storagePathBase } = await getGeneratedOutputPath({ name: 'Bob Smith', resumeSettings: {} }, 'Stripe', 'SWE', {
       output: plan.placeFor(order.number),
     });
     const resume = `${storagePathBase}/Bob_Smith.pdf`;

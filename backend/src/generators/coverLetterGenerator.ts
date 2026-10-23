@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 /// <reference path="../types/html-to-docx.d.ts" />
 import HTMLtoDOCX from 'html-to-docx';
-import { Profile } from '../types/profile';
+import { Resume } from '../types/resume';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getCoverLetterOutputFilename } from '../utils/generatedPath';
 
@@ -50,9 +50,9 @@ function contentToHtmlParagraphs(content: string): string {
 
 /**
  * Build professional PDF-style HTML for the cover letter.
- * Structure: greeting, {content}, Best regards, {Profile name}
+ * Structure: greeting, {content}, Best regards, {Resume name}
  */
-function buildCoverLetterHTML(content: string, profileName: string): string {
+function buildCoverLetterHTML(content: string, resumeName: string): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
@@ -60,16 +60,16 @@ function buildCoverLetterHTML(content: string, profileName: string): string {
   <p style="margin: 0 0 12pt 0;">${getCoverLetterGreeting()}</p>
   ${contentToHtmlParagraphs(content)}
   <p style="margin: 12pt 0 6pt 0;">Best regards,</p>
-  <p style="margin: 0; color: black;">${esc(profileName.trim())}</p>
+  <p style="margin: 0; color: black;">${esc(resumeName.trim())}</p>
 </body>
 </html>`;
 }
 
 /**
  * Build cover letter HTML for DOCX with explicit line breaks between sections.
- * Structure: greeting, (line break), {content}, (line break), Best regards, {profile name}
+ * Structure: greeting, (line break), {content}, (line break), Best regards, {resume name}
  */
-function buildCoverLetterHTMLForDocx(content: string, profileName: string): string {
+function buildCoverLetterHTMLForDocx(content: string, resumeName: string): string {
   const lineBreak = '<p style="margin: 0 0 12pt 0;"></p>';
   return `<!DOCTYPE html>
 <html>
@@ -80,17 +80,17 @@ function buildCoverLetterHTMLForDocx(content: string, profileName: string): stri
   ${contentToHtmlParagraphs(content)}
   ${lineBreak}
   <p style="margin: 0 0 12pt 0;">Best regards,</p>
-  <p style="margin: 0; font-weight: bold; color: black; font-size: 12pt;">${esc(profileName.trim())}</p>
+  <p style="margin: 0; font-weight: bold; color: black; font-size: 12pt;">${esc(resumeName.trim())}</p>
 </body>
 </html>`;
 }
 
 /**
  * Save cover letter as PDF in the same directory as the resume.
- * Path: {profile}/{count+1}_{company}/{role}/{profile}_cover_letter.pdf
+ * Path: {resume}/{count+1}_{company}/{role}/{resume}_cover_letter.pdf
  */
 export async function saveCoverLetter(
-  profile: Profile,
+  resume: Resume,
   content: string,
   pathInfo: GeneratedPathInfo
 ): Promise<string> {
@@ -98,7 +98,7 @@ export async function saveCoverLetter(
   const relativePath = `${pathInfo.storagePathBase}/${filename}`;
   const filepath = path.join(pathInfo.absoluteDir, filename);
 
-  const html = buildCoverLetterHTML(content.trim(), profile.name);
+  const html = buildCoverLetterHTML(content.trim(), resume.name);
 
   const browser = await launchBrowser();
 
@@ -127,10 +127,10 @@ export async function saveCoverLetter(
 
 /**
  * Save cover letter as DOCX in the same directory as the resume.
- * Path: {profile}/{date}/{company}/{role}/{profile}_cover_letter.docx
+ * Path: {resume}/{date}/{company}/{role}/{resume}_cover_letter.docx
  */
 export async function saveCoverLetterDOCX(
-  profile: Profile,
+  resume: Resume,
   content: string,
   pathInfo: GeneratedPathInfo
 ): Promise<string> {
@@ -138,7 +138,7 @@ export async function saveCoverLetterDOCX(
   const relativePath = `${pathInfo.storagePathBase}/${filename}`;
   const filepath = path.join(pathInfo.absoluteDir, filename);
 
-  const html = buildCoverLetterHTMLForDocx(content.trim(), profile.name);
+  const html = buildCoverLetterHTMLForDocx(content.trim(), resume.name);
 
   const docxBuffer = await HTMLtoDOCX(html, null, {
     font: 'Arial',

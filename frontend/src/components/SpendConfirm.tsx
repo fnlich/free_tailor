@@ -65,7 +65,7 @@ function SpendLine({ kind, estimate, what }: { kind: SpendKind; estimate: SpendE
         <p className="text-sm text-muted">
           {kind === 'subscription'
             ? 'What this costs could not be worked out just now.'
-            : 'What this costs could not be worked out just now. It is taken from your credit at the price of the model each resume is built with.'}
+            : 'What this costs could not be worked out just now. It is taken from your credit at the price per resume of the builder mode you chose.'}
         </p>
       );
     case 'later':

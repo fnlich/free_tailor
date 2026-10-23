@@ -8,13 +8,13 @@ const { buildTailorResumePromptValues } = require('../dist/services/resumeServic
  *
  * Two reasons to pin this rather than leave it to review. On a metered provider
  * every character is billed, and on a subscription seat every character counts
- * against the seat's usage allowance and lengthens the turn. And a `Profile`
+ * against the seat's usage allowance and lengthens the turn. And a `Resume`
  * grows fields over time - the projection is built by naming what goes in
  * precisely so a field added later is not sent to a model by default, and this
  * is what notices when that stops being true.
  */
 
-function profileFixture(extra = {}) {
+function resumeFixture(extra = {}) {
   const role = (index) => ({
     title: `Senior Engineer ${index}`,
     company: `Company ${index}`,
@@ -26,7 +26,7 @@ function profileFixture(extra = {}) {
     skills: ['C#', 'Python', 'Azure'],
   });
   return {
-    id: 'profile-1',
+    id: 'resume-1',
     name: 'A Person',
     title: 'Staff Engineer',
     totalYearsExperience: 12,
@@ -44,7 +44,7 @@ function profileFixture(extra = {}) {
     skills: Array.from({ length: 40 }, (_, index) => `Skill${index}`),
     education: [{ degree: 'BSc', institution: 'Uni', startDate: '2008', endDate: '2012', location: 'X' }],
     certifications: [{ name: 'AZ-204', issuer: 'Microsoft', date: '2021' }],
-    profileSettings: {
+    resumeSettings: {
       resumePromptId: 'tailor-resume',
       analyzeJobPromptId: 'analyze-job-description',
       coverLetterPromptId: 'generate-cover-letter',
@@ -85,22 +85,47 @@ const ANALYSIS = {
 };
 
 test("the operator's own configuration never reaches the model", () => {
-  // `profileSettings` holds which prompt records to use, the output file-name
+  // `resumeSettings` holds which prompt records to use, the output file-name
   // templates, and which AI model they pay for. Sending it put the operator's
   // tooling choices into a third party's model input, for a call that rewrites
   // a summary.
-  const values = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
+  const values = buildTailorResumePromptValues(resumeFixture(), ANALYSIS);
   const sent = JSON.parse(values.profileJson);
-  assert.equal('profileSettings' in sent, false);
+  assert.equal('resumeSettings' in sent, false);
   assert.doesNotMatch(values.profileJson, /claude-cli-opus/, 'the model preference must not travel');
   assert.doesNotMatch(values.profileJson, /coverLetterFileNameTemplate/);
+});
+
+test("a resume's keywords (as GET /api/resumes serves them) never reach the model", () => {
+  // Keywords are derived for the matcher that chooses among a profile's
+  // resumes (services/resumeKeywords.ts). They are computed, never stored, and
+  // the prompt's projection names what goes in, so a resume that carries them
+  // (one read from the GET) sends no word of them in either mode.
+  const withKeywords = resumeFixture({
+    matchKeywords: {
+      version: 1,
+      vocabulary: 'abc',
+      basedOn: 'def',
+      headline: ['Staff Engineer'],
+      roleTitles: ['Senior Engineer'],
+      terms: ['ZZSENTINELTERM', 'C#'],
+    },
+  });
+  for (const mode of ['partial', 'full']) {
+    const values = buildTailorResumePromptValues(withKeywords, ANALYSIS, mode);
+    const sent = JSON.stringify(values);
+    assert.doesNotMatch(sent, /ZZSENTINELTERM/, `${mode}: the terms`);
+    assert.doesNotMatch(sent, /matchKeywords|basedOn|roleTitles/, `${mode}: the field and its parts`);
+    const plain = buildTailorResumePromptValues(resumeFixture(), ANALYSIS, mode);
+    assert.deepEqual(values, plain, `${mode}: a resume with keywords asks the model exactly what one without asks`);
+  }
 });
 
 test('contact details never reach the model', () => {
   // This call rewrites the summary, the experience and the skills. It is never
   // asked for contact details, no prompt in this app mentions them, and the
-  // rendered resume takes them straight from the profile.
-  const values = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
+  // rendered resume takes them straight from its source.
+  const values = buildTailorResumePromptValues(resumeFixture(), ANALYSIS);
   assert.doesNotMatch(values.profileJson, /a\.person@example\.com/);
   assert.doesNotMatch(values.profileJson, /555 0100/);
   assert.doesNotMatch(values.profileJson, /linkedin\.com/);
@@ -108,7 +133,7 @@ test('contact details never reach the model', () => {
 });
 
 test("this database's bookkeeping never reaches the model", () => {
-  const sent = JSON.parse(buildTailorResumePromptValues(profileFixture(), ANALYSIS).profileJson);
+  const sent = JSON.parse(buildTailorResumePromptValues(resumeFixture(), ANALYSIS).profileJson);
   for (const field of ['id', 'createdAt', 'updatedAt']) {
     assert.equal(field in sent, false, `${field} means nothing to a model rewriting a summary`);
   }
@@ -117,7 +142,7 @@ test("this database's bookkeeping never reaches the model", () => {
 test('everything the model is asked to work from is still there', () => {
   // The other half. A projection that dropped something the prompt reasons over
   // would show up as a worse resume, not as an error.
-  const sent = JSON.parse(buildTailorResumePromptValues(profileFixture(), ANALYSIS).profileJson);
+  const sent = JSON.parse(buildTailorResumePromptValues(resumeFixture(), ANALYSIS).profileJson);
   for (const field of [
     'name',
     'title',
@@ -130,11 +155,11 @@ test('everything the model is asked to work from is still there', () => {
   ]) {
     assert.ok(field in sent, `${field} is what the prompt tailors`);
   }
-  // Strengths only while the profile's Strengths switch is on: off, the
+  // Strengths only while the resume's Strengths switch is on: off, the
   // person has said they are not for this resume, and they are not sent.
   assert.equal('strengths' in sent, false);
   const withStrengths = JSON.parse(
-    buildTailorResumePromptValues(profileFixture({ profileSettings: { includeStrengths: true } }), ANALYSIS).profileJson
+    buildTailorResumePromptValues(resumeFixture({ resumeSettings: { includeStrengths: true } }), ANALYSIS).profileJson
   );
   assert.ok('strengths' in withStrengths, 'strengths is what the prompt tailors, once switched on');
   assert.equal(sent.experience.length, 5);
@@ -143,16 +168,16 @@ test('everything the model is asked to work from is still there', () => {
   assert.equal('description' in sent.experience[0], false, 'but not the raw description twice');
 });
 
-test("a profile's own skill grouping travels, when it has one", () => {
+test("a resume's own skill grouping travels, when it has one", () => {
   // The model is asked to SELECT skills, and the author's grouping is a fact
   // about them it should not contradict.
   const grouped = buildTailorResumePromptValues(
-    profileFixture({ skillCategories: [{ category: 'Languages', skills: ['C#'] }] }),
+    resumeFixture({ skillCategories: [{ category: 'Languages', skills: ['C#'] }] }),
     ANALYSIS
   );
   assert.match(grouped.profileJson, /skillCategories/);
 
-  const plain = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
+  const plain = buildTailorResumePromptValues(resumeFixture(), ANALYSIS);
   assert.doesNotMatch(plain.profileJson, /skillCategories/, 'and an empty one is not sent as noise');
 });
 
@@ -160,7 +185,7 @@ test('the payload is compact JSON, not pretty-printed', () => {
   // Two-space indentation is for a person reading a file. Nothing reads this
   // but a model, which parses both identically - and the indentation is a
   // sixth of the payload on a record this nested, paid on every call.
-  const values = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
+  const values = buildTailorResumePromptValues(resumeFixture(), ANALYSIS);
   assert.doesNotMatch(values.profileJson, /\n {2}"/, 'profileJson is indented');
   assert.doesNotMatch(values.jobAnalysisJson, /\n {2}"/, 'jobAnalysisJson is indented');
 });
@@ -168,7 +193,7 @@ test('the payload is compact JSON, not pretty-printed', () => {
 test('the analysed posting is not echoed back inside the tailoring prompt', () => {
   // It is already in the analysis this call was given. Sending it again would
   // double the largest single field for nothing.
-  const values = buildTailorResumePromptValues(profileFixture(), ANALYSIS);
+  const values = buildTailorResumePromptValues(resumeFixture(), ANALYSIS);
   assert.doesNotMatch(values.jobAnalysisJson, /sourceJobDescription/);
 });
 
@@ -199,7 +224,7 @@ test("what a posting pays and how the filter judges it never reach the tailoring
   assert.equal(analysis.filter.jobType, 'remote');
   assert.equal(analysis.filter.seniority, 'principal');
 
-  const values = buildTailorResumePromptValues(profileFixture(), analysis);
+  const values = buildTailorResumePromptValues(resumeFixture(), analysis);
   assert.doesNotMatch(values.jobAnalysisJson, /"jobField"|"salary"|"filter"/);
   assert.doesNotMatch(values.jobAnalysisJson, /150000|150k|"remote"|clearance|principal/);
 });
@@ -208,7 +233,7 @@ test('the industry an older analysis was filed under never reaches the tailoring
   // v6 stored an `industry` on the analysis, for the lake and the sheet; a
   // new analysis carries none (it is derived). Either way the tailoring input
   // is byte for byte the same: the same values, so the same prompt and the
-  // same cache key for every profile and posting the cache already holds.
+  // same cache key for every resume and posting the cache already holds.
   const { tailorCacheKey } = require('../dist/services/tailorCache');
   const without = {
     ...ANALYSIS,
@@ -219,8 +244,8 @@ test('the industry an older analysis was filed under never reaches the tailoring
   };
   const withIndustry = { ...without, industry: 'insurance' };
 
-  const before = buildTailorResumePromptValues(profileFixture(), without);
-  const after = buildTailorResumePromptValues(profileFixture(), withIndustry);
+  const before = buildTailorResumePromptValues(resumeFixture(), without);
+  const after = buildTailorResumePromptValues(resumeFixture(), withIndustry);
   assert.deepEqual(after, before, 'the same values, to the byte');
   assert.equal(JSON.parse(after.jobAnalysisJson).industry, undefined);
   assert.doesNotMatch(after.jobAnalysisJson, /insurance/i);
@@ -230,7 +255,7 @@ test('the industry an older analysis was filed under never reaches the tailoring
   const key = (values) =>
     tailorCacheKey({
       kind: 'resume',
-      profile: profileFixture(),
+      resume: resumeFixture(),
       context: { analysisId: 'analysis-1', templateId: 'default' },
       choice: { provider: 'claude-cli', modelId: 'm', modelName: 'sonnet' },
       promptId: 'tailor-resume',
@@ -242,14 +267,14 @@ test('the industry an older analysis was filed under never reaches the tailoring
 
 test('the whole tailoring payload stays under budget', () => {
   // A ceiling rather than an exact figure, so ordinary edits do not fail this -
-  // but a change that puts the whole profile record back would sail past it.
+  // but a change that puts the whole resume record back would sail past it.
   // Measured at 4,484 characters for this fixture (4,561 with strengths), down
   // from 6,942 when the skill library's matches went too, twice over (as
   // `skillsJSON` and its alias `hardSkillsJson`). Every value counts.
   for (const settings of [{}, { includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat' }]) {
-    const fixture = profileFixture();
+    const fixture = resumeFixture();
     const values = buildTailorResumePromptValues(
-      { ...fixture, profileSettings: { ...fixture.profileSettings, ...settings } },
+      { ...fixture, resumeSettings: { ...fixture.resumeSettings, ...settings } },
       ANALYSIS
     );
     const total = Object.values(values).reduce((sum, value) => sum + value.length, 0);
@@ -262,10 +287,10 @@ test('the layout and the Soft Skills switch are not sent at all, and the Strengt
   // group in its own section or not - is decided when the resume is rendered,
   // so the model is asked the same question either way, and the tailoring
   // cache answers both from one answer. The Strengths switch decides whether
-  // the profile's own strengths are context in profileJson, and nothing else.
-  const fixture = profileFixture({ softSkills: ['Persistence'] });
+  // the resume's own strengths are context in profileJson, and nothing else.
+  const fixture = resumeFixture({ softSkills: ['Persistence'] });
   const values = (settings) =>
-    buildTailorResumePromptValues({ ...fixture, profileSettings: { ...fixture.profileSettings, ...settings } }, ANALYSIS);
+    buildTailorResumePromptValues({ ...fixture, resumeSettings: { ...fixture.resumeSettings, ...settings } }, ANALYSIS);
   const plain = values({});
   for (const name of ['includeStrengths', 'includeSoftSkills', 'technicalSkillsLayout', 'hardSkillsJson']) {
     assert.equal(name in plain, false, `${name} is no prompt value now`);
@@ -286,7 +311,7 @@ test('an older analysis is sent in the current schema: its duplicate lists once,
   // `technologies`, a top-level `softSkills` and `skills.preferred`. A posting
   // is analysed once, ever, so such analyses are what most resumes are still
   // tailored from - read the same way, and each term sent once.
-  const sent = JSON.parse(buildTailorResumePromptValues(profileFixture(), ANALYSIS).jobAnalysisJson);
+  const sent = JSON.parse(buildTailorResumePromptValues(resumeFixture(), ANALYSIS).jobAnalysisJson);
   assert.deepEqual(Object.keys(sent), [
     'jobMeta', 'skills', 'technologies', 'protocols', 'methodologies', 'architecturePatterns',
     'responsibilities', 'domainKnowledge', 'keywords',

@@ -11,20 +11,20 @@ process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';
 const { useTempStorage } = require('./helpers');
 
 /**
- * Two profiles, one posting, through the real routes.
+ * Two resumes (each its own person's only one), one posting, through the real routes.
  *
- * One profile has switched Strengths and Soft Skills on and lays its skills
- * out plain; the other is as every profile was before the switches. They are
- * previewed together - the builder's commonest shape - against a stub seat
+ * One resume has switched Strengths and Soft Skills on and lays its skills
+ * out plain; the other is as every resume was before the switches. They are
+ * previewed one after the other - a preview builds one profile - against a stub seat
  * that answers like the shipped prompt (the skills block in groups, the
  * posting's soft skills last under the heading the turn names), and this
  * follows each one from the turn its model is sent to the HTML the page
- * draws: the same kind of answer, drawn by each profile's own switches.
+ * draws: the same kind of answer, drawn by each resume's own switches.
  *
- * It also pins what is deliberately NOT per profile: the job analysis. It is
+ * It also pins what is deliberately NOT per resume: the job analysis. It is
  * a reading of the posting alone, so it is made once and shared - in one
  * request and, through the stored analyses (services/jobAnalysis/gate.ts),
- * for ever - whatever either profile's switches say. Keying it on the
+ * for ever - whatever either resume's switches say. Keying it on the
  * switches would buy a second identical answer for a seat turn each.
  */
 
@@ -93,7 +93,7 @@ function tailorAnswer(request) {
   });
 }
 
-function profileInput(name, settings) {
+function resumeInput(name, settings) {
   return {
     name,
     title: 'Senior Engineer',
@@ -115,7 +115,7 @@ function profileInput(name, settings) {
     skills: ['TypeScript', 'Kubernetes', 'Figma'],
     softSkills: ['Persistence'],
     education: [],
-    profileSettings: settings,
+    resumeSettings: settings,
   };
 }
 
@@ -150,31 +150,28 @@ async function serve() {
   }));
 
   const users = require('../dist/database/userRepository');
-  const { saveProfile } = require('../dist/database/profileRepository');
-  const { buildNewProfile } = require('../dist/services/profileService');
-  // Premium, because the preview below covers several profiles at once,
-  // which a Default subscription may not (test/subscriptionGates.test.js).
-  const owner = users.updateUser(users.createUser({ email: 'owner@example.com' }).id, { subscription: 'premium' });
+  const { seedProfileWithResumes } = require('./helpers');
+  // A Default account: a preview builds one profile (a person), on every tier.
+  const owner = users.createUser({ email: 'owner@example.com' });
   const token = users.createSession(owner.id);
-  saveProfile({
-    ...buildNewProfile(
-      profileInput('Ada', { includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat' }),
-      'p-on'
-    ),
-    ownerId: owner.id,
-  });
-  saveProfile({ ...buildNewProfile(profileInput('Bea', {}), 'p-off'), ownerId: owner.id });
-  // Both switches on, drawn with a template that has nowhere to print either.
-  saveProfile({
-    ...buildNewProfile(
+  // Three people, one resume each (one candidate: the resume is "the only").
+  const profiles = {
+    on: seedProfileWithResumes(owner, 'Ada', [
       {
-        ...profileInput('Cy', { includeStrengths: true, includeSoftSkills: true }),
-        preferredTemplate: 'charcoal-sidebar',
+        ...resumeInput('Ada', { includeStrengths: true, includeSoftSkills: true, technicalSkillsLayout: 'flat' }),
+        id: 'p-on',
       },
-      'p-charcoal'
-    ),
-    ownerId: owner.id,
-  });
+    ]).profileId,
+    off: seedProfileWithResumes(owner, 'Bea', [{ ...resumeInput('Bea', {}), id: 'p-off' }]).profileId,
+    // Both switches on, drawn with a template that has nowhere to print either.
+    charcoal: seedProfileWithResumes(owner, 'Cy', [
+      {
+        ...resumeInput('Cy', { includeStrengths: true, includeSoftSkills: true }),
+        preferredTemplate: 'charcoal-sidebar',
+        id: 'p-charcoal',
+      },
+    ]).profileId,
+  };
 
   const { attachUser } = require('../dist/middleware/auth');
   const app = express();
@@ -193,19 +190,27 @@ async function serve() {
     return { status: response.status, body: await response.json() };
   };
 
-  return { calls, post, close: () => server.close() };
+  return { calls, post, profiles, close: () => server.close() };
 }
 
-test("each profile is tailored by its own switches, on one analysis of the posting", async (t) => {
-  const { calls, post, close } = await serve();
+test("each resume is tailored by its own switches, on one analysis of the posting", async (t) => {
+  const { calls, post, profiles, close } = await serve();
   t.after(close);
 
-  const response = await post('/resume/preview-all', { profileIds: ['p-on', 'p-off'], jobDescription: POSTING });
-  assert.equal(response.status, 200, JSON.stringify(response.body));
+  // One preview per profile (there is no preview of several at once).
+  const previewOf = async (profileId) => {
+    const response = await post('/resume/preview', { profileId, jobDescription: POSTING });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    return response.body;
+  };
+  const ada = await previewOf(profiles.on);
+  const bea = await previewOf(profiles.off);
+  assert.equal(ada.resumeId, 'p-on');
+  assert.equal(bea.resumeId, 'p-off');
 
   const of = (site) => calls.filter((call) => call.callSite === site);
   const tailorings = of('tailor-resume');
-  assert.equal(of('analyze-job-description').length, 1, 'the posting is analysed once for both profiles');
+  assert.equal(of('analyze-job-description').length, 1, 'the posting is analysed once for both resumes');
   assert.equal(of('filter-google-sheet-job').length, 1, 'its facts asked once with it');
   assert.equal(tailorings.length, 2);
   // Each draft leaves the posting's terms out, so each is revised once (the
@@ -213,7 +218,7 @@ test("each profile is tailored by its own switches, on one analysis of the posti
   assert.equal(of('revise-resume-coverage').length, 2);
 
   // What each model turn was told: the same lists - the posting's - and no
-  // word about either profile's switches; a heading drawn for each resume.
+  // word about either source's switches; a heading drawn for each resume.
   const turnFor = (name) => tailorings.find((call) => call.userBody.includes(`"name":"${name}"`)).userBody;
   const on = turnFor('Ada');
   const off = turnFor('Bea');
@@ -226,9 +231,6 @@ test("each profile is tailored by its own switches, on one analysis of the posti
   assert.doesNotMatch(off, /Own strength/);
 
   // What came back, and what the page draws.
-  const preview = (profileId) => response.body.previews.find((entry) => entry.profileId === profileId);
-  const ada = preview('p-on');
-  const bea = preview('p-off');
 
   // Ada: her OWN strength, never the model's; the posting's soft skills in
   // their own section; the technical skills one plain list.
@@ -254,16 +256,15 @@ test("each profile is tailored by its own switches, on one analysis of the posti
   assert.ok(bea.html.includes(beaHeading.replace(/&/g, '&amp;')), 'the soft group prints under its heading');
   assert.equal(bea.html.split('Adaptable').length - 1, 1);
 
-  // The same posting again, for one profile at a time: the analysis comes
-  // from the store whichever profile's switches ask, and - nothing about
-  // either profile, the model or the prompts having changed - so does each
+  // The same posting again, for one resume at a time: the analysis comes
+  // from the store whichever resume's switches ask, and - nothing about
+  // either resume, the model or the prompts having changed - so does each
   // tailoring, revision included (owner decision P6), drawn by its own
   // switches again.
-  for (const profileId of ['p-off', 'p-on']) {
-    const again = await post('/resume/preview-all', { profileIds: [profileId], jobDescription: POSTING });
+  for (const [profileId, first] of [[profiles.off, bea], [profiles.on, ada]]) {
+    const again = await post('/resume/preview', { profileId, jobDescription: POSTING });
     assert.equal(again.status, 200, JSON.stringify(again.body));
-    const repeat = again.body.previews[0];
-    assert.deepEqual(repeat.tailoredContent, preview(profileId).tailoredContent);
+    assert.deepEqual(again.body.tailoredContent, first.tailoredContent);
   }
   assert.equal(of('analyze-job-description').length, 1, 'still one analysis');
   assert.equal(of('filter-google-sheet-job').length, 1);
@@ -272,30 +273,26 @@ test("each profile is tailored by its own switches, on one analysis of the posti
 });
 
 test('a switch the template has no section for is off for the model and the content too', async (t) => {
-  const { calls, post, close } = await serve();
+  const { calls, post, profiles, close } = await serve();
   t.after(close);
 
   // Charcoal Sidebar prints neither section. With both switches on, the turn
   // is not given strengths for a section that never prints, and the
   // posting's soft skills stay in the skills block rather than going to a
-  // list that never prints - in the batch preview and the single one alike.
-  for (const [route, body] of [
-    ['/resume/preview-all', { profileIds: ['p-charcoal'], jobDescription: POSTING }],
-    ['/resume/preview', { profileId: 'p-charcoal', jobDescription: POSTING }],
-  ]) {
-    const response = await post(route, body);
-    assert.equal(response.status, 200, `${route}: ${JSON.stringify(response.body)}`);
-    const turn = calls.filter((call) => call.callSite === 'tailor-resume').at(-1).userBody;
-    assert.doesNotMatch(turn, /Own strength/, route);
+  // list that never prints.
+  const route = '/resume/preview';
+  const response = await post(route, { profileId: profiles.charcoal, jobDescription: POSTING });
+  assert.equal(response.status, 200, `${route}: ${JSON.stringify(response.body)}`);
+  const turn = calls.filter((call) => call.callSite === 'tailor-resume').at(-1).userBody;
+  assert.doesNotMatch(turn, /Own strength/, route);
 
-    const content = route === '/resume/preview' ? response.body.tailoredContent : response.body.previews[0].tailoredContent;
-    assert.deepEqual(content.strengths, [], route);
-    assert.deepEqual(content.softSkills, [], route);
-    // Nothing to confirm, in the content or beside it.
-    assert.equal('unconfirmedSoftSkills' in content, false, route);
-    assert.equal('unconfirmedSoftSkills' in response.body, false, route);
-    assert.equal('unconfirmedHardSkills' in response.body, false, route);
-    assert.deepEqual(content.skillGroups.at(-1).skills, ['Adaptable', 'Teamwork'], route);
-    assert.equal(content.summary, 'Engineer building reliable services.', route);
-  }
+  const content = response.body.tailoredContent;
+  assert.deepEqual(content.strengths, [], route);
+  assert.deepEqual(content.softSkills, [], route);
+  // Nothing to confirm, in the content or beside it.
+  assert.equal('unconfirmedSoftSkills' in content, false, route);
+  assert.equal('unconfirmedSoftSkills' in response.body, false, route);
+  assert.equal('unconfirmedHardSkills' in response.body, false, route);
+  assert.deepEqual(content.skillGroups.at(-1).skills, ['Adaptable', 'Teamwork'], route);
+  assert.equal(content.summary, 'Engineer building reliable services.', route);
 });

@@ -8,16 +8,17 @@ a frontend) that are already running. None of them is part of `npm test`.
 |---|---|---|
 | `walkthrough.js`, `browser.js`, `buy-credits.js` | Buying credits, over HTTP and in a browser, against fake payment providers (`fake-providers.js`) | [Running it](#running-it) |
 | `refunds.js` | A reporter's payout request, the refund requests left from before, and Contact admin, with no provider at all | [Running it](#running-it), step 5 |
-| `preview-vibration.js` | The profile preview holding still with real scrollbars | [The profile preview, held still](#the-profile-preview-held-still) |
-| `section-switches.js` | The profile preview with Strengths and Soft Skills unticked, on uploaded-style templates and a built-in | [The profile preview, sections switched off](#the-profile-preview-sections-switched-off) |
+| `preview-vibration.js` | The resume preview holding still with real scrollbars | [The resume preview, held still](#the-resume-preview-held-still) |
+| `section-switches.js` | The resume preview with Strengths and Soft Skills unticked, on uploaded-style templates and a built-in | [The resume preview, sections switched off](#the-resume-preview-sections-switched-off) |
 | `skills-layouts.js` | Every template laid out in both Technical Skills layouts, and the Grouped / Plain switch in the template chooser and Admin -> Templates | [Both skills layouts, in a browser](#both-skills-layouts-in-a-browser) |
-| `immediate-run.js`, `sheet-panel.js` | Generate Immediately, Order and the sheet panel, against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Building resumes, with the seat stubbed](#building-resumes-with-the-seat-stubbed) |
-| `subscription.js` | Settings -> Subscription bought from the credit balance, the spend alert, the renewal sweep, and the locks, against a stubbed seat | [Subscriptions, the locks and the spend alert](#subscriptions-the-locks-and-the-spend-alert) |
+| `immediate-run.js`, `sheet-panel.js` | Generate Immediately, Order and the sheet panel (one profile, in one build mode), against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Building resumes, with the seat stubbed](#building-resumes-with-the-seat-stubbed) |
+| `profiles.js` | The Profiles pages (a profile is a person holding that person's resumes) and the three build modes - Choose Suitable Resume, Partial Tailor, Fully Tailor - against a stubbed seat and Google Sheet (`stub-seat.js`, `stub-sheets.js`) | [Profiles and the three build modes, with the seat stubbed](#profiles-and-the-three-build-modes-with-the-seat-stubbed) |
+| `subscription.js` | Settings -> Subscription bought from the credit balance, the spend alert, the renewal sweep, and the one lock left (adding a profile past the tier's limit), against a stubbed seat | [Subscriptions, the locks and the spend alert](#subscriptions-the-locks-and-the-spend-alert) |
 | `report-run.js` | Report Jobs and Admin -> Job Lake, against a stubbed sheet and seat (`stub-report-sheets.js`) | [Report Jobs and the job lake](#report-jobs-and-the-job-lake-with-google-stubbed) |
 | `lake-push.js` | Admin -> Job Lake's filter form and Push to Google Sheet, and a build from the pushed rows, against a stubbed sheet and seat (`stub-lake-push-sheets.js`) | [Push to Google Sheet](#push-to-google-sheet-with-google-stubbed) |
-| `find-jobs.js` | Find Jobs: the lake searched with several values, rows picked across pages, Export into Sheet and Order Immediately, against the same stubbed sheet and a stubbed seat | [Find Jobs](#find-jobs-with-google-stubbed) |
+| `find-jobs.js` | Find Jobs: the lake searched with several values, rows picked across pages, Export into Sheet and Order Immediately (one profile, in one build mode), against the same stubbed sheet and a stubbed seat | [Find Jobs](#find-jobs-with-google-stubbed) |
 | `providers.js` | Admin -> Models -> Providers, against a stubbed seat | [Providers, with the seat stubbed](#providers-with-the-seat-stubbed) |
-| `shell.js` | Every page as a user, an administrator and a reporter | [The shell, as every role](#the-shell-as-every-role) |
+| `shell.js` | Every page as a user, an administrator and a reporter - the Profiles dashboard, the builder's profile and mode choices and the one lock left among them | [The shell, as every role](#the-shell-as-every-role) |
 | `dev-reload.js` | A second tab must not reload the first, in each mode the frontend can be served in | [A second tab, in each dev mode](#a-second-tab-in-each-dev-mode) |
 
 **Start every e2e backend with a preload from here** - the script's own
@@ -39,7 +40,11 @@ Google.
 that judges what it draws. Next 16.3's build cache once shipped a stylesheet
 older than `globals.css` (the list boxes unstyled, a removed rule back), so
 `next.config.ts` now switches it off for builds and every build is cold; if
-you see old styles anyway, `rm -rf frontend/.next/cache/turbopack` first.
+you see old styles anyway, `rm -rf frontend/.next/cache/turbopack` first. A
+page that moved or was deleted since the last `next dev` stays named in
+`frontend/.next/dev`, and the build's type check then fails on it (v4.2 moved
+the resume chooser and editor to `/admin/resumes/...`): delete
+`frontend/.next/dev` first (README, Troubleshooting).
 
 ## Buying credits
 
@@ -128,7 +133,7 @@ DB_DIR=/path/to/db node test/e2e/refunds.js
 ```
 
 Every script exits non-zero on the first failing claim and prints every check.
-`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `subscription.js`, `report-run.js`, `lake-push.js`, `find-jobs.js` and `providers.js` use puppeteer, which the backend
+`buy-credits.js`, `shell.js`, `refunds.js`, `immediate-run.js`, `sheet-panel.js`, `subscription.js`, `report-run.js`, `lake-push.js`, `find-jobs.js`, `providers.js` and `profiles.js` use puppeteer, which the backend
 already installs for PDF rendering, so they run anywhere this project does;
 `browser.js` needs playwright and will not run on a checkout without it.
 
@@ -145,28 +150,36 @@ fail (*...and OK leaves, and stops the run at once*, *closing the tab stops
 its run at once*) with the run left going. Set `E2E_SHOTS` to a folder of
 your own unless you mean to replace the screenshots committed here.
 
-## The profile preview, held still
+## The resume preview, held still
 
-`preview-vibration.js` is not about payments: it watches the profile editor's
+`preview-vibration.js` is not about payments: it watches the resume editor's
 preview for the shake a scrollbar used to cause (README, Troubleshooting). It
 launches puppeteer **with real scrollbars** - the default `--hide-scrollbars`
-is why nothing else here could ever see it - opens one profile's editor, picks
-each template in turn, **in each layout** (every template prints both, and
-Plain changes the page's height, which is what the shake depends on), and
-reads the page's width and both scrollbars on every animation frame. It needs
-the two servers up and `DB_DIR` naming the backend's database, like the
-others:
+is why nothing else here could ever see it - opens one resume's editor
+(`/admin/resumes/<id>`: the signed-in account's first resume, as
+`GET /api/resumes` lists them, or the one `E2E_RESUME_ID` names; with neither
+it makes a profile with one resume for the purpose and deletes the profile
+again at the end), picks each
+template in turn from the editor's `#resume-template` select, **in each
+layout** (every template prints both, and Plain changes the page's height,
+which is what the shake depends on), and reads the page's width and both
+scrollbars on every animation frame. It needs the two servers up and `DB_DIR`
+naming the backend's database, like the others:
 
 ```bash
 DB_DIR=/path/to/db PORT=3001 node --require ./test/e2e/no-google.js dist/index.js   # the backend
 DB_DIR=/path/to/db node test/e2e/preview-vibration.js
 # E2E_VIEWPORTS=1920x937,1080xband  E2E_TEMPLATES=default  E2E_SECONDS=3
+# E2E_RESUME_ID=<a resume of the account> opens that one, not the account's first
 # E2E_NO_GUTTER=1 turns scrollbar-gutter off, to prove the editor's own guard
 ```
 
+A passing run ends with a line like *N template/layout/viewport
+combination(s) watched for Ns each: none shook.* (N follows the installation's
+templates and `E2E_VIEWPORTS`; the v4.2 gate run watched 208).
 `1080xband` measures the narrow layout's Preview tab and watches it 5px inside
 the band where, unfixed, the window's own scrollbar took itself away. Measured
-before the fix (Linux Chrome, 15px scrollbars, a one-page profile, 19 built-ins
+before the fix (Linux Chrome, 15px scrollbars, a one-page resume, 19 built-ins
 and two uploaded templates): at 1920x937 and 1903x937, 20 of 21 templates
 alternated 533.3 <-> 518.3px every frame (180 changes in 181 frames) - all but
 the uploaded one whose page ran to two pages; at 1440x900 none did; in the
@@ -175,11 +188,12 @@ narrow layout every width tried shook inside its band (1080x1450-1465,
 84 template/viewport pairs, nor 80 in the narrow band, nor 20 with
 `E2E_NO_GUTTER=1`.
 
-## The profile preview, sections switched off
+## The resume preview, sections switched off
 
-`section-switches.js` opens the profile editor as an administrator and
-watches its preview frame while it unticks **Print a Strengths section**, then
-**Print a Soft Skills section**, and ticks them back. It saves two
+`section-switches.js` opens the resume editor as an administrator and
+watches its preview frame while it unticks **Print a Strengths section**
+(`#resume-include-strengths`), then **Print a Soft Skills section**
+(`#resume-include-soft-skills`), and ticks them back. It saves two
 uploaded-style templates first (headings and loops only, no
 `section-strengths` class) through the admin upload, and checks one built-in
 beside them: a CSS-grid sidebar holding a photo, Strengths and a static
@@ -187,8 +201,12 @@ beside them: a CSS-grid sidebar holding a photo, Strengths and a static
 columns with a bold *Strengths* label and a line break before its loop and
 Soft Skills printed by `{{join}}`. Every state must show the heading and items
 exactly when the switch is on, and Experience, Technical Skills, the photo, the
-sidebar and every static line always. It deletes the templates and the profile
-again at the end. It needs the two servers up and `DB_DIR` naming the
+sidebar and every static line always. A resume lives in a profile (a person),
+so it first makes a profile of its own and files the resume it opens under it
+(`POST /api/resumes?profileId=`); every template is offered to every resume,
+so the editor's template select lists the saved ones with the built-in, none
+disabled; and at the end it deletes the resume, the profile and the
+templates. It needs the two servers up and `DB_DIR` naming the
 backend's database:
 
 ```bash
@@ -197,6 +215,7 @@ DB_DIR=/path/to/db node test/e2e/section-switches.js
 # E2E_SHOTS=/some/dir saves the preview pane in every state
 ```
 
+A passing run ends *Every state matched.* (it counts states, not claims).
 Against the finder before these templates were covered, 6 of its 15 states
 failed: the sidebar went with its photo and *References*, and the Soft Skills
 heading under its divider, the bold *Strengths* label and the `join`
@@ -217,10 +236,13 @@ no block children, a line ending at a `<br>` - hold both the sample's
 *Languages* and *Frameworks* headings (the owner's ATS templates used to print
 Grouped as one run-on paragraph). Then it saves an uploaded-style three-column
 grid through the admin upload, checks it the same way and deletes it; opens a
-template's details in the chooser, presses **Plain** in its *Technical
-skills* switch, and checks that the page frame asks for `layout=flat` and
-that **Use this template** opens the editor at `&layout=flat` with Plain
-ticked (nothing is saved); and on **Admin → Templates** presses **View**, then
+template's details in the chooser for a profile it makes
+(`/admin/resumes/new?profile=<id>`), presses **Plain** in
+its *Technical skills* switch, and checks that the page frame asks for
+`layout=flat` and that **Use this template** opens the editor
+(`/admin/resumes/new?template=<id>&layout=flat&profile=<id>`, the profile kept)
+with Plain ticked (no resume is saved, and the profile is deleted again at the
+end); and on **Admin → Templates** presses **View**, then
 **Plain**, and checks that the frame and *Open in new tab* ask for
 `layout=flat` and that the viewer stayed open - its overlay closes on any
 click that reaches it. On both pages, **Plain**, **Grouped** and **Plain**
@@ -243,10 +265,12 @@ DB_DIR=/path/to/db node test/e2e/skills-layouts.js
 # E2E_SHOTS=/some/dir saves the details and the viewer with Plain pressed, at both widths
 ```
 
+A passing run ends *Every check passed.*
+
 ## Building resumes, with the seat stubbed
 
-`immediate-run.js` and `sheet-panel.js` need resumes actually BUILT, which
-needs a model. `stub-seat.js` is that model: a `--require` preload, like
+`immediate-run.js`, `sheet-panel.js` and `profiles.js` need resumes actually
+BUILT, which needs a model. `stub-seat.js` is that model: a `--require` preload, like
 `fake-providers.js`, that registers a canned Claude seat before the app loads -
 nothing is spawned, so a machine whose `claude` is signed in never spends its
 owner's subscription on a test. It answers each prompt by its call site, and
@@ -279,12 +303,13 @@ intact on a job tab, the one batched read of a sheet run's rows, and the
 write-back, which throws on the old tab) - plus the Job Filter's tab
 inspection and its read of C:E, which the route calls directly. All three share the rows, so what a run writes back is
 what the next *Load rows* shows. `stub-seat.js` answers the analysis call with
-the posting's keywords and the facts call with its job type, clearance,
+one canned set of keywords, the same for every posting (TypeScript and Docker,
+a *Senior Engineer*), and the facts call with its job type, clearance,
 salary (no currency, as the facts prompt asks for none), company category and
 job field; the tailoring in the shipped prompt's shape (`skillGroups` with the
 soft skills last, no role description), its summary carrying every term of
-that analysis, so a profile whose role it names gets no revise pass; and a
-revise call, when one comes (a profile whose own words name a checklist term
+that analysis, so a resume whose role it names gets no revise pass; and a
+revise call, when one comes (a resume whose own words name a checklist term
 that summary lacks, or whose own bullets carry a figure the stub's answer
 drops), with no change - one more delayed call.
 Everything else is the shipping code:
@@ -310,12 +335,12 @@ posting's text, and `immediate-run.js` stores that posting's analysis with no
 link first, so the analysis `stub-sheets.js` stores for Today Inc is already
 there, linkless, and the Job Filter - which skips the page fetch only for a
 posting stored under its link - fetches `https://today.example/jobs/1`
-(*Could not open the job page*): 35 of 36. On a fresh database it passes all
-36.
+(*Could not open the job page*): 36 of 37, the Job Filter's verdict being the
+claim that fails. On a fresh database it passes all 37.
 
 The stub's delay applies only to a call that reaches it. A posting analysed
 once is never analysed again, and the tailoring cache answers the same posting,
-profile and model with no call at all - no tailoring and no revise pass - so a
+resume and model with no call at all - no tailoring and no revise pass - so a
 repeat build is near-instant - it
 finishes in PDF time, before anything can be stopped. The timing checks
 therefore give every queued JOB a posting of its own (`immediate-run.js`'s
@@ -324,11 +349,17 @@ needs a run still going when it acts has to do the same, per job and not per
 submission, or jobs 2..N of a run hit the cache the moment the first is
 tailored.
 
-`immediate-run.js` — 34 claims, on the Default subscription. It first saves
+`immediate-run.js` — 34 claims, on the Default subscription. It makes its
+resume through `POST /api/resumes`, so the server files it under its person:
+the one profile a Default account keeps, which Build Resumes starts on
+(`#manual-profile`) and every run below names, in Partial Tailor (a request of
+`{ profileId, buildMode: 'partial' }`; on the page the script picks it on the
+mode cards, `input[name=manualBuildMode]`). It saves
 the account's own folder path, the owner's example
 `/{{date}}{{profile_name}}/{{company_name}}/{{role}}`. The first
 Generate Immediately asks first, in the owner's sentence, with *Do not show
-again* - and, the stub seat's model being free, says nothing is taken from the
+again* - and, Partial Tailor being left unpriced (a mode nobody priced is
+free), says nothing is taken from the
 credit and names no amount - and after it is ticked the next click goes
 straight through, remembered for Generate Immediately alone
 (`freeTailor.spendConfirm.immediate.skip`); the run
@@ -338,7 +369,7 @@ is listed under the progress to download again. On the server, the run's
 folder - recorded as its order's `output_root` - is `<E2E_OUTPUT_DIR>/<the
 account's email>/<its order number>` (the default prefix), and every file the
 run recorded is on disk under that account's folder path, its first folder the
-date and the profile's name in one (`2026_10_15ada_run/acme/senior_engineer/`).
+date and the name on the resume in one (`2026_10_15ada_run/acme/senior_engineer/`).
 A run queued for the tab is
 picked back up by that tab after a reload - and never by a second tab, which
 gets an id of its own - followed to its end with every file of every resume
@@ -357,9 +388,13 @@ real person sees (README, Troubleshooting) and why the page lists the run's
 files to download again. The handed-over count is the page's promise; the saved
 count only has to be more than nothing.
 
-`sheet-panel.js` — 37 claims. The sheet card has no *Import from Google Sheet*
-button, no sheet to choose and no column mapping (the own sheet and its
-columns are the app's); the Tab select lists every tab in the spreadsheet's
+`sheet-panel.js` — 37 claims. Its resume is made through `POST /api/resumes`,
+which files it under its person: the profile a run builds. The sheet card has
+no *Import from Google Sheet* button, no sheet to choose and no column
+mapping (the own sheet and its columns are the app's), and its build target
+is ONE profile (`#sheets-profile`) and one of three open mode cards
+(`input[name=sheetsBuildMode]`), with no Single, All profiles or list target;
+the Tab select lists every tab in the spreadsheet's
 order and starts on **All**, the daily tab in an older build's layout listed
 as *09/30/2026 (not a job tab)* and disabled - driven to it anyway, the
 select stays on All - with the sentence that says where its rows go; nothing
@@ -374,7 +409,9 @@ Salary - for the row whose Analysis cell is filled, and *When built* for the
 others, and the line above it counts them (*1 of 3 already analysed*); a tab
 with nothing in its analysis columns has no row that skips.
 Another tab (*Notes*) drops what was loaded and loads its own rows. Order answers with an
-order number - free, it is placed without a spend alert, which an Order asks
+order number at once, saying what it builds (*2 resumes for 2 jobs are being
+built: Partial Tailor for Sam Sheet.*) - free, since Partial Tailor is
+unpriced, so it is placed without a spend alert, which an Order asks
 only when it takes credit - and Cancel on the receipt asks, cancels, and the order reads
 cancelled on Orders; Generate Immediately builds the loaded rows here and
 hands each of their twelve files to the browser once - and, reloaded after it,
@@ -391,13 +428,166 @@ analysis with no page fetched, Now LLC's `javascript:` link cannot be opened,
 and the two rows with no link say so - and writes nothing into the sheet (the
 stub answers the filter's tab inspection and its one read of C:E).
 
+## Profiles and the three build modes, with the seat stubbed
+
+`profiles.js` drives the Profiles pages and the builder's three modes in a
+browser. A profile is a PERSON and holds that person's resumes; a run builds
+ONE profile in one of Choose Suitable Resume, Partial Tailor and Fully Tailor.
+It needs the seat and Google stubbed as `sheet-panel.js` does (`stub-seat.js`
+and `stub-sheets.js`), `E2E_STUB_DELAY_MS=300` (at the default 2500 ms the
+previews and builds are slow), `E2E_OUTPUT_DIR` (it reads the built PDFs back)
+and the backend's own log, named as `E2E_BACKEND_LOG`: the stub prints each
+call (`[e2e stub] call N: <call site>`) to the backend's output, so that goes
+to a file, and without it the claims that count the seat's calls print `SKIP`
+while the rest run. The script makes its own accounts straight in `DB_DIR` -
+an administrator, a Premium user (room for five profiles) and a Default user
+(one) - and leaves them, with the three prices it sets ($0.01, $0.02 and
+$0.03), so the database must be FRESH:
+
+```bash
+cd backend && npm run build
+E2E_STUB_DELAY_MS=300 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
+  node --require ./test/e2e/stub-seat.js --require ./test/e2e/stub-sheets.js dist/index.js > /tmp/e2e-backend.log 2>&1
+# the frontend, built against that backend, in another terminal; then
+DB_DIR=/tmp/e2e-db E2E_BACKEND_LOG=/tmp/e2e-backend.log node test/e2e/profiles.js
+```
+
+Each section of the script is wrapped, so a selector that never appears is
+one failed claim (*<section>: ran to the end*) and the rest still run; a claim that
+cannot be made prints `SKIP`, and the last line counts the checks and the
+skips. Its screenshots are `profiles-*.png` in `E2E_SHOTS` (beside the script
+by default).
+
+`profiles.js` — 130 claims, in two parts, with `E2E_BACKEND_LOG` set (the last
+line is *All 130 checks passed.*; without it the two claims that count the
+seat's calls print `SKIP` and are counted apart, *All 128 checks passed (2 more
+skipped).*). **Part A**, the Profiles pages. As the
+Premium user: the empty dashboard (*My Profiles*, the tabs *Profiles (0)* and
+*All resumes (0)*, an open New profile tile and *No profiles yet*); **Create
+New** names a profile in the *New profile* dialog and opens that profile's own
+page; **New resume** there goes through the chooser for that profile
+(`/admin/resumes/new?profile=<id>`, *Start building a resume for Alpha
+Person*, its Back link reading the profile's name), a template's details
+offer **Use this template** - never off, and nothing said to be used by
+another resume - the editor keeps `template=<id>&profile=<id>`, offers to
+import an existing resume first and has a Back button reading the profile's
+name; **Create Resume** files the resume under that profile and goes back to
+its page, where it is the one card and carries the *Default* star, which the
+server agrees with (the first resume in becomes the default), on the template
+that was chosen. Resumes of two profiles share one template: the chooser for
+the second profile offers it, the editor's template select lists every
+template with none disabled, and the second profile's own resume opens on it
+with *Back to Beta Person*. The tabs and the address (`?tab=resumes` put in
+by a click and kept by a reload, taken out again by *Profiles*, a `?tab=`
+naming no tab read as Profiles, ArrowRight moving to All resumes and focusing
+it); Grid and List (`freeTailor.profiles.view` in localStorage, kept across a
+reload, on both tabs); the search on each tab with its count line (*1 of 2
+profiles match.*, *0 of 2 profiles match.*, a profile found by the headline of
+one of its resumes, a resume by its headline, name or profile) and **Clear**
+giving the focus back to the box. A profile's page: the default resume first
+and starred; a resume's ⋮ menu (*Edit, Set as default, Duplicate, Move to
+another profile..., Keywords, Download JSON, Disable, Delete*), Escape closing
+it with the focus back on its button, *Set as default* off on the default and
+moving the star otherwise; **Duplicate** makes a third resume in the profile,
+on the same template; **Keywords** opens a dialog and is a card on the
+editor's Customize tab; and the editor's Back goes to the profile's page, not
+the bare list. **Move**: the dialog lists the other profile and *A new
+profile*, open while there is room; Escape returns the focus to the ⋮ button;
+a real move says so, takes the card off the page and hands the focus to the
+next card; a move into *A new profile* makes a profile holding that resume. A
+profile's own ⋮ menu (*Open, Rename, New resume, Delete*) and **Delete a
+profile that holds two resumes**: the warning first, in the owner's words
+(*You can't undo this. Every resume in this profile will be deleted with it
+and can't be recovered.*) over a confirm button *Delete profile and its
+resumes*; Escape leaves it alone, focus back; confirming deletes the profile,
+says *Deleted Beta Person and its resumes.*, drops the tab counts, takes both
+resumes away (a 404 on the server, gone from All resumes) and hands the focus
+on to a neighbour; deleting from the profile's own page returns to the
+dashboard, which says what went. Old addresses: a resume's id after
+`/admin/profiles/` opens that resume's editor, an old chooser address reaches
+the new-resume page with its query string, an address that is neither a
+profile nor a resume says *That profile was not found. It may have been
+deleted.* with a way back. At
+390px (the dashboard, List rows that stack, an open menu and a profile's
+page: no sideways scroll, everything inside the window) and in the dark
+theme.
+
+The Default user makes their one profile (*Pat Match*); after that the New
+profile tile and **Create New** are locked (*Needs Premium*,
+`data-locked-feature="more-profiles"`), the page says *You are using all 1
+profile on the Default subscription.*, and pressing the tile opens *Locked:
+More profiles* with what Premium allows and Go to subscription; the server is
+the real lock (a second profile is a 402 `profile-limit`). Resumes are never
+counted: a Go and a React resume are added to the one profile and it is still
+one profile; the New resume tile stays open and goes straight to the chooser
+for that profile, with no locked panel; Duplicate and Delete (which asks
+first) stay open.
+
+As the administrator: Admin -> Models has no Price column or box and says
+where a resume's price is set, and its Create New Model dialog has no price;
+Admin -> Settings has a **Price per resume** section with the three
+`#mode-price-<setting>` boxes (text, `inputMode="decimal"`), a red *Free:
+nobody is charged for ...* line for exactly the modes priced $0, the Builder
+Defaults' default profile (*Choose automatically* first) and default builder
+mode (the three modes), a price finer than a thousandth refused under its own
+box in the server's words with nothing saved, **Save Prices** sending only
+what changed ($0.01 on the server), the other two prices set through the API
+and, after a reload, the boxes reading 0.01, 0.02 and 0.03 with no price Free
+and each *Set here*; at 390px the three boxes sit inside the window.
+
+**Part B**, the builder's three modes, as the Default user: one profile
+(*Pat Match*) holding a Go resume (*Golang Backend Specialist*) and a React
+resume (*React Frontend Specialist*, made the profile's default), $5 of
+credit, and a folder path that files by role, so the Role box shows. Build
+Resumes starts on that profile (*Pat Match (2 resumes)*) with Partial Tailor
+chosen; the three mode cards are all open - no lock - and each says what a
+resume costs in its mode (*$0.01 a resume.*, *$0.02 a resume.* and *$0.03 a
+resume.*); the cost line follows the mode (*1 resume × $0.01 = $0.01*, then
+$0.02 and $0.03); and the note under the cards is *For each job, the resume
+whose keywords match the posting best.* for Choose Suitable Resume and
+*Builds React Frontend Specialist, Pat Match's default resume, for every
+job.* for Fully Tailor. **Choose Suitable Resume** previews the matched
+resume AS WRITTEN - the Go posting gets the Go resume, the React posting the
+React one, each drawn with its own summary, with no ATS OPTIMIZATION pill and
+no Manual Edits box, and the preview names the resume and the mode - and,
+from the backend's log, asked the seat for the postings' analyses and for no
+tailoring and no cover letter. **Partial Tailor** previews the matched Go
+resume tailored (the pill, Manual Edits, the stub's sentence in place of the
+resume's own summary); **Fully Tailor** previews the profile's DEFAULT resume
+- the React one, not the match - saying *Fully Tailor: the profile's default
+resume*. Each mode is then built as an order through the API and its resume
+PDF read back: Choose Suitable Resume prints the chosen resume's own summary
+and is charged $0.01, with only cover-letter calls in the log; Partial Tailor
+prints the stub's tailored sentence on the Go resume, charged $0.02, with no
+posting analysed again; Fully Tailor prints it on the React resume, reason
+*default*, charged $0.03. Each order item names the profile and the resume
+and why (`profileLabel`, `resumeLabel`, `match`), and the order's page prints
+the item as *Pat Match · Golang Backend Specialist* with how it was chosen
+under it. An **Order** placed from the page in Choose Suitable Resume ends in
+the receipt *1 resume for 1 job is being built: Choose Suitable Resume for
+Pat Match.* (it takes $0.01, so the spend alert asks first, and Proceed
+answers). At
+390px the three mode cards stack inside the window with no sideways scroll,
+and in the dark theme the builder and its cards are dark. The last claim: no
+page threw an uncaught error.
+
+How the match is decided here: `stub-seat.js` answers EVERY posting's
+analysis with the same canned one, so the keyword half of the matcher cannot
+tell the Go posting from the React one. The two resumes therefore share
+TypeScript and Docker (equal recall) and differ in their titles - neither is
+an engineer, which the canned analysis would match in both - and each posting
+is built with the Role box set to the title it wants, so the matcher's title
+half decides. The skills half is `resumeMatch.test.js`'s; a stub that
+answered per posting would let the browser say it too, in the same
+direction.
+
 ## Subscriptions, the locks and the spend alert
 
 `subscription.js` buys a subscription from the credit balance in a browser,
 and needs the renewal sweep to run every second, so it can watch a renewal and
 a lapse happen. The backend runs with the stub seat (nothing is built) and
 `SUBSCRIPTION_RENEWAL_SWEEP_MS=1000`, sharing `DB_DIR` with the script, which
-writes the accounts, a profile and - to bring a renewal forward -
+writes the accounts, a resume and - to bring a renewal forward -
 `subscription_paid_through` straight into it:
 
 ```bash
@@ -409,7 +599,7 @@ SUBSCRIPTION_RENEWAL_SWEEP_MS=1000 DB_DIR=/tmp/e2e-sub-db PORT=3001 \
 DB_DIR=/tmp/e2e-sub-db node test/e2e/subscription.js   # E2E_SHOTS=<dir> saves the cards, the alert, 390 and General
 ```
 
-`subscription.js` — 45 claims. The prices are set through the server
+`subscription.js` — 47 claims, in the order of the page. The prices are set through the server
 (Premium $9.99, Premium+ $19.99, Premium Max an emptied box: not offered) and
 the user given $50. The four tiers are cards in one row at 1440 with Default
 current, the prices on them, Premium Max *Not offered* with its Contact admin
@@ -417,7 +607,8 @@ link, and no "plan" on the page; at 1024 and 1200 they are two by two, never
 three and one. Subscribe asks first - *This takes $9.99 from
 your credit*, *Your balance after: $40.01.*, *Do not show again* - Cancel there
 moves nothing, and Proceed buys it: one ledger row of exactly $9.99, and the
-page says when it renews. The builder's Multiple is open. Upgrade names the
+page says when it renews. The builder's three build modes (Choose Suitable
+Resume, Partial Tailor, Fully Tailor) are open, with no lock of any kind. Upgrade names the
 server's own proration (worked out again by `dist`'s billing rules from the
 stored row) and charges exactly it. Premium Max priced at $5 for a moment, its
 card reads *Upgrade · $0* - the unused days of Premium+ cover it - and still
@@ -429,10 +620,15 @@ own, then says when it ends - in the Current subscription section, scrolled
 into view and focused. With the paid period moved into the past the sweep renews it -
 a `subscription-renewal` row and *Premium+ renewed: $19.99* in the bell - and,
 the balance emptied and the period moved back again, ends it: Default, *Premium+
-ended: not enough credit*, and the builder's Multiple locked again. At the
-profile limit the New profile tile is locked but pressable, *Needs Premium*,
-and opens *Locked: More profiles* with Go to subscription; /admin/profiles/new
-is drawn locked. One card a row and no horizontal scrollbar at 390. An
+ended: not enough credit*, and the builder's three modes are still open - a
+run has no lock at any tier. At the profile limit (a profile is a person: the
+Default subscription keeps one) the New profile tile on `/admin/profiles` is
+locked but pressable, *Needs Premium*, and opens *Locked: More profiles* with
+Go to subscription. Resumes are never counted: two more resumes of the same
+person are created (201), the dashboard reads *Profiles (1)* and *All resumes
+(3)* with its New resume tile open, and `/admin/resumes/new` is drawn - the
+template chooser, with no locked panel. One
+card a row and no horizontal scrollbar at 390. An
 administrator's page has nothing to buy and says why, its Credits section
 says nothing is taken from the balance, and Settings -> General
 carries the three price boxes as stored, *Not offered* as the empty one's
@@ -592,7 +788,9 @@ across A:L, the red is gone from A:L, and column M and the header are as they
 were. A search for *Remote*, with the Company box changed afterwards, pushes
 the search on the page - the confirm names its 2 jobs and says the boxes
 changed since are not what is pushed - and leaves just those two, the rest of
-A:L emptied. An order built from those two rows reads their analysis cells
+A:L emptied. An order built from those two rows (one profile, the one the
+script's resume - made through `POST /api/resumes` - is filed under, in
+`buildMode: 'partial'`) reads their analysis cells
 and writes nothing back - a cell the server did not trust would be replaced -
 and, with the log, the server says *2 job(s) analysed in the sheet, 0 from the
 store, 0 to analyse*. The other administrator's Temp For AI is exactly as it
@@ -615,10 +813,16 @@ next in *Site reliability engineering (SRE)*, the other twenty-eight in
 Backend (10), Frontend / web UI and DevOps (9 each), and the newest three with
 the catalogues' widest words (*Telecommunications*, *Localization and
 internationalization*, *Logistics & Transportation*, *Manufacturing*), long
-titles and salaries - so the database must be FRESH. It
-prices the default model at $0.023 a resume (put back when it ends), gives
-the user $5 and one profile, and the administrator two profiles of their own
-(the order dialog's Several profiles). Start the backend with both
+titles and salaries - so the database must be FRESH. What a resume costs is
+the price of the build mode it is built in (a model has none), so the script
+prices Partial Tailor at $0.023 (`PUT /api/admin/settings` with
+`partialPriceUsd`, taken off the stored row again when it ends; the other two
+modes stay unpriced, which is free) and gives the user $5. It makes the
+resumes through `POST /api/resumes`, which files each under its person: two of
+one person for the user (*Una Finder*: a Senior Engineer listing TypeScript
+and Docker, and a Data Analyst listing Go and Python - so the Default tier's
+one profile holds a choice for the matcher) and two people for the
+administrator (*Ada One* and *Ada Two*, a profile each). Start the backend with both
 preloads: with `stub-seat.js` alone (which loads `no-google.js`) Go to my
 sheet is off, the page says job sheets are not set up, and the export has
 nowhere to go. Only a backend started with no preload at all reaches a real
@@ -632,7 +836,7 @@ E2E_STUB_DELAY_MS=300 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 \
 DB_DIR=/tmp/e2e-db node test/e2e/find-jobs.js
 ```
 
-`find-jobs.js` — 67 claims. The rail's Find Jobs is a same-tab link to
+`find-jobs.js` — 77 claims, on a fresh database. The rail's Find Jobs is a same-tab link to
 `/jobs`, and **Go to my sheet** opens the user's own All tab in a new one; a
 user's form has no *Requested by* box and the table no such column, the
 table fits its box at 1440px with those wide rows on top (no sideways
@@ -650,18 +854,32 @@ from an unpicked one's, so a lost or out-ranked tint rule fails it), and Search 
 page 1. Three picked and exported land in the stub's All, newest first, each
 Analysis cell naming its job's stored analysis, and stay picked; exported
 again they are *in All already* and nothing is written twice. **Order
-Immediately** draws Several profiles, All profiles and Specific group locked
-for the Default user - the lock opens *Locked: Building for several profiles*
-with **Go to subscription** - prices the order (*This order: 3 resumes ×
-$0.023 = $0.069*), asks first (*This takes $0.069 from your credit*, *Do not
-show again*), and ends in the receipt *You ordered successfully: Order number
-- ...* linking to the order, which `/api/orders` holds with three items, and
-which takes the focus; the selection is let go. An administrator's form and
+Immediately** builds ONE profile in ONE mode, on every tier: the dialog has a
+single profile select (`#order-profile`, *Una Finder (2 resumes)*) and the
+three mode cards (`input[name=orderBuildMode]`), all open for the Default
+user, with no Several, All profiles or list target to be locked. Partial
+Tailor's card says what it costs a resume (*$0.023 a resume.*) and the note
+under the cards says the resumes are chosen among by their keywords; the cost
+line prices the order (*This order: 3 resumes × $0.023 = $0.069*), it asks
+first (*This takes $0.069 from your credit*, *Do not show again*), and ends in
+the receipt *You ordered successfully: Order number - ...*, which says what is
+built (*3 resumes for 3 jobs are being built: Partial Tailor for Una
+Finder.*), links to the order and takes the focus; `/api/orders` holds the
+order with three items, each naming the profile (*Una Finder*), the resume the
+matcher chose (*Senior Engineer*) and why (Partial Tailor, matched
+TypeScript); the selection is let go. One job is then ordered in **Choose
+Suitable Resume**: the card says *Free.*, the cost line reads *1 resume × $0 =
+$0*, nothing is asked first, and its item and its order page say which resume
+and why - *Una Finder · Senior Engineer* with *Suitable resume: matched
+TypeScript* under it. An administrator's form and
 table have *Requested by*, the table still fits its box at 1440px, and at
 1280px it scrolls under every row's Details, held in view; picking the reporter finds their 15 jobs alone,
-and Details names them; their order dialog's *Several profiles* says *Please
-select the profiles to build for.* where the cost line stands, with Place
-order off, prices the order once their two profiles are chosen, and Cancel
+and Details names them; their order dialog offers both of their profiles, says
+*Please select a profile.* where the cost line stands, with Place order off,
+notes that the profile chosen has one resume, so every job builds it, and, in
+Fully Tailor (open to an administrator as to everyone), that it builds that
+profile's default resume; the order is priced (*Administrators are not
+charged*), and Cancel
 gives the focus back to Order Immediately. A reporter on `/jobs` is sent to
 Report Jobs. At 390px the four keyword chips wrap inside their box and the
 page has no horizontal scrollbar; a mouse press on a row's checkbox, more than
@@ -691,7 +909,7 @@ E2E_STUB_DELAY_MS=4000 E2E_OUTPUT_DIR=/tmp/e2e-out DB_DIR=/tmp/e2e-db PORT=3001 
 DB_DIR=/tmp/e2e-db node test/e2e/providers.js
 ```
 
-`providers.js` — 42 claims. The table lists the three built-in providers in
+`providers.js` — 44 claims, in order. The table lists the three built-in providers in
 catalog order, each marked *Built-in* with no Remove, each value saying where
 it comes from, the stub Claude seat *Ready*. Add provider: a relative folder is
 refused under its box before anything is sent; a folder that does not exist is
@@ -702,15 +920,22 @@ saved; the built-in's form starts empty (`.env` decides), a limit of 5 set
 there wins, and cleared it is `.env`'s again. Switch off and on; Check now
 checks afresh. Settings -> General draws a card for *Team B (Claude)* and the
 Claude row counts *1 of 2* providers that can take work (the built-in one
-switched off). An order then runs on Team B, Remove is refused while it builds
+switched off). The administrator's resume is filed under a profile of its own
+(the raw writer does it), and the order the script places names that profile
+and a mode (`{ profileId, buildMode: 'partial' }`: Partial Tailor, the mode a
+resume was always built in before modes belonged to the run). That order runs
+on Team B, Remove is refused while it builds
 - in the server's sentence, the row still there - and once the order is done
 its page says *Built on Team B (Claude)* to the administrator; idle, Team B is
-removed. Then Admin -> Models' own dialog (owner decisions M1, M2): **Create
-New Model** at the top right opens it; a price of $0.0005 is refused under the
-price box before anything is sent; a display name another administrator takes
-meanwhile (the script adds it over the API) is refused by the server and its
-sentence pinned under the name box; the model is created at $0.023 and Edit
-saves $0.05; **Set default** moves the *Default* badge and the default model
+removed. Then Admin -> Models' own dialog (owner decisions M1, M2): the page
+says what a resume costs is the builder mode's price (*What a resume costs is
+set per builder mode under Settings > General > Price per resume.*) and a
+model has none - no price column, no price on a row; **Create New Model** at
+the top right opens a dialog with a name box and no price box; a display name
+another administrator takes meanwhile (the script adds it over the API) is
+refused by the server and its sentence pinned under the name box; the model is
+created, its row names no price, and Edit saves a new description;
+**Set default** moves the *Default* badge and the default model
 reads *Set here*; **Use for analysis** puts the *Analysis* badge on it and its
 row then offers **Use the default model**, which leaves the analysis on the
 default model, still *Set here*; both **Reset to default**s give what the page
@@ -721,9 +946,11 @@ provider, and the provider and health routes refuse it.
 ## The shell, as every role
 
 `shell.js` walks every page as a user, an administrator and a reporter, in
-both themes and at 1440 and 390, with the two servers up and `DB_DIR` naming
-the backend's database (it writes the sessions, and the reporter's balance,
-straight into it):
+both themes and at 1440 and 390 (545 claims), with the two servers up and `DB_DIR` naming
+the backend's database (it writes the sessions, the reporter's balance and one
+resume each for the user and the administrator, straight into it - the user
+ends with ONE profile, the Default subscription's whole allowance, and each
+has a person for the builder's profile select to offer):
 
 ```bash
 cd backend && npm run build
@@ -740,13 +967,15 @@ Jobs say sheets are not set up on this server (*Job sheets ...* to a user,
 reporter's account menu simply has no *Your job sheet*. Only a backend started
 with no preload at all reaches a real credential (see the top).
 
-The rail reads Profiles, Groups, Find Jobs, Build Resumes, Orders, Credits |
+The rail reads Profiles, Find Jobs, Build Resumes, Orders, Credits |
 Job Filter, Bid Assistant, Calendar | Templates, Settings for every builder -
-Find Jobs a same-tab link to `/jobs`, which lights it alone (as `/jobs/filter`
-lights Job Filter alone), and every route walked includes `/jobs`.
+one Profiles entry and no locked row - Find Jobs
+a same-tab link to `/jobs`, which lights it alone (as `/jobs/filter` lights
+Job Filter alone), and every route walked includes `/jobs`, the dashboard's
+second tab, a profile that is nobody's and the template chooser.
 
 The reporter half (owner decision A3): their four pages - Report Jobs, Credits,
-Settings -> Profile and Job Sheet - each stay put, under a rail of Report Jobs,
+Settings -> Account and Job Sheet - each stay put, under a rail of Report Jobs,
 Credits and Settings, with only those two Settings tabs; Credits is their
 earnings and the payout the administrator just recorded, with no Purchase
 Credits and no order or refund tabs, but *Ask for Refund* - a payout request -
@@ -758,7 +987,7 @@ Every API answer the reporter's page gets is watched, and the walk fails on a
 single 403: a page of theirs that asked a builder route, or a bounced page
 that mounted before it was sent away, would show here. A user made a reporter
 while their page is open is taken to Report Jobs by their next request; one
-made a reporter on Job Sheet who then opens Settings -> Profile, where nothing
+made a reporter on Job Sheet who then opens Settings -> Account, where nothing
 is refused, finds it drawn as a reporter's - no Resume files, and no failure
 to read where their resumes are saved. On
 Admin -> Accounts: Reporter in the role select and the invite form (which
@@ -769,16 +998,31 @@ Neither a user nor an administrator is offered *Ask for refund* on any page
 they walk (owner decision R1), and the Refund Requests tab says to contact the
 administrator, with the link.
 
-The locks, for a user on the Default subscription: Groups is in the rail - a
-button, not a link - and pressing it opens *Locked: Groups* with **Go to
-subscription** (to `/settings/subscription`) and **Close**; typed, /admin/groups
-is drawn locked too. Build Resumes' Multiple, and sheet mode's All profiles and
-Specific group, are disabled with the lock beside them and no *Premium* in
-their labels; the lock, the locked card itself and the locked Select Group - a
-button where the select would be - each open *Locked: Building for several
-profiles*, and nothing gets chosen. An administrator sees every choice open and
-Groups as an ordinary link. Settings -> Subscription draws four cards in one
-row at 1440 with Default current, and one a row at 390 with no sideways
+The profiles and the one lock, for a user on the Default subscription: the
+rail has no locked row at all. Build Resumes locks
+nothing on a run: both ways of building draw one profile select
+(`#manual-profile`, `#sheets-profile`, offering the user's one profile,
+chosen) and the three build modes as cards (`input[name=manualBuildMode]`,
+`input[name=sheetsBuildMode]`) - every one open, none disabled or locked, one
+chosen, each saying what it does and none naming a subscription; pressing a
+mode chooses it and the note under the cards follows (Fully Tailor builds the
+default resume; Choose Suitable Resume says the profile has one resume, so
+every job builds it); the sheet card has no Single, All profiles or list
+target and no picker for several. `/admin/profiles` is *My Profiles* with the
+tabs *Profiles (1)* and *All resumes (1)* and the user's profile a card, and,
+at the Default subscription's one profile, the New profile tile is the one
+thing locked: pressable, *Needs Premium*, opening *Locked: More profiles* with
+what Premium allows, **Go to subscription** (to `/settings/subscription`) and
+**Close** - on a phone too, where Close gives the focus back to the tile.
+`?tab=resumes` selects All resumes, whose New resume tile is never locked;
+`/admin/resumes/new?profile=<id>` draws the chooser for that profile, with no
+lock even at the limit; `/admin/profiles/<no such profile>` says so, with a
+link to My Profiles, and keeps Profiles lit; and an old
+`/admin/profiles/<a resume's id>` bookmark replaces itself with that resume's
+editor. An administrator sees every choice open, the Profiles entry in the
+rail, and the New profile tile open whatever their own subscription (the page says
+*administrators have no limit*). Settings -> Subscription draws four cards in
+one row at 1440 with Default current, and one a row at 390 with no sideways
 scroll.
 
 The prompts, as an administrator sees them (owner decisions J0, J1, O1):
@@ -790,15 +1034,20 @@ New Variant and the override. Admin -> Settings -> General has no analysis
 model select and no folder template any more (owner decisions M2, O5): its
 output prefix box shows the prefix in effect, its three tokens as chips and the
 server's preview, and every setting with a `.env` default says where its value
-came from (*Set here*, *From .env (NAME)* or *Default*). Admin -> Models has
+came from (*Set here*, *From .env (NAME)* or *Default*); its **Price per
+resume** section has a text box for each of the three build modes
+(`#mode-price-<setting>`) with **Save Prices**, and its Builder Defaults
+choose a default profile (a select) and a default builder mode - no build
+target. Admin -> Models has
 **Create New Model** at the top right of its header and no inline form, the
 *Default* and *Analysis* badges and **Set default** and **Use for analysis**
-on its rows, and says each posting is analysed once; Create New Model opens the
-dialog, its price a text box. Settings -> Profile -> Resume files, for a user:
+on its rows, and says each posting is analysed once and that a resume costs
+the builder mode's price, with no price column; Create New Model opens the
+dialog, a name and no price box. Settings -> Account -> Resume files, for a user:
 the folder path in effect, its five tokens as chips, the server's preview and
 *Default*; a chip lands at the caret, and a token of the administrator's
 (`{{order_number}}`) is refused under the box by name before anything is
-saved. A reporter's Settings -> Profile has no Resume files.
+saved. A reporter's Settings -> Account has no Resume files.
 
 ## Sign-in is seeded, deliberately
 
@@ -807,6 +1056,17 @@ offline path to a login code and no dev backdoor. Rather than add one, these
 scripts write a session row directly and send its token as a Bearer token —
 which is what the browser would be carrying anyway. Sign-in is not what these
 scripts are testing.
+
+A seeded sign-in is the `ft_session` cookie and the `adminToken` in
+localStorage, and every page of one browser context shares both. So a page
+opened for a second account signs every OTHER page of that context in as
+that account at their next request or reload: `profiles.js`' builder page
+once loaded as the administrator (no profiles, no balance) because an admin
+page had been opened after it. Give each account its own context
+(`browser.createBrowserContext()`, as `profiles.js`' `newPage` and
+`refunds.js` do), or sign a page in again before it reads anything
+account-specific after another account was signed in (`shell.js`' phone
+section).
 
 ## What they check
 

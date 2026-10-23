@@ -29,7 +29,7 @@ type Props = {
  * It used to live two clicks deep inside the account menu, which is the wrong
  * place for the one number that decides whether the next thing you press will
  * work. It reads from the auth context rather than fetching, so the refresh
- * that Resume Profiles already triggers after a create keeps this current too.
+ * that saving a resume already triggers keeps this current too.
  */
 function CreditsPill({ balanceMilli, reporter }: { balanceMilli: number; reporter: boolean }) {
   const balance = formatMoney(balanceMilli);

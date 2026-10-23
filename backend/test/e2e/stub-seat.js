@@ -13,7 +13,7 @@
  *                       enough to press Stop, close a tab or leave the page
  *                       while a run is going. Only a call that reaches this
  *                       seat waits: a posting already analysed, or a
- *                       tailoring the cache holds for the same profile and
+ *                       tailoring the cache holds for the same resume and
  *                       model, never gets here, so a script that needs a run
  *                       still going gives every job a posting of its own
  *                       (immediate-run.js's `postingsFor`)
@@ -73,7 +73,7 @@ const ANSWERS = {
 
 // The tailoring, in the shape the shipped prompt asks for: no description, the
 // skills block in groups with the posting's soft skills last. Its summary
-// carries every term of the analysis above, so a profile whose role this is
+// carries every term of the analysis above, so a resume whose role this is
 // gets no revise pass - the run takes the calls it always took.
 const TAILORED = JSON.stringify({
   title: 'Senior Engineer',

@@ -255,7 +255,7 @@ function stubOutputs(rootDir) {
   };
 }
 
-function profileInput(name, extra = {}) {
+function resumeInput(name, extra = {}) {
   return {
     name,
     title: 'Engineer',
@@ -272,7 +272,7 @@ function profileInput(name, extra = {}) {
 /**
  * A served install: the resume, generation and jobs routes behind a signed-in
  * administrator (exempt from charges, so these stay tests about analyses),
- * profiles on the three seats, and the counting seats.
+ * resumes on the three seats, and the counting seats.
  */
 async function serveInstall(name, options = {}) {
   const storage = freshInstall(name);
@@ -284,8 +284,7 @@ async function serveInstall(name, options = {}) {
   const sheets = require('../dist/services/sheets/analysisColumns');
   const queue = require('../dist/services/queue/index');
   const users = require('../dist/database/userRepository');
-  const { saveProfile } = require('../dist/database/profileRepository');
-  const { buildNewProfile } = require('../dist/services/profileService');
+  const { seedProfileWithResumes } = require('./helpers');
 
   config.invalidateSettingsCache();
   gate.resetAnalysisGateForTests();
@@ -295,17 +294,34 @@ async function serveInstall(name, options = {}) {
 
   const owner = users.createUser({ email: 'owner@example.com' });
   const token = users.createSession(owner.id);
-  const profiles = options.profiles ?? [
+  const resumes = options.resumes ?? [
     ['p-claude', 'Ada', 'claude-cli-sonnet'],
     ['p-codex', 'Bea', 'codex-cli-default'],
     ['p-gemini', 'Cy', 'gemini-cli-auto'],
   ];
-  for (const [id, profileName, modelId, settings = {}] of profiles) {
-    saveProfile({
-      ...buildNewProfile(profileInput(profileName, { profileSettings: { ai: { modelId }, ...settings } }), id),
-      ownerId: owner.id,
-    });
+  // A run builds ONE profile (a person). Each listed resume is its own person,
+  // named after the resume, holding that one resume - unless `options.people`
+  // groups several resumes under one name: `[[personName, [[id, name,
+  // modelId, settings?], ...]], ...]`. `profileOf(resumeId)` is the person to
+  // name in a run body or a preview (`profileId`).
+  const people = options.people ?? resumes.map((entry) => [entry[1], [entry]]);
+  const profileIds = new Map();
+  for (const [personName, entries] of people) {
+    const { profileId } = seedProfileWithResumes(
+      owner,
+      personName,
+      entries.map(([id, resumeName, modelId, settings = {}]) => ({
+        id,
+        ...resumeInput(resumeName, { resumeSettings: { ai: { modelId }, ...settings } }),
+      }))
+    );
+    for (const [id] of entries) profileIds.set(id, profileId);
   }
+  const profileOf = (resumeId) => {
+    const profileId = profileIds.get(resumeId);
+    if (!profileId) throw new Error(`no seeded resume "${resumeId}"`);
+    return profileId;
+  };
 
   const restoreOutputs = stubOutputs(storage.rootDir);
   const { attachUser } = require('../dist/middleware/auth');
@@ -331,6 +347,7 @@ async function serveInstall(name, options = {}) {
     ...storage,
     seats,
     owner,
+    profileOf,
     post,
     config,
     gate,

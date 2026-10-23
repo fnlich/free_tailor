@@ -10,7 +10,9 @@ import {
 import { isConfiguredAdmin, resolveAdminIdentity, type AdminSource } from '../config/adminIdentity';
 import { parseReportRateUsd } from '../config/reportRate';
 import { globalReportRateMilli } from '../services/jobLake/settings';
-import { countProfilesForOwner } from '../database/profileRepository';
+import { countProfilesForOwner } from '../database/profileLimit';
+import { fileUnfiledResumesFor } from '../database/profileTree';
+import { countResumesForOwner } from '../database/resumeRepository';
 import {
   countAdmins,
   createUser,
@@ -132,6 +134,9 @@ function describe(
     ...account,
     subscriptionLabel: subscription.label,
     profileLimit: subscription.profileLimit,
+    // Filed profiles only: this list does not file anybody's old resumes (a list read
+    // should not write other accounts' data), so an upgraded account shows fewer here
+    // until its owner next opens the app.
     profilesUsed: countProfilesForOwner(account.id),
     roleLabel: ROLE_LABELS[account.role],
     reportRateMilli: lists ? (lists.rates.get(account.id) ?? null) : getReportRateMilli(account.id),
@@ -521,19 +526,25 @@ router.delete('/:id', (req: Request<{ id: string }>, res: Response) => {
     return;
   }
 
-  // The profiles are NOT deleted with the account. Deleting somebody's work as
-  // a side effect of removing their login is not recoverable, and an admin who
-  // wants that can delete the profiles first - or reassign them.
-  const owned = countProfilesForOwner(target.id);
+  // The profiles and their resumes are NOT deleted with the account. Deleting
+  // somebody's work as a side effect of removing their login is not
+  // recoverable, and an admin who wants that can delete the profiles first -
+  // or reassign them.
+  // Their old resumes are filed lazily; file them so the count below is of people, not of 0.
+  fileUnfiledResumesFor(target);
+  const ownedProfiles = countProfilesForOwner(target.id);
+  const ownedResumes = countResumesForOwner(target.id);
   deleteUser(target.id);
 
   res.json({
     deleted: true,
-    orphanedProfiles: owned,
-    ...(owned > 0
+    orphanedProfiles: ownedProfiles,
+    orphanedResumes: ownedResumes,
+    ...(ownedProfiles > 0 || ownedResumes > 0
       ? {
           note:
-            `${owned} profile${owned === 1 ? '' : 's'} belonged to that account and ` +
+            `${ownedResumes} resume${ownedResumes === 1 ? '' : 's'} in ` +
+            `${ownedProfiles} profile${ownedProfiles === 1 ? '' : 's'} belonged to that account and ` +
             'still exist. They are visible to administrators only until they are reassigned or deleted.',
         }
       : {}),

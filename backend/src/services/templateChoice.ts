@@ -1,11 +1,11 @@
-import type { Profile } from '../types/profile';
+import type { Resume } from '../types/resume';
 import type { Template } from '../types/template';
 import { PublicError } from '../middleware/publicError';
 import { getAllTemplates, getTemplateById } from '../extractors/templateExtractor';
 
 /**
- * Which template a resume is drawn with - ONE answer for the live profile
- * preview, `/resume/preview`, `/resume/preview-all` and the queue.
+ * Which template a resume is drawn with - ONE answer for the editor's live
+ * preview, `/resume/preview` and the queue.
  *
  * It was two copies (the resume routes and the queue task) that already
  * agreed, and the preview would have been a third. Three copies of a fallback
@@ -26,7 +26,7 @@ export interface TemplateChoiceOptions {
 }
 
 /**
- * The template for this profile: the one requested, else the profile's own
+ * The template for this resume: the one requested, else its own
  * `preferredTemplate`, else `default` - the first of those that exists and is
  * enabled. Failing all three, the first enabled template there is (newest
  * first, as the list is served), so a resume is never refused while anything
@@ -35,15 +35,15 @@ export interface TemplateChoiceOptions {
  * Every template prints both Technical Skills layouts, so the layout plays no
  * part in the choice.
  */
-export async function resolveTemplateForProfile(
-  profile: Pick<Profile, 'preferredTemplate'>,
+export async function resolveTemplateForResume(
+  resume: Pick<Resume, 'preferredTemplate'>,
   requestedTemplateId?: string,
   options: TemplateChoiceOptions = {}
 ): Promise<Template | null> {
   const requested = typeof requestedTemplateId === 'string' ? requestedTemplateId.trim() : '';
   const candidateIds = [
     requested,
-    typeof profile.preferredTemplate === 'string' ? profile.preferredTemplate.trim() : '',
+    typeof resume.preferredTemplate === 'string' ? resume.preferredTemplate.trim() : '',
     FALLBACK_TEMPLATE_ID,
   ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
 

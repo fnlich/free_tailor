@@ -129,7 +129,7 @@ export default function ResumePreview({
                   </svg>
                   <p className="mt-4 text-lg font-medium text-ink">No Preview Available</p>
                   <p className="mt-2 text-sm">
-                    Select a profile and template, then click &quot;Generate Resume&quot;
+                    Nothing to preview yet.
                   </p>
                 </div>
               </div>

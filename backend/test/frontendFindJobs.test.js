@@ -12,14 +12,14 @@ const ts = require('typescript');
  *  - the MultiSelect kit component's decisions (lib/multiSelect.ts): which
  *    options a typed filter leaves, choosing past a cap, typed text split
  *    into values, where the active option moves, what is announced;
- *  - who an Order Immediately builds for (lib/runChoices.ts) against the
- *    server's own lock (`assertProfileScopeAllowed`): every target the dialog
- *    leaves open to a Default account is one the server takes, and every
- *    locked one would be refused for more than one profile;
- *  - the pages as written: Build Resumes draws the cost line and the receipt
- *    from the shared components rather than its own copies, and the order
- *    dialog sends an ORDER, only after the spend confirm, through the shared
- *    pieces.
+ *  - who an Order Immediately builds for (lib/runChoices.ts): ONE profile in
+ *    one of three build modes, on every subscription - the request the dialog
+ *    sends is quoted by the real generation route for a Default account in
+ *    each mode, and the list-of-profiles shape the old dialog sent is refused;
+ *  - the pages as written: Build Resumes draws the cost line, the receipt,
+ *    the profile select and the mode cards from the shared components rather
+ *    than its own copies, and the order dialog sends an ORDER, only after the
+ *    spend confirm, through the shared pieces.
  *
  * The frontend has no test runner, so the modules are transpiled with the
  * backend's TypeScript and loaded with a resolver that follows only other
@@ -167,68 +167,141 @@ test("the MultiSelect component draws the combobox the e2e scripts and a screen 
   assert.ok(!css.includes('tl-nav-out'), 'the rail no longer has a row that leaves the app');
 });
 
-test("who an order builds for: every target left open to a Default account is one the server takes, every locked one it refuses", () => {
+test("who an order builds for: one profile and each of the three modes is open to a Default account, and the server takes exactly what the dialog sends", async () => {
   const runChoices = choices();
-  const { assertProfileScopeAllowed } = require('../dist/middleware/auth');
-  const profiles = [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }];
-  const groups = [{ id: 'g1', profileIds: ['p1', 'p3'] }, { id: 'g2', profileIds: ['p2'] }];
-  const accounts = {
-    default: { role: 'user', subscription: 'default' },
-    premium: { role: 'user', subscription: 'premium' },
-    admin: { role: 'admin', subscription: 'default' },
+  const { lakeOrderJobs } = loadFile(path.join(SRC, 'lib', 'jobLakeDisplay.ts'));
+  const { BUILD_MODES } = loadFile(path.join(SRC, 'lib', 'buildModes.ts'));
+  const backendModes = require('../dist/config/buildModes');
+  assert.deepEqual([...BUILD_MODES], [...backendModes.BUILD_MODES]);
+
+  // A served install with a Default account that has one profile of two resumes.
+  const helpers = require('./helpers');
+  const storage = helpers.useTempStorage('find-jobs-order-modes');
+  const users = require('../dist/database/userRepository');
+  const config = require('../dist/config/aiModelConfig');
+  const { attachUser } = require('../dist/middleware/auth');
+  const express = require('express');
+  config.invalidateSettingsCache();
+  const alice = users.createUser({ email: 'alice@example.com' });
+  assert.equal(alice.subscription, 'default');
+  assert.equal(alice.role, 'user');
+  const resumeInput = (id, title) => ({
+    id,
+    name: 'Jane Doe',
+    title,
+    skills: [],
+    contact: { email: 'jane@example.com', phone: '555-0100', location: 'Remote' },
+    summary: 'A summary.',
+    experience: [],
+    strengths: [],
+    education: [],
+  });
+  const seeded = helpers.seedProfileWithResumes(alice, 'Jane Doe', [
+    resumeInput('jane-data', 'Data Engineer'),
+    resumeInput('jane-backend', 'Backend Engineer'),
+  ]);
+  const analysisId = helpers.storeJobAnalysis({}, { jobDescription: 'A posting for the order dialog test.', jobLink: 'https://jobs.example.com/a/1' });
+  await config.updateAppSettings({ suitablePriceUsd: '0.010', partialPriceUsd: '0.030', fullPriceUsd: '0.020' });
+
+  const token = users.createSession(alice.id);
+  const app = express();
+  app.use(express.json());
+  app.use(attachUser);
+  app.use('/api/generation', require('../dist/routes/generation').default);
+  const server = app.listen(0);
+  const post = async (route, body) => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/generation${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
   };
-  const refusedBy = (account, picked) => {
-    try {
-      assertProfileScopeAllowed(account, { profileIds: picked.map((profile) => profile.id), resolvedCount: picked.length });
-      return null;
-    } catch (error) {
-      return error.code ?? error.message;
+
+  try {
+    // What the dialog starts on, from the lib's own choices: the first offered profile, the administrator's default mode.
+    const summaries = [{ id: seeded.profileId }];
+    assert.equal(runChoices.startingProfileId({ defaultProfileId: '' }, summaries), seeded.profileId);
+    assert.equal(runChoices.profileBlocker(seeded.profileId, summaries), null);
+    const { jobs } = lakeOrderJobs([
+      { company: 'Acme', title: 'Backend Engineer', url: 'https://jobs.example.com/a/1', analysisId },
+      { company: 'Ghost', title: 'Nothing', url: '', analysisId: null },
+    ]);
+    assert.equal(jobs.length, 1, 'a job with no stored analysis is left out, as the dialog says');
+
+    // Every mode is open to a Default account: the request the dialog sends (a
+    // profile, a mode, the jobs) is a quote the server answers, in that mode,
+    // at that mode's price - never a 403 for the subscription.
+    const prices = { suitable: 10, partial: 30, full: 20 };
+    for (const mode of BUILD_MODES) {
+      const request = { buildMode: mode, profileId: seeded.profileId, jobs };
+      const quote = await post('/quote', request);
+      assert.equal(quote.status, 200, `${mode}: ${JSON.stringify(quote.body)}`);
+      assert.equal(quote.body.buildMode, mode);
+      assert.equal(quote.body.resumes, 1);
+      assert.equal(quote.body.costMilli, prices[mode], mode);
+      assert.equal(quote.body.pricePerResumeMilli, prices[mode], mode);
     }
-  };
-  const subscriptions = loadFile(path.join(SRC, 'lib', 'subscriptions.ts'));
-  assert.deepEqual([...runChoices.TARGET_KINDS], ['single', 'several', 'all', 'group']);
-  for (const [name, account] of Object.entries(accounts)) {
-    const manyProfiles = subscriptions.canBuildForManyProfiles(account);
-    for (const kind of runChoices.TARGET_KINDS) {
-      for (const choice of [
-        { kind, profileId: 'p2', profileIds: ['p3', 'p1'], groupId: 'g1' },
-        { kind, profileId: 'p1', profileIds: ['p2'], groupId: 'g2' },
-      ]) {
-        const inEffect = { ...choice, kind: runChoices.targetInEffect(choice.kind, manyProfiles) };
-        const picked = runChoices.targetProfiles(inEffect, profiles, groups);
-        // What the dialog sends is always accepted: a Default account's locked choice is in effect its single profile.
-        assert.equal(refusedBy(account, picked), null, `${name} ${JSON.stringify(choice)}`);
-        // And what it locks really is locked: the choice as made, for more than one profile, is refused below Premium.
-        const asMade = runChoices.targetProfiles(choice, profiles, groups);
-        if (!manyProfiles && runChoices.isMultiProfileTarget(kind) && asMade.length > 1) {
-          assert.equal(refusedBy(account, asMade), 'subscription-too-low', `${name} ${JSON.stringify(choice)}`);
-        }
-      }
+
+    // What the dialog no longer sends is what the server refuses: a list of profiles is not a profile.
+    for (const retired of [{ profileIds: [seeded.profileId] }, { profileIds: [] }, { resumeIds: ['jane-data'] }]) {
+      const refused = await post('/quote', { buildMode: 'partial', jobs, ...retired });
+      assert.equal(refused.status, 400, JSON.stringify(retired));
+      assert.equal(refused.body.code, 'one-profile-per-run', JSON.stringify(retired));
     }
+    // A profile that is not the account's own is a 404, not a lock.
+    const stranger = await post('/quote', { buildMode: 'partial', profileId: 'not-mine', jobs });
+    assert.equal(stranger.status, 404);
+    assert.equal(stranger.body.code, 'profile-not-found');
+  } finally {
+    server.close();
   }
-  // The starting target is Build Resumes' own: the administrator's default, Single below Premium.
-  const settings = { defaultResumeSelection: 'group', defaultProfileId: 'p2', defaultGroupId: 'g1' };
-  assert.deepEqual(runChoices.startingTarget(settings, profiles, groups, true), { kind: 'group', profileId: 'p2', groupId: 'g1' });
-  assert.deepEqual(runChoices.startingTarget(settings, profiles, groups, false), { kind: 'single', profileId: 'p2', groupId: '' });
+
+  // The files an order makes follow the administrator's builder defaults.
   assert.deepEqual(runChoices.defaultRunFormat({ defaultResumeDocxEnabled: false, defaultCoverLetterDocxEnabled: true }), {
     format: 'pdf',
     includeCoverLetterDocx: true,
   });
+  void storage;
 });
 
-test('Build Resumes and Find Jobs share the cost line, the receipt and the targets; the order dialog places an ORDER only after the spend confirm', () => {
+test('Build Resumes and Find Jobs share the cost line, the receipt, the profile choice and the mode cards; the order dialog places an ORDER only after the spend confirm', () => {
   const builder = codeOf('app/page.tsx');
   assert.match(builder, /import CostLine, \{ type CreditShortfall \} from '@\/components\/builder\/CostLine';/);
   assert.match(builder, /import OrderReceipt, \{ placedOrderFrom, type PlacedOrder \} from '@\/components\/orders\/OrderReceipt';/);
   assert.doesNotMatch(builder, /function (CostLine|OrderReceipt)\b|const RECEIPT_POLL_MS/, 'no copy of its own');
 
   const dialog = codeOf('app/jobs/OrderJobsDialog.tsx');
-  assert.match(dialog, /from '@\/components\/builder\/ProfileTargets'/);
   assert.match(dialog, /from '@\/components\/builder\/CostLine'/);
-  // The order offers Several profiles; Build Resumes' sheet mode keeps its three cards.
-  assert.match(dialog, /selectedProfileIds=\{target\.profileIds \?\? \[\]\}/);
-  assert.match(dialog, /onProfileIdsChange=/);
-  assert.doesNotMatch(builder, /selectedProfileIds=|onProfileIdsChange=/);
+  // One profile and one mode, drawn by the same two components on both pages;
+  // the several-profile targets and their lock are gone from both.
+  for (const [name, source] of [['Build Resumes', builder], ['the order dialog', dialog]]) {
+    assert.match(source, /import BuildModeChoice from '@\/components\/builder\/BuildModeChoice';/, name);
+    assert.match(source, /import ProfileSelector from '@\/components\/ProfileSelector';/, name);
+    assert.match(source, /<BuildModeChoice\b/, name);
+    assert.match(source, /<ProfileSelector\b/, name);
+    assert.doesNotMatch(source, /ProfileTargets/, `${name}: no several-profile targets`);
+    assert.doesNotMatch(source, /selectedProfileIds|onProfileIdsChange|profileIds\b/, `${name}: one profileId, never a list`);
+    assert.doesNotMatch(
+      source,
+      /canBuildForManyProfiles|isSubscriptionTooLow|describeTooLowRefusal|useLockedFeature|hasSubscription|subscriptionAtLeast/,
+      `${name}: nothing on a run is locked`
+    );
+  }
+  assert.equal(fs.existsSync(path.join(SRC, 'components', 'builder', 'ProfileTargets.tsx')), false);
+  // The dialog's ids and radios, for the browser scripts; the order's own radio group.
+  assert.match(dialog, /id="order-profile"/);
+  assert.match(dialog, /name="orderBuildMode"/);
+  // The profiles are loaded on every tier, with no gate in front of the read.
+  assert.match(dialog, /profilesApi\.getAll\(\)/);
+  // The request is one profile and one mode, and the quote key follows both.
+  assert.match(dialog, /buildMode, profileId: profile\.id, jobs/);
+  assert.match(dialog, /const quoteKey = request \? `\$\{request\.profileId\}\|\$\{jobs\.length\}\|\$\{modelId \?\? ''\}\|\$\{buildMode\}` : '';/);
+  // The sentences the dialog says when it cannot offer a profile.
+  assert.match(dialog, /Your profiles could not be loaded/);
+  assert.match(dialog, /Loading your profiles\.\.\./);
+  assert.match(dialog, /You have no profile with an enabled resume\. Add one under Profiles first\./);
+  assert.match(dialog, /profileBlocker\(profileId, profiles\)/);
   // Why it cannot be placed is said where the cost line stands, not only in a tooltip.
   assert.match(dialog, /aria-live="polite" data-order-blocker/);
   assert.match(dialog, /placedOrderFrom\(/);
@@ -239,8 +312,7 @@ test('Build Resumes and Find Jobs share the cost line, the receipt and the targe
   assert.match(dialog, asked);
   assert.equal((dialog.match(/generationApi\.submit\(/g) ?? []).length, 1);
   assert.ok(dialog.indexOf('const place = async') < dialog.search(asked), 'submit lives in `place`, which only the confirm starts');
-  // A refusal for the subscription opens the lock, worded from the refusal; a 402 is the cost line's shortfall.
-  assert.match(dialog, /isSubscriptionTooLow\(caught\)\) \{\s*\/?\/?[^\n]*\n?\s*locked\.open\(describeTooLowRefusal\(\)\)/);
+  // A run is never refused for the subscription any more; a 402 is the cost line's shortfall.
   assert.match(dialog, /isInsufficientCredits\(caught\)/);
 
   const page = codeOf('app/jobs/page.tsx');

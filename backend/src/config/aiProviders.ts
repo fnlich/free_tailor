@@ -25,7 +25,7 @@ import { AI_PROVIDER_IDS, getProviderLabel, getProviderLockReason, isProviderLoc
  *
  * THE FIRST PROVIDER OF EACH TYPE IS THE BUILT-IN ONE, with the type's own id.
  * That is what keeps every stored model, prompt override, queued task and
- * profile working: each of them names a type id, and the type id is still a
+ * resume working: each of them names a type id, and the type id is still a
  * provider - the one this install always had, configured from `.env` exactly
  * as before (`AI_CLI_BIN` / `CLAUDE_CONFIG_DIR` / `AI_CLI_CONCURRENCY` and the
  * Codex and Gemini equivalents) unless an administrator sets a value of their

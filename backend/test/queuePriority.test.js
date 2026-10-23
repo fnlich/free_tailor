@@ -41,7 +41,7 @@ function harness({ slots = 1, maxAttempts = 1 } = {}) {
   const tasks = (prefix, count, lane = 'cli') =>
     Array.from({ length: count }, (_, index) => ({
       queue: lane,
-      label: { profileId: 'p', profileName: 'P', companyName: `${prefix}${index}`, role: '' },
+      label: { resumeId: 'p', resumeName: 'P', companyName: `${prefix}${index}`, role: '' },
       kind,
       payload: { label: `${prefix}${index}` },
     }));

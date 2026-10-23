@@ -10,10 +10,10 @@
  * runtime, so backend/test/frontendRoles.test.js loads it and runs it against
  * the backend's own.
  *
- * - `user` builds resumes from their own profiles - every new sign-in;
+ * - `user` builds resumes from their own stored resumes - every new sign-in;
  * - `reporter` adds job postings to the shared job lake and is paid per job
  *   accepted (owner decisions A3, A4): Report Jobs, Credits, their own job
- *   sheet, Settings -> Profile / Job Sheet, notifications and Contact admin,
+ *   sheet, Settings -> Account / Job Sheet, notifications and Contact admin,
  *   and nothing else;
  * - `admin` manages everything the installation shares.
  */
@@ -64,7 +64,7 @@ export const REPORTER_HOME = '/report';
 /**
  * The pages a reporter may open - an ALLOWLIST, never a list of what to keep
  * them out of: /admin/* holds ordinary users' pages too (/admin/profiles is
- * everybody's resume profiles), so "everything under /admin is for
+ * everybody's own resumes), so "everything under /admin is for
  * administrators" would be wrong both ways, and a page added later is a
  * reporter's only once somebody adds it here.
  *
@@ -95,7 +95,7 @@ export function reporterMayOpen(pathname: string): boolean {
  * Where AuthGate sends this account instead of drawing `pathname`, or null to
  * draw it. Only a reporter is ever sent anywhere: a user or an administrator
  * opens every page, and the page explains itself if it is not for them
- * (AdminOnly, RequiresSubscription, ReporterOnly).
+ * (AdminOnly, ReporterOnly).
  */
 export function redirectFor(role: unknown, pathname: string): string | null {
   if (role !== 'reporter') return null;
@@ -107,7 +107,7 @@ export function homeFor(role: unknown): string {
   return role === 'reporter' ? REPORTER_HOME : '/';
 }
 
-/** Report Jobs is a reporter's page, and an administrator may open it (the plan's /report row). */
+/** Report Jobs is a reporter's page, and an administrator may open it (owner decision A3's /report row). */
 export function canOpenReportJobs(role: unknown): boolean {
   return role === 'reporter' || role === 'admin';
 }

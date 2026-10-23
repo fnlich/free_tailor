@@ -154,7 +154,7 @@ async function serve() {
     credits.reserveCredits(account(userId), cost, {
       kind: 'request',
       id,
-      label: `Jane / Acme - ${credits.describeCharge([{ modelLabel: 'Claude', costMilli: cost }])}`,
+      label: `Jane / Acme - ${credits.describeCharge([{ label: 'Partial Tailor', costMilli: cost }])}`,
     });
     if (delivered) credits.settleRun(id);
     else credits.releaseReservation(id, 'The run did not finish.');
@@ -169,8 +169,8 @@ async function serve() {
       { userId, batchId, label: 'An order', retentionDays: 5 },
       states.map((_, index) => ({
         seq: index,
-        profileId: `p${index}`,
-        profileName: 'Jane',
+        resumeId: `p${index}`,
+        resumeName: 'Jane',
         companyName: `Company ${index}`,
         role: 'Engineer',
         costMilli: PRICE,

@@ -12,7 +12,7 @@ const { getAllTemplates, getTemplateById } = require('../dist/extractors/templat
 
 test('prepareResumeRenderData normalizes LinkedIn href and display text', () => {
   const renderData = prepareResumeRenderData({
-    id: 'profile-1',
+    id: 'resume-1',
     name: 'Jane Doe',
     title: 'Software Engineer',
     contact: {
@@ -38,7 +38,7 @@ test('prepareResumeRenderData normalizes LinkedIn href and display text', () => 
 test('generatePreviewHTML shows linkedin.com text while keeping the full LinkedIn href', async () => {
   const html = await generatePreviewHTML(
     {
-      id: 'profile-2',
+      id: 'resume-2',
       name: 'Jane Doe',
       title: 'Software Engineer',
       contact: {
@@ -70,11 +70,11 @@ test('generatePreviewHTML shows linkedin.com text while keeping the full LinkedI
   assert.doesNotMatch(html, />https:\/\/www\.linkedin\.com\/in\/jane-doe<\/a>/);
 });
 
-test('the builder preview carries the same Content-Security-Policy as the profile editor preview', async () => {
+test('the builder preview carries the same Content-Security-Policy as the resume editor preview', async () => {
   // It holds whatever the model wrote, framed in the page; the policy keeps a
   // stray script or remote fetch out even if the frame's own sandbox did not.
-  const profile = {
-    id: 'profile-csp',
+  const resume = {
+    id: 'resume-csp',
     name: 'Jane Doe',
     title: 'Engineer',
     contact: { phone: '', email: '', linkedin: '', location: '' },
@@ -88,14 +88,14 @@ test('the builder preview carries the same Content-Security-Policy as the profil
   };
   const template = (htmlContent) => ({ id: 't-csp', name: 'T', htmlContent, cssContent: '', createdAt: '', updatedAt: '' });
 
-  const withDoctype = await generatePreviewHTML(profile, template('<!DOCTYPE html><html><body>{{name}}</body></html>'));
+  const withDoctype = await generatePreviewHTML(resume, template('<!DOCTYPE html><html><body>{{name}}</body></html>'));
   assert.match(withDoctype, /^<!DOCTYPE html><meta http-equiv="Content-Security-Policy" content="default-src 'none';/);
 
-  const bare = await generatePreviewHTML(profile, template('<div>{{name}}</div>'));
+  const bare = await generatePreviewHTML(resume, template('<div>{{name}}</div>'));
   assert.ok(bare.indexOf('Content-Security-Policy') < bare.indexOf('Jane Doe'));
 });
 
-test('prepareResumeRenderData leaves soft skills out unless the profile switches them on', () => {
+test('prepareResumeRenderData leaves soft skills out unless the resume switches them on', () => {
   const tailoredContent = {
     title: 'Senior Software Engineer',
     summary: 'Summary',
@@ -108,7 +108,7 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
 
   const firstRenderData = prepareResumeRenderData(
     {
-      id: 'profile-1',
+      id: 'resume-1',
       name: 'Sam Chen',
       title: 'Senior Software Engineer',
       contact: {
@@ -130,7 +130,7 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
 
   const otherRenderData = prepareResumeRenderData(
     {
-      id: 'profile-4',
+      id: 'resume-4',
       name: 'Jane Doe',
       title: 'Software Engineer',
       contact: {
@@ -150,7 +150,7 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
     tailoredContent
   );
 
-  // Off - absent from profileSettings, as on every profile written before the
+  // Off - absent from resumeSettings, as on every resume written before the
   // switch - is what every resume has always rendered: no soft skills, even
   // when the tailored content carries some.
   assert.deepEqual(firstRenderData.softSkills, []);
@@ -158,7 +158,7 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
 
   const switchedOn = prepareResumeRenderData(
     {
-      id: 'profile-5',
+      id: 'resume-5',
       name: 'Sam Chen',
       title: 'Senior Software Engineer',
       contact: { phone: '1', email: 'sam@example.com', location: 'San Jose, CA' },
@@ -167,7 +167,7 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
       strengths: [],
       skills: [],
       education: [],
-      profileSettings: { includeSoftSkills: true },
+      resumeSettings: { includeSoftSkills: true },
       createdAt: '',
       updatedAt: '',
     },
@@ -180,14 +180,14 @@ test('prepareResumeRenderData leaves soft skills out unless the profile switches
  * A tailored list is printed as it came, never filled out from the skill
  * library. These four inputs once came back as five library headings of five,
  * Python and Java added beside a TypeScript nobody asked to pair them with,
- * Gin, Echo, Django and FastAPI added for a Go and Python profile, CI/CD
+ * Gin, Echo, Django and FastAPI added for a Go and Python resume, CI/CD
  * dropped by a gate and a sixth language cut. Content with `skillGroups` - what
  * the tailoring prompt returns now - is test/tailoredRender.test.js; these are
  * content without it, as an older build held it.
  */
 test('older tailored content is printed unpadded: nothing added, nothing gated, nothing capped', () => {
-  const profile = {
-    id: 'profile-legacy',
+  const resume = {
+    id: 'resume-legacy',
     name: 'Alex Rivera',
     title: 'Senior Software Engineer',
     contact: { phone: '555-555-5555', email: 'alex@example.com', location: 'Kirkland, WA' },
@@ -215,19 +215,19 @@ test('older tailored content is printed unpadded: nothing added, nothing gated, 
     ['Go', 'Python'],
     ['Go', 'Python', 'JavaScript', 'PHP', 'Java', 'TypeScript'],
   ]) {
-    const grouped = prepareResumeRenderData(profile, tailored(hardSkills));
+    const grouped = prepareResumeRenderData(resume, tailored(hardSkills));
     assert.deepEqual(new Set(printed(grouped)), new Set(hardSkills), `grouped: ${hardSkills.join(', ')}`);
     assert.ok(grouped.skillCategories.every((group) => group.category), 'under the library headings');
 
     const flat = prepareResumeRenderData(
-      { ...profile, profileSettings: { technicalSkillsLayout: 'flat' } },
+      { ...resume, resumeSettings: { technicalSkillsLayout: 'flat' } },
       tailored(hardSkills)
     );
     assert.deepEqual(flat.hardSkills, hardSkills, `flat: ${hardSkills.join(', ')}, in order`);
   }
 
   const languages = prepareResumeRenderData(
-    profile,
+    resume,
     tailored(['Go', 'Python', 'JavaScript', 'PHP', 'Java', 'TypeScript'])
   ).skillCategories.find((group) => group.category === 'Languages');
   assert.deepEqual(languages.skills, ['Go', 'Python', 'JavaScript', 'PHP', 'Java', 'TypeScript'], 'no cap at five');
@@ -400,7 +400,7 @@ test('a template of each layout shape renders the sample resume end to end', asy
   for (const template of templates) {
     assert.ok(template, 'built-in template should load');
     const preview = generateTemplatePreviewHTML(template);
-    // The sample profile is deliberately a full resume, so a template that
+    // The sample resume is deliberately a complete one, so a template that
     // silently drops a section shows up here rather than in someone's PDF.
     assert.ok(preview.includes('Jordan Avery Chen'), `${template.id}: name missing`);
     assert.ok(preview.includes('Northwind Payments'), `${template.id}: experience missing`);

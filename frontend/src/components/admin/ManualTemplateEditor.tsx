@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { templatesApi, Template, ManualTemplateConfigStored } from '@/lib/api';
-import chrome from '@/components/admin/profileTemplateChrome.module.css';
+import chrome from '@/components/admin/resumeTemplateChrome.module.css';
 import { IconClose } from '@/components/icons';
 import { Card, Field, Notice } from '@/components/ui/kit';
 import { messageWithDetail } from '@/lib/userMessage';

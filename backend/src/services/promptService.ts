@@ -30,7 +30,7 @@ import type { AIProvider } from '../types/template';
 
 const CUSTOM_PROMPT_PREFIX = 'custom-';
 const VARIABLE_PATTERN = /\[\[\s*([a-zA-Z0-9_.-]+)\s*\]\]/g;
-const PROFILE_SCOPED_PROMPT_FEATURES = new Set<PromptFeatureKey>([
+const RESUME_SCOPED_PROMPT_FEATURES = new Set<PromptFeatureKey>([
   'tailor-resume',
 ]);
 
@@ -51,18 +51,18 @@ type SinglePromptRule = {
  * kept and listed - it is the administrator's text - but nothing runs it.
  *
  * - The analysis and the job facts are the two calls of a posting's ONE
- *   analysis, for every profile (owner decisions J0, O1), on the analysis
+ *   analysis, for every resume (owner decisions J0, O1), on the analysis
  *   model.
- * - Tailor Resume (Fully) is the tailoring of every profile set to Fully
- *   tailor, run by its exact id whatever tailoring prompt the profile chose
- *   for Partial - a variant of it would be a second idea of what "write the
- *   experience" means, and nothing would choose it.
+ * - Tailor Resume (Fully) is the tailoring of every Fully Tailor run, run by
+ *   its exact id whatever tailoring prompt the resume chose for Partial Tailor
+ *   - a variant of it would be a second idea of what "write the experience"
+ *   means, and nothing would choose it.
  * - The revise pass is the tailoring's second call, run by its exact id on
- *   the model the resume is charged at, whichever tailoring prompt the
- *   profile chose.
- * - A cover letter runs on the model the resume is charged at. Its
+ *   the model the run builds with, whichever tailoring prompt the resume
+ *   chose.
+ * - A cover letter runs on the model the run builds with. Its
  *   activation was inert even before: the call always named the built-in
- *   (or a per-profile id no page ever set), so an activated variant showed
+ *   (or a per-resume id no page ever set), so an activated variant showed
  *   "Live" and never ran.
  */
 const SINGLE_PROMPT_FEATURES: ReadonlyMap<PromptFeatureKey, SinglePromptRule> = new Map<PromptFeatureKey, SinglePromptRule>([
@@ -86,8 +86,8 @@ const SINGLE_PROMPT_FEATURES: ReadonlyMap<PromptFeatureKey, SinglePromptRule> = 
     'tailor-resume-full',
     {
       variant:
-        'Fully tailoring has one prompt, the built-in Tailor Resume (Fully), which every profile set to Fully ' +
-        'tailor runs. Edit that prompt instead of adding another.',
+        'Fully tailoring has one prompt, the built-in Tailor Resume (Fully), which every Fully Tailor run uses. ' +
+        'Edit that prompt instead of adding another.',
       activation: 'Every Fully tailored resume runs the built-in Tailor Resume (Fully) prompt. Edit that prompt instead.',
     },
   ],
@@ -96,7 +96,7 @@ const SINGLE_PROMPT_FEATURES: ReadonlyMap<PromptFeatureKey, SinglePromptRule> = 
     {
       variant:
         'The revise pass has one prompt, the built-in Revise Resume Coverage, which runs after a tailoring that left ' +
-        'checklist terms out or dropped a figure the profile states. Edit that prompt instead of adding another.',
+        'checklist terms out or dropped a figure the resume states. Edit that prompt instead of adding another.',
       activation: 'Every revise pass runs the built-in Revise Resume Coverage prompt. Edit that prompt instead.',
     },
   ],
@@ -155,15 +155,15 @@ export const OWNER_PROMPTS_CONTRACT = '2026-10-19T00:00:00.000Z';
 
 /**
  * When the tailoring's contract last changed (owner's request, 2026-10-20):
- * two modes, a role the profile leaves empty written from the posting rather
+ * two modes, a role the resume leaves empty written from the posting rather
  * than printed blank, and a skills block that leads with the posting's own
- * hard skills whether or not the profile lists them (the owner kept the empty
+ * hard skills whether or not the resume lists them (the owner kept the empty
  * role's rule when asked, 2026-10-20). The `updatedAt` of the shipped Tailor
  * Resume, Tailor Resume (Fully), Revise Resume Coverage (sent each role's dates
- * now, and after a Fully draft terms the profile never names) and Generate
+ * now, and after a Fully draft terms the resume never names) and Generate
  * Cover Letter (told the tailored resume when there is one) files. An edit of
  * the tailoring stored before then was written for a prompt that leaves an
- * empty role empty - which is how a profile of titles and dates printed a
+ * empty role empty - which is how a resume of titles and dates printed a
  * resume with no Skills and no Experience - so it gives way to the shipped
  * text, and so do the other two's.
  */
@@ -184,7 +184,7 @@ type PromptFeatureDefinition = {
    * Variables every record of this feature must use, by name - each one of
    * `allowedVariables`. Contract markers: a record without them cannot
    * produce what the code parses (an analysis or a facts call that never
-   * shows the model the posting, a cover letter written from no profile), so
+   * shows the model the posting, a cover letter written from no resume), so
    * a save without them is refused (`assertValidPromptDraft`), and a stored
    * record without them is marked `needsUpdate` and never run: the
    * feature's built-in prompt runs in its place (`usableAtRuntime`). So does
@@ -233,8 +233,8 @@ type PromptLibraryConfig = {
   activePrompts: Partial<Record<PromptFeatureKey, string>>;
 };
 
-function isProfileScopedPromptFeature(featureKey?: PromptFeatureKey): boolean {
-  return Boolean(featureKey && PROFILE_SCOPED_PROMPT_FEATURES.has(featureKey));
+function isResumeScopedPromptFeature(featureKey?: PromptFeatureKey): boolean {
+  return Boolean(featureKey && RESUME_SCOPED_PROMPT_FEATURES.has(featureKey));
 }
 
 const PROMPT_FEATURES: PromptFeatureDefinition[] = withFullyTailoring([
@@ -311,13 +311,13 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     name: 'Tailor Resume',
     description:
       'Partial tailor: rewrites the candidate\'s own summary and each role\'s description and achievements for a ' +
-      'posting\'s analysis - writing a role the profile leaves empty from the posting - with the headline the code ' +
+      'posting\'s analysis - writing a role the resume leaves empty from the posting - with the headline the code ' +
       'builds on, the Technical Skills block in groups (the posting\'s hard skills first, its soft skills last) and ' +
       'a cover letter.',
     usage:
-      'Runs for every resume of a profile set to Partial tailor (the default), on the model it is charged at; a ' +
-      'profile may choose a variant of its own. The code composes the title, restores each role\'s facts from the ' +
-      'profile, keeps eight bullets a role and prints the skill groups as written. Revise Resume Coverage may ' +
+      'Runs for every resume built with Partial Tailor; a resume may choose a variant of its own (its ' +
+      'editor\'s Building prompt). The code composes the title, restores each role\'s facts from the ' +
+      'source resume, keeps eight bullets a role and prints the skill groups as written. Revise Resume Coverage may ' +
       'follow it.',
     responseFormat: 'json',
     contractSince: TAILORING_PROMPTS_CONTRACT,
@@ -412,11 +412,11 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     name: 'Revise Resume Coverage',
     description:
       'Puts back into a tailored draft\'s summary and bullets the checklist terms it left out - after a Partial ' +
-      'tailoring only those the profile itself names - and the profile\'s figures it dropped, changing as little ' +
+      'tailoring only those the source resume itself names - and the source resume\'s figures it dropped, changing as little ' +
       'as possible.',
     usage:
-      'Runs after a fresh tailoring that left out checklist terms, or dropped a figure the profile\'s own lines ' +
-      'state, on the model the resume is charged at. After a Partial tailoring a posting term the profile never ' +
+      'Runs after a fresh tailoring that left out checklist terms, or dropped a figure the source resume\'s own lines ' +
+      'state, on the model the run builds with. After a Partial tailoring a posting term the source resume never ' +
       'names is never asked for; after a Fully one, any checklist term the draft lacks is, and no figure. Never on ' +
       'a reused tailoring or on content a page sent back. TAILOR_REVISE_PASS turns it off.',
     responseFormat: 'json',
@@ -433,14 +433,14 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
         name: 'missingTermsJson',
         description:
           'The checklist terms the summary and bullets do not carry, in priority order (TAILOR_REVISE_MAX_TERMS at ' +
-          'most), never one with a banned word in it. After a Partial tailoring only those the profile\'s own words ' +
+          'most), never one with a banned word in it. After a Partial tailoring only those the source resume\'s own words ' +
           'carry; after a Fully one, any of them.',
         sampleValue: `["incident response","Datadog","Communication skills"]`,
       },
       {
         name: 'figuresNote',
         description:
-          'The profile\'s own lines whose figures the draft no longer shows, each under the role it is from, with ' +
+          'The source resume\'s own lines whose figures the draft no longer shows, each under the role it is from, with ' +
           'the one instruction to put the figure back where a bullet of that role describes the same work and ' +
           'otherwise add nothing. Empty when the draft dropped none.',
         sampleValue:
@@ -457,11 +457,12 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     label: 'Generate Cover Letter',
     id: 'generate-cover-letter',
     name: 'Generate Cover Letter',
-    description: 'Generates a concise cover letter body using the profile and application details.',
+    description: 'Generates a concise cover letter body using the resume and application details.',
     usage:
       'Writes the cover letter when the tailoring answer brought none (or there is no posting to tailor to), ' +
-      'on the model the resume is charged at. The profile is its only source of fact - the tailored resume\'s ' +
-      'summary and bullets in place of the profile\'s own when one was written.',
+      'and for every Choose Suitable Resume build, which tailors nothing; it runs on the model the run builds ' +
+      'with. Its only source of fact is the resume record - the tailored resume\'s ' +
+      'summary and bullets in place of the record\'s own when one was written.',
     responseFormat: 'text',
     contractSince: TAILORING_PROMPTS_CONTRACT,
     requiredVariables: ['profileJson'],
@@ -477,10 +478,10 @@ We are a SaaS company hiring a backend engineer: Node.js, TypeScript, PostgreSQL
     id: 'write-entry-bullets',
     name: 'Write Entry Bullets',
     description:
-      'Writes or improves the achievement bullets of one entry of a profile - a role, a project or a ' +
+      'Writes or improves the achievement bullets of one entry of a resume - a role, a project or a ' +
       'volunteering entry - from the facts typed into it.',
     usage:
-      'Runs when a builder presses Write with AI or Improve with AI in the profile editor, on the app ' +
+      'Runs when a builder presses Write with AI or Improve with AI in the resume editor, on the app ' +
       'default model. Free: no credit is reserved, one call per account at a time. The code keeps up to ' +
       "eight bullets, each sanitised like a tailored resume's and cut at 300 characters.",
     responseFormat: 'json',
@@ -553,11 +554,11 @@ BS Computer Science | State University | 2018`,
   },
   {
     key: 'extract-profile-from-resume',
-    label: 'Extract Profile From Resume',
+    label: 'Extract Resume From Upload',
     id: 'extract-profile-from-resume',
-    name: 'Extract Profile From Resume',
-    description: 'Parses raw resume text into the structured profile schema used by the app.',
-    usage: 'Live prompt used when importing resume text into a profile.',
+    name: 'Extract Resume From Upload',
+    description: 'Parses raw resume text into the structured resume schema used by the app.',
+    usage: 'Live prompt used when importing resume text into a resume.',
     responseFormat: 'json',
     allowedVariables: [
       {
@@ -585,7 +586,7 @@ Node.js, TypeScript, PostgreSQL, AWS`,
 /**
  * The feature list with Tailor Resume (Fully) placed right after Tailor
  * Resume, whose variables it takes: the same builder fills both
- * (resumeService.ts `buildTailorResumePromptValues`, by the profile's mode),
+ * (resumeService.ts `buildTailorResumePromptValues`, by the run's mode),
  * so one list keeps them from drifting apart. Only `profileJson` reads
  * differently - in Fully, each role is its title, company and dates.
  */
@@ -602,9 +603,9 @@ function withFullyTailoring(features: PromptFeatureDefinition[]): PromptFeatureD
       'title, company and dates alone, with modest, plausible figures - and the headline the code builds on, the ' +
       'Technical Skills block in groups (the posting\'s hard skills first, its soft skills last) and a cover letter.',
     usage:
-      'Runs for every resume of a profile set to Fully tailor, on the model it is charged at, whatever tailoring ' +
-      'prompt the profile chose for Partial. The profile\'s descriptions, achievements, role skills and summary ' +
-      'are not sent. The code composes the title, restores each role\'s facts from the profile, keeps eight bullets ' +
+      'Runs for every resume built with Fully Tailor - the profile\'s default resume - whatever Building prompt ' +
+      'it chose for Partial Tailor. The source resume\'s descriptions, achievements, role skills and summary ' +
+      'are not sent. The code composes the title, restores each role\'s facts from the source resume, keeps eight bullets ' +
       'a role and prints the skill groups as written. Revise Resume Coverage may follow it.',
     responseFormat: partial.responseFormat,
     contractSince: TAILORING_PROMPTS_CONTRACT,
@@ -1089,11 +1090,11 @@ function normalizePromptLibraryConfig(input: unknown): PromptLibraryConfig {
 
   for (const feature of PROMPT_FEATURES) {
     const value = rawActivePrompts[feature.key];
-    // Nothing is activated for a feature that runs one prompt per profile or
+    // Nothing is activated for a feature that runs one prompt per resume or
     // one prompt in all: a stale entry an older build wrote is dropped here,
     // and with it on the next write.
     if (
-      !isProfileScopedPromptFeature(feature.key) &&
+      !isResumeScopedPromptFeature(feature.key) &&
       !isSinglePromptFeature(feature.key) &&
       typeof value === 'string' &&
       value.trim()
@@ -1282,7 +1283,7 @@ async function listAllPromptRecords(): Promise<PromptRecord[]> {
   const activeByFeature = new Map<PromptFeatureKey, string>();
 
   for (const feature of PROMPT_FEATURES) {
-    if (isProfileScopedPromptFeature(feature.key)) {
+    if (isResumeScopedPromptFeature(feature.key)) {
       continue;
     }
 
@@ -1313,11 +1314,11 @@ async function listAllPromptRecords(): Promise<PromptRecord[]> {
       if (leftOrder !== rightOrder) {
         return leftOrder - rightOrder;
       }
-      const leftProfileScoped = isProfileScopedPromptFeature(left.featureKey);
-      const rightProfileScoped = isProfileScopedPromptFeature(right.featureKey);
+      const leftResumeScoped = isResumeScopedPromptFeature(left.featureKey);
+      const rightResumeScoped = isResumeScopedPromptFeature(right.featureKey);
       if (
-        !leftProfileScoped &&
-        !rightProfileScoped &&
+        !leftResumeScoped &&
+        !rightResumeScoped &&
         (left.isActiveForFeature ? 0 : 1) !== (right.isActiveForFeature ? 0 : 1)
       ) {
         return (left.isActiveForFeature ? 0 : 1) - (right.isActiveForFeature ? 0 : 1);
@@ -1347,7 +1348,7 @@ export async function getPromptById(id: string): Promise<PromptRecord | null> {
 }
 
 export async function getRuntimePromptByFeature(featureKey: PromptFeatureKey): Promise<PromptRecord | null> {
-  if (isProfileScopedPromptFeature(featureKey)) {
+  if (isResumeScopedPromptFeature(featureKey)) {
     const builtIn = await getPromptRecordByIdExact(featureKey);
     if (builtIn) {
       return builtIn;
@@ -1547,8 +1548,8 @@ export async function activatePrompt(id: string): Promise<PromptActivationResult
   if (!prompt.featureKey) {
     throw new Error('Only feature-linked prompts can be activated');
   }
-  if (isProfileScopedPromptFeature(prompt.featureKey)) {
-    throw new Error('Resume prompts are selected per profile');
+  if (isResumeScopedPromptFeature(prompt.featureKey)) {
+    throw new Error('Resume prompts are selected per resume');
   }
   const single = SINGLE_PROMPT_FEATURES.get(prompt.featureKey);
   if (single && prompt.id !== prompt.featureKey) {

@@ -1,7 +1,7 @@
 import type { TemplateCategory } from '../types/template';
 
 /**
- * The styles the new-profile template chooser files a template under, as
+ * The styles the new-resume template chooser files a template under, as
  * FlowCV's does: Simple (one column, plain rules), Modern (a sidebar or a
  * coloured band), Creative (colour, cards, a timeline). A built-in names its
  * own in its JSON (`category`); a saved template may carry one too, and a

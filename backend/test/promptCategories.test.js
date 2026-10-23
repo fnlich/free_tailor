@@ -50,7 +50,7 @@ test('every shipped feature is filed under one of the two categories', async () 
 
   assert.equal(byFeature.get('tailor-resume').category, 'building');
   assert.equal(byFeature.get('generate-cover-letter').category, 'building');
-  // The profile editor's Write Entry Bullets turns an entry's facts into what
+  // The resume editor's Write Entry Bullets turns an entry's facts into what
   // the resume prints: building.
   assert.equal(byFeature.get('write-entry-bullets').category, 'building');
 

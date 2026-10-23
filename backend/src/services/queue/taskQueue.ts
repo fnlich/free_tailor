@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import { publicTaskError } from '../../middleware/publicError';
+import type { TaskMatch } from '../resumeMatch';
 
 /**
  * The queues the server runs generation out of.
@@ -147,11 +148,17 @@ export type Assignment = {
 };
 
 export type TaskLabel = {
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   role: string;
   sourceRowNumber?: number;
+  /** The chosen resume's headline label at submit (`resumeLabelOf`). Absent on a task queued before v4.2. */
+  resumeLabel?: string;
+  /** The profile's (the person's) name at submit. Absent on a task queued before v4.2. */
+  profileLabel?: string;
+  /** Why this resume was chosen for this job (services/resumeMatch.ts). Absent on a task queued before v4.2. */
+  match?: TaskMatch;
 };
 
 /**
@@ -372,7 +379,7 @@ export const CANCELLED_WHILE_RUNNING = 'Cancelled while it was running';
 
 /**
  * A runner's failure that no later attempt can change - it says so with
- * `retryable: false` (a deleted profile, say) - settles at once instead of
+ * `retryable: false` (a deleted resume, say) - settles at once instead of
  * spending the remaining attempts reaching the same answer.
  */
 function isFinalFailure(error: unknown): boolean {

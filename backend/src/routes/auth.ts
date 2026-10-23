@@ -2,7 +2,8 @@ import { Router, type Request, type Response } from 'express';
 
 import { resolveSubscription, type AccountSubscription } from '../config/accountSubscriptions';
 import { sessionTtlMs } from '../config/operational';
-import { countProfilesForOwner } from '../database/profileRepository';
+import { countProfilesForOwner } from '../database/profileLimit';
+import { fileUnfiledResumesFor } from '../database/profileTree';
 import { destroySession, updateUser } from '../database/userRepository';
 import { requireAccount, requireUser, SESSION_COOKIE } from '../middleware/auth';
 import { canBuildResumes } from '../config/accountRoles';
@@ -74,6 +75,10 @@ export type AccountView = UserAccount & {
 /** The account plus what its subscription entitles it to, which the UI always wants together. */
 export function describeAccount(account: UserAccount): AccountView {
   const subscription: AccountSubscription = resolveSubscription(account.subscription);
+  // The count is of filed profiles, and a database from v4.1 files its old resumes
+  // lazily: file this account's first (a seek when there is nothing to file), so
+  // `profilesUsed` is never an understatement that a page would draw as room left.
+  fileUnfiledResumesFor(account);
   return {
     ...account,
     subscriptionLabel: subscription.label,
@@ -204,7 +209,7 @@ router.post('/logout', (req: Request, res: Response) => {
 });
 
 /**
- * The account as Settings > Profile reads it: the session's view, and - for
+ * The account as Settings > Account reads it: the session's view, and - for
  * an account that builds resumes - where its resumes are filed
  * (`AccountOutputPath`: its own folder path or null, where the one in effect
  * came from, and what Reset gives). A reporter builds nothing, so theirs says
@@ -218,7 +223,7 @@ function describeOwnAccount(account: UserAccount): AccountView & Partial<Account
 }
 
 /**
- * The signed-in account's own details, refreshed. Any role: Settings > Profile
+ * The signed-in account's own details, refreshed. Any role: Settings > Account
  * is one of the pages a reporter keeps.
  */
 router.get('/account', requireAccount, (req: Request, res: Response) => {
@@ -242,7 +247,7 @@ router.patch('/account', requireAccount, (req: Request, res: Response) => {
 });
 
 /**
- * Where the account files its own resumes (Settings > Profile > Resume files,
+ * Where the account files its own resumes (Settings > Account > Resume files,
  * owner decision O3): `{ outputPathSuffix }`, the folder path after the
  * administrator's prefix. Checked by utils/outputStorage.ts
  * `validateOutputSuffix` - a refusal is 400 `output-path-invalid` with

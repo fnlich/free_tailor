@@ -12,10 +12,11 @@ import { describeDollarProblem, formatMoney, parseDollars } from '../utils/money
  * decision J7): changing either rate changes what the NEXT accepted job pays,
  * never one already paid.
  *
- * A leaf, for the reason pricePerResume.ts is: the accounts route parses it
+ * A leaf, for the reason buildModes.ts is: the accounts route parses it
  * and the lake will, and neither may import the other. The same units and the
- * same ceiling as a price per resume - $0.001 steps, $0.000 to $1000.000 -
- * because both are an amount per item that an administrator types into a box.
+ * same ceiling as a build mode's price per resume - $0.001 steps, $0.000 to
+ * $1000.000 - because both are an amount per item that an administrator types
+ * into a box.
  */
 
 export const MIN_REPORT_RATE_MILLI = 0;

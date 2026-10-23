@@ -86,19 +86,19 @@ test('output path helpers render a prefix and a folder path, and file names', ()
   assert.equal(
     renderOutputFileNameTemplate('{{profile name}}_Resume', {
       date: '2026-04-18',
-      profileName: 'Jane Doe',
+      resumeName: 'Jane Doe',
       companyName: 'Acme Inc.',
       jobTitle: 'Senior Engineer',
     }, '{{profile name}}'),
     'Jane_Doe_Resume'
   );
-  // The folder path's own spellings - the ones the profile editor offers -
+  // The folder path's own spellings - the ones the resume editor offers -
   // read in a file name too, beside the older ones.
   const variables = {
     date: '2026-04-18',
     accountName: 'jane@example.com',
     orderNumber: 'FT-20260418-0007',
-    profileName: 'Jane Doe',
+    resumeName: 'Jane Doe',
     companyName: 'Acme Inc.',
     rowNumber: '12',
     jobTitle: 'Senior Engineer',
@@ -124,7 +124,7 @@ test('resolveStoredFilePath keeps paths inside the configured base directory', (
 // -- Cross-platform path safety --------------------------------------------- //
 
 test('sanitizePathSegment escapes the device names Windows reserves', () => {
-  // A company called "Con" or a profile called "Aux" is legal input, and the
+  // A company called "Con" or a resume called "Aux" is legal input, and the
   // filesystem refuses the directory with EINVAL rather than creating it.
   assert.equal(sanitizePathSegment('Con'), '_con');
   assert.equal(sanitizePathSegment('AUX'), '_aux');

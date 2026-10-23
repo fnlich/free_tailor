@@ -63,14 +63,14 @@ db.exec(`
 
 /*
  * Answers whose profile is gone. Deleting a profile deletes its answers now
- * (profileRepository.deleteProfile); before that they stayed, keyed by an id a
+ * (resumeRepository.deleteResume); before that they stayed, keyed by an id a
  * new profile may take - the Bid Assistant accepts a chosen id and an import
  * keeps any free one - and that profile's account then read them as its own.
  * Swept on every start, which after the first finds nothing.
  */
 const orphanedAnswerCount = db.prepare(`
   DELETE FROM answers
-  WHERE NOT EXISTS (SELECT 1 FROM profiles WHERE profiles.id = answers.profile_id)
+  WHERE NOT EXISTS (SELECT 1 FROM resumes WHERE resumes.id = answers.profile_id)
 `).run().changes;
 
 if (orphanedAnswerCount > 0) {

@@ -120,7 +120,9 @@ function accountSheetClient() {
 /** An install whose owner has their own app sheet, and a fake of its tab. */
 async function serveWithSheet(name, rows, options = {}) {
   const h = await serveInstall(name, {
-    profiles: [['p-claude', 'Ada', 'claude-cli-sonnet'], ['p-codex', 'Bea', 'codex-cli-default']],
+    // One person with one resume: a run builds one profile, so each job is one
+    // tailoring (it used to be one per resume on two models).
+    resumes: [['p-claude', 'Ada', 'claude-cli-sonnet']],
     ...(options.answer ? { answer: options.answer } : {}),
   });
   const accountSheet = require('../dist/services/sheets/accountSheet');
@@ -173,7 +175,7 @@ async function order(h, jobs, extra = {}) {
     mode: 'order',
     format: 'pdf',
     includeCoverLetterDocx: false,
-    profileIds: ['p-claude', 'p-codex'],
+    profileId: h.profileOf('p-claude'),
     sheet: { tabName: TAB },
     jobs,
     ...extra,
@@ -218,7 +220,7 @@ test("rows whose Analysis cell names their posting's stored analysis make no ana
   const logged = await capturing('log', async () => {
     snapshot = await order(h, [submittedJob(2, { jobAnalysis: { jobMeta: { title: 'Forged' } } }), submittedJob(3)]);
   });
-  assert.equal(snapshot.completed, 4);
+  assert.equal(snapshot.completed, 2);
   assert.equal(h.seats.analyses().length, 0, 'zero analysis calls');
   assert.equal(h.sheet.calls.reads.length, 1, 'one batched read of the submitted rows');
   assert.equal(h.sheet.calls.reads[0].length, 2, 'one run of rows: identity and Analysis, two ranges');
@@ -228,7 +230,7 @@ test("rows whose Analysis cell names their posting's stored analysis make no ana
   );
 
   const tailored = h.seats.tailorings().map((call) => /"title":"(Stored Title \w+)"/.exec(call.userBody)?.[1]);
-  assert.deepEqual(tailored.sort(), ['Stored Title Three', 'Stored Title Three', 'Stored Title Two', 'Stored Title Two']);
+  assert.deepEqual(tailored.sort(), ['Stored Title Three', 'Stored Title Two']);
   assert.equal(h.seats.tailorings().some((call) => call.userBody.includes('Forged')), false);
 
   // Nothing was stored from the sheet: the two analyses are the two there were.
@@ -252,7 +254,7 @@ test("a cell naming no stored analysis is never registered or used, whatever pos
 
   const warned = await capturing('warn', () => order(h, [submittedJob(2), submittedJob(3)]));
   assert.equal(h.seats.analyses().length, 2, 'each posting analysed once, through the gate');
-  assert.deepEqual(tailoredTitles(h).sort(), ['Title of posting 2', 'Title of posting 2', 'Title of posting 3', 'Title of posting 3']);
+  assert.deepEqual(tailoredTitles(h).sort(), ['Title of posting 2', 'Title of posting 3']);
   assert.equal(h.seats.tailorings().some((call) => call.userBody.includes('FORGED')), false, 'nobody is built on either cell');
   assert.ok(
     warned.some((line) => /Sheet row 2's Analysis cell names an analysis this store does not have \(11111111-/.test(line)),
@@ -290,7 +292,7 @@ test('rows without it are analysed once and written back, RAW, once - and the ne
   t.after(h.close);
 
   await order(h, [submittedJob(4), submittedJob(5)]);
-  assert.equal(h.seats.analyses().length, 2, 'one per posting, for both profiles');
+  assert.equal(h.seats.analyses().length, 2, 'one per posting');
   assert.equal(h.sheet.calls.reads.length, 1, 'one batched read at submission');
 
   const report = await h.columns.flushAnalysisWriteBacks();
@@ -316,7 +318,7 @@ test('rows without it are analysed once and written back, RAW, once - and the ne
     mode: 'immediate',
     format: 'pdf',
     includeCoverLetterDocx: false,
-    profileIds: ['p-claude'],
+    profileId: h.profileOf('p-claude'),
     sheet: { tabName: TAB },
     jobs: [submittedJob(4)],
   });
@@ -500,7 +502,7 @@ test("a row whose posting was replaced is not built on the old posting's analysi
   const replaced = submittedJob(99, { companyName: 'Company 2', sourceRowNumber: 2 });
   await order(h, [replaced]);
   assert.equal(h.seats.analyses().length, 2, "the new posting is analysed once - not answered with the old one's analysis");
-  assert.deepEqual(tailoredTitles(h).slice(-2), ['Title of posting 99', 'Title of posting 99']);
+  assert.deepEqual(tailoredTitles(h).slice(-1), ['Title of posting 99']);
 
   // The program is the only writer of those cells, so it puts them right.
   assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 1, skipped: 0, failed: 0, failedSpreadsheets: [] });
@@ -512,7 +514,7 @@ test("a row whose posting was replaced is not built on the old posting's analysi
   // And from then on the row is read from the sheet again: no call.
   await order(h, [replaced]);
   assert.equal(h.seats.analyses().length, 2);
-  assert.deepEqual(tailoredTitles(h).slice(-2), ['Title of posting 99', 'Title of posting 99']);
+  assert.deepEqual(tailoredTitles(h).slice(-1), ['Title of posting 99']);
   assert.deepEqual(await h.columns.flushAnalysisWriteBacks(), { written: 0, skipped: 0, failed: 0, failedSpreadsheets: [] });
 });
 
@@ -533,7 +535,7 @@ test('rows sorted under the protected columns: each task gets its own posting\'s
     mode: 'order',
     format: 'pdf',
     includeCoverLetterDocx: false,
-    profileIds: ['p-claude', 'p-codex'],
+    profileId: h.profileOf('p-claude'),
     sheet: { tabName: TAB },
     jobs: [submittedJob(3, { sourceRowNumber: 2 }), submittedJob(2, { sourceRowNumber: 3 })],
   });

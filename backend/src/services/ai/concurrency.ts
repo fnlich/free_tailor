@@ -7,7 +7,7 @@ import type { Deadline } from './types';
  *
  * The bound matters more than the count. The Claude CLI provider spawns one
  * process per call, and every batch endpoint in this app can ask for many
- * completions at once; without a shared limit, a 25-profile batch is 25
+ * completions at once; without a shared limit, a 25-resume batch is 25
  * concurrent node processes. And the wait itself has to be bounded, because a
  * request queued behind others with no clock waits invisibly - the HTTP
  * request times out with nothing in the log to say why.

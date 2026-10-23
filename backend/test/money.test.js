@@ -133,7 +133,10 @@ test('a provider amount is read exactly: trailing zeros agree, a half cent does 
  */
 const MONEY_SOURCES = [
   'utils/money.ts',
-  'config/pricePerResume.ts',
+  // The three build modes' prices per resume, and the pure rules of a run's
+  // choice and its exact price (jobs x the mode's price, the supplied-content floor).
+  'config/buildModes.ts',
+  'services/resumeChoice.ts',
   'database/creditRepository.ts',
   'database/paymentRepository.ts',
   'services/credits/index.ts',

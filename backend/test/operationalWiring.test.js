@@ -106,7 +106,7 @@ test('unset, a sign-in lasts thirty days, cookie and row alike, as it always did
 /* ============================================================== uploads */
 
 /**
- * An app with the real auth, profile and template routes. The upload
+ * An app with the real auth, resume and template routes. The upload
  * middleware is loaded fresh FIRST, after the environment is set, because it
  * reads UPLOAD_MAX_MB once when it loads - the routes then pick up that copy.
  */
@@ -119,14 +119,14 @@ async function serveUploads(name) {
   loadFresh('../dist/middleware/pdfUpload');
   const { attachUser } = loadFresh('../dist/middleware/auth');
   const authRoutes = loadFresh('../dist/routes/auth');
-  const profileRoutes = loadFresh('../dist/routes/profiles');
+  const resumesRoutes = loadFresh('../dist/routes/resumes');
   const templateRoutes = loadFresh('../dist/routes/templates');
 
   const app = express();
   app.use(express.json());
   app.use(attachUser);
   app.use('/api/auth', authRoutes.default);
-  app.use('/api/profiles', profileRoutes.default);
+  app.use('/api/resumes', resumesRoutes.default);
   app.use('/api/templates', templateRoutes.default);
   // The app's real last-resort handler, so a multer error that is NOT a size
   // problem lands where it does in production.
@@ -192,7 +192,7 @@ test('a resume PDF over UPLOAD_MAX_MB is a 413 that names the limit, not a 500',
     try {
       const response = await server.upload(
         server.memberToken,
-        '/api/profiles/upload',
+        '/api/resumes/upload',
         'resume',
         Buffer.alloc(1024 * 1024 + 1, 0x41)
       );
@@ -219,13 +219,13 @@ test('a PDF of exactly UPLOAD_MAX_MB is refused and one byte under is not - the 
     const realError = console.error;
     console.error = () => {};
     try {
-      const exact = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.alloc(1024 * 1024, 0x41));
+      const exact = await server.upload(server.memberToken, '/api/resumes/upload', 'resume', Buffer.alloc(1024 * 1024, 0x41));
       assert.equal(exact.status, 413);
       assert.equal((await exact.json()).limitMb, 1);
 
       // Under the cap multer hands the bytes on; they are no real PDF, so the
       // parser fails after it - anything but a 413.
-      const under = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.alloc(1024 * 1024 - 1, 0x41));
+      const under = await server.upload(server.memberToken, '/api/resumes/upload', 'resume', Buffer.alloc(1024 * 1024 - 1, 0x41));
       assert.notEqual(under.status, 413);
       await under.text();
     } finally {
@@ -266,7 +266,7 @@ test('a resume upload under the cap is read in memory, and no uploads directory 
       console.error = () => {};
       let response;
       try {
-        response = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.from('%PDF-1.4 not really'));
+        response = await server.upload(server.memberToken, '/api/resumes/upload', 'resume', Buffer.from('%PDF-1.4 not really'));
       } finally {
         console.error = realError;
       }
@@ -278,7 +278,7 @@ test('a resume upload under the cap is read in memory, and no uploads directory 
 
       // A non-PDF is still refused by the filter, through the error handler -
       // as the caller's 415, where it used to be the server's 500.
-      const text = await server.upload(server.memberToken, '/api/profiles/upload', 'resume', Buffer.from('hello'), 'text/plain');
+      const text = await server.upload(server.memberToken, '/api/resumes/upload', 'resume', Buffer.from('hello'), 'text/plain');
       assert.equal(text.status, 415);
       const refused = await text.json();
       assert.equal(refused.error, 'Only PDF files can be uploaded.');
@@ -286,7 +286,7 @@ test('a resume upload under the cap is read in memory, and no uploads directory 
 
       // A form with the file under the wrong field is the form's fault too: a
       // 400 in plain words, not multer's "Unexpected field" as a 500.
-      const misnamed = await server.upload(server.memberToken, '/api/profiles/upload', 'document', Buffer.from('%PDF-1.4'));
+      const misnamed = await server.upload(server.memberToken, '/api/resumes/upload', 'document', Buffer.from('%PDF-1.4'));
       assert.equal(misnamed.status, 400);
       const unreadable2 = await misnamed.json();
       assert.equal(unreadable2.code, 'upload-unreadable');
@@ -450,7 +450,7 @@ function makeFakeBrowser(page) {
   };
 }
 
-const PROFILE = {
+const RESUME_RECORD = {
   id: 'p1',
   name: 'Jane Doe',
   title: 'Engineer',
@@ -468,7 +468,7 @@ function pathInfoIn(dir) {
   return {
     absoluteDir: dir,
     storagePathBase: 'jane',
-    profileSlug: 'jane',
+    resumeSlug: 'jane',
     resumeFileStem: 'Jane',
     coverLetterFileStem: 'Jane_cover_letter',
   };
@@ -482,7 +482,7 @@ test('PDF_RENDER_TIMEOUT_MS bounds both the Chrome launch and every step of a re
     withFakeChrome(makeFakeBrowser(page), async () => {
       const { generateResumePDF } = loadFresh('../dist/generators/pdfGenerator');
       await generateResumePDF(
-        PROFILE,
+        RESUME_RECORD,
         { id: 't', name: 'T', htmlContent: '<div>{{name}}</div>', cssContent: '', sections: [] },
         undefined,
         pathInfoIn(outDir)
@@ -501,7 +501,7 @@ test("unset, both are puppeteer's own 30 seconds - the value that was inherited,
   const launches = await withEnv({ PDF_RENDER_TIMEOUT_MS: undefined }, () =>
     withFakeChrome(makeFakeBrowser(page), async () => {
       const { saveCoverLetter } = loadFresh('../dist/generators/coverLetterGenerator');
-      await saveCoverLetter(PROFILE, 'Dear team,\n\nHello.', pathInfoIn(outDir));
+      await saveCoverLetter(RESUME_RECORD, 'Dear team,\n\nHello.', pathInfoIn(outDir));
     })
   );
   assert.equal(launches[0].timeout, 30_000);

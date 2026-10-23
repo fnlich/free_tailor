@@ -8,7 +8,7 @@ import type {
   Publication,
   Reference,
   Volunteering,
-} from '../types/profile';
+} from '../types/resume';
 
 /**
  * The render data of the section kinds beyond the classic six - what the
@@ -17,8 +17,8 @@ import type {
  * it applies to `contact.linkedin`, so a project's or a publication's link is
  * policed by exactly the code that polices every other href in a resume.
  *
- * Spread over `...profile` by `prepareResumeRenderData`, so each prepared list
- * stands under the profile field's own name, with the derived text beside the
+ * Spread over `...resume` by `prepareResumeRenderData`, so each prepared list
+ * stands under the resume field's own name, with the derived text beside the
  * fields (`dates`, `note`, `linkHref`, ...): a template that loops over
  * `certifications` itself keeps working and gains `dates`. Lenient about shape
  * - render data can be a payload this build never normalised - and an entry
@@ -91,8 +91,8 @@ export function dateRangeText(start: unknown, end: unknown): string {
 const nonEmpty = (...values: Array<string | string[]>) =>
   values.some((value) => (Array.isArray(value) ? value.length > 0 : value.length > 0));
 
-export function prepareExtraSectionData(profile: Source, links: LinkRules): ExtraSectionData {
-  const certifications = records(profile.certifications)
+export function prepareExtraSectionData(resume: Source, links: LinkRules): ExtraSectionData {
+  const certifications = records(resume.certifications)
     .map((item): PreparedCertification => {
       const credentialId = text(item.credentialId);
       return {
@@ -107,7 +107,7 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     })
     .filter((item) => nonEmpty(item.name, item.issuer));
 
-  const projects = records(profile.projects)
+  const projects = records(resume.projects)
     .map((item): PreparedProject => ({
       name: text(item.name),
       role: text(item.role),
@@ -122,7 +122,7 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     }))
     .filter((item) => nonEmpty(item.name, item.role, item.description, item.achievements));
 
-  const volunteering = records(profile.volunteering)
+  const volunteering = records(resume.volunteering)
     .map((item): PreparedVolunteering => ({
       role: text(item.role),
       organization: text(item.organization),
@@ -135,7 +135,7 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     }))
     .filter((item) => nonEmpty(item.role, item.organization));
 
-  const awards = records(profile.awards)
+  const awards = records(resume.awards)
     .map((item): PreparedAward => ({
       title: text(item.title),
       issuer: text(item.issuer),
@@ -145,7 +145,7 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     }))
     .filter((item) => nonEmpty(item.title, item.issuer));
 
-  const publications = records(profile.publications)
+  const publications = records(resume.publications)
     .map((item): PreparedPublication => ({
       title: text(item.title),
       publisher: text(item.publisher),
@@ -158,7 +158,7 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     }))
     .filter((item) => nonEmpty(item.title));
 
-  const courses = records(profile.courses)
+  const courses = records(resume.courses)
     .map((item): PreparedCourse => ({
       name: text(item.name),
       institution: text(item.institution),
@@ -167,13 +167,13 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     }))
     .filter((item) => nonEmpty(item.name));
 
-  const languages = records(profile.languages)
+  const languages = records(resume.languages)
     .map((item): Language => ({ language: text(item.language), proficiency: text(item.proficiency) }))
     .filter((item) => nonEmpty(item.language));
 
-  const interests = list(profile.interests);
+  const interests = list(resume.interests);
 
-  const references = records(profile.references)
+  const references = records(resume.references)
     .map((item): PreparedReference => {
       const title = text(item.title);
       const company = text(item.company);
@@ -192,7 +192,7 @@ export function prepareExtraSectionData(profile: Source, links: LinkRules): Extr
     .filter((item) => nonEmpty(item.name));
 
   const customSections: PreparedCustomSection[] = [];
-  for (const item of records(profile.customSections)) {
+  for (const item of records(resume.customSections)) {
     const key = text(item.key);
     if (!key || customSections.some((section) => section.key === key)) continue;
     const entries = records(item.entries)

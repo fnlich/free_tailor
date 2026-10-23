@@ -1,7 +1,5 @@
 import type { AdminAppSettings, AIModelRecord, AIProvider } from '@/lib/api';
-import { toDollarInput } from '@/lib/format';
 import { blankDraftChoice, displayNameOwner } from './modelDraft';
-import { readPriceDraft } from './modelPrice';
 
 /**
  * Admin -> Models' Create New Model / Edit dialog (owner decision M1), with
@@ -10,16 +8,16 @@ import { readPriceDraft } from './modelPrice';
  * send - in the server's own sentences - what a save sends, and which box a
  * refusal belongs under.
  *
- * Runtime imports: lib/format.ts and this folder's two other helpers, all
- * pure.
+ * Its one runtime import is this folder's modelDraft.ts, which is pure.
+ * A model carries no price: what a resume costs is the price of its build
+ * mode (Settings > General > Price per resume).
  */
 
-/** The form, as typed. The price is dollars as typed ("0.023"), sent as typed - the server parses it exactly. */
+/** The form, as typed. */
 export type ModelDraft = {
   name: string;
   provider: AIProvider;
   modelName: string;
-  price: string;
   description: string;
   enabled: boolean;
 };
@@ -29,7 +27,7 @@ export type ModelDraft = {
  * of the server's `AI_MODEL_FIELDS`, held to it by a test. A refusal naming
  * one (`{ error, field }`) is shown under it.
  */
-export const MODEL_FIELDS = ['name', 'provider', 'modelName', 'pricePerResumeUsd', 'description', 'enabled'] as const;
+export const MODEL_FIELDS = ['name', 'provider', 'modelName', 'description', 'enabled'] as const;
 
 export type ModelField = (typeof MODEL_FIELDS)[number];
 
@@ -43,7 +41,6 @@ export function draftFromModel(model: AIModelRecord): ModelDraft {
     name: model.name,
     provider: model.provider,
     modelName: model.modelName,
-    price: toDollarInput(model.pricePerResumeMilli),
     description: model.description,
     enabled: model.enabled,
   };
@@ -56,10 +53,6 @@ export function blankModelDraft(settings: FormSettings | null): ModelDraft {
     name: '',
     provider,
     modelName,
-    // EMPTY, not a default: a new model is priced by whoever adds it, and the
-    // server refuses a create without a price. A pre-filled figure is a price
-    // somebody would save without having chosen it.
-    price: '',
     description: '',
     enabled: true,
   };
@@ -73,7 +66,7 @@ function seatLabel(settings: FormSettings, provider: AIProvider): string {
 /**
  * What the form may not send, per box, in the words the server would refuse
  * it with (config/aiModelConfig.ts): a display name, one no other model goes
- * by, a model name, and a price the server reads. What only the server knows -
+ * by, and a model name. What only the server knows -
  * the seat's current list, another record's pair - comes back as a refusal
  * naming its box.
  */
@@ -89,7 +82,7 @@ export function modelDraftProblems(
   } else {
     const owner = displayNameOwner(settings, name, editingId);
     // On an edit only when the name changes, as the server checks it: a pair
-    // stored before the rule can still be toggled or repriced.
+    // stored before the rule can still be toggled or edited.
     const current = editingId ? settings.aiModels.find((model) => model.id === editingId) : null;
     const renamed = !current || current.name.trim().toLowerCase() !== name.toLowerCase();
     if (owner && renamed) {
@@ -99,21 +92,15 @@ export function modelDraftProblems(
     }
   }
   if (!draft.modelName.trim()) problems.modelName = 'Model name is required.';
-  const price = readPriceDraft(draft.price);
-  // An edit that leaves the box as it was sends no price, so only a changed box is judged.
-  if (!price.ok) problems.pricePerResumeUsd = price.message;
   return problems;
 }
 
-/** A create's body: every box, the price as typed. */
+/** A create's body: every box. */
 export function createModelBody(draft: ModelDraft) {
   return {
     name: draft.name.trim(),
     provider: draft.provider,
     modelName: draft.modelName.trim(),
-    // As typed: the server reads "0.023" exactly. Sending the parsed number
-    // back as a float would be the one way to lose that precision.
-    pricePerResumeUsd: draft.price.trim(),
     description: draft.description.trim(),
     enabled: draft.enabled,
   };
@@ -123,8 +110,7 @@ export type ModelEditBody = Partial<ReturnType<typeof createModelBody>>;
 
 /**
  * An edit's body: only what differs from the model as stored. Empty when
- * nothing does - the dialog then closes without a request. A price retyped
- * to the same amount ("0.050" for $0.05) is no change; a model name is
+ * nothing does - the dialog then closes without a request. A model name is
  * compared as the server compares it, in any case.
  */
 export function editModelBody(model: AIModelRecord, draft: ModelDraft): ModelEditBody {
@@ -136,8 +122,6 @@ export function editModelBody(model: AIModelRecord, draft: ModelDraft): ModelEdi
   if (draft.provider !== model.provider || modelName.toLowerCase() !== model.modelName.toLowerCase()) {
     body.modelName = modelName;
   }
-  const price = readPriceDraft(draft.price);
-  if (!price.ok || price.milli !== model.pricePerResumeMilli) body.pricePerResumeUsd = draft.price.trim();
   const description = draft.description.trim();
   if (description !== model.description) body.description = description;
   if (draft.enabled !== model.enabled) body.enabled = draft.enabled;

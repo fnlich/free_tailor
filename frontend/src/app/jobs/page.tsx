@@ -60,8 +60,8 @@ import OrderJobsDialog from './OrderJobsDialog';
  *  - **Export into Sheet** appends them to the All tab of the account's OWN
  *    job sheet, each with its analysis cells, so building from those rows
  *    analyses nothing again; jobs already there are left out and said;
- *  - **Order Immediately** places an ORDER of a resume per job for the
- *    profiles chosen (./OrderJobsDialog.tsx), priced and asked about first,
+ *  - **Order Immediately** places an ORDER of a resume per job for ONE
+ *    profile in one build mode (./OrderJobsDialog.tsx), priced and asked about first,
  *    whose receipt appears here - and takes the focus, so a keyboard or a
  *    screen reader is told, and goes on from it, rather than from the top.
  *

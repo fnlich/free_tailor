@@ -59,7 +59,7 @@ function harness(capacity) {
 
   const task = (label, options = {}) => ({
     queue: options.queue ?? 'cli',
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: 'SWE' },
     kind,
     payload: { label },
   });
@@ -289,7 +289,7 @@ test('a slot is never handed to two tasks at once', async () => {
   });
   const make = (label) => ({
     queue: 'cli',
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: 'SWE' },
     kind: 'exclusive',
     payload: { label },
   });
@@ -434,7 +434,7 @@ test('the Gemini lane drains on its own slots, and its tasks say they run on the
     harnessed.queue
       .snapshot(batch.id)
       .tasks.filter((task) => task.state === 'running')
-      .map((task) => [task.profileName, task.runningOn])
+      .map((task) => [task.resumeName, task.runningOn])
   );
   // The lane IS the provider: a task says it runs on its lane, which in the
   // real queue is a provider id (test/providerQueues.test.js).
@@ -502,7 +502,7 @@ test('a backlog that is all Codex work still asks for a fresh capacity reading',
   });
   const make = (label, lane) => ({
     queue: lane,
-    label: { profileId: label, profileName: label, companyName: 'Acme', role: 'SWE' },
+    label: { resumeId: label, resumeName: label, companyName: 'Acme', role: 'SWE' },
     kind: 'codex-backlog',
     payload: { label },
   });

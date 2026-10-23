@@ -1,4 +1,4 @@
-import { formatMoney } from './format';
+import { BUILD_MODES, isBuildMode, type BuildMode } from './buildModes';
 import type { JobFilterFacts, JobSalary } from './jobAnalysis';
 import type { SheetTabListing } from './sheetTabs';
 import {
@@ -259,20 +259,9 @@ export function operatorDetail(error: unknown): string | null {
   return typeof detail === 'string' && detail.trim() ? detail : null;
 }
 
-/** The account is at its subscription's profile limit. */
+/** The account is at its subscription's limit on profiles (people): 402 `profile-limit`. */
 export function isProfileLimit(error: unknown): error is ApiResponseError {
   return error instanceof ApiResponseError && error.code === 'profile-limit';
-}
-
-/**
- * The account's subscription does not include what was asked: 403
- * `subscription-too-low` - building for more than one profile below Premium,
- * or Groups. A page answers it with the lock (components/subscription/
- * LockedFeature.tsx), which leads to the Subscription page, rather than a
- * bare sentence.
- */
-export function isSubscriptionTooLow(error: unknown): error is ApiResponseError {
-  return error instanceof ApiResponseError && error.status === 403 && error.code === 'subscription-too-low';
 }
 
 /**
@@ -572,19 +561,19 @@ export function coerceProvider(value: unknown): AIProvider | null {
 }
 export type DefaultMode = 'preview' | 'generate';
 export type ThemeMode = 'light' | 'dark';
-export type DefaultResumeSelection = 'single' | 'all' | 'group';
 
 /**
- * The most a resume may be priced at: $1,000, in thousandths of a dollar.
- * Mirrors the backend's MAX_PRICE_PER_RESUME_MILLI; the server is the one that
- * enforces it. There is no default price - a new model is priced by whoever
- * adds it - and the least is $0, which makes a model free.
+ * The most a resume may be priced at in any build mode: $1,000, in thousandths
+ * of a dollar. Mirrors the backend's MAX_BUILD_MODE_PRICE_MILLI; the server is
+ * the one that enforces it. A mode's price is an administrator's setting
+ * (`suitablePriceMilli`, `partialPriceMilli`, `fullPriceMilli`), $0 until set.
  */
-export const MAX_PRICE_PER_RESUME_MILLI = 1_000_000;
+export const MAX_MODE_PRICE_MILLI = 1_000_000;
 
 /**
- * One model an administrator added. Administrator-facing: the provider, the
- * CLI's model name and the price never reach an ordinary account's payload.
+ * One model an administrator added. Administrator-facing: the provider and the
+ * CLI's model name never reach an ordinary account's payload. A model carries
+ * no price: what a resume costs is the price of its build mode.
  */
 export interface AIModelRecord {
   id: string;
@@ -593,13 +582,6 @@ export interface AIModelRecord {
   modelName: string;
   description: string;
   enabled: boolean;
-  /**
-   * What one resume on this model costs, in thousandths of a dollar: 23 is
-   * $0.023, 0 is free. A record priced before credits were dollars reads as 0
-   * until an administrator prices it, and is listed in red until then
-   * (`AdminAppSettings.freeEnabledModelIds`).
-   */
-  pricePerResumeMilli: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -649,12 +631,6 @@ export function describeProviderModel(
   modelName: string
 ): string {
   return findProviderModelOption(options, provider, modelName)?.label ?? modelName;
-}
-
-/** "Free ($0)", or "$0.023 / resume". */
-export function formatPricePerResume(milli: number): string {
-  if (milli <= 0) return `Free (${formatMoney(0)})`;
-  return `${formatMoney(milli)} / resume`;
 }
 
 /**
@@ -711,8 +687,8 @@ export interface GoogleSheetJobFilterResponse {
 /**
  * A model choice.
  *
- * Optional, and absent means INHERIT: a profile inherits the app default, and
- * one generation inherits the profile. That is why the same type describes both
+ * Optional, and absent means INHERIT: a resume inherits the app default, and
+ * one generation inherits the resume. That is why the same type describes both
  * layers.
  */
 export interface AiPreferences {
@@ -768,8 +744,12 @@ export interface ProviderLock {
 export interface BuilderDefaults {
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
-  defaultResumeSelection: DefaultResumeSelection;
-  defaultGroupId: string;
+  /**
+   * The mode Build Resumes starts on and a run that names none runs in:
+   * `.env`'s DEFAULT_TAILOR_MODE, else partial.
+   */
+  defaultBuildMode: BuildMode;
+  /** The profile (a person) the builder starts on: one of the administrator's own. '' is "choose automatically". */
   defaultProfileId: string;
   defaultModelId: string;
   defaultResumeDocxEnabled: boolean;
@@ -777,19 +757,30 @@ export interface BuilderDefaults {
 }
 
 /**
+ * What one resume costs in each build mode, in thousandths of a dollar: 23 is
+ * $0.023, 0 is free (and is what a mode nobody priced costs). Served to every
+ * signed-in account, for the builder's mode cards - the same figures a quote
+ * reveals.
+ */
+export interface BuildModePrices {
+  suitablePriceMilli: number;
+  partialPriceMilli: number;
+  fullPriceMilli: number;
+}
+
+/**
  * GET /resume/models: what any signed-in account may know about models.
  *
  * Display names and ids, and nothing else - no provider, no CLI model name, no
- * price, no locks, no sheet sources. A person picks a model by the name an
- * administrator gave it; the cost of a run is a separate quote
- * (`generationApi.quote`), never part of the option label.
+ * locks, no sheet sources. A person picks a model by the name an
+ * administrator gave it; the cost of a run is the price of its build mode
+ * (`suitablePriceMilli`... here, `generationApi.quote` for a run), never part
+ * of the option label.
  */
-export interface UserAppSettings extends BuilderDefaults {
+export interface UserAppSettings extends BuilderDefaults, BuildModePrices {
   /** Runnable models, in the administrator's order. `defaultModelId` is one of them, or ''. */
   models: PublicModelOption[];
   outputPathUsesJobTitle: boolean;
-  /** How a profile that has chosen no tailoring mode is tailored: `.env`'s DEFAULT_TAILOR_MODE, else partial. */
-  defaultTailorMode: TailorMode;
 }
 
 /**
@@ -798,7 +789,7 @@ export interface UserAppSettings extends BuilderDefaults {
  * stays manageable), the locks with their reasons and the per-seat model-name
  * lists - everything the user payload leaves out.
  */
-export interface AdminAppSettings extends BuilderDefaults {
+export interface AdminAppSettings extends BuilderDefaults, BuildModePrices {
   /** Canonical enable flags, keyed by provider id. */
   providersEnabled: Record<AIProvider, boolean>;
   aiModels: AIModelRecord[];
@@ -817,17 +808,16 @@ export interface AdminAppSettings extends BuilderDefaults {
   /**
    * The administrator's half of every resume's folder (owner decision O1),
    * canonical: `/{{user_email}}/{{order_number}}` by default. Each account
-   * adds its own folder path after it (Settings -> Profile -> Resume files).
+   * adds its own folder path after it (Settings -> Account -> Resume files).
    */
   outputPathPrefix: string;
   /**
-   * The ids of every ENABLED model priced $0 - free to everybody who
-   * picks it. Admin -> Models lists them in red: after credits became dollars
-   * every model was, until an administrator priced it, and a model a
-   * migration seeds arrives unpriced too. Free on purpose is allowed; free
-   * without anybody noticing is what the notice is for.
+   * The modes priced $0 only because their `.env` line (RESUME_<MODE>_PRICE_USD)
+   * could not be read and nothing is stored over it: the price reads 0 like an
+   * unset one, but nobody chose that. Admin -> Settings shows each in red and
+   * names the variable.
    */
-  freeEnabledModelIds: string[];
+  unreadableModePrices: BuildMode[];
   /**
    * The model every job analysis runs on - one for the whole installation, so
    * that every posting is read, and classified into a job field, the same way.
@@ -903,7 +893,11 @@ export interface AppSettingDefaults {
   analysisModelId: string;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
-  defaultResumeSelection: DefaultResumeSelection;
+  defaultBuildMode: BuildMode;
+  /** What each build mode costs a resume with nothing set here, in thousandths: $0 unless `.env` prices it. */
+  suitablePriceMilli: number;
+  partialPriceMilli: number;
+  fullPriceMilli: number;
   defaultResumeDocxEnabled: boolean;
   defaultCoverLetterDocxEnabled: boolean;
   outputBaseDir: string;
@@ -1029,8 +1023,7 @@ function normalizeProvidersEnabled(source: Record<string, unknown>): Record<AIPr
 const DEFAULT_BUILDER_DEFAULTS: BuilderDefaults = {
   defaultMode: 'preview',
   defaultTheme: 'light',
-  defaultResumeSelection: 'single',
-  defaultGroupId: '',
+  defaultBuildMode: 'partial',
   defaultProfileId: '',
   defaultModelId: '',
   defaultResumeDocxEnabled: true,
@@ -1044,19 +1037,40 @@ export const DEFAULT_USER_APP_SETTINGS: UserAppSettings = {
   ...DEFAULT_BUILDER_DEFAULTS,
   models: [],
   outputPathUsesJobTitle: true,
-  defaultTailorMode: 'partial',
+  suitablePriceMilli: 0,
+  partialPriceMilli: 0,
+  fullPriceMilli: 0,
 };
 
 /**
- * A model's price as the server sent it: a whole number of thousandths from 0
- * to the cap. Anything else reads as 0 - free - which is how the server itself
- * reads a record it cannot price, and which Admin -> Models then shows in red.
- * Never floored or rounded: a price is money, and a figure nobody set is a
- * figure everybody would be charged.
+ * A build mode's price as the server sent it: a whole number of thousandths
+ * from 0 to the cap. Anything else reads as 0 - free - which is how the server
+ * itself reads a price it cannot read. Never floored or rounded: a price is
+ * money, and a figure nobody set is a figure everybody would be charged.
  */
-function readPricePerResumeMilli(value: unknown): number {
+function readModePriceMilli(value: unknown): number {
   const milli = readMilli(value);
-  return milli > MAX_PRICE_PER_RESUME_MILLI ? MAX_PRICE_PER_RESUME_MILLI : milli;
+  return milli > MAX_MODE_PRICE_MILLI ? MAX_MODE_PRICE_MILLI : milli;
+}
+
+/** The three mode prices of a payload (or a `settingDefaults` block), each read on its own. */
+function readModePrices(source: Record<string, unknown>, fallback?: BuildModePrices): BuildModePrices {
+  const price = (key: keyof BuildModePrices) =>
+    fallback && !Object.prototype.hasOwnProperty.call(source, key)
+      ? fallback[key]
+      : readModePriceMilli(source[key]);
+  return {
+    suitablePriceMilli: price('suitablePriceMilli'),
+    partialPriceMilli: price('partialPriceMilli'),
+    fullPriceMilli: price('fullPriceMilli'),
+  };
+}
+
+/** The modes a payload lists as unreadable in `.env`: known modes only, each once, in the server's order. */
+function readUnreadableModePrices(value: unknown): BuildMode[] {
+  if (!Array.isArray(value)) return [];
+  const listed = new Set(value.filter(isBuildMode));
+  return BUILD_MODES.filter((mode) => listed.has(mode));
 }
 
 function normalizeModelRecords(value: unknown): AIModelRecord[] {
@@ -1078,7 +1092,6 @@ function normalizeModelRecords(value: unknown): AIModelRecord[] {
           modelName: typeof entry.modelName === 'string' ? entry.modelName : '',
           description: typeof entry.description === 'string' ? entry.description : '',
           enabled: typeof entry.enabled === 'boolean' ? entry.enabled : true,
-          pricePerResumeMilli: readPricePerResumeMilli(entry.pricePerResumeMilli),
           createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
           updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
         } satisfies AIModelRecord,
@@ -1207,11 +1220,7 @@ function normalizeBuilderDefaults(source: Record<string, unknown>): BuilderDefau
   return {
     defaultMode: source.defaultMode === 'generate' ? 'generate' : 'preview',
     defaultTheme: source.defaultTheme === 'dark' ? 'dark' : 'light',
-    defaultResumeSelection:
-      source.defaultResumeSelection === 'all' || source.defaultResumeSelection === 'group'
-        ? source.defaultResumeSelection
-        : 'single',
-    defaultGroupId: typeof source.defaultGroupId === 'string' ? source.defaultGroupId : '',
+    defaultBuildMode: isBuildMode(source.defaultBuildMode) ? source.defaultBuildMode : 'partial',
     defaultProfileId: typeof source.defaultProfileId === 'string' ? source.defaultProfileId : '',
     defaultModelId: typeof source.defaultModelId === 'string' ? source.defaultModelId : '',
     defaultResumeDocxEnabled:
@@ -1231,10 +1240,10 @@ function normalizeUserAppSettings(value: unknown): UserAppSettings {
   const source = asRecord(value);
   return {
     ...normalizeBuilderDefaults(source),
+    ...readModePrices(source),
     models: normalizePublicModelOptions(source.models),
     outputPathUsesJobTitle:
       typeof source.outputPathUsesJobTitle === 'boolean' ? source.outputPathUsesJobTitle : true,
-    defaultTailorMode: source.defaultTailorMode === 'full' ? 'full' : 'partial',
   };
 }
 
@@ -1252,7 +1261,8 @@ function normalizeSettingDefaults(value: unknown, inEffect: Omit<AdminAppSetting
     analysisModelId: text('analysisModelId', inEffect.analysisModelId),
     defaultMode: builder.defaultMode,
     defaultTheme: builder.defaultTheme,
-    defaultResumeSelection: builder.defaultResumeSelection,
+    defaultBuildMode: builder.defaultBuildMode,
+    ...readModePrices(source, inEffect),
     defaultResumeDocxEnabled: builder.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: builder.defaultCoverLetterDocxEnabled,
     outputBaseDir: text('outputBaseDir', inEffect.outputBaseDir),
@@ -1282,8 +1292,7 @@ function pickBuilderDefaults(settings: BuilderDefaults): BuilderDefaults {
   return {
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
-    defaultResumeSelection: settings.defaultResumeSelection,
-    defaultGroupId: settings.defaultGroupId,
+    defaultBuildMode: settings.defaultBuildMode,
     defaultProfileId: settings.defaultProfileId,
     defaultModelId: settings.defaultModelId,
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
@@ -1301,6 +1310,8 @@ function normalizeAdminSettingsInEffect(source: Record<string, unknown>): Omit<A
   const paymentLimits = normalizePaymentLimits(source.paymentLimits);
   return {
     ...normalizeBuilderDefaults(source),
+    ...readModePrices(source),
+    unreadableModePrices: readUnreadableModePrices(source.unreadableModePrices),
     providersEnabled: normalizeProvidersEnabled(source),
     aiModels: normalizeModelRecords(source.aiModels),
     providerLocks: normalizeProviderLocks(source.providerLocks),
@@ -1308,9 +1319,6 @@ function normalizeAdminSettingsInEffect(source: Record<string, unknown>): Omit<A
     providerModelOptions: normalizeProviderModelOptions(source.providerModelOptions),
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathPrefix: typeof source.outputPathPrefix === 'string' ? source.outputPathPrefix : '',
-    freeEnabledModelIds: Array.isArray(source.freeEnabledModelIds)
-      ? source.freeEnabledModelIds.filter((id): id is string => typeof id === 'string')
-      : [],
     analysisModelId: typeof source.analysisModelId === 'string' ? source.analysisModelId : '',
     paymentLimits,
     paymentLimitSources: normalizePaymentLimitSources(source.paymentLimitSources, paymentLimits),
@@ -1359,6 +1367,16 @@ export type AdminAppSettingsUpdate = Resettable<
   premiumPriceUsd?: string | null;
   premiumPlusPriceUsd?: string | null;
   premiumMaxPriceUsd?: string | null;
+  /**
+   * What one resume costs in each build mode, in DOLLARS as typed ("0.023") -
+   * never in thousandths, which the server refuses (400 `bad-price-field`).
+   * A price is required: '' is refused (400 `bad-price`, with `field` naming
+   * the box); `null` is Reset to default. Names in
+   * lib/settingSources.ts `MODE_PRICE_REQUEST_FIELDS`.
+   */
+  suitablePriceUsd?: string | null;
+  partialPriceUsd?: string | null;
+  fullPriceUsd?: string | null;
 };
 
 export interface BrowseOutputDirectoryResponse {
@@ -1567,8 +1585,6 @@ export const adminApi = {
     modelName: string;
     description?: string;
     enabled?: boolean;
-    /** Required: dollars as typed, "0.023". A new model is priced by whoever adds it. */
-    pricePerResumeUsd: string;
   }) =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/models', {
       method: 'POST',
@@ -1583,8 +1599,6 @@ export const adminApi = {
       modelName?: string;
       description?: string;
       enabled?: boolean;
-      /** Dollars as typed. Left out, the stored price is kept - which is what the enable switch relies on. */
-      pricePerResumeUsd?: string;
     }
   ) =>
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>(`/admin/models/${id}`, {
@@ -1636,7 +1650,7 @@ export const jobsApi = {
     }),
 };
 
-// Profile types
+// Resume types
 export interface Contact {
   phone: string;
   email: string;
@@ -1668,7 +1682,7 @@ export interface Education {
   startDate: string;
   endDate: string;
   location: string;
-  /** Not edited by the profile editor, but kept: it travels with the row. */
+  /** Not edited by the resume editor, but kept: it travels with the row. */
   gpa?: string;
   achievements?: string[];
 }
@@ -1677,15 +1691,15 @@ export interface Certification {
   name: string;
   issuer: string;
   date: string;
-  /** Not edited by the profile editor, but kept: it travels with the row. */
+  /** Not edited by the resume editor, but kept: it travels with the row. */
   expiryDate?: string;
   credentialId?: string;
 }
 
 /*
- * The other section kinds a resume commonly carries (lib/profileSections.ts
+ * The other section kinds a resume commonly carries (lib/sectionCatalogue.ts
  * is the catalogue, a copy of the server's). Each is a list of entries on the
- * profile that prints only when it has one - there is no on/off switch for
+ * resume that prints only when it has one - there is no on/off switch for
  * them as there is for Soft Skills and Strengths. Links are stored as typed,
  * like `contact.github`; the renderer keeps only http(s) ones.
  */
@@ -1755,8 +1769,8 @@ export interface CustomSectionEntry {
 
 /**
  * A section the person titles themselves. `key` is minted by the editor
- * (`cs-` and eight hex digits, lib/profileSections.ts `newCustomSectionKey`),
- * unique in the profile, and `sectionOrder` refers to the section as
+ * (`cs-` and eight hex digits, lib/sectionCatalogue.ts `newCustomSectionKey`),
+ * unique in the resume, and `sectionOrder` refers to the section as
  * `custom:<key>`.
  */
 export interface CustomSection {
@@ -1791,14 +1805,6 @@ export interface SkillGroup extends SkillCategoryGroup {
  * of names with no headings over it.
  */
 export type TechnicalSkillsLayout = 'categorized' | 'flat';
-
-/**
- * Partial tailor (the profile's own descriptions and achievements rewritten
- * for each posting) or Fully tailor (only each role's title, company and dates
- * sent; the experience and the summary written for the posting). The server's
- * types/profile.ts `TailorMode`.
- */
-export type TailorMode = 'partial' | 'full';
 
 /**
  * The headings the shared skill library sorts skills into.
@@ -1846,7 +1852,7 @@ export const HARD_SKILL_CATEGORIES: HardSkillCategory[] = [
   'Mobile Development',
 ];
 
-export interface ProfileSettings {
+export interface ResumeSettings {
   resumePromptId?: string;
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
@@ -1859,23 +1865,43 @@ export interface ProfileSettings {
   includeSoftSkills?: boolean;
   /** Whether the resume carries a Strengths section. Absent means false. */
   includeStrengths?: boolean;
-  /**
-   * Partial or Fully tailor. Absent follows the default (UserAppSettings
-   * `defaultTailorMode`); a save sends `null` to clear a stored choice.
+  /*
+   * No tailoring mode: Partial or Fully Tailor is the RUN's choice
+   * (`buildMode`); a mode an older save stored is read past by the server.
    */
-  tailorMode?: TailorMode | null;
-  /** This profile's default model. */
+  /** This resume's default model. */
   ai?: AiPreferences;
 }
 
-export interface Profile {
+/**
+ * A resume's keywords, COMPUTED by the server and never stored
+ * (`matchKeywords` on GET /resumes and GET /resumes/:id): the kind of role its
+ * headline and held titles name, and the technologies, tools and concepts it
+ * claims. What the suitable-resume matcher compares a posting with.
+ */
+export interface ResumeKeywords {
+  version: number;
+  vocabulary: string;
+  basedOn: string;
+  /** The kind of role the headline names; [] for none. */
+  headline: string[];
+  /** The kind of role each held title names, in resume order. */
+  roleTitles: string[];
+  terms: string[];
+}
+
+export interface Resume {
   id: string;
   name: string;
   title: string;
+  /** The profile (person) the resume is filed under. Absent only on a resume the server has not filed yet. */
+  profileId?: string;
+  /** Derived on every read of the resume lists; never sent to the server and never stored. */
+  matchKeywords?: ResumeKeywords;
   totalYearsExperience?: number;
   preferredTemplate?: string;
   disabled?: boolean;
-  profileSettings?: ProfileSettings;
+  resumeSettings?: ResumeSettings;
   contact: Contact;
   summary: string;
   experience: Experience[];
@@ -1890,13 +1916,13 @@ export interface Profile {
   skillCategories?: SkillCategoryGroup[];
   /**
    * The soft skills this person claims, in their own order. Printed only when
-   * `profileSettings.includeSoftSkills` is on, and kept either way.
+   * `resumeSettings.includeSoftSkills` is on, and kept either way.
    */
   softSkills?: string[];
   education: Education[];
   certifications?: Certification[];
   /*
-   * The other section kinds (lib/profileSections.ts). Absent on every profile
+   * The other section kinds (lib/sectionCatalogue.ts). Absent on every resume
    * saved before them; absent and empty read the same.
    */
   projects?: Project[];
@@ -1910,7 +1936,7 @@ export interface Profile {
   customSections?: CustomSection[];
   /**
    * The order the resume's sections print in, by kind id or `custom:<key>`.
-   * ABSENT means the template's own order - every profile saved before the
+   * ABSENT means the template's own order - every resume saved before the
    * order existed, and every one whose person never arranged the cards. A
    * kind listed here with nothing in it is an added, empty section: shown as
    * an empty card, printed as nothing.
@@ -1920,15 +1946,29 @@ export interface Profile {
   updatedAt: string;
 }
 
-export interface Group {
+/**
+ * A profile is a PERSON, and holds that person's resumes: what /api/profiles
+ * answers. Its resumes are counted, never listed - a resume says which profile
+ * it is under (`Resume.profileId`).
+ */
+export interface ProfileSummary {
   id: string;
   name: string;
-  profileIds: string[];
+  /** Only on an administrator's `?allOwners=true` list. */
+  ownerId?: string;
   createdAt: string;
   updatedAt: string;
+  /** The later of the profile's own `updatedAt` and its newest resume's. */
+  lastEditedAt: string;
+  resumeCount: number;
+  enabledResumeCount: number;
+  /** The EFFECTIVE default: what Fully Tailor builds. Null only for a profile with no resume. */
+  defaultResumeId: string | null;
+  /** The stored choice; null while none is stored. */
+  chosenDefaultResumeId: string | null;
 }
 
-export interface CreateProfileDTO {
+export interface CreateResumeDTO {
   name?: string;
   title?: string;
   totalYearsExperience?: number;
@@ -1940,7 +1980,7 @@ export interface CreateProfileDTO {
   /**
    * The author's grouping of `skills`.
    *
-   * Sent whether or not the profile renders grouped: the grouping is storage
+   * Sent whether or not the resume renders grouped: the grouping is storage
    * and the layout is rendering, so switching to the plain list and back must
    * not lose the headings somebody assigned. Omitting the field entirely leaves
    * whatever is stored alone; sending an empty list clears it.
@@ -1972,11 +2012,11 @@ export interface CreateProfileDTO {
   sectionOrder?: string[];
   preferredTemplate?: string;
   disabled?: boolean;
-  profileSettings?: ProfileSettings;
+  resumeSettings?: ResumeSettings;
 }
 
 /**
- * What `POST /profiles/preview` answers: the draft drawn as a resume.
+ * What `POST /resumes/preview` answers: the draft drawn as a resume.
  *
  * `templateId` is the template it was really drawn with - not the draft's own
  * when that one is not offered any more (disabled or deleted), because the
@@ -1988,7 +2028,7 @@ export interface CreateProfileDTO {
  * is scaled; `contentHeightPx` is one page's content box, roughly where a page
  * break falls in the continuous document.
  */
-export interface ProfilePreviewResult {
+export interface ResumeDraftPreviewResult {
   html: string;
   templateId: string;
   page: { widthPx: number; heightPx: number; contentHeightPx?: number };
@@ -2018,7 +2058,7 @@ export interface ManualTemplateConfigStored {
   sectionStyles?: Record<string, Record<string, { color?: string; fontSizePt?: number; fontFamily?: string; fontWeight?: string }>>;
 }
 
-/** The style a template is filed under in the new-profile chooser (the backend's config/templateCategories.ts). */
+/** The style a template is filed under in the new-resume chooser (the backend's config/templateCategories.ts). */
 export type TemplateCategory = 'simple' | 'modern' | 'creative';
 
 export interface Template {
@@ -2044,14 +2084,14 @@ export interface Template {
   /** Whether its markup has a Strengths section. Worked out by the server on every read. */
   supportsStrengths: boolean;
   /**
-   * The sections its markup prints: every kind id (lib/profileSections.ts) it
+   * The sections its markup prints: every kind id (lib/sectionCatalogue.ts) it
    * names or prints through the extra-sections macro, and `custom` when it
    * prints custom sections. Worked out by the server on every read.
    */
   printsSections: string[];
   /**
    * The order its own markup prints the sections in, by kind id - what a
-   * profile with no stored `sectionOrder` is drawn and shown in. Worked out
+   * resume with no stored `sectionOrder` is drawn and shown in. Worked out
    * by the server on every read; custom sections are not in it.
    */
   nativeSectionOrder: string[];
@@ -2075,7 +2115,7 @@ export interface PromptVariableDefinition {
   sampleValue?: string;
   /**
    * True on a variable every prompt of its feature must use - the posting for
-   * the analysis and its facts call, the profile for the cover letter, the
+   * the analysis and its facts call, the resume for the cover letter, the
    * tailoring prompt's own set. The server refuses a save without them
    * (lib/promptRequirements.ts says so first, in its words).
    */
@@ -2221,7 +2261,7 @@ export interface TailoredStrength {
 /**
  * A tailored resume as the server answers it (backend types/template.ts).
  * `skillGroups` is the Technical Skills block as the model wrote it; every
- * other skill list here is worked out from it and the profile, again, each
+ * other skill list here is worked out from it and the source resume, again, each
  * time the content is sent back - which is why the builder's Manual Edits box
  * holds only the editable part (`TailoredContentEdit`).
  */
@@ -2236,7 +2276,7 @@ export interface TailoredContent {
   skills: string[];
   hardSkills: string[];
   softSkills: string[];
-  /** The profile's own, while its Strengths switch is on. */
+  /** The source resume's own, while its Strengths switch is on. */
   strengths: TailoredStrength[];
   coverLetter?: string;
 }
@@ -2244,11 +2284,11 @@ export interface TailoredContent {
 /**
  * The part of a tailored resume a person edits and sends back: what the
  * builder's Manual Edits box holds (lib/tailoredDraft.ts). The server works
- * everything else out from it and the profile - the title from the profile's
+ * everything else out from it and the source resume - the title from its
  * headline when it has one, the skill lists, Soft Skills and Strengths. A
  * role's company, title and dates are there only to say which role its
  * bullets are (the dates tell two stints under one company and title apart);
- * they, and its place, print as the profile has them.
+ * they, and its place, print as the source resume has them.
  */
 export interface TailoredContentEdit {
   title: string;
@@ -2261,51 +2301,61 @@ export interface TailoredContentEdit {
 /** Tailored content a page holds and may send back: the server's whole answer, or a person's edit of it. */
 export type HeldTailoredContent = TailoredContent | TailoredContentEdit;
 
-// Profiles API
-export const profilesApi = {
+/**
+ * A create's `?profileId=`: the profile (a person of the caller's own) the new
+ * resume is filed under. Left out, the server files it by the person's name.
+ * Never in the body - a body places nothing.
+ */
+function filedUnder(path: string, options?: { profileId?: string | null }): string {
+  const profileId = options?.profileId?.trim();
+  return profileId ? `${path}?profileId=${encodeURIComponent(profileId)}` : path;
+}
+
+// Resumes API
+export const resumesApi = {
   getAll: (options?: { includeDisabled?: boolean }) =>
-    apiFetch<Profile[]>(
-      options?.includeDisabled ? '/profiles?includeDisabled=true' : '/profiles'
+    apiFetch<Resume[]>(
+      options?.includeDisabled ? '/resumes?includeDisabled=true' : '/resumes'
     ),
 
-  getById: (id: string) => apiFetch<Profile>(`/profiles/${id}`),
+  getById: (id: string) => apiFetch<Resume>(`/resumes/${encodeURIComponent(id)}`),
 
-  create: (data: CreateProfileDTO) =>
-    apiFetch<Profile>('/profiles', {
+  create: (data: CreateResumeDTO, options?: { profileId?: string | null }) =>
+    apiFetch<Resume>(filedUnder('/resumes', options), {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
-  update: (id: string, data: Partial<CreateProfileDTO>) =>
-    apiFetch<Profile>(`/profiles/${id}`, {
+  update: (id: string, data: Partial<CreateResumeDTO>) =>
+    apiFetch<Resume>(`/resumes/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
 
   delete: (id: string) =>
-    apiFetch<{ message: string }>(`/profiles/${id}`, {
+    apiFetch<{ message: string }>(`/resumes/${id}`, {
       method: 'DELETE',
     }),
 
-  uploadResume: (file: File) => {
+  uploadPdf: (file: File, options?: { profileId?: string | null }) => {
     const formData = new FormData();
     formData.append('resume', file);
-    return apiFetch<Profile>('/profiles/upload', {
+    return apiFetch<Resume>(filedUnder('/resumes/upload', options), {
       method: 'POST',
       body: formData,
     });
   },
 
   /**
-   * Creates profiles from an already-parsed JSON document.
+   * Creates resumes from an already-parsed JSON document.
    *
-   * The file is read and parsed by `readProfileImportFile` before it gets
+   * The file is read and parsed by `readResumeImportFile` before it gets
    * here, so a file that is not JSON is reported without a round trip - and
    * the server, which cannot trust any of this anyway, is the one that decides
-   * whether the parsed document is actually a profile.
+   * whether the parsed document is actually a resume.
    */
-  importJson: (document: unknown) =>
-    apiFetch<ProfileImportResult>('/profiles/import', {
+  importJson: (document: unknown, options?: { profileId?: string | null }) =>
+    apiFetch<ResumeImportResult>(filedUnder('/resumes/import', options), {
       method: 'POST',
       body: JSON.stringify(document),
     }),
@@ -2313,22 +2363,22 @@ export const profilesApi = {
   /**
    * Draws an unsaved draft as a resume, for the editor's live preview.
    *
-   * Saves nothing, asks no model and costs no credit. `profileId` lays the
-   * draft over that stored profile, so fields the editor never sends still
+   * Saves nothing, asks no model and costs no credit. `resumeId` lays the
+   * draft over that stored resume, so fields the editor never sends still
    * show as they will after a save. Aborting `signal` rejects with the
    * AbortError itself (see `apiFetch`), which the caller ignores.
    */
   preview: (
     body: {
-      profile: CreateProfileDTO;
-      profileId?: string;
+      resume: CreateResumeDTO;
+      resumeId?: string;
       templateId?: string;
-      /** false: draw the profile as it stands, nothing filled from the sample person (the Profiles page's thumbnails). */
+      /** false: draw the resume as it stands, nothing filled from the sample person (the Profiles page's thumbnails). */
       sample?: false;
     },
     signal?: AbortSignal
   ) =>
-    apiFetch<ProfilePreviewResult>('/profiles/preview', {
+    apiFetch<ResumeDraftPreviewResult>('/resumes/preview', {
       method: 'POST',
       body: JSON.stringify(body),
       signal,
@@ -2336,7 +2386,7 @@ export const profilesApi = {
 
   /**
    * Writes or improves one entry's bullets, for the editor's Write with AI /
-   * Improve with AI (POST /profiles/entries/bullets).
+   * Improve with AI (POST /resumes/entries/bullets).
    *
    * Free, and nothing is saved: the editor puts the answer in its draft, and
    * the person saves or does not. A 400 names what the entry lacks (its
@@ -2346,7 +2396,7 @@ export const profilesApi = {
    * AbortError itself, which the caller ignores.
    */
   writeBullets: (body: WriteBulletsRequest, signal?: AbortSignal) =>
-    apiFetch<WriteBulletsAnswer>('/profiles/entries/bullets', {
+    apiFetch<WriteBulletsAnswer>('/resumes/entries/bullets', {
       method: 'POST',
       body: JSON.stringify(body),
       signal,
@@ -2358,8 +2408,8 @@ export type WriteBulletsKind = 'experience' | 'project' | 'volunteering';
 export type WriteBulletsTask = 'write' | 'improve';
 
 /**
- * What `POST /profiles/entries/bullets` is sent: one entry as typed, who it
- * belongs to, and what to do. Built by lib/profileDraft.ts's
+ * What `POST /resumes/entries/bullets` is sent: one entry as typed, who it
+ * belongs to, and what to do. Built by lib/resumeDraft.ts's
  * `bulletsRequestFor`, never by a page.
  */
 export interface WriteBulletsRequest {
@@ -2371,7 +2421,7 @@ export interface WriteBulletsRequest {
    */
   entry: Record<string, string | string[]>;
   /** Five facts about the person, never contact details. */
-  profile?: {
+  resume?: {
     name: string;
     title: string;
     totalYearsExperience?: number;
@@ -2396,11 +2446,15 @@ export interface TemplateImportResult {
   keptIds: number;
 }
 
-export interface ProfileImportResult {
-  profiles: Profile[];
+export interface ResumeImportResult {
+  resumes: Resume[];
   imported: number;
   /** How many kept the id from the file; the rest were given a new one. */
   keptIds: number;
+  /** The distinct profiles the resumes were filed under, in file order. */
+  profileIds: string[];
+  /** The profiles the import made, for the people the file named who had none. */
+  createdProfiles: Array<{ id: string; name: string }>;
 }
 
 /**
@@ -2411,7 +2465,7 @@ export interface ProfileImportResult {
  * 4213 - which is the error a person actually gets when they pick a PDF from
  * the wrong row of their downloads folder.
  */
-export async function readProfileImportFile(file: File): Promise<unknown> {
+export async function readResumeImportFile(file: File): Promise<unknown> {
   let text: string;
   try {
     text = await file.text();
@@ -2422,28 +2476,87 @@ export async function readProfileImportFile(file: File): Promise<unknown> {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new Error(`${file.name} is not valid JSON. Export a profile from this app, or check the file.`);
+    throw new Error(`${file.name} is not valid JSON. Export a resume from this app, or check the file.`);
   }
 }
 
-// Groups API
-export const groupsApi = {
-  getAll: () => apiFetch<Group[]>('/groups'),
+/**
+ * One profile as the server answered it, read leniently: a count that is not a
+ * whole number reads 0, a default that is not text reads null, and a time that
+ * is missing falls back to the profile's own `updatedAt`, so sorting by
+ * `lastEditedAt` always has something to sort on.
+ */
+export function normalizeProfileSummary(value: unknown): ProfileSummary {
+  const source = asRecord(value);
+  const text = (field: unknown) => (typeof field === 'string' ? field : '');
+  const count = (field: unknown) =>
+    typeof field === 'number' && Number.isSafeInteger(field) && field > 0 ? field : 0;
+  const idOrNull = (field: unknown) => (typeof field === 'string' && field ? field : null);
+  const updatedAt = text(source.updatedAt);
+  return {
+    id: text(source.id),
+    name: text(source.name),
+    ...(typeof source.ownerId === 'string' && source.ownerId ? { ownerId: source.ownerId } : {}),
+    createdAt: text(source.createdAt),
+    updatedAt,
+    lastEditedAt: text(source.lastEditedAt) || updatedAt,
+    resumeCount: count(source.resumeCount),
+    enabledResumeCount: count(source.enabledResumeCount),
+    defaultResumeId: idOrNull(source.defaultResumeId),
+    chosenDefaultResumeId: idOrNull(source.chosenDefaultResumeId),
+  };
+}
 
-  create: (data: { name: string; profileIds: string[] }) =>
-    apiFetch<Group>('/groups', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+function normalizeProfileSummaries(value: unknown): ProfileSummary[] {
+  return Array.isArray(value) ? value.map(normalizeProfileSummary) : [];
+}
 
-  update: (id: string, data: { name?: string; profileIds?: string[] }) =>
-    apiFetch<Group>(`/groups/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
+// Profiles API: a profile is a PERSON, and holds that person's resumes
+export const profilesApi = {
+  /** The caller's profiles; `allOwners` (an administrator's) lists everybody's, each with its `ownerId`. */
+  getAll: async (options?: { allOwners?: boolean }) =>
+    normalizeProfileSummaries(
+      await apiFetch<unknown>(options?.allOwners ? '/profiles?allOwners=true' : '/profiles')
+    ),
 
+  get: async (id: string) =>
+    normalizeProfileSummary(await apiFetch<unknown>(`/profiles/${encodeURIComponent(id)}`)),
+
+  /** Counts against the subscription's limit on profiles (402 `profile-limit`); the listed resumes move in, all or nothing. */
+  create: async (data: { name?: string; resumeIds?: string[] }) =>
+    normalizeProfileSummary(
+      await apiFetch<unknown>('/profiles', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      })
+    ),
+
+  /** A name, and/or the default resume (an ENABLED resume of this profile). */
+  update: async (id: string, data: { name?: string; defaultResumeId?: string }) =>
+    normalizeProfileSummary(
+      await apiFetch<unknown>(`/profiles/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      })
+    ),
+
+  /** Moves resumes into this profile; answers it and every profile a resume came from, counted after the move. */
+  move: async (id: string, resumeIds: string[]) => {
+    const answer = asRecord(
+      await apiFetch<unknown>(`/profiles/${encodeURIComponent(id)}/move`, {
+        method: 'POST',
+        body: JSON.stringify({ resumeIds }),
+      })
+    );
+    return {
+      moved: typeof answer.moved === 'number' && Number.isSafeInteger(answer.moved) ? answer.moved : 0,
+      profiles: normalizeProfileSummaries(answer.profiles),
+    };
+  },
+
+  /** Deletes the profile AND every resume in it. */
   delete: (id: string) =>
-    apiFetch<{ message: string }>(`/groups/${id}`, {
+    apiFetch<{ deleted: true; deletedResumes: number }>(`/profiles/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
 };
@@ -2619,6 +2732,134 @@ export const promptsApi = {
     }),
 };
 
+/**
+ * Why a run chose the resume it built for a job (the server's
+ * services/resumeMatch.ts `TaskMatch`): on a preview's answer, a queue
+ * snapshot's task, and an order's item. `reason` is `matched` (the resume won
+ * on its score), `tie` (the best score was shared, or nothing matched, and the
+ * tie-break decided), `only` (the profile has one enabled resume) or `default`
+ * (Fully Tailor, which builds the profile's default by rule).
+ */
+export interface TaskMatch {
+  v: 1;
+  mode: BuildMode;
+  reason: 'matched' | 'tie' | 'only' | 'default';
+  /** Enabled resumes the profile had when the choice was made. */
+  candidates: number;
+  /** What the score was worked out from; `matched` and `tie` only. */
+  basis?: 'analysis' | 'text' | 'title' | 'none';
+  score?: number;
+  titleMatched?: boolean;
+  /** The posting's terms the chosen resume carries, best first, at most 8, in the posting's spelling. */
+  matched?: string[];
+  matchedCount?: number;
+  postingTermCount?: number;
+}
+
+/**
+ * A `TaskMatch` as the server sent it, read leniently: null for anything that
+ * is not one (an order item from before v4.2 has none), and only the known
+ * keys of a known shape survive.
+ */
+export function normalizeTaskMatch(value: unknown): TaskMatch | null {
+  const source = asRecord(value);
+  const reason = source.reason;
+  if (source.v !== 1 || !isBuildMode(source.mode)) return null;
+  if (reason !== 'matched' && reason !== 'tie' && reason !== 'only' && reason !== 'default') return null;
+  const count = (field: unknown) =>
+    typeof field === 'number' && Number.isSafeInteger(field) && field >= 0 ? field : undefined;
+  const basis = source.basis;
+  const match: TaskMatch = {
+    v: 1,
+    mode: source.mode,
+    reason,
+    candidates: count(source.candidates) ?? 0,
+  };
+  if (basis === 'analysis' || basis === 'text' || basis === 'title' || basis === 'none') match.basis = basis;
+  if (typeof source.score === 'number' && Number.isFinite(source.score)) match.score = source.score;
+  if (typeof source.titleMatched === 'boolean') match.titleMatched = source.titleMatched;
+  if (Array.isArray(source.matched)) {
+    match.matched = source.matched.filter((term): term is string => typeof term === 'string');
+  }
+  const matchedCount = count(source.matchedCount);
+  if (matchedCount !== undefined) match.matchedCount = matchedCount;
+  const postingTermCount = count(source.postingTermCount);
+  if (postingTermCount !== undefined) match.postingTermCount = postingTermCount;
+  return match;
+}
+
+/**
+ * The posting a preview is for, and the request's overrides. `companyName` and
+ * `role` are optional context: the role is what the matcher compares resume
+ * titles with, the company is recorded on the posting's stored analysis.
+ */
+type PreviewPosting = {
+  /** The stored analysis to build on (from /resume/analyze or an earlier preview). */
+  analysisId?: string;
+  jobDescription?: string;
+  jobLink?: string;
+  companyName?: string;
+  role?: string;
+  templateId?: string;
+  /** This request's model (Partial and Fully only); otherwise each resume's own, then the app default. */
+  model?: string;
+};
+
+/**
+ * What POST /resume/preview is sent: CHOOSE a resume of a profile and draw it
+ * (`profileId`, with the run's `buildMode`; left out, the administrator's
+ * default), or DRAW held tailored content again (`resumeId` and
+ * `tailoredContent`).
+ */
+export type PreviewRequest = (
+  | { profileId: string; buildMode?: BuildMode }
+  | { resumeId: string; tailoredContent: HeldTailoredContent }
+) &
+  PreviewPosting;
+
+/**
+ * The builder's preview. `profileId`, `resumeId` and `resumeLabel` name the
+ * resume that was drawn (what the page sends back as `previewedResumeId`);
+ * `match` says why it was chosen, and is null when held content was drawn
+ * again. `previewToken` comes only with content THIS request wrote
+ * (Partial and Fully) and prices it at that mode when the run is finalised.
+ */
+export interface ResumePreviewAnswer {
+  html: string;
+  tailored: boolean;
+  tailoredContent?: TailoredContent;
+  previewToken?: string;
+  /** The analysis the preview was built on, when it was built on one. */
+  analysisId?: string;
+  profileId: string;
+  profileName: string;
+  resumeId: string;
+  resumeLabel: string;
+  buildMode: BuildMode;
+  match: TaskMatch | null;
+}
+
+function normalizePreviewAnswer(value: unknown): ResumePreviewAnswer {
+  const source = asRecord(value);
+  const text = (field: unknown) => (typeof field === 'string' ? field : '');
+  const content = asRecord(source.tailoredContent);
+  return {
+    html: text(source.html),
+    tailored: source.tailored === true,
+    ...(Object.keys(content).length > 0 ? { tailoredContent: content as unknown as TailoredContent } : {}),
+    ...(typeof source.previewToken === 'string' && source.previewToken
+      ? { previewToken: source.previewToken }
+      : {}),
+    ...(typeof source.analysisId === 'string' && source.analysisId ? { analysisId: source.analysisId } : {}),
+    profileId: text(source.profileId),
+    profileName: text(source.profileName),
+    resumeId: text(source.resumeId),
+    resumeLabel: text(source.resumeLabel),
+    buildMode: isBuildMode(source.buildMode) ? source.buildMode : 'partial',
+    match: normalizeTaskMatch(source.match),
+  };
+}
+
 // Resume API
 export const resumeApi = {
   getModels: async () => normalizeUserAppSettings(await apiFetch<unknown>('/resume/models')),
@@ -2626,7 +2867,7 @@ export const resumeApi = {
   /**
    * The posting's one analysis: stored, or made now - once, ever - on the
    * administrator's analysis model. No model or prompt is sent: there is one
-   * of each for every analysis, so that every profile, model and order builds
+   * of each for every analysis, so that every resume, model and order builds
    * on the same reading of the posting. Keep the `analysisId` it answers and
    * send that onwards (lib/jobAnalysis.ts), not the analysis.
    */
@@ -2675,50 +2916,19 @@ export const resumeApi = {
       body: JSON.stringify(data),
     }),
 
-  preview: (data: {
-    profileId: string;
-    templateId: string;
-    jobDescription?: string;
-    jobLink?: string;
-    /** The stored analysis to build on; see `generate`. */
-    analysisId?: string;
-    tailoredContent?: HeldTailoredContent;
-    model?: string;
-  }) =>
-    apiFetch<{
-      html: string;
-      tailored: boolean;
-      /** The analysis the preview was built on, when it was built on one. */
-      analysisId?: string;
-      tailoredContent?: TailoredContent;
-      /** Only when THIS request wrote `tailoredContent`; a re-render of supplied content gets none. */
-      previewToken?: string;
-    }>('/resume/preview', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  previewAll: (data: {
-    templateId?: string;
-    jobDescription?: string;
-    jobLink?: string;
-    /** The stored analysis every profile is built on; see `generate`. */
-    analysisId?: string;
-    model?: string;
-    profileIds?: string[];
-  }) =>
-    apiFetch<{
-      previews: Array<{
-        profileId: string;
-        profileName: string;
-        html: string;
-        tailoredContent?: TailoredContent;
-        previewToken?: string;
-      }>;
-      tailored: boolean;
-      analysisId?: string;
-    }>('/resume/preview-all', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+  /**
+   * The builder's ONE preview (POST /resume/preview). Exactly one of
+   * `profileId` (CHOOSE the resume as a run would for this posting, then draw
+   * it: Choose Suitable Resume as written, Partial and Fully tailored, with a
+   * `previewToken`) and `resumeId` with `tailoredContent` (draw held content
+   * again: no model, no token). Both, or neither, is a 400.
+   */
+  preview: async (data: PreviewRequest, signal?: AbortSignal): Promise<ResumePreviewAnswer> =>
+    normalizePreviewAnswer(
+      await apiFetch<unknown>('/resume/preview', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        signal,
+      })
+    ),
 };

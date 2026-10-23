@@ -22,7 +22,15 @@ import {
   listProviderModelOptions,
   type ProviderModelOptions,
 } from './providerModels';
-import { parsePricePerResume, readPricePerResumeMilli } from './pricePerResume';
+import {
+  BUILD_MODES,
+  BUILD_MODE_PRICE_FIELDS,
+  buildModePriceFieldError,
+  isBuildMode,
+  isStoredBuildModePriceMilli,
+  parseBuildModePriceInput,
+  type BuildMode,
+} from './buildModes';
 import {
   MAX_SUBSCRIPTION_PRICE_MILLI,
   PAID_SUBSCRIPTION_IDS,
@@ -74,13 +82,13 @@ import {
   envDefaultCoverLetterDocx,
   envDefaultMode,
   envDefaultModelText,
+  envBuildModePriceMilli,
+  envDefaultBuildMode,
   envDefaultResumeDocx,
-  envDefaultResumeSelection,
   envDefaultTheme,
   envOutputBaseDir,
   envOutputPathPrefix,
   envOutputPathSuffix,
-  envDefaultTailorMode,
   envPaymentLimits,
   envRequireThreeDSecure,
   envSubscriptionPriceMilli,
@@ -88,14 +96,12 @@ import {
   settingEnvFingerprint,
   type DefaultedSettingKey,
   type DefaultMode,
-  type DefaultResumeSelection,
   type PaymentTargetLimits,
   type SettingSource,
   type ThemeMode,
 } from './settingDefaults';
-import type { TailorMode } from '../types/profile';
 
-export type { DefaultMode, DefaultResumeSelection, PaymentTargetLimits, SettingSource, ThemeMode };
+export type { BuildMode, DefaultMode, PaymentTargetLimits, SettingSource, ThemeMode };
 export { DEFAULT_PAYMENT_LIMITS };
 
 export type AIModelRecord = {
@@ -105,13 +111,12 @@ export type AIModelRecord = {
   modelName: string;
   description: string;
   enabled: boolean;
-  /**
-   * What one resume built on this model costs, in thousandths of a dollar (0
-   * is free): $0.023 is 23. See config/pricePerResume. A record stored without
-   * one - priced before credits were dollars, or a seed nobody has priced -
-   * reads as 0, in memory only, and Admin -> Models flags it.
+  /*
+   * No price. What a resume costs is the price of the build mode it is built
+   * in (config/buildModes.ts); the model that runs it never changes it. A
+   * `pricePerResumeMilli` an older build stored on a record is read past here
+   * and dropped by the next settings write.
    */
-  pricePerResumeMilli: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -124,8 +129,12 @@ type AppSettings = {
   providersEnabled: ProvidersEnabled;
   defaultMode: DefaultMode;
   defaultTheme: ThemeMode;
-  defaultResumeSelection: DefaultResumeSelection;
-  defaultGroupId: string;
+  /**
+   * The mode Build Resumes starts on, and the mode of a run that names none:
+   * stored > `.env`'s DEFAULT_TAILOR_MODE > `partial`.
+   */
+  defaultBuildMode: BuildMode;
+  /** One of the administrator's own profiles (a person); '' is automatic. */
   defaultProfileId: string;
   defaultModelId: string;
   /**
@@ -200,6 +209,14 @@ type AppSettings = {
   premiumPriceMilli: number | null;
   premiumPlusPriceMilli: number | null;
   premiumMaxPriceMilli: number | null;
+  /**
+   * What one resume costs in each build mode, in thousandths of a dollar (0 is
+   * free): stored > `.env`'s RESUME_<MODE>_PRICE_USD > 0. Saved as
+   * `suitablePriceUsd` and its two siblings (config/buildModes.ts).
+   */
+  suitablePriceMilli: number;
+  partialPriceMilli: number;
+  fullPriceMilli: number;
   aiModels: AIModelRecord[];
   /**
    * The model PROVIDERS (config/aiProviders.ts): every place a type can run,
@@ -233,8 +250,7 @@ type BuilderDefaults = Pick<
   AppSettings,
   | 'defaultMode'
   | 'defaultTheme'
-  | 'defaultResumeSelection'
-  | 'defaultGroupId'
+  | 'defaultBuildMode'
   | 'defaultProfileId'
   | 'defaultModelId'
   | 'defaultResumeDocxEnabled'
@@ -264,19 +280,20 @@ export type UserModelOption = { id: string; name: string };
  * `models` is the runnable list, in the administrator's order, as ids and
  * display names and NOTHING else - no provider, no CLI model name, no
  * description, no price, no locks. A person picks a model by the name an
- * administrator gave it; what a run costs is the separate quote
- * (`POST /api/generation/quote`), never part of a model's label.
+ * administrator gave it; what a run costs is the build mode's price, never
+ * part of a model's label.
  * `defaultModelId` is always one of `models`, or '' when nothing can run.
  */
 export type UserAppSettings = BuilderDefaults & {
   models: UserModelOption[];
   outputPathUsesJobTitle: boolean;
   /**
-   * How a profile that has chosen no tailoring mode is tailored - `.env`'s
-   * DEFAULT_TAILOR_MODE, else `partial` - so the profile editor can say what
-   * "the default" is beside its Tailoring choice.
+   * What one resume costs in each build mode, in thousandths: what the
+   * builder's mode cards show - the same figures a quote reveals.
    */
-  defaultTailorMode: TailorMode;
+  suitablePriceMilli: number;
+  partialPriceMilli: number;
+  fullPriceMilli: number;
 };
 
 /**
@@ -304,7 +321,7 @@ type BaseAppSettingsWithDerived = BaseAppSettings & {
 };
 
 export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'aiProviders'> & {
-  /** Every record, runnable or not, each with its `pricePerResumeMilli`. */
+  /** Every record, runnable or not. */
   aiModels: AIModelRecord[];
   /**
    * Every provider (config/aiProviders.ts), built-ins first among their type,
@@ -312,13 +329,6 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
    * folders and binaries are this server's business.
    */
   aiProviders: AdminAIProvider[];
-  /**
-   * The ids of every enabled model priced $0.000, in stored order: free to
-   * everybody who picks it. Admin -> Models lists them in red. A seed model
-   * arrives unpriced - free on purpose is allowed (0 is a valid price), but
-   * never silently.
-   */
-  freeEnabledModelIds: string[];
   /**
    * The model names Admin -> Models may pick, per seat: every seat in catalog
    * order, locked ones included so a model can be prepared before the lock is
@@ -336,6 +346,19 @@ export type AdminAppSettings = Omit<BaseAppSettingsWithDerived, 'aiModels' | 'ai
   premiumPriceMilli: number | null;
   premiumPlusPriceMilli: number | null;
   premiumMaxPriceMilli: number | null;
+  /**
+   * What one resume costs in each build mode, in thousandths; 0 is free and
+   * Admin -> Settings shows it in red. Saved as `suitablePriceUsd`...
+   */
+  suitablePriceMilli: number;
+  partialPriceMilli: number;
+  fullPriceMilli: number;
+  /**
+   * The modes priced $0 only because a `.env` line (RESUME_<MODE>_PRICE_USD)
+   * could not be read: reads 0 like an unset one, but is nobody's decision,
+   * so the page shows it red and names the variable.
+   */
+  unreadableModePrices: BuildMode[];
   /**
    * Where each setting that has a `.env` default got the value in effect:
    * 'admin' (stored here - Reset to default is offered), 'env' (the variable
@@ -398,6 +421,8 @@ type SettingsState = {
   limitSources: Record<string, PaymentLimitSource>;
   /** The paid tiers whose price is "not offered" only because a value somebody set could not be read. */
   unreadablePrices: UnreadableSubscriptionPrice[];
+  /** The build modes priced $0 only because their `.env` line could not be read. */
+  unreadableModePrices: BuildMode[];
 };
 
 /**
@@ -419,10 +444,9 @@ export type SubscriptionPriceReading = {
 
 /**
  * A save from Admin -> Settings. Not the model list: models are created, edited
- * and priced one at a time through the /api/admin/models routes, which check
- * each model name against its seat's options and each price against its
- * bounds. A list arriving here would skip both, so `updateAppSettings` ignores
- * one.
+ * and edited one at a time through the /api/admin/models routes, which check
+ * each model name against its seat's options. A list arriving here would
+ * skip that, so `updateAppSettings` ignores one.
  *
  * Every field is optional and only what is named changes. A field that has a
  * `.env` default (`DEFAULTED_SETTING_KEYS`) may be `null`: Reset to default,
@@ -443,6 +467,15 @@ export type AppSettingsUpdate = Resettable<Partial<Omit<BaseAppSettings, 'aiMode
   premiumPriceUsd?: string | number | null;
   premiumPlusPriceUsd?: string | number | null;
   premiumMaxPriceUsd?: string | number | null;
+  /**
+   * What one resume costs in a build mode, in DOLLARS ("0.023", or the JSON
+   * number 0.023) from 0 to 1000 in steps of $0.001 - never in thousandths: a
+   * `partialPriceMilli` in a save is refused. A price is required: '' is
+   * refused, and `null` is Reset to default.
+   */
+  suitablePriceUsd?: string | number | null;
+  partialPriceUsd?: string | number | null;
+  fullPriceUsd?: string | number | null;
 };
 
 /** `null` beside each defaulted field's own type: what a Reset to default sends. */
@@ -581,9 +614,6 @@ function createDefaultModelRecords(): AIModelRecord[] {
       modelName: seed.modelName,
       description: seed.description,
       enabled: true,
-      // Free until priced: there is no default price, and Admin -> Models
-      // lists every enabled model at $0.000 in red until somebody sets one.
-      pricePerResumeMilli: 0,
       createdAt: now,
       updatedAt: now,
     }));
@@ -627,8 +657,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   providersEnabled: allProvidersEnabled(),
   defaultMode: CODE_SETTING_DEFAULTS.defaultMode,
   defaultTheme: CODE_SETTING_DEFAULTS.defaultTheme,
-  defaultResumeSelection: CODE_SETTING_DEFAULTS.defaultResumeSelection,
-  defaultGroupId: '',
+  defaultBuildMode: CODE_SETTING_DEFAULTS.defaultBuildMode,
   defaultProfileId: '',
   defaultModelId: defaultSeedModelId(),
   analysisModelId: CODE_SETTING_DEFAULTS.analysisModelId,
@@ -641,6 +670,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   premiumPriceMilli: CODE_SETTING_DEFAULTS.premiumPriceMilli,
   premiumPlusPriceMilli: CODE_SETTING_DEFAULTS.premiumPlusPriceMilli,
   premiumMaxPriceMilli: CODE_SETTING_DEFAULTS.premiumMaxPriceMilli,
+  suitablePriceMilli: CODE_SETTING_DEFAULTS.suitablePriceMilli,
+  partialPriceMilli: CODE_SETTING_DEFAULTS.partialPriceMilli,
+  fullPriceMilli: CODE_SETTING_DEFAULTS.fullPriceMilli,
   aiModels: DEFAULT_MODEL_RECORDS,
   aiProviders: normalizeStoredProviders([]),
 };
@@ -694,11 +726,8 @@ function normalizeDefaultMode(value: unknown, fallback: DefaultMode): DefaultMod
   return value === 'preview' || value === 'generate' ? value : fallback;
 }
 
-function normalizeDefaultResumeSelection(
-  value: unknown,
-  fallback: DefaultResumeSelection
-): DefaultResumeSelection {
-  return value === 'single' || value === 'all' || value === 'group' ? value : fallback;
+function normalizeDefaultBuildMode(value: unknown, fallback: BuildMode): BuildMode {
+  return isBuildMode(value) ? value : fallback;
 }
 
 /**
@@ -863,11 +892,9 @@ function normalizeAIModelRecords(input: unknown, fallback: AIModelRecord[], stri
         modelName,
         description: normalizeAIModelText(raw.description),
         enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
-        // Carried, or every save that goes through here would drop it and every
-        // model would be free again. Lenient even when strict: a record with
-        // no price reads as $0.000, and one hand-edited out of range clamps
-        // rather than failing the read every page depends on.
-        pricePerResumeMilli: readPricePerResumeMilli(raw.pricePerResumeMilli, id),
+        // Built from the known fields only: a `pricePerResumeMilli` an older
+        // build stored is read past, never fails the read, and is gone from
+        // the row at the next write.
         createdAt,
         updatedAt,
       } satisfies AIModelRecord;
@@ -897,7 +924,7 @@ function resolveDefaultModelId(
 }
 
 /**
- * The models a profile or a request may pick: enabled, under a provider that is
+ * The models a resume or a request may pick: enabled, under a provider that is
  * both switched on and runnable here.
  *
  * This is exactly the list an ordinary account is shown (`UserAppSettings`),
@@ -991,6 +1018,16 @@ function readStoredPriceMilli(value: unknown, fallback: number | null): number |
   return value === 0 ? null : value;
 }
 
+/**
+ * A stored build-mode price as it is in effect: the integer this app wrote
+ * (0 is free, and an administrator's choice that beats `.env`), else the
+ * fallback. A value this app never writes - hand-edited into the row - was
+ * taken out by `withoutUnsetOverrides` with a warning.
+ */
+function readStoredModePriceMilli(value: unknown, fallback: number): number {
+  return isStoredBuildModePriceMilli(value) ? value : fallback;
+}
+
 function normalizeSettings(
   input: unknown,
   fallback: AppSettings = DEFAULT_SETTINGS,
@@ -1033,30 +1070,20 @@ function normalizeSettings(
           : strict
             ? (() => { throw new Error('defaultTheme must be "light" or "dark"'); })()
             : normalizeThemeMode(source.defaultTheme, fallback.defaultTheme),
-    defaultResumeSelection:
-      typeof source.defaultResumeSelection === 'undefined'
-        ? fallback.defaultResumeSelection
-        : source.defaultResumeSelection === 'single'
-          || source.defaultResumeSelection === 'all'
-          || source.defaultResumeSelection === 'group'
-          ? source.defaultResumeSelection
+    defaultBuildMode:
+      typeof source.defaultBuildMode === 'undefined'
+        ? fallback.defaultBuildMode
+        : isBuildMode(source.defaultBuildMode)
+          ? source.defaultBuildMode
           : strict
-            ? (() => { throw new Error('defaultResumeSelection must be "single", "all", or "group"'); })()
-            : normalizeDefaultResumeSelection(
-                source.defaultResumeSelection,
-                fallback.defaultResumeSelection
-              ),
-    defaultGroupId:
-      typeof source.defaultGroupId === 'string'
-        ? source.defaultGroupId.trim()
-        : strict && hasOwnProperty(source, 'defaultGroupId')
-          ? (() => { throw new Error('defaultGroupId must be a string'); })()
-          : fallback.defaultGroupId,
-    defaultProfileId: typeof source.defaultProfileId === 'string'
-      ? source.defaultProfileId.trim()
-      : strict && hasOwnProperty(source, 'defaultProfileId')
-        ? (() => { throw new Error('defaultProfileId must be a string'); })()
-      : fallback.defaultProfileId,
+            ? (() => { throw new DefaultBuildModeError(); })()
+            : normalizeDefaultBuildMode(source.defaultBuildMode, fallback.defaultBuildMode),
+    defaultProfileId:
+      typeof source.defaultProfileId === 'string'
+        ? source.defaultProfileId.trim()
+        : strict && hasOwnProperty(source, 'defaultProfileId')
+          ? (() => { throw new Error('defaultProfileId must be a string'); })()
+          : fallback.defaultProfileId,
     defaultModelId,
     // Kept as stored, even when it no longer names a model that runs: a
     // switched-off model comes back on, and the gate falls back to the app
@@ -1104,6 +1131,9 @@ function normalizeSettings(
     premiumPriceMilli: readStoredPriceMilli(source.premiumPriceMilli, fallback.premiumPriceMilli),
     premiumPlusPriceMilli: readStoredPriceMilli(source.premiumPlusPriceMilli, fallback.premiumPlusPriceMilli),
     premiumMaxPriceMilli: readStoredPriceMilli(source.premiumMaxPriceMilli, fallback.premiumMaxPriceMilli),
+    suitablePriceMilli: readStoredModePriceMilli(source.suitablePriceMilli, fallback.suitablePriceMilli),
+    partialPriceMilli: readStoredModePriceMilli(source.partialPriceMilli, fallback.partialPriceMilli),
+    fullPriceMilli: readStoredModePriceMilli(source.fullPriceMilli, fallback.fullPriceMilli),
     aiModels,
     // Read leniently even from a strict caller: a provider this build cannot
     // use is dropped with a warning (normalizeStoredProviders), and the
@@ -1160,8 +1190,7 @@ function toBuilderDefaults(settings: AppSettings): BuilderDefaults {
   return {
     defaultMode: settings.defaultMode,
     defaultTheme: settings.defaultTheme,
-    defaultResumeSelection: settings.defaultResumeSelection,
-    defaultGroupId: settings.defaultGroupId,
+    defaultBuildMode: settings.defaultBuildMode,
     defaultProfileId: settings.defaultProfileId,
     defaultModelId: effectiveDefaultModelId(settings),
     defaultResumeDocxEnabled: settings.defaultResumeDocxEnabled,
@@ -1193,7 +1222,9 @@ function toUserSettings(settings: AppSettings, outputPathSuffix: string): UserAp
     models: getRunnableModels(settings).map((model) => ({ id: model.id, name: model.name })),
     ...toBuilderDefaults(settings),
     outputPathUsesJobTitle: outputSuffixUsesRole(outputPathSuffix),
-    defaultTailorMode: envDefaultTailorMode().value,
+    suitablePriceMilli: settings.suitablePriceMilli,
+    partialPriceMilli: settings.partialPriceMilli,
+    fullPriceMilli: settings.fullPriceMilli,
   };
 }
 
@@ -1238,9 +1269,10 @@ function toAdminSettings(state: SettingsState): AdminAppSettings {
     premiumPriceMilli: settings.premiumPriceMilli,
     premiumPlusPriceMilli: settings.premiumPlusPriceMilli,
     premiumMaxPriceMilli: settings.premiumMaxPriceMilli,
-    freeEnabledModelIds: settings.aiModels
-      .filter((model) => model.enabled && model.pricePerResumeMilli === 0)
-      .map((model) => model.id),
+    suitablePriceMilli: settings.suitablePriceMilli,
+    partialPriceMilli: settings.partialPriceMilli,
+    fullPriceMilli: settings.fullPriceMilli,
+    unreadableModePrices: [...state.unreadableModePrices],
     settingSources: { ...state.sources },
     staleDefaultModelId:
       state.overrides.defaultModelId !== undefined && state.overrides.defaultModelId !== settings.defaultModelId
@@ -1362,8 +1394,33 @@ function withoutUnsetOverrides(source: Record<string, unknown>): Record<string, 
     );
     delete row[key];
   }
+  // A build-mode price this app never writes - hand-edited into the row - is
+  // taken out too, with one warning: read as set, it would show "Set here"
+  // holding `.env`'s price and the next save would freeze that.
+  for (const mode of BUILD_MODES) {
+    const key = BUILD_MODE_PRICE_FIELDS[mode].setting;
+    if (!hasOwnProperty(row, key) || isStoredBuildModePriceMilli(row[key])) continue;
+    warnOncePerPreference(
+      `stored-price:${key}`,
+      `[settings] The stored ${key} is ${JSON.stringify(row[key])}, which is not a price in thousandths of a ` +
+        'dollar from 0 to 1000000; it is ignored until Admin -> Settings -> General saves one.'
+    );
+    delete row[key];
+  }
+  // Keys an older build stored and this one no longer reads: read past, never
+  // a failure, and not carried by the next write (`storedRowOf` builds the row
+  // from the fields this build knows). Removed here so none can be mistaken
+  // for a setting.
+  for (const retired of RETIRED_SETTING_KEYS) delete row[retired];
   return row;
 }
+
+/**
+ * Stored app-settings keys that no longer mean anything: the builder's target
+ * (`defaultResumeSelection`, a default resume or group - a profile is chosen by
+ * `defaultProfileId` now) and a per-resume tailoring mode.
+ */
+const RETIRED_SETTING_KEYS = ['defaultResumeSelection', 'defaultResumeId', 'defaultGroupId', 'tailorMode'] as const;
 
 /**
  * The model a `DEFAULT_MODEL` / `ANALYSIS_MODEL` text names: a runnable
@@ -1414,7 +1471,10 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
   const readings = {
     defaultMode: envDefaultMode(env),
     defaultTheme: envDefaultTheme(env),
-    defaultResumeSelection: envDefaultResumeSelection(env),
+    defaultBuildMode: envDefaultBuildMode(env),
+    suitablePriceMilli: envBuildModePriceMilli('suitable', env),
+    partialPriceMilli: envBuildModePriceMilli('partial', env),
+    fullPriceMilli: envBuildModePriceMilli('full', env),
     defaultResumeDocxEnabled: envDefaultResumeDocx(env),
     defaultCoverLetterDocxEnabled: envDefaultCoverLetterDocx(env),
     outputBaseDir: envOutputBaseDir(env),
@@ -1428,7 +1488,10 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
   const base = cloneDefaultSettings();
   base.defaultMode = readings.defaultMode.value;
   base.defaultTheme = readings.defaultTheme.value;
-  base.defaultResumeSelection = readings.defaultResumeSelection.value;
+  base.defaultBuildMode = readings.defaultBuildMode.value;
+  base.suitablePriceMilli = readings.suitablePriceMilli.value;
+  base.partialPriceMilli = readings.partialPriceMilli.value;
+  base.fullPriceMilli = readings.fullPriceMilli.value;
   base.defaultResumeDocxEnabled = readings.defaultResumeDocxEnabled.value;
   base.defaultCoverLetterDocxEnabled = readings.defaultCoverLetterDocxEnabled.value;
   base.outputBaseDir = readings.outputBaseDir.value;
@@ -1519,7 +1582,10 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     analysisModelId: analysisStored ? 'admin' : envAnalysisModelId !== null ? 'env' : 'default',
     defaultMode: simpleSource('defaultMode'),
     defaultTheme: simpleSource('defaultTheme'),
-    defaultResumeSelection: simpleSource('defaultResumeSelection'),
+    defaultBuildMode: simpleSource('defaultBuildMode'),
+    suitablePriceMilli: simpleSource('suitablePriceMilli'),
+    partialPriceMilli: simpleSource('partialPriceMilli'),
+    fullPriceMilli: simpleSource('fullPriceMilli'),
     defaultResumeDocxEnabled: simpleSource('defaultResumeDocxEnabled'),
     defaultCoverLetterDocxEnabled: simpleSource('defaultCoverLetterDocxEnabled'),
     outputBaseDir: simpleSource('outputBaseDir'),
@@ -1536,7 +1602,10 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     analysisModelId: envAnalysisModelId ?? CODE_SETTING_DEFAULTS.analysisModelId,
     defaultMode: base.defaultMode,
     defaultTheme: base.defaultTheme,
-    defaultResumeSelection: base.defaultResumeSelection,
+    defaultBuildMode: base.defaultBuildMode,
+    suitablePriceMilli: base.suitablePriceMilli,
+    partialPriceMilli: base.partialPriceMilli,
+    fullPriceMilli: base.fullPriceMilli,
     defaultResumeDocxEnabled: base.defaultResumeDocxEnabled,
     defaultCoverLetterDocxEnabled: base.defaultCoverLetterDocxEnabled,
     outputBaseDir: normalizeOutputBaseDir(base.outputBaseDir),
@@ -1562,7 +1631,14 @@ function composeSettings(input: unknown, strict: boolean, env: EnvSource = proce
     else if (readings[key].unreadable) unreadablePrices.push({ tier, source: 'env' });
   }
 
-  return { settings, overrides, sources, defaults, limitSources, unreadablePrices };
+  // A mode priced $0 because its `.env` line could not be read (nothing stored
+  // over it): the price reads 0 like an unset one, but nobody chose that.
+  const unreadableModePrices: BuildMode[] = BUILD_MODES.filter((mode) => {
+    const key = BUILD_MODE_PRICE_FIELDS[mode].setting;
+    return !hasOwnProperty(source, key) && readings[key].unreadable;
+  });
+
+  return { settings, overrides, sources, defaults, limitSources, unreadablePrices, unreadableModePrices };
 }
 
 /**
@@ -1577,7 +1653,6 @@ function storedRowOf(state: SettingsState): Record<string, unknown> {
   const { settings, overrides } = state;
   const row: Record<string, unknown> = {
     providersEnabled: { ...settings.providersEnabled },
-    defaultGroupId: settings.defaultGroupId,
     defaultProfileId: settings.defaultProfileId,
   };
   for (const key of DEFAULTED_SETTING_KEYS) {
@@ -1679,6 +1754,20 @@ export async function getSubscriptionPrices(): Promise<SubscriptionPrices> {
 }
 
 /**
+ * What one resume costs in each build mode now, in thousandths: the
+ * administrator's price, else `.env`'s, else 0 (free). THROWS when the
+ * settings cannot be read, so a run is never priced from nothing.
+ */
+export async function getBuildModePrices(): Promise<Record<BuildMode, number>> {
+  const settings = await readSettings();
+  return {
+    suitable: settings.suitablePriceMilli,
+    partial: settings.partialPriceMilli,
+    full: settings.fullPriceMilli,
+  };
+}
+
+/**
  * The prices, and the paid tiers among them that are "not offered" only
  * because a value somebody set could not be read (`UnreadableSubscriptionPrice`)
  * - the renewal sweep's read. A tier somebody stopped offering ends at
@@ -1777,6 +1866,21 @@ export async function resolveAnalysisModel(): Promise<AIModelRecord> {
 }
 
 /**
+ * A default build mode that is none of the three, refused naming its box
+ * (`field`, `code`: PUT /api/admin/settings passes both on, as it does for a
+ * price, so the page puts the sentence under the mode choice).
+ */
+export class DefaultBuildModeError extends Error {
+  readonly field = 'defaultBuildMode';
+  readonly code = 'bad-build-mode';
+
+  constructor() {
+    super('defaultBuildMode must be "suitable", "partial" or "full".');
+    this.name = 'DefaultBuildModeError';
+  }
+}
+
+/**
  * A subscription price refused, naming the box it came from (`field`, the
  * `...Usd` name it was sent under): PUT /api/admin/settings passes `field`
  * and `code` on, so the page puts the sentence under that price.
@@ -1807,6 +1911,9 @@ function refusePriceInThousandths(body: Record<string, unknown>): void {
         'bad-price-field'
       );
     }
+  }
+  for (const mode of BUILD_MODES) {
+    if (hasOwnProperty(body, BUILD_MODE_PRICE_FIELDS[mode].setting)) throw buildModePriceFieldError(mode);
   }
 }
 
@@ -1852,6 +1959,9 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
     premiumPriceUsd: _premiumPrice,
     premiumPlusPriceUsd: _premiumPlusPrice,
     premiumMaxPriceUsd: _premiumMaxPrice,
+    suitablePriceUsd: _suitablePrice,
+    partialPriceUsd: _partialPrice,
+    fullPriceUsd: _fullPrice,
     ...changes
   } = body;
 
@@ -1920,6 +2030,16 @@ export async function updateAppSettings(input: AppSettingsUpdate): Promise<Admin
     const price = readSubscriptionPriceInput(tier, body[request]);
     if (price === null) delete row[setting];
     else row[setting] = price;
+  }
+
+  // Each build-mode price the save names, in dollars, stored in thousandths:
+  // `null` is Reset to default, '' is refused (a price is required - Reset is
+  // the button), anything else exactly the dollars typed from 0 to 1000.
+  for (const mode of BUILD_MODES) {
+    const { setting, request } = BUILD_MODE_PRICE_FIELDS[mode];
+    if (body[request] === undefined) continue;
+    if (body[request] === null) delete row[setting];
+    else row[setting] = parseBuildModePriceInput(mode, body[request]);
   }
 
   // Read as strictly as the stored row is: a field that is present and of the
@@ -2032,22 +2152,22 @@ const warnedLockedPreferences = new Set<string>();
 /**
  * Resolves a model id that was STORED rather than chosen for this run.
  *
- * A profile's model is a preference, set some time ago, and one that cannot run
+ * A resume's model is a preference, set some time ago, and one that cannot run
  * now - switched off, its seat switched off or locked on this machine, deleted -
  * is stale rather than wrong. The person generating did not cause it and cannot
  * see why from anything they are shown: an ordinary account sees only the
- * models that run, and the profile form shows a stale choice as "the default
+ * models that run, and the resume form shows a stale choice as "the default
  * will be used". So it falls back to the app default, and the log says so once,
  * naming the cause for the administrator who can fix it. Failing instead would
- * mean one untick under Admin -> Models broke every generate for every profile
+ * mean one untick under Admin -> Models broke every generate for every resume
  * that had picked that model.
  *
  * An id named in the REQUEST goes through `resolveRequestedAIModel`, where the
  * same states are refused: somebody picked that model a moment ago, and quietly
- * running another would also quietly charge another price.
+ * running another would not be what they chose.
  *
  * Stored data, not a request, so the provider forms are read as they always
- * were: a profile saved by an administrator's tooling may hold one.
+ * were: a resume saved by an administrator's tooling may hold one.
  */
 export async function resolveStoredAIModelPreference(
   storedModelId?: string
@@ -2065,23 +2185,23 @@ export async function resolveStoredAIModelPreference(
   warnOncePerPreference(
     requested,
     `[ai] A stored preference names "${requested}", which cannot run: ${found.problem} Those calls run on ` +
-      'the default model instead. Pick another model for the profile to silence this.'
+      'the default model instead. Pick another model for the resume to silence this.'
   );
   return resolveRequestedAIModel();
 }
 
 /**
- * The model id a profile save may store, checked against the list its owner
+ * The model id a resume save may store, checked against the list its owner
  * picks from: '' to inherit, the id, or `ModelUnavailableError`.
  *
- * Only a CHANGED choice is checked. The profile form sends the whole profile
- * back, and a model switched off since it was picked must not stop its owner
+ * Only a CHANGED choice is checked. The resume editor's form sends the whole
+ * record back, and a model switched off since it was picked must not stop its owner
  * saving their phone number - the stored choice already falls back to the
  * default when it is used (see resolveStoredAIModelPreference), and the form
  * says so. A NEW choice has to be one the owner could have picked: a runnable
  * model, by id.
  */
-export async function checkProfileModelChoice(requested: unknown, stored: unknown): Promise<string> {
+export async function checkResumeModelChoice(requested: unknown, stored: unknown): Promise<string> {
   const next = typeof requested === 'string' ? requested.trim() : '';
   const current = typeof stored === 'string' ? stored.trim() : '';
   if (!next || next === current) return next;
@@ -2104,8 +2224,8 @@ function warnOncePerPreference(key: string, message: string): void {
  *
  * A name that cannot run is refused with `ModelUnavailableError` - one public
  * sentence for whatever the cause, the cause itself in its `detail` and in the
- * log - because the price of a resume is its model's, and running something
- * else would charge something else. See `ModelRequestOptions` for which names a
+ * log - because the person chose that model, and running something else would
+ * not be what they asked for. See `ModelRequestOptions` for which names a
  * caller may use. Nothing runnable at all is a different failure, the
  * installation's rather than the request's: `AiUnavailableError`, a 503.
  */
@@ -2144,7 +2264,7 @@ export async function resolveRequestedAIModel(
 }
 
 /** The boxes of Admin -> Models' dialog, by the name each has in a create or edit body. */
-export const AI_MODEL_FIELDS = ['name', 'provider', 'modelName', 'pricePerResumeUsd', 'description', 'enabled'] as const;
+export const AI_MODEL_FIELDS = ['name', 'provider', 'modelName', 'description', 'enabled'] as const;
 
 export type AIModelField = (typeof AI_MODEL_FIELDS)[number];
 
@@ -2170,22 +2290,9 @@ type AIModelMutationInput = {
   modelName?: string;
   description?: string;
   enabled?: boolean;
-  /**
-   * The price per resume in DOLLARS ("0.023", or the JSON number 0.023), from
-   * $0.000 to $1000.000 in steps of $0.001. Required on a create; left out of
-   * an edit, the stored price stays.
-   */
-  pricePerResumeUsd?: unknown;
+  // No price: a `pricePerResumeUsd` in a body is not read, as `creditsPerResume`
+  // never was. What a resume costs is its build mode's (config/buildModes.ts).
 };
-
-/** The price box's value, or its refusal pinned to the box (config/pricePerResume.ts words it). */
-function priceOrRefusal(value: unknown, fallback: number | undefined): number {
-  try {
-    return parsePricePerResume(value, fallback);
-  } catch (error) {
-    throw new AIModelInputError(error instanceof Error ? error.message : String(error), 'pricePerResumeUsd');
-  }
-}
 
 /**
  * An administrator's create (no `fallback`) or edit (the stored record as
@@ -2199,8 +2306,8 @@ function priceOrRefusal(value: unknown, fallback: number | undefined): number {
  * a rename, a new description - is not asked about the list: a record saved
  * before the lists existed, or one a narrowed `.env` list no longer names,
  * keeps running and can still be renamed or switched off. Every field the
- * input leaves out keeps its stored value - the price included, so the enable
- * switch, which sends only `{ enabled }`, cannot reset what a model costs.
+ * input leaves out keeps its stored value, so the enable switch, which sends
+ * only `{ enabled }`, changes nothing else.
  */
 function normalizeAIModelMutationInput(
   input: AIModelMutationInput,
@@ -2247,7 +2354,6 @@ function normalizeAIModelMutationInput(
     modelName,
     description: normalizeAIModelText(input.description, fallback?.description || ''),
     enabled: typeof input.enabled === 'boolean' ? input.enabled : fallback?.enabled ?? true,
-    pricePerResumeMilli: priceOrRefusal(input.pricePerResumeUsd, fallback?.pricePerResumeMilli),
   };
 }
 

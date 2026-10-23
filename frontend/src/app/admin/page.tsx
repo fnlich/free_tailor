@@ -19,7 +19,7 @@ import { REPORTER_HOME } from '@/lib/roles';
  * admin to the profiles page, because `isAdmin` is false while it is unknown.
  * A reporter never gets this far - /admin is not on their allowlist, so
  * AuthGate sends them to Report Jobs first - but if they did, that is where
- * they would go: the profiles are a builder's.
+ * they would go: the resumes are a builder's.
  */
 export default function AdminPage() {
   const router = useRouter();

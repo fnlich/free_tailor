@@ -20,7 +20,7 @@ function builtInIds() {
     .filter((id) => !templateNamed(id).source);
 }
 
-function profile(extra = {}) {
+function resumeRecord(extra = {}) {
   return {
     id: 'p1',
     name: 'A Person',
@@ -39,7 +39,7 @@ function profile(extra = {}) {
 }
 
 test('the flat layout renders skill names, not headings', () => {
-  const data = prepareResumeRenderData(profile({ profileSettings: { technicalSkillsLayout: 'flat' } }));
+  const data = prepareResumeRenderData(resumeRecord({ resumeSettings: { technicalSkillsLayout: 'flat' } }));
   assert.equal(data.skillCategories.length, 1, 'one group, so every template keeps its single loop');
   assert.equal(data.skillCategories[0].category, '', 'and that group has no heading');
 
@@ -51,16 +51,16 @@ test('the flat layout renders skill names, not headings', () => {
   }
 });
 
-test('the flat layout does not pad the list with skills the profile never claimed', () => {
+test('the flat layout does not pad the list with skills the resume never claimed', () => {
   // The padding rules exist to make a CATEGORIZED block look right - five per
   // heading, at least five headings. A list with no headings has no such shape
   // to fill, and filling it anyway invents claims on somebody's resume.
-  const claimed = profile().skills.map((skill) => skill.toLowerCase());
-  const data = prepareResumeRenderData(profile({ profileSettings: { technicalSkillsLayout: 'flat' } }));
+  const claimed = resumeRecord().skills.map((skill) => skill.toLowerCase());
+  const data = prepareResumeRenderData(resumeRecord({ resumeSettings: { technicalSkillsLayout: 'flat' } }));
   for (const skill of data.skillCategories[0].skills) {
     assert.ok(
       claimed.includes(skill.toLowerCase()),
-      `"${skill}" is on the resume but not in the profile`
+      `"${skill}" is on the resume but not in the resume`
     );
   }
 });
@@ -68,24 +68,24 @@ test('the flat layout does not pad the list with skills the profile never claime
 test('the categorized layout puts each skill under its library heading, and adds none', () => {
   // It used to fill an inferred block out to five headings of five from the
   // library. Nothing pads a block now, on any path.
-  const data = prepareResumeRenderData(profile());
+  const data = prepareResumeRenderData(resumeRecord());
   assert.ok(data.skillCategories.length > 1);
   assert.equal(data.skillCategories[0].category, 'Languages');
   assert.match(data.hardSkills[0], /^Languages: /);
-  const claimed = profile().skills.map((skill) => skill.toLowerCase()).sort();
+  const claimed = resumeRecord().skills.map((skill) => skill.toLowerCase()).sort();
   const shown = data.skillCategories.flatMap((group) => group.skills).map((skill) => skill.toLowerCase()).sort();
   assert.deepEqual(shown, claimed);
 });
 
-test("a profile's own grouping beats the library's guess", () => {
+test("a resume's own grouping beats the library's guess", () => {
   // The library has no idea that a particular person's Vault is infrastructure
   // rather than a library. Somebody who says so has to be believed.
-  const inferred = prepareResumeRenderData(profile());
+  const inferred = prepareResumeRenderData(resumeRecord());
   const guessed = inferred.skillCategories.find((group) => group.skills.includes('Vault'));
   assert.equal(guessed.category, 'Frameworks and Libraries', 'what the library guesses today');
 
   const authored = prepareResumeRenderData(
-    profile({
+    resumeRecord({
       skillCategories: [
         { category: 'Languages', skills: ['C#', 'Python', 'C'] },
         { category: 'Cloud and Infrastructure', skills: ['Vault', 'Azure'] },
@@ -96,10 +96,10 @@ test("a profile's own grouping beats the library's guess", () => {
   assert.equal(placed.category, 'Cloud and Infrastructure');
 });
 
-test("a tailored resume's own skill groups beat the profile's grouping", () => {
+test("a tailored resume's own skill groups beat the source's grouping", () => {
   // The model writes the block for the posting; the author's headings decide
   // an untailored render only.
-  const authored = profile({ skillCategories: [{ category: 'Languages', skills: ['C#', 'Python', 'C'] }] });
+  const authored = resumeRecord({ skillCategories: [{ category: 'Languages', skills: ['C#', 'Python', 'C'] }] });
   const data = prepareResumeRenderData(authored, {
     title: 'Engineer',
     summary: 'S',
@@ -124,7 +124,7 @@ test('a skill the author never placed still reaches the resume', () => {
   // dropping it would mean grouping your skills quietly deleted the ones you
   // had not got round to.
   const data = prepareResumeRenderData(
-    profile({ skillCategories: [{ category: 'Languages', skills: ['C#'] }] })
+    resumeRecord({ skillCategories: [{ category: 'Languages', skills: ['C#'] }] })
   );
   const all = data.skillCategories.flatMap((group) => group.skills);
   assert.ok(all.includes('Keras'), 'an unplaced skill must not vanish');
@@ -136,7 +136,7 @@ test("the author's headings are not padded to a count they never chose", () => {
   // Applying it to somebody's own headings files skills under headings they
   // did not pick for them.
   const data = prepareResumeRenderData(
-    profile({ skillCategories: [{ category: 'Languages', skills: ['C#', 'Python', 'C'] }] })
+    resumeRecord({ skillCategories: [{ category: 'Languages', skills: ['C#', 'Python', 'C'] }] })
   );
   const languages = data.skillCategories.find((group) => group.category === 'Languages');
   assert.deepEqual(languages.skills, ['C#', 'Python', 'C']);
@@ -145,8 +145,8 @@ test("the author's headings are not padded to a count they never chose", () => {
 test('flat wins over a grouping, and the grouping survives it', () => {
   // A rendering choice, not a storage one: switching to flat and back must not
   // lose the headings somebody typed in.
-  const stored = profile({
-    profileSettings: { technicalSkillsLayout: 'flat' },
+  const stored = resumeRecord({
+    resumeSettings: { technicalSkillsLayout: 'flat' },
     skillCategories: [{ category: 'Languages', skills: ['C#'] }],
   });
   const data = prepareResumeRenderData(stored);
@@ -155,7 +155,7 @@ test('flat wins over a grouping, and the grouping survives it', () => {
   assert.deepEqual(
     stored.skillCategories,
     [{ category: 'Languages', skills: ['C#'] }],
-    'the profile itself is not rewritten by rendering it'
+    'the resume itself is not rewritten by rendering it'
   );
 });
 
@@ -169,7 +169,7 @@ test('every built-in template renders the flat layout without an empty heading',
 
   for (const id of ids) {
     const html = await generatePreviewHTML(
-      profile({ profileSettings: { technicalSkillsLayout: 'flat' } }),
+      resumeRecord({ resumeSettings: { technicalSkillsLayout: 'flat' } }),
       templateNamed(id)
     );
     const body = html.slice(html.indexOf('</style>'));
@@ -190,7 +190,7 @@ test('every built-in template renders the flat layout without an empty heading',
 
 test('every built-in template still renders headings when categorized', async () => {
   for (const id of builtInIds()) {
-    const html = await generatePreviewHTML(profile(), templateNamed(id));
+    const html = await generatePreviewHTML(resumeRecord(), templateNamed(id));
     const body = html.slice(html.indexOf('</style>'));
     assert.ok(body.includes('Languages'), `${id} lost its category headings`);
   }
@@ -207,8 +207,8 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-const GROUPED = profile();
-const PLAIN = profile({ profileSettings: { technicalSkillsLayout: 'flat' } });
+const GROUPED = resumeRecord();
+const PLAIN = resumeRecord({ resumeSettings: { technicalSkillsLayout: 'flat' } });
 
 /** A template as an uploaded file holds one. */
 function uploaded(id, body, head = '') {

@@ -31,7 +31,7 @@ export const PROMPT_CATEGORIES: Readonly<Record<PromptCategoryId, PromptCategory
     label: 'Extracting Prompts',
     description:
       'Turn source material into structured data: a job posting into keywords and requirements, ' +
-      'a resume PDF into a profile, a scraped page into job attributes.',
+      'an uploaded PDF into a resume, a scraped page into job attributes.',
     order: 0,
   },
   building: {

@@ -1,8 +1,9 @@
 import type { AiChoice } from '../../config/aiPreferences';
+import type { BuildMode } from '../../config/buildModes';
 import { PublicError } from '../../middleware/publicError';
 import { generationRenderConcurrency } from '../../config/operational';
-import { resolveTemplateForProfile } from '../templateChoice';
-import { profileForTemplate } from '../profileService';
+import { resolveTemplateForResume } from '../templateChoice';
+import { resumeForTemplate } from '../resumeDocument';
 import { generateResumeDOCX } from '../../generators/docxGenerator';
 import { saveCoverLetter, saveCoverLetterDOCX } from '../../generators/coverLetterGenerator';
 import { generateResumePDF } from '../../generators/pdfGenerator';
@@ -14,7 +15,7 @@ import {
 } from '../resumeService';
 import { getOrCreateAnalysis, loadAnalysis, type StoredJobAnalysis } from '../jobAnalysis/gate';
 import { writeBackFor, type SheetRowRef } from '../jobAnalysis/submit';
-import type { Profile } from '../../types/profile';
+import type { Resume } from '../../types/resume';
 import type { JobAnalysis, TailoredContent } from '../../types/template';
 import { getGeneratedOutputPath, type RunOutputPlace } from '../../utils/generatedPath';
 import { claimRunFileStems } from './runFiles';
@@ -54,36 +55,45 @@ export type ResumeJob = {
 /**
  * Everything one resume needs, and nothing that cannot be written to a database.
  *
- * A PROFILE ID rather than the profile, and a JOB INDEX rather than the job.
- * Both are the same saving twice over: the profile is reloaded when the task
+ * A RESUME ID rather than the stored resume, and a JOB INDEX rather than the
+ * job. Both are the same saving twice over: the resume is reloaded when the task
  * runs, and the jobs live once on the batch instead of once per task - thirty
  * tasks on one posting would otherwise carry thirty copies of it, on disk and in
  * memory alike.
  */
 export type ResumeTaskPayload = {
   batchId: string;
-  profileId: string;
+  resumeId: string;
   jobIndex: number;
   templateId?: string;
   format: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx: boolean;
   choice: AiChoice;
   /**
-   * What this resume was charged, in thousandths of a dollar: the
-   * `pricePerResumeMilli` of the model `choice` resolved to at submit.
+   * What this resume was charged, in thousandths of a dollar: the build mode's
+   * price when it was submitted (settings `suitablePriceMilli`,
+   * `partialPriceMilli` or `fullPriceMilli`; the model plays no part).
    * Snapshotted, and outside `choice`, because a refund must give back what
-   * was TAKEN, not what the model costs by then - an administrator can
+   * was TAKEN, not what the mode costs by then - an administrator can
    * reprice it while the batch runs. Every task the routes queue has one
    * (`buildTasks`); read through `taskCostMilli`.
    */
   costMilli?: number;
+  /**
+   * The run's builder mode, snapshotted at submit: Choose Suitable Resume
+   * tailors nothing (the cover letter is its only model call), Partial Tailor
+   * and Fully Tailor call `tailorResume`. ABSENT on a task queued before v4.2
+   * and restored after it, which builds `partial` - what every resume without
+   * a stored choice did.
+   */
+  buildMode?: BuildMode;
   /** Tailored content a preview already produced, so the model is not re-asked. */
   tailoredContent?: import('../../types/template').TailoredContent;
   /**
    * The job's stored analysis (`job_analyses.id`). Set at submission when the
    * posting already had one, and otherwise written onto every task of the job
    * the moment the first of them obtains it (`AnalysisHooks.recorded`) - so a
-   * retry, a restored task and a sibling profile's task all skip the
+   * retry, a restored task and a sibling resume's task all skip the
    * analysis step. Persisted with the payload, which `taskRow` writes whole
    * and the restore reads back whole.
    */
@@ -98,12 +108,14 @@ export type ResumeTaskPayload = {
 };
 
 export type ResumeTaskInput = {
-  profile: Profile;
+  resume: Resume;
   job: ResumeJob;
   templateId?: string;
   format: 'pdf' | 'docx' | 'both';
   includeCoverLetterDocx: boolean;
   choice: AiChoice;
+  /** The run's builder mode (`ResumeTaskPayload.buildMode`); absent builds `partial`. */
+  buildMode?: BuildMode;
   tailoredContent?: import('../../types/template').TailoredContent;
   /** The task's own `analysisId`, when it carries one: the analysis step is skipped. */
   analysisId?: string;
@@ -130,8 +142,8 @@ export const RESUME_TASK_KIND = 'resume';
  * every resume in it is the one real way this leaks.
  */
 export type ResumeTaskResult = {
-  profileId: string;
-  profileName: string;
+  resumeId: string;
+  resumeName: string;
   companyName: string;
   role: string;
   pdf?: string;
@@ -171,7 +183,7 @@ export function resumeRenderConcurrency(): number {
  * reaches the gate: a retry repeats only the step that failed (tailoring, the
  * PDF...), and a task restored after a restart is the same task. Only a task
  * with none goes through the gate - the first of a job's tasks to get there
- * makes the job's one call, and every other profile's task waits for it
+ * makes the job's one call, and every other resume's task waits for it
  * there - and a FAILED analysis stored nothing, so its retry is the first
  * analysis, not a second. A job whose posting is too short to analyse has
  * none, and its resume is built untailored, as before.
@@ -215,19 +227,19 @@ async function analysisFor(input: ResumeTaskInput, signal: AbortSignal): Promise
 
 /**
  * The analysis step on its own, for the tests: a whole task would also drag
- * in a template, a profile on disk and a PDF render.
+ * in a template, a resume on disk and a PDF render.
  */
 export const __analysisForTests = analysisFor;
 
 /**
- * Content a page held from an earlier preview, finished against the profile
+ * Content a page held from an earlier preview, finished against the resume
  * as it is NOW - what /resume/preview does with the same content.
  *
- * The preview was tailored for whatever the profile said then, and the person
+ * The preview was tailored for whatever the resume said then, and the person
  * can flip a section switch or edit their headline, roles or strengths before
  * pressing Generate. Running the same post-processing the tailoring call ends
  * with puts all of it right - the soft-skill group to its section or back
- * into the block, the profile's own strengths, its role facts and headline -
+ * into the block, the resume's own strengths, its role facts and headline -
  * and it is idempotent on content it already produced. It makes no model
  * call: content a page sends back is never revised again.
  *
@@ -236,11 +248,11 @@ export const __analysisForTests = analysisFor;
  */
 function finaliseHeldContent(
   content: TailoredContent,
-  profile: Profile,
+  resume: Resume,
   analysis: JobAnalysis
 ): TailoredContent {
   try {
-    return parseTailoredResumeContent(JSON.stringify(content), profile, analysis);
+    return parseTailoredResumeContent(JSON.stringify(content), resume, analysis);
   } catch (error) {
     warnOnce(
       'heldTailoredContentUnreadable',
@@ -275,15 +287,16 @@ export async function runResumeTask(
   input: ResumeTaskInput,
   assignment: Assignment
 ): Promise<ResumeTaskResult> {
-  const { profile, job, choice } = input;
+  const { resume, job, choice } = input;
+  const buildMode: BuildMode = input.buildMode ?? 'partial';
 
-  // The same choice the preview makes, against the profile as it is now.
-  const template = await resolveTemplateForProfile(profile, input.templateId);
+  // The same choice the preview makes, against the resume as it is now.
+  const template = await resolveTemplateForResume(resume, input.templateId);
   if (!template) throw new Error('Default template not available');
 
   const stored = await analysisFor(input, assignment.signal);
   const analysis = stored?.analysis;
-  // What, with the profile, the model and the prompt, keys this resume's
+  // What, with the source resume, the model and the prompt, keys this resume's
   // tailoring and cover letter in the cache (services/tailorCache.ts): the
   // same resume generated again reuses them, charged as usual.
   const cacheContext = { analysisId: stored?.id ?? null, templateId: template.id ?? null };
@@ -291,13 +304,23 @@ export async function runResumeTask(
   // Tailored for the template it is drawn with: a section switch that
   // template has no section for is off for the model too, as it is in the
   // PDF and the DOCX below.
-  const sectionProfile = profileForTemplate(profile, template);
+  const sectionResume = resumeForTemplate(resume, template);
   let tailoredContent = input.tailoredContent;
   if (tailoredContent && analysis) {
-    tailoredContent = finaliseHeldContent(tailoredContent, sectionProfile, analysis);
+    tailoredContent = finaliseHeldContent(tailoredContent, sectionResume, analysis);
   }
-  if (!tailoredContent && analysis) {
-    tailoredContent = await tailorResume(sectionProfile, analysis, choice, assignment.signal, cacheContext);
+  // Choose Suitable Resume tailors nothing: the resume prints as written
+  // (`tailoredContent` stays undefined, the untailored path), and its only
+  // model call is the cover letter below.
+  if (!tailoredContent && analysis && buildMode !== 'suitable') {
+    tailoredContent = await tailorResume(
+      sectionResume,
+      analysis,
+      choice,
+      buildMode === 'full' ? 'full' : 'partial',
+      assignment.signal,
+      cacheContext
+    );
   }
 
   // The role the sheet or the form gave, else the posting's own title as the
@@ -309,41 +332,51 @@ export async function runResumeTask(
   const coverLetterBody = tailoredContent?.coverLetter?.trim()
     ? tailoredContent.coverLetter.trim()
     : // Told what the tailored resume says when there is one, so the letter
-      // matches it - a Fully tailored profile sends the letter no work of its own.
-      await generateCoverLetter(profile, job.companyName, role, choice, assignment.signal, cacheContext, tailoredContent);
+      // matches it - a Fully tailored resume sends the letter no work of its own.
+      await generateCoverLetter(
+        resume,
+        job.companyName,
+        role,
+        choice,
+        assignment.signal,
+        cacheContext,
+        tailoredContent,
+        buildMode === 'full' ? 'full' : 'partial'
+      );
 
-  const placed = await getGeneratedOutputPath(profile, job.companyName, role, {
+  const placed = await getGeneratedOutputPath(resume, job.companyName, role, {
     sourceRowNumber: job.sourceRowNumber,
     output: input.output,
   });
   const pathInfo = input.claim ? claimRunFileStems(input.claim.batchId, input.claim.seq, placed) : placed;
-  const coverLetterPdf = await saveCoverLetter(profile, coverLetterBody, pathInfo);
+  const coverLetterPdf = await saveCoverLetter(resume, coverLetterBody, pathInfo);
   const coverLetterDocx = input.includeCoverLetterDocx
-    ? await saveCoverLetterDOCX(profile, coverLetterBody, pathInfo)
+    ? await saveCoverLetterDOCX(resume, coverLetterBody, pathInfo)
     : undefined;
 
   const result: ResumeTaskResult = {
-    profileId: profile.id,
-    profileName: profile.name,
+    resumeId: resume.id,
+    resumeName: resume.name,
     companyName: job.companyName,
     role,
     coverLetterPdf,
     coverLetterDocx,
-    tailored: Boolean(analysis),
+    // Differs from "had an analysis" only for Choose Suitable Resume.
+    tailored: Boolean(tailoredContent),
   };
 
   const release = await getProviderSemaphore('resume-render', RENDER_CONCURRENCY).acquire();
   try {
     if (input.format === 'both') {
       const [pdf, docx] = await Promise.all([
-        generateResumePDF(profile, template, tailoredContent, pathInfo, job.companyName, role),
-        generateResumeDOCX(profile, template, tailoredContent, pathInfo, job.companyName, role),
+        generateResumePDF(resume, template, tailoredContent, pathInfo, job.companyName, role),
+        generateResumeDOCX(resume, template, tailoredContent, pathInfo, job.companyName, role),
       ]);
       result.pdf = pdf;
       result.docx = docx;
     } else if (input.format === 'docx') {
       result.docx = await generateResumeDOCX(
-        profile,
+        resume,
         template,
         tailoredContent,
         pathInfo,
@@ -352,7 +385,7 @@ export async function runResumeTask(
       );
     } else {
       result.pdf = await generateResumePDF(
-        profile,
+        resume,
         template,
         tailoredContent,
         pathInfo,
@@ -368,30 +401,30 @@ export async function runResumeTask(
 }
 
 /**
- * The profile a queued resume names was deleted before it ran.
+ * The source resume that a queued build names was deleted before it ran.
  *
  * Its owner's own doing, and nothing an administrator can fix, so the stored
  * text says what happened in their terms rather than "contact your
  * administrator" - the id stays out of it and goes to the log as detail. And
- * not retried: no later attempt will find the profile either.
+ * not retried: no later attempt will find the resume either.
  */
-export class ProfileGoneError extends PublicError {
+export class ResumeGoneError extends PublicError {
   readonly retryable = false;
 
-  constructor(profileId: string) {
-    super('The profile for this resume was deleted before it could be built.', {
+  constructor(resumeId: string) {
+    super('This resume was deleted before it could be built.', {
       status: 410,
-      detail: `Profile ${profileId} no longer exists, so this resume cannot be generated.`,
+      detail: `Resume ${resumeId} no longer exists, so this resume cannot be generated.`,
     });
-    this.name = 'ProfileGoneError';
+    this.name = 'ResumeGoneError';
   }
 }
 
 /**
  * Turns a stored payload back into a running resume.
  *
- * The indirection a restart costs: a task on disk names its profile and its job
- * rather than holding them, so this is where they are looked up again. A profile
+ * The indirection a restart costs: a task on disk names its resume and its job
+ * rather than holding them, so this is where they are looked up again. A resume
  * deleted while its task was queued fails that task by name instead of throwing
  * something about `undefined`.
  */
@@ -415,15 +448,15 @@ export type AnalysisHooks = {
 
 export function makeResumeRunner(
   readJobs: (batchId: string) => ResumeJob[] | undefined,
-  readProfile: (profileId: string) => Profile | null,
+  readResume: (resumeId: string) => Resume | null,
   hooks: AnalysisHooks = {}
 ) {
   return async (payload: unknown, assignment: Assignment): Promise<ResumeTaskResult> => {
     const input = payload as ResumeTaskPayload;
 
-    const profile = readProfile(input.profileId);
-    if (!profile) {
-      throw new ProfileGoneError(input.profileId);
+    const resume = readResume(input.resumeId);
+    if (!resume) {
+      throw new ResumeGoneError(input.resumeId);
     }
 
     const jobs = readJobs(input.batchId);
@@ -439,12 +472,13 @@ export function makeResumeRunner(
     // where the dispatcher put it.
     return runPinnedToProvider(assignment.queue, () => runResumeTask(
       {
-        profile,
+        resume,
         job,
         templateId: input.templateId,
         format: input.format,
         includeCoverLetterDocx: input.includeCoverLetterDocx,
         choice: input.choice,
+        buildMode: input.buildMode ?? 'partial',
         ...(output ? { output } : {}),
         ...(input.tailoredContent ? { tailoredContent: input.tailoredContent } : {}),
         // The payload's own id first; a job stamped by a sibling task since

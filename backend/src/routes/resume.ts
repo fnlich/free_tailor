@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { assertProfileScopeAllowed, isAdmin, requireAdmin, requireUser } from '../middleware/auth';
+import { isAdmin, requireAdmin, requireUser } from '../middleware/auth';
 import { requestSignal } from '../middleware/requestSignal';
 import { parseTailoredResumeContent, tailorResume } from '../services/resumeService';
 import {
@@ -10,23 +10,23 @@ import {
 } from '../services/jobAnalysis/gate';
 import { jobFieldLabel, listJobFieldsForClient } from '../config/jobFields';
 import { generatePreviewHTML } from '../generators/pdfGenerator';
-import { noTemplateAvailable, resolveTemplateForProfile } from '../services/templateChoice';
-import { getUserAppSettings, type ModelRequestOptions } from '../config/aiModelConfig';
+import { noTemplateAvailable, resolveTemplateForResume } from '../services/templateChoice';
+import { getAppSettings, getUserAppSettings } from '../config/aiModelConfig';
 import { effectiveOutputPathSuffix } from '../services/outputPath';
-import {
-  normalizeAiPreferences,
-  resolveAiChoice,
-  type AiChoice,
-  type AiPreferences,
-} from '../config/aiPreferences';
-import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
+import { normalizeAiPreferences, resolveAiChoice, type AiPreferences } from '../config/aiPreferences';
+import type { BuildMode } from '../config/buildModes';
 import { issuePreviewToken } from '../services/credits/previewToken';
-import { PublicError, publicItemError, sendPublicError } from '../middleware/publicError';
+import { PublicError, sendPublicError } from '../middleware/publicError';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
-import { Profile } from '../types/profile';
-import { getProfileFor, listProfilesFor, NO_MATCHING_PROFILES, type Viewer } from '../database/profileRepository';
-import { profileForTemplate } from '../services/profileService';
-import { JobAnalysis, PreviewResumeRequest, TailoredContent } from '../types/template';
+import { getResumeFor } from '../database/resumeRepository';
+import { anyProfile } from '../database/profileTree';
+import { getDb } from '../database/sqlite';
+import { resumeForTemplate } from '../services/resumeDocument';
+import { resumeLabelOf } from '../services/profileRules';
+import { planRun, readBuildMode, resolveRunTarget } from '../services/resumeChoice';
+import type { TaskMatch } from '../services/resumeMatch';
+import type { Resume } from '../types/resume';
+import type { JobAnalysis, TailoredContent } from '../types/template';
 
 const router = Router();
 /**
@@ -34,14 +34,14 @@ const router = Router();
  *
  * At the router rather than per route, so a route added later is protected by
  * default. Before v2 these were open, which was defensible with one user on one
- * machine and is not once profiles belong to people.
+ * machine and is not once resumes belong to people.
  */
 router.use(requireUser);
 
 
 // `requestSignal` - the signal that aborts a model call when the client goes
-// away - lives in middleware/requestSignal.ts now, shared with the profile
-// editor's Write with AI route (routes/profiles.ts).
+// away - lives in middleware/requestSignal.ts now, shared with the resume
+// editor's Write with AI route (routes/resumes.ts).
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -126,7 +126,7 @@ router.get('/models', async (req: Request, res: Response) => {
 /*
  * The skill library is ONE store, read for every account's resumes, and
  * managed from the admin Skill Library page. Reading it and confirming a skill
- * typed into a profile (additive and idempotent - the profile editor's own
+ * typed into a resume (additive and idempotent - the resume editor's own
  * flow) stay open to every account; adding one with its category and
  * priority, changing one and deleting one are the library management that
  * page does, and were open to any signed-in account, which let anybody rename
@@ -221,35 +221,9 @@ router.post('/analyze-prompt-test', requireAdmin, async (req: Request, res: Resp
 });
 
 /**
- * The requester's non-disabled profiles, optionally narrowed to a set of ids.
- *
- * Scoped by the viewer, and the narrowing happens AFTER: naming somebody else's
- * profile id in `profileIds` selects nothing rather than reaching it, so the
- * request builds fewer resumes than asked rather than one it should not.
- */
-async function loadAllProfiles(viewer: Viewer, profileIds?: string[]): Promise<Profile[]> {
-  const selectedIds = Array.isArray(profileIds)
-    ? new Set(profileIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
-    : null;
-  return listProfilesFor(viewer)
-    .filter((profile) => !selectedIds || selectedIds.has(profile.id))
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
-/**
- * How many AI-only batch items one request offers up at once.
- *
- * The provider's own process-wide semaphore is what actually bounds concurrent
- * `claude` processes across simultaneous requests; this only decides how many
- * items this loop hands it. Deliberately NOT set above that limit: the excess
- * can do nothing but queue, and a queued item still spends its caller's
- * deadline, so a wider fan-out buys nothing and risks turning a slow batch
- * into a failed one.
- */
-/**
  * The model a single request asks for.
  *
- * An override for THIS run only. Absent, it falls through to the profile's own
+ * An override for THIS run only. Absent, it falls through to the resume's own
  * setting and then to the app default, which is why it is normalized into
  * preferences rather than resolved here.
  */
@@ -260,257 +234,172 @@ function readAiOverrides(body: unknown): AiPreferences {
   });
 }
 
-async function tailorResumesForProfiles(
-  profiles: Profile[],
-  analysis: JobAnalysis,
-  /** The posting's stored analysis: with each profile and model, the tailoring cache's key. */
-  analysisId: string | null,
-  requestChoice: AiChoice,
-  overrides: AiPreferences,
-  options: ModelRequestOptions,
-  templateId: string | undefined,
-  signal?: AbortSignal
-): Promise<{
-  tailoredByProfileId: Map<string, TailoredContent>;
-  /** The model each profile's content was written on, for its preview token. */
-  modelIdByProfileId: Map<string, string>;
-  failures: Array<{ profileId: string; profileName: string; error: string }>;
-}> {
-  const tailoredByProfileId = new Map<string, TailoredContent>();
-  const modelIdByProfileId = new Map<string, string>();
-  const failures: Array<{ profileId: string; profileName: string; error: string }> = [];
-
-  // Tailoring is pure model work with no shared state, so running profiles in
-  // parallel is only a question of how many at once. It used to be one - a
-  // five-profile batch was five full model calls end to end, with the user
-  // waiting through all of them. Failures are still collected per profile
-  // rather than aborting the batch, exactly as the sequential loop did.
-  // Resolved per profile, not once for the batch: the model is a PROFILE
-  // setting, so a batch of profiles that disagree must
-  // run each on its own choice rather than on whichever profile came first.
-  // The request's own overrides still win over every one of them.
-  // Width from the provider the REQUEST resolved to. Each profile may still
-  // resolve its own model below - that is a per-profile setting - but the
-  // capacity question is about the resource in front of the batch, and asking
-  // it once per profile would read the settings row once per profile to get the
-  // same answer.
-  const capacity = await resolveBatchCapacity(requestChoice);
-  const outcomes = await mapWithConcurrency(profiles, capacity.limit, async (profile) => {
-    const choice = await resolveAiChoice(overrides, profile, options);
-    modelIdByProfileId.set(profile.id, choice.modelId);
-    // Tailored for the template it will be drawn with, which the preview
-    // below resolves the same way: a section that template cannot print is
-    // off for the model too (see `profileForTemplate`).
-    const template = await resolveTemplateForProfile(profile, templateId);
-    return tailorResume(profileForTemplate(profile, template), analysis, choice, signal, {
-      analysisId,
-      templateId: template?.id ?? null,
-    });
-  });
-
-  outcomes.forEach((outcome, index) => {
-    const profile = profiles[index];
-    if (outcome.ok) {
-      tailoredByProfileId.set(profile.id, outcome.value);
-      return;
-    }
-    failures.push({
-      profileId: profile.id,
-      profileName: profile.name,
-      error: publicItemError(outcome.error, 'Failed to tailor the resume', `tailor ${profile.id}`),
-    });
-  });
-
-  return { tailoredByProfileId, modelIdByProfileId, failures };
+/**
+ * What the preview's answer says about the resume it drew: the person, the
+ * resume, the mode and why this resume was chosen. `match` is null for a
+ * re-render of content a page already holds, which chooses nothing.
+ */
+function previewIdentity(
+  resume: Resume,
+  profile: { id: string; name: string } | null,
+  buildMode: BuildMode,
+  match: TaskMatch | null
+) {
+  return {
+    profileId: profile?.id ?? resume.profileId ?? null,
+    profileName: profile?.name ?? null,
+    resumeId: resume.id,
+    resumeLabel: resumeLabelOf(resume),
+    buildMode,
+    match,
+  };
 }
 
-// Preview resumes for all profiles
-router.post('/preview-all', async (req: Request, res: Response) => {
-  try {
-    const {
-      templateId,
-      profileIds,
-    } = req.body as {
-      templateId?: string;
-      jobDescription?: string;
-      jobLink?: string;
-      analysisId?: string;
-      model?: string;
-      profileIds?: string[];
-    };
-
-    const aiOverrides = readAiOverrides(req.body);
-    const requestOptions: ModelRequestOptions = { admin: isAdmin(req) };
-    const selectedModel = await resolveAiChoice(aiOverrides, null, requestOptions);
-
-    const profiles = await loadAllProfiles(req.user ?? null, profileIds);
-    if (profiles.length === 0) {
-      res.status(400).json({ error: NO_MATCHING_PROFILES });
-      return;
-    }
-    // Previewing several profiles is the first half of building for several,
-    // and is refused on the same terms (403 `subscription-too-low`) - before
-    // the analysis, so a refusal never costs a model call.
-    assertProfileScopeAllowed(req.user, { profileIds, resolvedCount: profiles.length });
-
-
-    // One analysis for every profile, through the gate: the one the page
-    // names, else the posting's own - stored, or made now, once.
-    const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
-    const analysis: JobAnalysis | undefined = storedAnalysis?.analysis;
-
-    const previews: Array<{
-      profileId: string;
-      profileName: string;
-      html: string;
-      tailoredContent?: TailoredContent;
-      /** Names the model that wrote `tailoredContent`; finalising is charged for that model. */
-      previewToken?: string;
-    }> = [];
-    const bulkTailoring = analysis
-      ? await tailorResumesForProfiles(
-          profiles,
-          analysis,
-          storedAnalysis?.id ?? null,
-          selectedModel,
-          aiOverrides,
-          requestOptions,
-          templateId,
-          requestSignal(req, res)
-        )
-      : null;
-
-    if (bulkTailoring && bulkTailoring.failures.length > 0) {
-      // Built from each profile's PUBLIC sentence, so it is public too.
-      throw new PublicError(
-        `Failed to tailor ${bulkTailoring.failures.length} profile(s): ${bulkTailoring.failures
-          .slice(0, 3)
-          .map((item) => `${item.profileName}: ${item.error}`)
-          .join(' | ')}${bulkTailoring.failures.length > 3 ? ' | ...' : ''}`,
-        { status: 502 }
-      );
-    }
-
-    const capacity = await resolveBatchCapacity(selectedModel);
-    const previewable = profiles.filter((profile): profile is Profile => Boolean(profile));
-    const outcomes = await mapWithConcurrency(previewable, capacity.limit, async (profile) => {
-      const template = await resolveTemplateForProfile(profile, templateId);
-      if (!template) {
-        throw new Error('Default template not available');
-      }
-
-      const tailoredContent = analysis
-        ? bulkTailoring
-          ? bulkTailoring.tailoredByProfileId.get(profile.id)
-          : await tailorResume(profileForTemplate(profile, template), analysis, selectedModel, requestSignal(req, res), {
-              analysisId: storedAnalysis?.id ?? null,
-              templateId: template.id ?? null,
-            })
-        : undefined;
-      const writtenOn = tailoredContent
-        ? bulkTailoring?.modelIdByProfileId.get(profile.id) ?? selectedModel.modelId
-        : null;
-
-      return {
-        tailoredContent,
-        preview: {
-          profileId: profile.id,
-          profileName: profile.name,
-          html: await generatePreviewHTML(profile, template, tailoredContent),
-          tailoredContent,
-          ...(writtenOn
-            ? { previewToken: issuePreviewToken({ userId: req.user!.id, profileId: profile.id, modelId: writtenOn }) }
-            : {}),
-        },
-      };
-    });
-
-    // A missing template fails THIS profile, not the whole preview.
-    //
-    // The loop this replaced answered 500 and returned the moment one profile
-    // had no template, discarding every preview already built - including the
-    // model calls that produced them. A batch that throws away finished work
-    // over one bad row is the thing every other batch path here avoids.
-    for (const [index, outcome] of outcomes.entries()) {
-      const profile = previewable[index];
-      if (!outcome.ok) {
-        console.error(`Error previewing resume for profile ${profile.id} (${profile.name}):`, outcome.error);
-        continue;
-      }
-      previews.push(outcome.value.preview);
-    }
-
-    res.json({
-      previews,
-      tailored: !!analysis,
-      ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
-    });
-  } catch (error) {
-    sendPublicError(req, res, error, 'Failed to preview the resumes');
-  }
-});
-
-// Preview resume HTML
+/**
+ * Preview a resume: exactly one of
+ *
+ *  - `{ profileId, buildMode?, ...posting, templateId?, model? }`: CHOOSE, then
+ *    preview. The resume is chosen as a run would choose it for this posting
+ *    (services/resumeChoice.ts `planRun`: the matcher's pick for Choose
+ *    Suitable Resume and Partial Tailor, the profile's effective default for
+ *    Fully Tailor). Choose Suitable Resume draws it as written - no model call,
+ *    `tailored: false`, no token. Partial and Fully tailor it and answer a
+ *    `previewToken` for (this account, that resume, that mode), which
+ *    finalising presents to be charged that mode's price. A posting too short
+ *    to analyse is drawn as written, untailored, in every mode.
+ *  - `{ resumeId, tailoredContent, ... }`: a RE-RENDER of content the page
+ *    holds (re-read against the resume as it is now). No model call, no token.
+ *
+ * The answer adds `profileId`, `profileName`, `resumeId`, `resumeLabel`,
+ * `buildMode` and `match` (why this resume), so the page can send back
+ * `previewedResumeId` and show the choice.
+ */
 router.post('/preview', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   console.log('[Resume timing] /resume/preview started');
   try {
-    const { profileId, templateId, tailoredContent: manualTailoredContent }: PreviewResumeRequest = req.body;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
+    const resumeId = typeof body.resumeId === 'string' ? body.resumeId.trim() : '';
+    const templateId = typeof body.templateId === 'string' ? body.templateId : undefined;
+    const requestedMode = readBuildMode(body.buildMode);
+    const mode: BuildMode = requestedMode ?? (await getAppSettings()).defaultBuildMode;
 
-    if (!profileId) {
-      res.status(400).json({ error: 'Profile ID is required' });
-      return;
-    }
-
-    // Load profile
-    const profile = getProfileFor(req.user ?? null, profileId);
-    if (!profile) {
-      res.status(404).json({ error: 'Profile not found' });
-      return;
-    }
-    if (profile.disabled) {
-      res.status(400).json({ error: 'Selected profile is disabled' });
-      return;
-    }
-
-    // Resolved here rather than at the top of the handler: the model
-    // is a per-profile setting, so the profile has to be loaded
-    // before they can be read. The request's own overrides still win.
-    const selectedModel = await resolveAiChoice(readAiOverrides(req.body), profile, { admin: isAdmin(req) });
-
-    // Ensure built-in templates exist, then load requested template
-    const template = await resolveTemplateForProfile(profile, templateId);
-    if (!template) {
-      throw noTemplateAvailable();
-    }
-
-    // If job description provided, tailor the resume. Existing/manual content is
-    // re-read against the profile as it is now (parseTailoredResumeContent) -
-    // never tailored or revised again: a model call is what was paid for.
-    let tailoredContent = manualTailoredContent;
-    const storedAnalysis = await analysisForRequest(req, res, req.body ?? {});
-    const analysis = storedAnalysis?.analysis;
-    // Tailoring reads the profile through its template, as the render does: a
-    // switch the template has no section for is off for the model too.
-    const sectionProfile = profileForTemplate(profile, template);
-    if (tailoredContent && analysis) {
-      tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), sectionProfile, analysis);
-    }
-    // Only content THIS request wrote gets a token naming its model. Content
-    // the request supplied is re-rendered, and a token for it would let any
-    // model's work be re-labelled as the one the request names.
-    let previewToken: string | undefined;
-    if (!tailoredContent && analysis) {
-      tailoredContent = await tailorResume(sectionProfile, analysis, selectedModel, requestSignal(req, res), {
-        analysisId: storedAnalysis?.id ?? null,
-        templateId: template.id ?? null,
+    if (profileId && resumeId) {
+      throw new PublicError('Name the profile to preview, or the resume to show again, not both.', {
+        status: 400,
+        code: 'profile-or-resume',
       });
-      previewToken = issuePreviewToken({ userId: req.user!.id, profileId: profile.id, modelId: selectedModel.modelId });
+    }
+    if (!profileId && !resumeId) {
+      throw new PublicError('Choose a profile to preview.', { status: 400, code: 'profile-required' });
     }
 
-    // Generate HTML preview
+    if (resumeId) {
+      // A RE-RENDER of content the page holds: no choice, no model call.
+      const heldContent = body.tailoredContent;
+      if (!heldContent || typeof heldContent !== 'object' || Array.isArray(heldContent)) {
+        throw new PublicError('Send the previewed content to show it again, or name the profile to preview.', {
+          status: 400,
+          code: 'content-required',
+        });
+      }
+      const resume = getResumeFor(req.user ?? null, resumeId);
+      if (!resume) {
+        res.status(404).json({ error: 'Resume not found' });
+        return;
+      }
+      if (resume.disabled) {
+        res.status(400).json({ error: 'Selected resume is disabled' });
+        return;
+      }
+      const template = await resolveTemplateForResume(resume, templateId);
+      if (!template) throw noTemplateAvailable();
+
+      // Existing/manual content is re-read against the resume as it is now
+      // (parseTailoredResumeContent) - never tailored or revised again: a model
+      // call is what was paid for. Read through the template, as the render
+      // does: a switch the template has no section for is off for the model too.
+      const storedAnalysis = await analysisForRequest(req, res, body);
+      const analysis = storedAnalysis?.analysis;
+      let tailoredContent = heldContent as TailoredContent;
+      if (analysis) {
+        tailoredContent = parseTailoredResumeContent(
+          JSON.stringify(tailoredContent),
+          resumeForTemplate(resume, template),
+          analysis
+        );
+      }
+      const html = await timeResumeStage('Preview HTML generation', () =>
+        generatePreviewHTML(resume, template, tailoredContent)
+      );
+      const profile = resume.profileId ? anyProfile(getDb(), resume.profileId) : null;
+      console.log(`[Resume timing] /resume/preview finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
+      res.json({
+        html,
+        tailored: true,
+        tailoredContent,
+        ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
+        ...previewIdentity(resume, profile, mode, null),
+      });
+      return;
+    }
+
+    // CHOOSE, then preview. The refusals that cost nothing come first: another
+    // account's or unknown profile (404), one with no enabled resume (400), a
+    // model the request may not use (400) - all before the posting is analysed.
+    const admin = isAdmin(req);
+    const overrides = readAiOverrides(body);
+    const unit = await resolveRunTarget(req.user ?? null, profileId, { preview: true });
+    if (mode !== 'suitable' && overrides.modelId) {
+      await resolveAiChoice(overrides, unit.defaultResume ?? unit.candidates[0], { admin });
+    }
+
+    // One analysis, through the gate: the one the page names, else the
+    // posting's own - stored, or made now, once. None for a posting too short.
+    const storedAnalysis = await analysisForRequest(req, res, body);
+    const analysis: JobAnalysis | undefined = storedAnalysis?.analysis;
+
+    const [planned] = await planRun(
+      [
+        {
+          analysis: analysis ?? null,
+          text: typeof body.jobDescription === 'string' ? body.jobDescription : '',
+          title: typeof body.role === 'string' ? body.role : '',
+          ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
+        },
+      ],
+      unit,
+      mode
+    );
+    const resume = planned.resume;
+
+    const template = await resolveTemplateForResume(resume, templateId);
+    if (!template) throw noTemplateAvailable();
+
+    // Choose Suitable Resume tailors nothing: the resume is drawn as written.
+    // Partial and Fully call the model, and only content THIS request wrote
+    // gets a token naming its mode; a posting with no analysis is drawn as
+    // written too (nothing to tailor to).
+    let tailoredContent: TailoredContent | undefined;
+    let previewToken: string | undefined;
+    if (mode !== 'suitable' && analysis) {
+      const choice = await resolveAiChoice(overrides, resume, { admin });
+      // Tailored through the template it will be drawn with: a section that
+      // template cannot print is off for the model too (`resumeForTemplate`).
+      tailoredContent = await tailorResume(
+        resumeForTemplate(resume, template),
+        analysis,
+        choice,
+        mode,
+        requestSignal(req, res),
+        { analysisId: storedAnalysis?.id ?? null, templateId: template.id ?? null }
+      );
+      previewToken = issuePreviewToken({ userId: req.user!.id, resumeId: resume.id, buildMode: mode });
+    }
+
     const html = await timeResumeStage('Preview HTML generation', () =>
-      generatePreviewHTML(profile, template, tailoredContent)
+      generatePreviewHTML(resume, template, tailoredContent)
     );
 
     console.log(`[Resume timing] /resume/preview finished in ${formatDuration(requestStartedAt, process.hrtime.bigint())}`);
@@ -520,6 +409,7 @@ router.post('/preview', async (req: Request, res: Response) => {
       tailoredContent,
       ...(previewToken ? { previewToken } : {}),
       ...(storedAnalysis ? { analysisId: storedAnalysis.id } : {}),
+      ...previewIdentity(resume, unit.profile, mode, planned.match),
     });
   } catch (error) {
     sendPublicError(req, res, error, 'Failed to generate the preview');

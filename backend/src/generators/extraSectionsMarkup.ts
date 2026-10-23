@@ -1,4 +1,4 @@
-import { EXTRA_SECTION_KINDS, sectionKindDefinition, type ExtraSectionKind } from '../config/profileSections';
+import { EXTRA_SECTION_KINDS, sectionKindDefinition, type ExtraSectionKind } from '../config/sectionCatalogue';
 import { EXTRA_SECTIONS_MACRO, isGeneratableCustomKey, templateNamesField } from './sectionLocator';
 
 /**
@@ -190,7 +190,7 @@ const BASELINE_STYLE =
 /**
  * Puts a stylesheet the compile step generates into markup that does not
  * carry one of that id yet: before `</head>` when there is one, else at
- * `fallbackAt`. In the head on purpose - test/profilePreview.test.js's reading
+ * `fallbackAt`. In the head on purpose - test/resumeDraftPreview.test.js's reading
  * of a preview's body starts after the last `</style>`, and so would a
  * reader's. Idempotent by the stylesheet's id. Shared with the Plain safety
  * net (plainSkillsMarkup.ts).

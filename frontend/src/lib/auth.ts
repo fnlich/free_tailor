@@ -10,9 +10,10 @@ export type { UserRole } from './roles';
  * Signing in, and what the app knows about who is signed in.
  *
  * The types here mirror what `/api/auth` returns rather than restating the
- * subscriptions: the subscription's label, its profile limit and how many
- * profiles the account has all arrive with the account, so a page never has to work out an
- * entitlement for itself and cannot work it out differently from the server.
+ * subscriptions: the subscription's label, its limit on profiles (people) and
+ * how many profiles the account has all arrive with the account, so a page
+ * never has to work out an entitlement for itself and cannot work it out
+ * differently from the server.
  */
 
 export type Account = {
@@ -25,8 +26,9 @@ export type Account = {
   subscription: AccountSubscriptionId;
   subscriptionLabel: string;
   subscriptionSummary: string;
-  /** null means unlimited. */
+  /** How many profiles (people) the tier allows; null means unlimited. Resumes are never counted. */
   profileLimit: number | null;
+  /** How many profiles (people) the account has. */
   profilesUsed: number;
   /** The credit balance, in thousandths of a dollar: 3977 is $3.977. Show it with `formatMoney`. */
   balanceMilli: number;
@@ -43,7 +45,7 @@ export type Account = {
 } & Partial<AccountOutputPath>;
 
 /**
- * Where an account files its own resumes (Settings -> Profile -> Resume
+ * Where an account files its own resumes (Settings -> Account -> Resume
  * files, owner decision O3): the folder path after the administrator's
  * prefix. On GET and PUT /auth/account only - not on the session's account
  * from /auth/me - and only for an account that builds resumes; a reporter's
@@ -65,7 +67,7 @@ export type AccountSubscription = {
   label: string;
   profileLimit: number | null;
   summary: string;
-  /** What the tier includes, a line each: "Up to 5 profiles", "Groups"... */
+  /** What the tier includes, a line each: "Up to 5 profiles", ... */
   features: string[];
   order: number;
 };
@@ -139,7 +141,7 @@ export const authApi = {
       body: JSON.stringify({ name }),
     }),
 
-  /** The account as Settings -> Profile reads it: with its folder path, for a builder. */
+  /** The account as Settings -> Account reads it: with its folder path, for a builder. */
   account: () => apiFetch<{ account: Account }>('/auth/account'),
 
   /**
@@ -339,7 +341,7 @@ export function describeProfileUsage(account: Account): string {
   return `${account.profilesUsed} of ${account.profileLimit}`;
 }
 
-/** True when the account is at its subscription's profile limit. */
+/** True when the account is at its subscription's limit on profiles (people); resumes never count. */
 export function isAtProfileLimit(account: Account): boolean {
   if (account.role === 'admin') return false;
   return account.profileLimit !== null && account.profilesUsed >= account.profileLimit;

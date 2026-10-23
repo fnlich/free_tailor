@@ -237,7 +237,7 @@ router.get('/:id/items/:itemId/:kind', async (req: Request, res: Response) => {
 /**
  * What an entry is called inside the zip.
  *
- * Company, then profile, then the file's own name - so an archive of three
+ * Company, then resume, then the file's own name - so an archive of three
  * hundred resumes opens as something a person can navigate rather than three
  * hundred files in one flat list. The segments are sanitized with the same
  * helper the output tree uses, because a company called `A/B` would otherwise
@@ -245,8 +245,8 @@ router.get('/:id/items/:itemId/:kind', async (req: Request, res: Response) => {
  */
 function entryName(item: OrderItem, file: OrderFile): string {
   const company = sanitizePathSegment(item.companyName) || 'unknown';
-  const profile = sanitizePathSegment(item.profileName) || 'unknown';
-  return `${company}/${profile}/${path.basename(file.path)}`;
+  const resume = sanitizePathSegment(item.resumeName) || 'unknown';
+  return `${company}/${resume}/${path.basename(file.path)}`;
 }
 
 /**
@@ -294,7 +294,7 @@ router.get('/:id/zip', async (req: Request, res: Response) => {
         const absolute = await getGeneratedFilePath(file.path, order.outputRoot);
         if (!absolute) continue;
 
-        // Two profiles of the same name for one company would otherwise write
+        // Two resumes of the same name for one company would otherwise write
         // the same entry twice, and most unzip tools silently keep whichever
         // came last. A suffix is uglier than a lost file is dangerous.
         let name = entryName(item, file);

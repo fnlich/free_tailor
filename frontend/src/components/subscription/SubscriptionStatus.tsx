@@ -41,7 +41,7 @@ export default function SubscriptionStatus({
         </Field>
         <Field
           label="Profiles used"
-          hint="Your profiles belong to this account and are not visible to anybody else on this installation."
+          hint="A profile is a person you build resumes for, and holds any number of resumes. They belong to this account and are not visible to anybody else on this installation."
         >
           <StaticValue>{describeProfileUsage(account)}</StaticValue>
         </Field>

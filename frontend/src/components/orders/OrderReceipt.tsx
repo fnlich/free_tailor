@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Notice } from '@/components/ui/kit';
 import { ApiResponseError } from '@/lib/api';
+import { BUILD_MODE_LABELS, isBuildMode, type BuildMode } from '@/lib/buildModes';
 import type { SubmitBatchResponse } from '@/lib/generationQueue';
 import {
   cancelOrderQuestion,
@@ -29,7 +30,10 @@ export type PlacedOrder = {
   number: string;
   total: number;
   jobCount: number;
-  profileCount: number;
+  /** The build mode the run was submitted in; null when the server did not say. */
+  buildMode: BuildMode | null;
+  /** The profile the run builds, by name; '' when the page did not say. */
+  profileName: string;
   skippedNote: string;
   /** Set once Cancel on the receipt went through: what it stopped. */
   cancelled?: CancelOutcome;
@@ -42,16 +46,34 @@ export type PlacedOrder = {
 };
 
 /** The receipt for a submission the server filed as an order; null when it did not (no order number). */
-export function placedOrderFrom(submitted: SubmitBatchResponse, skippedNote = ''): PlacedOrder | null {
+export function placedOrderFrom(
+  submitted: SubmitBatchResponse,
+  skippedNote = '',
+  profileName = ''
+): PlacedOrder | null {
   if (!submitted.orderId || !submitted.orderNumber) return null;
   return {
     id: submitted.orderId,
     number: submitted.orderNumber,
     total: submitted.total,
     jobCount: submitted.jobCount,
-    profileCount: submitted.profileCount,
+    buildMode: isBuildMode(submitted.buildMode) ? submitted.buildMode : null,
+    profileName,
     skippedNote,
   };
+}
+
+/**
+ * What the run is building, as the receipt's closing clause: the mode and the
+ * profile - "Partial Tailor for Jane Doe" - or only the part the page knows.
+ */
+function describeBuild(order: Pick<PlacedOrder, 'buildMode' | 'profileName'>): string {
+  const mode = order.buildMode ? BUILD_MODE_LABELS[order.buildMode] : '';
+  const profile = order.profileName.trim();
+  if (mode && profile) return `: ${mode} for ${profile}`;
+  if (mode) return `: ${mode}`;
+  if (profile) return `: for ${profile}`;
+  return '';
 }
 
 /** How often the receipt asks whether its order is still being built: as often as /orders does. */
@@ -170,9 +192,8 @@ export default function OrderReceipt({
           </p>
         ) : (
           <p className="mt-1">
-            {plural(order.total, 'resume')} for {plural(order.jobCount, 'job')} across{' '}
-            {plural(order.profileCount, 'profile')} {order.total === 1 ? 'is' : 'are'} being built. You can close
-            this page - they are waiting for you under{' '}
+            {plural(order.total, 'resume')} for {plural(order.jobCount, 'job')} {order.total === 1 ? 'is' : 'are'}{' '}
+            being built{describeBuild(order)}. You can close this page - they are waiting for you under{' '}
             <Link href={`/orders/${order.id}`} className="font-semibold underline underline-offset-2">
               Order status &amp; built resumes
             </Link>

@@ -3,7 +3,7 @@ const test = require('node:test');
 
 process.env.AI_UNLOCKED_PROVIDERS = 'claude-cli';
 
-const { loadFresh, useTempStorage, useAdminEmails } = require('./helpers');
+const { loadFresh, seedProfileWithResumes, useTempStorage, useAdminEmails } = require('./helpers');
 
 /**
  * The batch HTTP surface.
@@ -28,24 +28,20 @@ async function serve() {
   const account = users.createUser({ email: 'batch-runner@example.com' });
   const token = users.createSession(account.id);
 
-  const { saveProfile } = loadFresh('../dist/database/profileRepository');
-  const { buildNewProfile } = loadFresh('../dist/services/profileService');
-  saveProfile({
-    ...buildNewProfile(
-      {
-        name: 'Ada',
-        title: 'Engineer',
-        skills: ['C#'],
-        contact: { email: 'a@b.c', phone: '1', location: 'X' },
-        summary: 's',
-        experience: [],
-        strengths: [],
-        education: [],
-      },
-      'p1'
-    ),
-    ownerId: account.id,
+  // One person holding two resumes: a run builds the profile, and the matcher
+  // picks one of them for each job.
+  const resumeInput = (id, title) => ({
+    id,
+    name: 'Ada',
+    title,
+    skills: ['C#'],
+    contact: { email: 'a@b.c', phone: '1', location: 'X' },
+    summary: 's',
+    experience: [],
+    strengths: [],
+    education: [],
   });
+  const { profileId } = seedProfileWithResumes(account, 'Ada', [resumeInput('p1', 'Engineer'), resumeInput('p2', 'Analyst')]);
 
   const queue = loadFresh('../dist/services/queue/index');
   queue.resetGenerationQueueForTests();
@@ -66,6 +62,7 @@ async function serve() {
     dbDir,
     routes,
     account,
+    profileId,
     token,
     origin: `http://127.0.0.1:${port}`,
     close: () => server.close(),
@@ -101,13 +98,13 @@ test('submitting returns before any of the work has run', async () => {
   const server = await serve();
   try {
     const startedAt = Date.now();
-    const response = await server.post('/batches', { jobs: jobsFor(10), profileIds: ['p1'] });
+    const response = await server.post('/batches', { jobs: jobsFor(10), profileId: server.profileId });
     const elapsed = Date.now() - startedAt;
     const body = await response.json();
 
     assert.equal(response.status, 202, 'accepted, not "here is your answer"');
     assert.ok(body.batchId.startsWith('bat_'));
-    assert.equal(body.total, 10, 'ten jobs and one profile is ten tasks');
+    assert.equal(body.total, 10, 'ten jobs and one resume per job is ten tasks');
     assert.equal(body.jobCount, 10);
     assert.ok(elapsed < 5_000, `submitting took ${elapsed}ms, so it waited for work`);
   } finally {
@@ -115,14 +112,17 @@ test('submitting returns before any of the work has run', async () => {
   }
 });
 
-test('the cross-product is built on the server, not sent by the page', async () => {
-  // Three jobs and one profile is three tasks. The page sends jobs and profile
-  // ids; it does not have to know that a task is a pair.
+test('the tasks are built on the server, not sent by the page', async () => {
+  // Three jobs for one profile is three tasks - one resume chosen for each job
+  // (this profile holds two). The page sends jobs and the profile; it does not
+  // have to know that a task is a pair.
   const server = await serve();
   try {
-    const body = await (await server.post('/batches', { jobs: jobsFor(3) })).json();
+    const body = await (await server.post('/batches', { jobs: jobsFor(3), profileId: server.profileId })).json();
     assert.equal(body.total, 3);
-    assert.equal(body.profileCount, 1);
+    assert.equal(body.jobCount, 3);
+    assert.equal(body.buildMode, 'partial', 'the builder mode in effect when the run names none');
+    assert.equal('profileCount' in body, false, 'a run has exactly one profile: no count of them');
   } finally {
     server.close();
   }
@@ -131,7 +131,7 @@ test('the cross-product is built on the server, not sent by the page', async () 
 test('a snapshot says where the work has got to', async () => {
   const server = await serve();
   try {
-    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(4) })).json();
+    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(4), profileId: server.profileId })).json();
     const snapshot = await (await server.call(`/batches/${batchId}`)).json();
 
     assert.equal(snapshot.batchId, batchId);
@@ -151,7 +151,7 @@ test('a batch can be found again without knowing its id', async () => {
   // browser entirely.
   const server = await serve();
   try {
-    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(2) })).json();
+    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(2), profileId: server.profileId })).json();
     const listed = await (await server.call('/batches?active=1')).json();
     assert.ok(
       listed.batches.some((batch) => batch.batchId === batchId) ||
@@ -182,7 +182,7 @@ test('the stream opens with a complete snapshot', async () => {
   // never has to reconcile the events it missed.
   const server = await serve();
   try {
-    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(3) })).json();
+    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(3), profileId: server.profileId })).json();
     const stream = await server.call(`/batches/${batchId}/stream`);
 
     assert.equal(stream.status, 200);
@@ -204,15 +204,44 @@ test('a submission that could never work is refused before anything is queued', 
   // Refused once, rather than discovered thirty times as thirty failed tasks.
   const server = await serve();
   try {
-    const noJobs = await server.post('/batches', { jobs: [] });
+    const noJobs = await server.post('/batches', { jobs: [], profileId: server.profileId });
     assert.equal(noJobs.status, 400);
     assert.match((await noJobs.json()).error, /At least one job/);
 
     const noCompany = await server.post('/batches', {
       jobs: [{ role: 'Engineer', jobDescription: 'x'.repeat(200) }],
+      profileId: server.profileId,
     });
     assert.equal(noCompany.status, 400);
     assert.match((await noCompany.json()).error, /company name/);
+
+    // Decision 10: a run builds exactly ONE profile, on every tier (this account
+    // is an administrator and is no exception). Anything else is refused once.
+    const ONE = 'Choose one profile to build for.';
+    for (const [what, extra] of [
+      ['no profile', {}],
+      ['a list of profiles', { profileIds: [server.profileId] }],
+      ['a list beside the profile', { profileId: server.profileId, profileIds: [server.profileId, 'other'] }],
+      ['resume ids', { profileId: server.profileId, resumeIds: ['p1'] }],
+      ['a resume id only', { resumeIds: ['p1'] }],
+    ]) {
+      const refused = await server.post('/batches', { jobs: jobsFor(1), ...extra });
+      assert.equal(refused.status, 400, what);
+      const body = await refused.json();
+      assert.equal(body.code, 'one-profile-per-run', what);
+      assert.equal(body.error, ONE, what);
+    }
+
+    const unknown = await server.post('/batches', { jobs: jobsFor(1), profileId: 'no-such-profile' });
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json()).code, 'profile-not-found');
+
+    const junkMode = await server.post('/batches', { jobs: jobsFor(1), profileId: server.profileId, buildMode: 'lazy' });
+    assert.equal(junkMode.status, 400);
+    const junk = await junkMode.json();
+    assert.equal(junk.code, 'bad-build-mode');
+    assert.equal(junk.error, 'buildMode must be "suitable", "partial" or "full".');
+    assert.deepEqual((await (await server.call('/batches')).json()).batches, [], 'none of them queued anything');
   } finally {
     server.close();
   }
@@ -225,6 +254,7 @@ test('a missing role is NOT refused when a job description could name one', asyn
   try {
     const response = await server.post('/batches', {
       jobs: [{ companyName: 'Acme', jobDescription: 'A long job description. '.repeat(10) }],
+      profileId: server.profileId,
     });
     assert.equal(response.status, 202);
   } finally {
@@ -235,7 +265,7 @@ test('a missing role is NOT refused when a job description could name one', asyn
 test('cancelling reports what it dropped, and twice is not an error', async () => {
   const server = await serve();
   try {
-    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(6) })).json();
+    const { batchId } = await (await server.post('/batches', { jobs: jobsFor(6), profileId: server.profileId })).json();
     const first = await server.post(`/batches/${batchId}/cancel`, {});
     if (first.status === 200) {
       const outcome = await first.json();
@@ -251,7 +281,7 @@ test('cancelling reports what it dropped, and twice is not an error', async () =
   }
 });
 
-test('a task routes to a queue by the profile model, not by the request', async () => {
+test('a task routes to a queue by the resume model, not by the request', async () => {
   const { routeFor } = loadFresh('../dist/routes/generation');
   // The POOL of the model's type, named by the type id - which is also the
   // built-in provider's lane. The queue then places each task with whichever
@@ -279,16 +309,16 @@ test('a model id no model has - a removed provider\'s included - is refused, and
   // showed; so a request naming a model that cannot run is refused.
   const server = await serve();
   try {
-    const refused = await server.post('/batches', { jobs: jobsFor(2), profileIds: ['p1'], model: 'free-hybrid' });
+    const refused = await server.post('/batches', { jobs: jobsFor(2), profileId: server.profileId, model: 'free-hybrid' });
     assert.equal(refused.status, 400);
     assert.equal((await refused.json()).code, 'model-unavailable');
 
-    const response = await server.post('/batches', { jobs: jobsFor(2), profileIds: ['p1'] });
+    const response = await server.post('/batches', { jobs: jobsFor(2), profileId: server.profileId });
     assert.equal(response.status, 202);
     const body = await response.json();
     assert.equal(body.total, 2, 'only the second submission queued anything');
     const claude = body.queues['claude-cli'];
-    assert.equal(claude.queued + claude.running, 2, 'both resumes are on the seat');
+    assert.equal(claude.queued + claude.running, 2, 'both jobs\' resumes are on the seat');
 
     // Once the providers are read, a lane per provider - the three built-in
     // ones on an install with none added - and no other.
@@ -309,7 +339,7 @@ test('the batch endpoints are closed to a request with no session', async () => 
     const submitted = await server.callAnonymously('/batches', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jobs: jobsFor(1), profileIds: ['p1'] }),
+      body: JSON.stringify({ jobs: jobsFor(1), profileId: server.profileId }),
     });
     assert.equal(submitted.status, 401, 'submitting work needs an account');
   } finally {
@@ -334,7 +364,7 @@ test('a batch belongs to the account that submitted it', async () => {
     const strangerToken = users.createSession(stranger.id);
 
     const submitted = await (
-      await server.post('/batches', { jobs: jobsFor(2), profileIds: ['p1'] })
+      await server.post('/batches', { jobs: jobsFor(2), profileId: server.profileId })
     ).json();
 
     const asStranger = (path, init = {}) =>

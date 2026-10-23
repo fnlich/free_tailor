@@ -33,13 +33,13 @@ export function storeTailorCache(entry: {
   content: string;
   modelId: string;
   analysisId: string | null;
-  profileId: string | null;
+  resumeId: string | null;
   createdAt?: string;
 }): void {
   getDb()
     .prepare(
-      `INSERT INTO tailor_cache (cache_key, kind, content, model_id, analysis_id, profile_id, created_at)
-       VALUES (@cacheKey, @kind, @content, @modelId, @analysisId, @profileId, @createdAt)
+      `INSERT INTO tailor_cache (cache_key, kind, content, model_id, analysis_id, resume_id, created_at)
+       VALUES (@cacheKey, @kind, @content, @modelId, @analysisId, @resumeId, @createdAt)
        ON CONFLICT(cache_key) DO NOTHING`
     )
     .run({

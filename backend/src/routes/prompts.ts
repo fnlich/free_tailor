@@ -20,7 +20,7 @@ const router = Router();
  *
  * Split because the prompts are shared: they are how EVERY account's resumes
  * are built, so one user editing the tailoring prompt changes what everybody
- * else gets. Reading stays open to users so a profile can pick which prompt its
+ * else gets. Reading stays open to users so a resume can pick which prompt its
  * runs use - but only what that picker needs. A prompt's body, its variables
  * and the model override it carries (a seat and a CLI model id) are the
  * administrator's, and so are the routes that validate, preview and list

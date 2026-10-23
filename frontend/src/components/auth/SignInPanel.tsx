@@ -214,7 +214,7 @@ export default function SignInPanel() {
       ) : (
         <div className="tl-card w-full max-w-md p-6 sm:p-8">
           <h1 className="text-2xl font-bold tracking-tight text-ink">Sign in</h1>
-          <p className="mt-2 text-sm text-muted">Tailor keeps your profiles to your own account.</p>
+          <p className="mt-2 text-sm text-muted">Tailor keeps your resumes to your own account.</p>
 
           {optionsError && (
             <Notice tone="error" className="mt-6">

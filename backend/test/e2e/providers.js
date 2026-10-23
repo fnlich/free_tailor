@@ -28,11 +28,12 @@
  *     nothing
  *   - no horizontal page scroll at 390px on Admin -> Models
  *   - Admin -> Models' own dialog (owner decisions M1, M2): Create New Model
- *     at the top right; a price the server would refuse is refused under its
- *     box before anything is sent; a display name another tab took meanwhile
- *     is refused BY THE SERVER, pinned under the name box; Edit saves a new
- *     price; Set default and Use for analysis move the badges and say "Set
- *     here", Reset to default and "Use the default model" put them back
+ *     at the top right; the page says a resume costs the price of the builder
+ *     mode (Settings > General > Price per resume), and a model has no price -
+ *     no column, no box; a display name another tab took meanwhile is refused
+ *     BY THE SERVER, pinned under the name box; Edit saves a new description;
+ *     Set default and Use for analysis move the badges and say "Set here",
+ *     Reset to default and "Use the default model" put them back
  *
  * Servers are expected to be up already, the backend preloaded with the stub
  * seat and sharing DB_DIR with this script:
@@ -56,8 +57,8 @@ const DIST = process.env.E2E_DIST || path.join(__dirname, '..', '..', 'dist');
 require(path.join(DIST, 'config', 'env'));
 const users = require(path.join(DIST, 'database', 'userRepository'));
 const orders = require(path.join(DIST, 'database', 'orderRepository'));
-const { saveProfile } = require(path.join(DIST, 'database', 'profileRepository'));
-const { buildNewProfile } = require(path.join(DIST, 'services', 'profileService'));
+const { saveResume } = require(path.join(DIST, 'database', 'resumeRepository'));
+const { buildNewResume } = require(path.join(DIST, 'services', 'resumeDocument'));
 
 const API = process.env.E2E_API || 'http://127.0.0.1:3001/api';
 const APP = process.env.E2E_APP || 'http://127.0.0.1:3000';
@@ -169,9 +170,9 @@ async function main() {
   const asAdmin = apiAs(adminToken);
   const asPerson = apiAs(personToken);
 
-  const profileId = `p-prov-${stamp}`;
-  saveProfile({
-    ...buildNewProfile(
+  const resumeId = `p-prov-${stamp}`;
+  saveResume({
+    ...buildNewResume(
       {
         name: 'Ada Provider',
         title: 'Senior Engineer',
@@ -192,7 +193,7 @@ async function main() {
         skills: ['TypeScript', 'Docker'],
         education: [],
       },
-      profileId
+      resumeId
     ),
     ownerId: admin.id,
   });
@@ -203,7 +204,7 @@ async function main() {
   const seededBatch = `b-e2e-${stamp}`;
   const personOrder = orders.createOrder(
     { userId: person.id, batchId: seededBatch, label: 'Seeded', retentionDays: 7 },
-    [{ seq: 0, profileId: 'p-none', profileName: 'Plain User', companyName: 'Globex', role: 'Engineer', costMilli: 0 }]
+    [{ seq: 0, resumeId: 'p-none', resumeName: 'Plain User', companyName: 'Globex', role: 'Engineer', costMilli: 0 }]
   );
   orders.markItemRunning(seededBatch, 0, 'claude-cli');
 
@@ -402,11 +403,18 @@ async function main() {
     check("and the Claude row counts its providers that can take work", general.typeRow);
 
     /* ---------------------------------------- an order, built on Team B */
+    // A run builds ONE profile (a person) in one build mode: the profile the
+    // raw writer filed Ada's resume under, and the mode the resume was always
+    // built in before modes were the run's (Partial Tailor).
+    const adminProfiles = (await asAdmin('/profiles')).body;
+    const adaProfile = Array.isArray(adminProfiles) ? adminProfiles.find((profile) => profile.defaultResumeId === resumeId) : null;
+    check('the resume is filed under a profile of its own, the one an order names', Boolean(adaProfile), JSON.stringify(adminProfiles));
     const placed = await asAdmin('/generation/batches', {
       method: 'POST',
       body: JSON.stringify({
         mode: 'order',
-        profileIds: [profileId],
+        profileId: adaProfile?.id,
+        buildMode: 'partial',
         jobs: [{ companyName: 'Initech', jobDescription: POSTING }],
       }),
     });
@@ -464,28 +472,35 @@ async function main() {
     const before = (await asAdmin('/admin/settings')).body;
     await page.goto(`${APP}/admin/models`, { waitUntil: 'networkidle2' });
     await until(page, () => Boolean(document.querySelector('[data-model-id]')), 20_000);
+    const modelsPage = await page.evaluate(() => ({
+      costSentence: /What a resume costs is set per builder mode under Settings > General > Price per resume\./.test(document.body.innerText),
+      priceColumn: Array.from(document.querySelectorAll('.tl-table thead th')).some((th) => /price/i.test(th.textContent)),
+      priceInRows: Array.from(document.querySelectorAll('tr[data-model-id]')).some((row) => /\$\d/.test(row.innerText)),
+    }));
+    check(
+      'Admin -> Models says what a resume costs is the builder mode\'s price, with no price column and no price on a model',
+      modelsPage.costSentence && !modelsPage.priceColumn && !modelsPage.priceInRows,
+      JSON.stringify(modelsPage)
+    );
     check('Create New Model opens the dialog', await pressButton(page, 'Create New Model', 'main header'));
     await until(page, () => Boolean(document.querySelector('[role="dialog"] #model-display-name')), 5_000);
     await setBox(page, '#model-display-name', modelName);
-    await setBox(page, '#model-price-per-resume', '0.0005');
-    await pressButton(page, 'Create model', '[role="dialog"]');
-    await wait(300);
-    under = await errorUnder(page, 'model-price-per-resume');
-    check(
-      'a price the server would refuse is refused under its box, and the dialog stays',
-      under?.invalid && /Price per resume/.test(under.text) && (await page.evaluate(dialogOpen)),
-      JSON.stringify(under)
-    );
+    // A model has no price: what a resume costs is the build mode's, set on
+    // Settings > General > Price per resume, and the page says so.
+    const noPrice = await page.evaluate(() => ({
+      box: Boolean(document.querySelector('[role="dialog"] [id*="price"]')),
+      field: Boolean(document.getElementById('model-display-name')),
+    }));
+    check('the dialog has a name box and no price box - a model has no price', noPrice.field && !noPrice.box, JSON.stringify(noPrice));
     // Another administrator takes the name meanwhile: only the server can know.
     const codexFree = before.providerModelOptions
       .find((entry) => entry.provider === 'codex-cli')
       ?.models.find((option) => !before.aiModels.some((model) => model.provider === 'codex-cli' && model.modelName.toLowerCase() === option.value.toLowerCase()))?.value;
     const taken = await asAdmin('/admin/models', {
       method: 'POST',
-      body: JSON.stringify({ name: modelName, provider: 'codex-cli', modelName: codexFree, pricePerResumeUsd: '0' }),
+      body: JSON.stringify({ name: modelName, provider: 'codex-cli', modelName: codexFree }),
     });
     const takenId = taken.body?.aiModels?.find((model) => model.name === modelName)?.id ?? null;
-    await setBox(page, '#model-price-per-resume', '0.023');
     await pressButton(page, 'Create model', '[role="dialog"]');
     await until(page, () => /already the name of/.test(document.querySelector('[role="dialog"]')?.innerText ?? ''), 10_000);
     under = await errorUnder(page, 'model-display-name');
@@ -499,16 +514,26 @@ async function main() {
     await pressButton(page, 'Create model', '[role="dialog"]');
     await until(page, (name) => document.body.innerText.includes(`${name} created.`), 10_000, `${modelName} B`);
     const createdId = (await asAdmin('/admin/settings')).body?.aiModels?.find((model) => model.name === `${modelName} B`)?.id;
-    check('the model is created, priced as typed', Boolean(createdId), String(createdId));
+    check('the model is created', Boolean(createdId), String(createdId));
     const rowSel = `tr[data-model-id="${createdId}"]`;
-    check('its row reads $0.023', await page.evaluate((sel) => /\$0\.023/.test(document.querySelector(sel)?.innerText ?? ''), rowSel));
+    check(
+      'its row names no price - a model has none',
+      await page.evaluate((sel) => {
+        const text = document.querySelector(sel)?.innerText ?? '';
+        return text.includes('E2E Model') && !/\$\d/.test(text);
+      }, rowSel)
+    );
 
+    const description = `Edited by the providers walkthrough ${stamp}`;
     await pressButton(page, 'Edit', rowSel);
-    await until(page, () => Boolean(document.querySelector('[role="dialog"] #model-price-per-resume')), 5_000);
-    await setBox(page, '#model-price-per-resume', '0.05');
+    await until(page, () => Boolean(document.querySelector('[role="dialog"] #model-description')), 5_000);
+    await setBox(page, '#model-description', description);
     await pressButton(page, 'Save model', '[role="dialog"]');
-    await until(page, (sel) => /\$0\.05\b/.test(document.querySelector(sel)?.innerText ?? ''), 10_000, rowSel);
-    check('Edit saves a new price', await page.evaluate((sel) => /\$0\.05\b/.test(document.querySelector(sel)?.innerText ?? ''), rowSel));
+    await until(page, (sel, text) => (document.querySelector(sel)?.innerText ?? '').includes(text), 10_000, rowSel, description);
+    check(
+      'Edit saves a new description',
+      await page.evaluate((sel, text) => (document.querySelector(sel)?.innerText ?? '').includes(text), rowSel, description)
+    );
 
     /** The default or analysis model as the page names it, and its source line. */
     const choice = (which) =>

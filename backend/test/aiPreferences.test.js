@@ -7,7 +7,7 @@ const {
 } = require('../dist/config/aiPreferences');
 const { loadFresh, useTempStorage } = require('./helpers');
 const { buildChildEnv } = require('../dist/services/ai/providers/claudeCli/env');
-const { normalizeProfileSettings } = require('../dist/services/profileService');
+const { normalizeResumeSettings } = require('../dist/services/resumeDocument');
 
 test('only values this build understands survive normalization', () => {
   assert.deepEqual(normalizeAiPreferences({ modelId: '  model-1  ' }), { modelId: 'model-1' });
@@ -17,15 +17,15 @@ test('only values this build understands survive normalization', () => {
 });
 
 /**
- * The upgrade path every existing profile takes, and the reason removing a knob
+ * The upgrade path every existing resume takes, and the reason removing a knob
  * needed no migration.
  *
- * `thinking` and then `effort` were both real stored fields. Profiles in a live
+ * `thinking` and then `effort` were both real stored fields. Resumes in a live
  * database still carry them. This is an ALLOW-LIST, so a dead key is IGNORED
- * rather than rejected - a profile that threw on read would take its owner's
+ * rather than rejected - a resume that threw on read would take its owner's
  * whole builder down over a setting the build no longer has.
  */
-test('a profile still storing a dead knob is read without it', () => {
+test('a resume still storing a dead knob is read without it', () => {
   assert.deepEqual(
     normalizeAiPreferences({ modelId: 'm-1', effort: 'high', thinking: 'off' }),
     { modelId: 'm-1' }
@@ -36,18 +36,18 @@ test('a profile still storing a dead knob is read without it', () => {
 
 test('an absent field inherits rather than resetting the layer beneath it', async () => {
   // Through `resolveAiChoice`, which is where the layers meet: a request that
-  // names nothing must not wipe the profile's choice, and a profile that names
+  // names nothing must not wipe the resume's choice, and a resume that names
   // nothing must not wipe the app default.
   useTempStorage('ai-preferences-inherit');
   const config = loadFresh('../dist/config/aiModelConfig');
   const { resolveAiChoice } = loadFresh('../dist/config/aiPreferences');
-  const profile = { profileSettings: { ai: { modelId: 'claude-cli-opus' } } };
+  const resume = { resumeSettings: { ai: { modelId: 'claude-cli-opus' } } };
 
-  assert.equal((await resolveAiChoice({ modelId: 'claude-cli-haiku' }, profile)).modelId, 'claude-cli-haiku');
-  assert.equal((await resolveAiChoice({}, profile)).modelId, 'claude-cli-opus', 'an empty request inherits');
-  assert.equal((await resolveAiChoice(undefined, profile)).modelId, 'claude-cli-opus');
+  assert.equal((await resolveAiChoice({ modelId: 'claude-cli-haiku' }, resume)).modelId, 'claude-cli-haiku');
+  assert.equal((await resolveAiChoice({}, resume)).modelId, 'claude-cli-opus', 'an empty request inherits');
+  assert.equal((await resolveAiChoice(undefined, resume)).modelId, 'claude-cli-opus');
   assert.equal(
-    (await resolveAiChoice({}, { profileSettings: { ai: {} } })).modelId,
+    (await resolveAiChoice({}, { resumeSettings: { ai: {} } })).modelId,
     (await config.getUserAppSettings()).defaultModelId,
     'and with neither naming a model, the app default'
   );
@@ -57,7 +57,7 @@ test('an absent field inherits rather than resetting the layer beneath it', asyn
  * Nothing sets the thinking budget any more, and the strip is what keeps it
  * that way.
  *
- * The per-profile thinking knob is gone, so the CLI is left to think
+ * The per-resume thinking knob is gone, so the CLI is left to think
  * adaptively - its own default. An operator who happens to have exported
  * MAX_THINKING_TOKENS must not be able to make one machine answer differently
  * from another, which is the whole reason the strip outlived the setting.
@@ -71,17 +71,17 @@ test('the thinking budget is never set, and an exported one is stripped', () => 
   assert.equal(buildChildEnv(parent).PATH, '/usr/bin');
 });
 
-test('a profile stores the preferences, and keeps them when a client omits them', () => {
-  const saved = normalizeProfileSettings({ ai: { modelId: 'm-1' } });
+test('a resume stores the preferences, and keeps them when a client omits them', () => {
+  const saved = normalizeResumeSettings({ ai: { modelId: 'm-1' } });
   assert.deepEqual(saved.ai, { modelId: 'm-1' });
 
-  // A client that predates these fields sends profileSettings without `ai`.
-  // Blanking the profile's choice on every such save would be a data loss bug.
-  const afterOlderClientSave = normalizeProfileSettings({ hardSkillOrdering: 'library' }, saved);
+  // A client that predates these fields sends resumeSettings without `ai`.
+  // Blanking the resume's choice on every such save would be a data loss bug.
+  const afterOlderClientSave = normalizeResumeSettings({ hardSkillOrdering: 'library' }, saved);
   assert.deepEqual(afterOlderClientSave.ai, { modelId: 'm-1' });
 
   // Explicitly clearing still works.
-  const cleared = normalizeProfileSettings({ ai: {} }, saved);
+  const cleared = normalizeResumeSettings({ ai: {} }, saved);
   assert.deepEqual(cleared.ai, {});
 });
 

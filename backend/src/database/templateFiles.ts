@@ -351,7 +351,7 @@ export function sweepTemplateScratchFiles(now = Date.now(), olderThanMs = 10 * 6
  * `Company_Brand.json`, `My Template.json` - which are therefore not offered.
  * An older build offered a file copied in by hand under any name; this one
  * offers only `<id>.json`, so such a file would otherwise vanish in silence,
- * and a profile naming it be drawn with `default`.
+ * and a resume naming it be drawn with `default`.
  */
 export function unusableTemplateFileNames(): string[] {
   let entries: string[];

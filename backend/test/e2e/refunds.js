@@ -253,8 +253,8 @@ async function main() {
   const batchId = `e2e-order-${stamp}`;
   credits.reserveCredits(users.getUserById(user.id), 46, { kind: 'batch', id: batchId });
   const order = orders.createOrder({ userId: user.id, batchId, retentionDays: 5 }, [
-    { seq: 0, profileId: 'e2e-profile', profileName: 'Jane Doe', companyName: 'Acme', role: 'Engineer', costMilli: 23 },
-    { seq: 1, profileId: 'e2e-profile', profileName: 'Jane Doe', companyName: 'Globex', role: 'Engineer', costMilli: 23 },
+    { seq: 0, resumeId: 'e2e-resume', resumeName: 'Jane Doe', companyName: 'Acme', role: 'Engineer', costMilli: 23 },
+    { seq: 1, resumeId: 'e2e-resume', resumeName: 'Jane Doe', companyName: 'Globex', role: 'Engineer', costMilli: 23 },
   ]);
   orders.recordItemOutcome(batchId, 0, { state: 'done' });
   orders.recordItemOutcome(batchId, 1, {

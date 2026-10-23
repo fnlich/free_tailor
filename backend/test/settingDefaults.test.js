@@ -76,7 +76,36 @@ const limitsOf = (rows) => rows.map((row) => [row.target, row.minMilli, row.maxM
 const CASES = [
   { field: 'defaultMode', env: { DEFAULT_MODE: 'generate' }, fromEnv: 'generate', save: 'preview', saved: 'preview', code: 'preview' },
   { field: 'defaultTheme', env: { DEFAULT_THEME: 'Dark' }, fromEnv: 'dark', save: 'light', saved: 'light', code: 'light' },
-  { field: 'defaultResumeSelection', env: { DEFAULT_RESUME_SELECTION: 'all' }, fromEnv: 'all', save: 'group', saved: 'group', code: 'single' },
+  // The mode the builder starts on: .env's DEFAULT_TAILOR_MODE takes the three modes in any case.
+  { field: 'defaultBuildMode', env: { DEFAULT_TAILOR_MODE: 'Suitable' }, fromEnv: 'suitable', save: 'full', saved: 'full', code: 'partial' },
+  // What one resume costs in each build mode: free (0) until somebody prices it; 0 is a price too.
+  {
+    field: 'suitablePriceMilli',
+    request: 'suitablePriceUsd',
+    env: { RESUME_SUITABLE_PRICE_USD: '0.005' },
+    fromEnv: 5,
+    save: '0.007',
+    saved: 7,
+    code: 0,
+  },
+  {
+    field: 'partialPriceMilli',
+    request: 'partialPriceUsd',
+    env: { RESUME_PARTIAL_PRICE_USD: '$0.023' },
+    fromEnv: 23,
+    save: 0.05,
+    saved: 50,
+    code: 0,
+  },
+  {
+    field: 'fullPriceMilli',
+    request: 'fullPriceUsd',
+    env: { RESUME_FULL_PRICE_USD: '1000' },
+    fromEnv: 1_000_000,
+    save: '0',
+    saved: 0,
+    code: 0,
+  },
   { field: 'defaultResumeDocxEnabled', env: { DEFAULT_RESUME_DOCX: 'off' }, fromEnv: false, save: true, saved: true, code: true },
   { field: 'defaultCoverLetterDocxEnabled', env: { DEFAULT_COVER_LETTER_DOCX: 'no' }, fromEnv: false, save: true, saved: true, code: true },
   { field: 'requireThreeDSecure', env: { REQUIRE_THREE_D_SECURE: 'yes' }, fromEnv: true, save: false, saved: false, code: false },
@@ -216,7 +245,6 @@ test('a save stores only the fields it names, so a value merely in effect keeps 
       name: 'Claude Fable',
       provider: 'claude-cli',
       modelName: 'fable',
-      pricePerResumeUsd: '0',
     });
     const fable = created.aiModels.find((model) => model.modelName === 'fable');
     await config.updateAIModel('claude-cli-opus', { description: 'Hardest prompts.' });
@@ -239,7 +267,6 @@ test("deleting the administrator's default or analysis model removes the choice,
       name: 'Claude Fable',
       provider: 'claude-cli',
       modelName: 'fable',
-      pricePerResumeUsd: '0.01',
     });
     const fable = created.aiModels.find((model) => model.modelName === 'fable');
     let admin = await config.updateAppSettings({ defaultModelId: fable.id, analysisModelId: fable.id });
@@ -381,20 +408,34 @@ async function serveAdmin(name) {
 }
 
 test('PUT /api/admin/settings: null resets a field, and a value of the wrong shape is refused by name', async () => {
-  await withEnv({ DEFAULT_RESUME_SELECTION: 'all' }, async () => {
+  await withEnv({ DEFAULT_TAILOR_MODE: 'full' }, async () => {
     const s = await serveAdmin('put');
     try {
-      let reply = await s.call('PUT', '/api/admin/settings', { defaultResumeSelection: 'group', defaultTheme: 'dark' });
+      let reply = await s.call('PUT', '/api/admin/settings', { defaultBuildMode: 'suitable', defaultTheme: 'dark' });
       assert.equal(reply.status, 200, JSON.stringify(reply.body));
-      assert.equal(reply.body.settingSources.defaultResumeSelection, 'admin');
-      assert.equal(reply.body.settingDefaults.defaultResumeSelection, 'all');
+      assert.equal(reply.body.defaultBuildMode, 'suitable');
+      assert.equal(reply.body.settingSources.defaultBuildMode, 'admin');
+      assert.equal(reply.body.settingDefaults.defaultBuildMode, 'full');
 
-      reply = await s.call('PUT', '/api/admin/settings', { defaultResumeSelection: null });
+      reply = await s.call('PUT', '/api/admin/settings', { defaultBuildMode: null });
       assert.equal(reply.status, 200);
-      assert.equal(reply.body.defaultResumeSelection, 'all');
-      assert.equal(reply.body.settingSources.defaultResumeSelection, 'env');
+      assert.equal(reply.body.defaultBuildMode, 'full');
+      assert.equal(reply.body.settingSources.defaultBuildMode, 'env');
       assert.equal(reply.body.defaultTheme, 'dark', 'only the field named was reset');
 
+      reply = await s.call('PUT', '/api/admin/settings', { defaultBuildMode: 'everything' });
+      assert.equal(reply.status, 400);
+      assert.match(reply.body.error, /defaultBuildMode must be "suitable", "partial" or "full"/);
+      // Contract 2.10: the sentence ends with its period and names its box, as a price refusal does.
+      assert.equal(reply.body.error, 'defaultBuildMode must be "suitable", "partial" or "full".');
+      assert.equal(reply.body.field, 'defaultBuildMode');
+      assert.equal(reply.body.code, 'bad-build-mode');
+      // The old builder target is not a setting any more: a save naming it changes nothing and stores nothing.
+      reply = await s.call('PUT', '/api/admin/settings', { defaultResumeSelection: 'group', defaultResumeId: 'r-1' });
+      assert.equal(reply.status, 200, JSON.stringify(reply.body));
+      assert.equal('defaultResumeSelection' in reply.body, false);
+      assert.equal('defaultResumeId' in reply.body, false);
+      assert.equal('defaultResumeSelection' in reply.body.settingSources, false);
       reply = await s.call('PUT', '/api/admin/settings', { defaultTheme: 'blue' });
       assert.equal(reply.status, 400);
       assert.match(reply.body.error, /defaultTheme must be "light" or "dark"/);
@@ -484,15 +525,80 @@ test('each payment method resolves on its own: changing the card never freezes c
   });
 });
 
-test('DEFAULT_RESUME_SELECTION=group is refused from .env, which cannot name the group: the default is used, said once', async () => {
-  useTempStorage('setting-defaults-group-env');
-  await withEnv({ DEFAULT_RESUME_SELECTION: 'Group' }, async (warnings) => {
+test('DEFAULT_TAILOR_MODE is the default build mode: suitable, partial or full in any case; anything else warns once and partial is used', async () => {
+  useTempStorage('setting-defaults-build-mode-env');
+  for (const [text, expected] of [['Suitable', 'suitable'], ['PARTIAL', 'partial'], ['full', 'full']]) {
+    await withEnv({ DEFAULT_TAILOR_MODE: text }, async (warnings) => {
+      const config = loadFresh('../dist/config/aiModelConfig');
+      const admin = await config.getAdminAppSettings();
+      assert.equal(admin.defaultBuildMode, expected, text);
+      assert.equal(admin.settingSources.defaultBuildMode, 'env');
+      assert.equal((await config.getUserAppSettings()).defaultBuildMode, expected, 'everybody is told the mode the builder starts on');
+      assert.deepEqual(warnings, []);
+    });
+  }
+  await withEnv({ DEFAULT_TAILOR_MODE: 'everything' }, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    let admin = await config.getAdminAppSettings();
+    assert.equal(admin.defaultBuildMode, 'partial');
+    assert.equal(admin.settingSources.defaultBuildMode, 'default');
+    config.invalidateSettingsCache();
+    admin = await config.getAdminAppSettings();
+    assert.equal(admin.defaultBuildMode, 'partial');
+    assert.equal(warnings.filter((line) => line.includes('DEFAULT_TAILOR_MODE')).length, 1, warnings.join('\n'));
+  });
+  // The reader on its own, and the retired variable that is not read at all.
+  const { envDefaultBuildMode } = require('../dist/config/settingDefaults');
+  assert.deepEqual(envDefaultBuildMode({ DEFAULT_TAILOR_MODE: ' Full ' }), { value: 'full', fromEnv: true });
+  assert.deepEqual(envDefaultBuildMode({}), { value: 'partial', fromEnv: false });
+  assert.equal(require('../dist/config/settingDefaults').envDefaultResumeSelection, undefined);
+  assert.equal(require('../dist/config/settingDefaults').envDefaultTailorMode, undefined);
+  await withEnv({ DEFAULT_RESUME_SELECTION: 'group' }, async (warnings) => {
     const config = loadFresh('../dist/config/aiModelConfig');
     const admin = await config.getAdminAppSettings();
-    assert.equal(admin.defaultResumeSelection, 'single');
-    assert.equal(admin.settingSources.defaultResumeSelection, 'default');
-    assert.equal((await config.getUserAppSettings()).defaultResumeSelection, 'single');
-    assert.equal(warnings.filter((line) => line.includes('DEFAULT_RESUME_SELECTION=group names no group')).length, 1, warnings.join('\n'));
+    assert.equal('defaultResumeSelection' in admin, false);
+    assert.equal(JSON.stringify(admin.settingSources).includes('defaultResumeSelection'), false);
+    assert.deepEqual(warnings, [], 'DEFAULT_RESUME_SELECTION is no longer read');
+  });
+});
+
+test('keys an older build stored and this one retired are read past, never fail a read, and are gone after the next write', async () => {
+  const { dbDir } = useTempStorage('setting-defaults-retired-keys');
+  await withEnv({}, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    await config.updateAppSettings({ defaultMode: 'generate', defaultProfileId: 'person-1' });
+    const row = storedRow(dbDir);
+    writeSettingRaw(
+      dbDir,
+      'app-settings',
+      JSON.stringify({
+        ...row,
+        defaultResumeSelection: 'group',
+        defaultResumeId: 'resume-1',
+        defaultGroupId: 'group-1',
+        tailorMode: 'full',
+        aiModels: row.aiModels.map((model) => ({ ...model, pricePerResumeMilli: 7 })),
+      })
+    );
+    config.invalidateSettingsCache();
+
+    let admin = await config.getAdminAppSettings();
+    assert.equal(admin.defaultMode, 'generate');
+    assert.equal(admin.defaultProfileId, 'person-1', 'the profile stays');
+    for (const key of ['defaultResumeSelection', 'defaultResumeId', 'defaultGroupId', 'tailorMode', 'freeEnabledModelIds']) {
+      assert.equal(key in admin, false, key);
+    }
+    assert.equal(admin.aiModels.some((model) => 'pricePerResumeMilli' in model), false, 'a model carries no price');
+    assert.deepEqual(Object.keys(admin.settingSources).sort(), [...DEFAULTED_SETTING_KEYS].sort());
+    assert.deepEqual(warnings, [], 'retired keys are read past without a word');
+
+    await config.updateAppSettings({ defaultTheme: 'dark' });
+    const after = storedRow(dbDir);
+    for (const key of ['defaultResumeSelection', 'defaultResumeId', 'defaultGroupId', 'tailorMode']) {
+      assert.equal(key in after, false, `${key} is dropped by the next write`);
+    }
+    assert.equal(after.aiModels.some((model) => 'pricePerResumeMilli' in model), false);
+    assert.equal(after.defaultProfileId, 'person-1');
   });
 });
 
@@ -826,6 +932,165 @@ test('PUT /api/admin/settings: a subscription price is saved in dollars, and a r
   });
 });
 
+/* ------------------------------------------------ build-mode prices */
+
+test('a build-mode price: Reset puts .env back, an empty box and a bad amount are refused by their box, thousandths are never read', async () => {
+  const { dbDir } = useTempStorage('setting-defaults-mode-prices');
+  await withEnv({ RESUME_PARTIAL_PRICE_USD: '0.02' }, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    let admin = await config.getAdminAppSettings();
+    assert.deepEqual([admin.suitablePriceMilli, admin.partialPriceMilli, admin.fullPriceMilli], [0, 20, 0]);
+    assert.deepEqual(
+      [admin.settingSources.suitablePriceMilli, admin.settingSources.partialPriceMilli, admin.settingSources.fullPriceMilli],
+      ['default', 'env', 'default']
+    );
+    assert.deepEqual(admin.unreadableModePrices, [], 'unset and a price are decisions');
+    assert.deepEqual(await config.getBuildModePrices(), { suitable: 0, partial: 20, full: 0 });
+
+    // $0 saved is a price: free on purpose, and it beats .env.
+    admin = await config.updateAppSettings({ partialPriceUsd: '0' });
+    assert.equal(admin.partialPriceMilli, 0);
+    assert.equal(admin.settingSources.partialPriceMilli, 'admin');
+    assert.equal(admin.settingDefaults.partialPriceMilli, 20, 'what Reset would give');
+    assert.equal(storedRow(dbDir).partialPriceMilli, 0);
+    assert.deepEqual(await config.getBuildModePrices(), { suitable: 0, partial: 0, full: 0 });
+
+    // Null is Reset to default: .env's price, nothing stored.
+    admin = await config.updateAppSettings({ partialPriceUsd: null });
+    assert.equal(admin.partialPriceMilli, 20);
+    assert.equal(admin.settingSources.partialPriceMilli, 'env');
+    assert.equal('partialPriceMilli' in storedRow(dbDir), false);
+
+    // Only the box named is saved; the largest price there is, exactly, and the smallest step.
+    admin = await config.updateAppSettings({ fullPriceUsd: 1000, suitablePriceUsd: '0.001' });
+    assert.deepEqual([admin.suitablePriceMilli, admin.partialPriceMilli, admin.fullPriceMilli], [1, 20, 1_000_000]);
+    assert.deepEqual(
+      DEFAULTED_SETTING_KEYS.filter((key) => key in storedRow(dbDir)),
+      ['suitablePriceMilli', 'fullPriceMilli'],
+      'a value merely in effect is not stored'
+    );
+
+    const WHERE = 'It is from \\$0 to \\$1000 in steps of \\$0\\.001, like 0\\.023; 0 makes it free\\.$';
+    for (const [body, sentence, field, code] of [
+      [{ partialPriceUsd: '' }, new RegExp(`^The Partial Tailor price is required: an amount in dollars, like 0\\.023\\. ${WHERE}`), 'partialPriceUsd', 'bad-price'],
+      [{ partialPriceUsd: '  ' }, /^The Partial Tailor price is required/, 'partialPriceUsd', 'bad-price'],
+      [{ suitablePriceUsd: '0.0005' }, /^The Choose Suitable Resume price can have at most three decimal places: \$0\.001 is the smallest step\. It is from/, 'suitablePriceUsd', 'bad-price'],
+      [{ fullPriceUsd: '1000.001' }, new RegExp(`^The Fully Tailor price must be from \\$0 to \\$1000 in steps of \\$0\\.001, like 0\\.023; 0 makes it free\\.$`), 'fullPriceUsd', 'bad-price'],
+      [{ fullPriceUsd: '-1' }, /^The Fully Tailor price cannot be negative\. It is from/, 'fullPriceUsd', 'bad-price'],
+      [{ partialPriceUsd: 'abc' }, /^The Partial Tailor price must be an amount in dollars, like 0\.023 or 12\.50\. It is from/, 'partialPriceUsd', 'bad-price'],
+      [{ partialPriceUsd: true }, /^The Partial Tailor price must be an amount in dollars/, 'partialPriceUsd', 'bad-price'],
+      // A price in thousandths is never read: requests carry dollars.
+      [{ partialPriceMilli: 23 }, /^Send the Partial Tailor price in dollars, as partialPriceUsd\.$/, 'partialPriceUsd', 'bad-price-field'],
+      [{ suitablePriceMilli: null }, /^Send the Choose Suitable Resume price in dollars, as suitablePriceUsd\.$/, 'suitablePriceUsd', 'bad-price-field'],
+      [{ fullPriceMilli: 0 }, /^Send the Fully Tailor price in dollars, as fullPriceUsd\.$/, 'fullPriceUsd', 'bad-price-field'],
+    ]) {
+      const refusal = await config.updateAppSettings(body).then(
+        () => null,
+        (error) => error
+      );
+      assert.ok(refusal, `refused: ${JSON.stringify(body)}`);
+      assert.match(refusal.message, sentence);
+      assert.equal(refusal.field, field);
+      assert.equal(refusal.code, code);
+    }
+    admin = await config.getAdminAppSettings();
+    assert.deepEqual([admin.suitablePriceMilli, admin.partialPriceMilli, admin.fullPriceMilli], [1, 20, 1_000_000], 'a refused save changed nothing');
+    assert.deepEqual(warnings, []);
+  });
+});
+
+test('PUT /api/admin/settings: a build-mode price is saved in dollars, and a refusal names its box', async () => {
+  await withEnv({ RESUME_FULL_PRICE_USD: '0.5' }, async () => {
+    const s = await serveAdmin('mode-prices');
+    try {
+      let reply = await s.call('PUT', '/api/admin/settings', { partialPriceUsd: '0.023' });
+      assert.equal(reply.status, 200, JSON.stringify(reply.body));
+      assert.deepEqual([reply.body.suitablePriceMilli, reply.body.partialPriceMilli, reply.body.fullPriceMilli], [0, 23, 500]);
+      assert.deepEqual(
+        [reply.body.settingSources.suitablePriceMilli, reply.body.settingSources.partialPriceMilli, reply.body.settingSources.fullPriceMilli],
+        ['default', 'admin', 'env']
+      );
+      assert.equal(reply.body.settingDefaults.fullPriceMilli, 500);
+      assert.deepEqual(reply.body.unreadableModePrices, []);
+      assert.equal('freeEnabledModelIds' in reply.body, false);
+
+      reply = await s.call('PUT', '/api/admin/settings', { suitablePriceUsd: '' });
+      assert.equal(reply.status, 400);
+      assert.equal(reply.body.field, 'suitablePriceUsd');
+      assert.equal(reply.body.code, 'bad-price');
+      assert.match(reply.body.error, /^The Choose Suitable Resume price is required/);
+
+      reply = await s.call('PUT', '/api/admin/settings', { fullPriceMilli: 1 });
+      assert.equal(reply.status, 400);
+      assert.equal(reply.body.field, 'fullPriceUsd');
+      assert.equal(reply.body.code, 'bad-price-field');
+      assert.equal((await s.call('GET', '/api/admin/settings')).body.fullPriceMilli, 500, 'nothing was saved');
+    } finally {
+      s.close();
+    }
+  });
+});
+
+test('a build-mode price .env cannot use: above $1000 clamps, junk reads $0 but is flagged unreadable, each said once; a junk stored one is ignored', async () => {
+  const { dbDir } = useTempStorage('setting-defaults-mode-prices-junk');
+  await withEnv({ RESUME_SUITABLE_PRICE_USD: '2000', RESUME_PARTIAL_PRICE_USD: 'cheap' }, async (warnings) => {
+    const config = loadFresh('../dist/config/aiModelConfig');
+    let admin = await config.getAdminAppSettings();
+    assert.equal(admin.suitablePriceMilli, 1_000_000);
+    assert.equal(admin.settingSources.suitablePriceMilli, 'env');
+    assert.equal(admin.partialPriceMilli, 0, 'junk reads $0');
+    assert.equal(admin.settingSources.partialPriceMilli, 'default');
+    assert.deepEqual(admin.unreadableModePrices, ['partial'], 'and the page shows it red');
+    assert.ok(warnings.some((line) => line === '[env] RESUME_SUITABLE_PRICE_USD=2000 is above $1,000; using $1,000.'), warnings.join('\n'));
+    assert.ok(warnings.some((line) => line.includes('RESUME_PARTIAL_PRICE_USD="cheap" is not an amount in dollars')), warnings.join('\n'));
+    config.invalidateSettingsCache();
+    await config.getAdminAppSettings();
+    assert.equal(warnings.filter((line) => line.includes('RESUME_PARTIAL_PRICE_USD')).length, 1, 'said once');
+
+    const { envBuildModePriceMilli } = require('../dist/config/settingDefaults');
+    assert.deepEqual(envBuildModePriceMilli('partial', { RESUME_PARTIAL_PRICE_USD: '0,02' }), { value: 0, fromEnv: false, unreadable: true });
+    assert.deepEqual(envBuildModePriceMilli('partial', { RESUME_PARTIAL_PRICE_USD: '0.0005' }), { value: 0, fromEnv: false, unreadable: true });
+    assert.deepEqual(envBuildModePriceMilli('full', { RESUME_FULL_PRICE_USD: '-1' }), { value: 0, fromEnv: false, unreadable: true });
+    assert.deepEqual(envBuildModePriceMilli('suitable', {}), { value: 0, fromEnv: false, unreadable: false });
+    assert.deepEqual(envBuildModePriceMilli('suitable', { RESUME_SUITABLE_PRICE_USD: '  ' }), { value: 0, fromEnv: false, unreadable: false });
+    assert.deepEqual(envBuildModePriceMilli('suitable', { RESUME_SUITABLE_PRICE_USD: '0' }), { value: 0, fromEnv: true, unreadable: false });
+    assert.deepEqual(envBuildModePriceMilli('full', { RESUME_FULL_PRICE_USD: '$0.023' }), { value: 23, fromEnv: true, unreadable: false });
+
+    // A price saved here is a decision over the unreadable line: nothing is flagged.
+    admin = await config.updateAppSettings({ partialPriceUsd: '0.01' });
+    assert.equal(admin.partialPriceMilli, 10);
+    assert.deepEqual(admin.unreadableModePrices, []);
+
+    // A price hand-edited into the row is not one this app writes: ignored, said once, and what is under it is in effect.
+    writeSettingRaw(
+      dbDir,
+      'app-settings',
+      JSON.stringify({ ...storedRow(dbDir), partialPriceMilli: 'free', suitablePriceMilli: 1.5, fullPriceMilli: 2_000_000 })
+    );
+    config.invalidateSettingsCache();
+    admin = await config.getAdminAppSettings();
+    assert.equal(admin.suitablePriceMilli, 1_000_000, '.env\'s clamped price is under the junk');
+    assert.equal(admin.settingSources.suitablePriceMilli, 'env');
+    assert.equal(admin.partialPriceMilli, 0);
+    assert.equal(admin.settingSources.partialPriceMilli, 'default');
+    assert.equal(admin.fullPriceMilli, 0);
+    assert.equal(admin.settingSources.fullPriceMilli, 'default');
+    for (const [key, shown] of [['partialPriceMilli', '"free"'], ['suitablePriceMilli', '1.5'], ['fullPriceMilli', '2000000']]) {
+      assert.equal(
+        warnings.filter((line) => line.includes(`The stored ${key} is ${shown}`)).length,
+        1,
+        `${key}: ${warnings.join('\n')}`
+      );
+    }
+    config.invalidateSettingsCache();
+    await config.getAdminAppSettings();
+    assert.equal(warnings.filter((line) => line.includes('The stored partialPriceMilli')).length, 1, 'once, not on every read');
+    // The next save does not keep it.
+    await config.updateAppSettings({ defaultTheme: 'dark' });
+    for (const key of ['partialPriceMilli', 'suitablePriceMilli', 'fullPriceMilli']) assert.equal(key in storedRow(dbDir), false, key);
+  });
+});
+
 /* ------------------------------------------------------------- step 9 */
 
 const { settingsDefaultsStep } = require('../dist/database/migrations/settingsDefaults');
@@ -854,8 +1119,8 @@ function frozenDefaults(seed) {
     defaultMode: 'preview',
     defaultTheme: 'light',
     defaultResumeSelection: 'single',
-    defaultGroupId: 'group-1',
-    defaultProfileId: '',
+    defaultProfileId: 'group-1',
+    defaultResumeId: '',
     defaultModelId: seed,
     analysisModelId: '',
     defaultResumeDocxEnabled: true,
@@ -881,13 +1146,13 @@ test('step 9 takes every field still at its old default out of the row, keeps th
   const after = rowOf(db);
   assert.deepEqual(Object.keys(after).sort(), [
     'aiModels',
-    'defaultGroupId',
     'defaultProfileId',
+    'defaultResumeId',
     'outputPathTemplate',
     'providersEnabled',
   ]);
   assert.deepEqual(after.providersEnabled, { 'claude-cli': true, 'codex-cli': false, 'gemini-cli': true });
-  assert.equal(after.defaultGroupId, 'group-1');
+  assert.equal(after.defaultProfileId, 'group-1');
 
   const again = settingsDefaultsStep.apply(db);
   assert.equal(again.ran, false);

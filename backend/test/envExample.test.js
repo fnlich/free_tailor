@@ -95,6 +95,50 @@ function withWarnings(read) {
   }
 }
 
+/**
+ * The build modes' settings (owner decision 8): the mode the builder starts on
+ * and the price of one resume in each mode. DEFAULT_RESUME_SELECTION went with
+ * the builder's old target, and is documented nowhere.
+ */
+const BUILD_MODE_VARIABLES = [
+  ['DEFAULT_TAILOR_MODE', 'partial'],
+  ['RESUME_SUITABLE_PRICE_USD', '0'],
+  ['RESUME_PARTIAL_PRICE_USD', '0'],
+  ['RESUME_FULL_PRICE_USD', '0'],
+];
+
+test('the build-mode variables are operational settings, documented in both files, and the retired selection is documented in neither', () => {
+  const table = new Map(OPERATIONAL_VARIABLES.map((variable) => [variable.name, variable]));
+  const { rows } = readmeConfiguration();
+  for (const [name, defaultValue] of BUILD_MODE_VARIABLES) {
+    const variable = table.get(name);
+    assert.ok(variable, `${name} is in config/operational.ts's table`);
+    assert.equal(variable.defaultValue, defaultValue, `${name}: the default the code uses`);
+    assert.equal(variable.readAt, 'per-call', `${name}: read on every call, so a change applies to the next run`);
+    const entry = byName.get(name);
+    assert.ok(entry, `${name} is in .env.example`);
+    assert.equal(entry.commented, true, `${name} ships commented out`);
+    assert.equal(entry.value, defaultValue, `${name} shows its default`);
+    assert.ok(
+      rows.some((row) => row.first.includes('`' + name + '`')),
+      `README's Configuration table has a row for ${name}`
+    );
+  }
+  // A price is a dollar amount: the only mode price range is $0 to $1000.
+  for (const [name] of BUILD_MODE_VARIABLES.slice(1)) {
+    assert.match(byName.get(name).paragraph, /\$1000/, `${name}: .env.example states the ceiling`);
+  }
+
+  assert.equal(byName.has('DEFAULT_RESUME_SELECTION'), false, 'not an .env.example line');
+  assert.equal(envExampleText.includes('DEFAULT_RESUME_SELECTION'), false, 'not even in its prose');
+  assert.equal(table.has('DEFAULT_RESUME_SELECTION'), false, 'not in the operational table');
+  assert.equal(
+    readmeConfiguration().section.includes('DEFAULT_RESUME_SELECTION'),
+    false,
+    "nor in the README's Configuration section"
+  );
+});
+
 test('the table is not empty, so the checks below are checking something', () => {
   assert.ok(OPERATIONAL_VARIABLES.length >= 30, `only ${OPERATIONAL_VARIABLES.length} operational variables`);
   assert.ok(entries.length > OPERATIONAL_VARIABLES.length, 'parsed suspiciously few variable lines from .env.example');
@@ -289,6 +333,7 @@ test("the README's Configuration table shows each setting's default, range and r
     }
   }
 
+  // (The build modes' variables are checked by name in their own test below.)
   // Tags, per row: *Startup* exactly when a variable in it is read at startup,
   // *Rebuild* exactly when one is compiled into the bundle.
   for (const row of rows) {

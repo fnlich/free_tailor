@@ -130,12 +130,12 @@ test("a remembered run is read back only by the tab that started it", () => {
 
 test('each finished resume is downloaded exactly once, whatever the stream repeats', () => {
   const tasks = [
-    { id: 't-1', state: 'done', profileName: 'Ada', companyName: 'Acme', files: ['cover-letter-pdf', 'resume-pdf'] },
-    { id: 't-2', state: 'running', profileName: 'Ada', companyName: 'Beta' },
-    { id: 't-3', state: 'done', profileName: 'Bob', companyName: 'Acme', files: ['resume-docx', 'resume-pdf', 'mystery'] },
-    { id: 't-4', state: 'failed', profileName: 'Bob', companyName: 'Beta', error: 'x' },
+    { id: 't-1', state: 'done', resumeName: 'Ada', companyName: 'Acme', files: ['cover-letter-pdf', 'resume-pdf'] },
+    { id: 't-2', state: 'running', resumeName: 'Ada', companyName: 'Beta' },
+    { id: 't-3', state: 'done', resumeName: 'Bob', companyName: 'Acme', files: ['resume-docx', 'resume-pdf', 'mystery'] },
+    { id: 't-4', state: 'failed', resumeName: 'Bob', companyName: 'Beta', error: 'x' },
     // Done with nothing kept: there is nothing to fetch.
-    { id: 't-5', state: 'done', profileName: 'Cy', companyName: 'Gamma', files: [] },
+    { id: 't-5', state: 'done', resumeName: 'Cy', companyName: 'Gamma', files: [] },
   ];
 
   const first = run.pendingDownloads(tasks, new Set());
@@ -148,7 +148,7 @@ test('each finished resume is downloaded exactly once, whatever the stream repea
     ]
   );
   assert.equal(first[0].companyName, 'Acme');
-  assert.equal(first[0].profileName, 'Ada');
+  assert.equal(first[0].resumeName, 'Ada');
 
   // The next line of the stream repeats both, plus a newly finished one: only
   // the new one is due. `done` includes what is already in flight on the page.
@@ -166,11 +166,32 @@ test('each finished resume is downloaded exactly once, whatever the stream repea
   assert.deepEqual(run.pendingDownloads(later, new Set(remembered.downloaded)), []);
 });
 
+test("a finished resume names which of the person's resumes the run chose, only when the snapshot says so", () => {
+  const tasks = [
+    { id: 't-1', state: 'done', resumeName: 'Ada', resumeLabel: 'Backend Engineer', companyName: 'Acme', files: ['resume-pdf'] },
+    { id: 't-2', state: 'done', resumeName: 'Ada', resumeLabel: '', companyName: 'Beta', files: ['resume-pdf'] },
+    // A snapshot an older server sent: no label at all.
+    { id: 't-3', state: 'done', resumeName: 'Bob', companyName: 'Gamma', files: ['resume-pdf'] },
+  ];
+  const [chosen, empty, older] = run.pendingDownloads(tasks, new Set());
+  assert.equal(chosen.resumeLabel, 'Backend Engineer');
+  // Present only when non-empty: the key is absent otherwise, so an item reads exactly as it always did.
+  assert.equal('resumeLabel' in empty, false);
+  assert.equal('resumeLabel' in older, false);
+  assert.deepEqual(empty, { taskId: 't-2', resumeName: 'Ada', companyName: 'Beta', kinds: ['resume-pdf'] });
+  assert.deepEqual(older, { taskId: 't-3', resumeName: 'Bob', companyName: 'Gamma', kinds: ['resume-pdf'] });
+
+  // The file list and the progress line show it after the name, " · label".
+  const files = fs.readFileSync(path.join(SRC, 'components', 'ImmediateRunFiles.tsx'), 'utf8');
+  assert.match(files, /resumeLabel/);
+  assert.match(files, /· \{[^}]*resumeLabel[^}]*\}/);
+});
+
 test('a page that went away part way through a resume saves only the files it had not', () => {
   const task = {
     id: 't-1',
     state: 'done',
-    profileName: 'Ada',
+    resumeName: 'Ada',
     companyName: 'Acme',
     files: ['resume-pdf', 'resume-docx', 'cover-letter-pdf', 'cover-letter-docx'],
   };

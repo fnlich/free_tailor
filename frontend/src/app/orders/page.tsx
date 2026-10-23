@@ -132,8 +132,8 @@ export default function OrdersPage() {
           <Link href="/" className="tl-link">
             Build Resumes
           </Link>{' '}
-          - from your Google Sheet, or for several profiles - and the resumes will appear here as they
-          are built.
+          - from your Google Sheet, or for one profile - and the resumes will appear here as they
+          are built. Find Jobs places orders too.
         </EmptyState>
       ) : (
         /*

@@ -121,7 +121,7 @@ function normalizeTemplateRecord(id: string, parsed: unknown): Template | null {
     ...inferTemplateCapabilities(htmlContent),
     // Read-time too, by the same locator the compile step moves sections with
     // (generators/sectionLocator.ts): which kinds the markup prints, and in
-    // what order - what the editor shows a profile with no stored order in.
+    // what order - what the editor shows a resume with no stored order in.
     printsSections: inferTemplatePrintedSections(htmlContent),
     nativeSectionOrder: inferTemplateNativeSectionOrder(htmlContent),
     createdAt,
@@ -384,7 +384,7 @@ export interface ManualTemplateConfig {
  *
  * Strengths and Soft Skills were offered by the editor and silently dropped
  * here, so a template built with them had neither. Their blocks are guarded on
- * the list having entries, so a profile with the sections switched off - the
+ * the list having entries, so a resume with the sections switched off - the
  * default - renders exactly what a template without them would.
  */
 const MANUAL_SECTIONS = ['summary', 'experience', 'strengths', 'hardSkills', 'softSkills', 'education'] as const;
@@ -528,7 +528,7 @@ function buildManualTemplateHTML(config: ManualTemplateConfig): string {
         </div>
       </div>`;
       case 'strengths':
-        // The section class is what the renderer strips when a profile has
+        // The section class is what the renderer strips when a resume has
         // Strengths switched off; the guard keeps an empty list from leaving a
         // bare heading when it is on.
         return `
@@ -581,7 +581,7 @@ function buildManualTemplateHTML(config: ManualTemplateConfig): string {
   // The sections beyond the six above print through the extra-sections macro
   // (generators/extraSectionsMarkup.ts), after the last block of the main
   // column, in this template's own classes. The orders above decide where the
-  // TEMPLATE puts each section; a profile's stored order reorders them within
+  // TEMPLATE puts each section; a resume's stored order reorders them within
   // each column at render.
   const extraSections =
     '{{> extra-sections sectionClass="section" headingClass="section-title" entryClass="education-item" ' +

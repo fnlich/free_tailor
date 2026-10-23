@@ -6,7 +6,7 @@ const path = require('node:path');
 const { useTempStorage } = require('./helpers');
 
 /**
- * Every section of a resume prints where its profile's stored order puts it,
+ * Every section of a resume prints where its stored order puts it,
  * on every template, and the nine kinds beyond the classic six print at all.
  *
  *   - with a stored order, the sections of every built-in come out in that
@@ -15,7 +15,7 @@ const { useTempStorage } = require('./helpers');
  *     survives and no template needs the compile fallback;
  *   - with no stored order nothing moves: the classic sections print in the
  *     template's own order - the one `nativeSectionOrder` reports, which is
- *     what the editor shows such a profile in - and the other kinds print at
+ *     what the editor shows such a resume in - and the other kinds print at
  *     the macro's position in canonical order, custom sections last;
  *   - an unlisted section follows the listed ones in the template's order; a
  *     listed kind with no entries prints no heading; a custom section prints
@@ -48,8 +48,8 @@ function seeded(name) {
   return storage;
 }
 
-/** A profile with something in every kind of section, both switches on. */
-function fullProfile(extra = {}) {
+/** A resume with something in every kind of section, both switches on. */
+function fullResume(extra = {}) {
   return {
     id: 'p1',
     name: 'A Person',
@@ -105,7 +105,7 @@ function fullProfile(extra = {}) {
       { key: 'cs-alpha', title: 'Patents', entries: [{ heading: 'US123 Patent', subheading: 'USPTO', startDate: '2021', endDate: '', location: '', description: '', achievements: [] }] },
       { key: 'cs-beta', title: 'Talks', entries: [{ heading: 'KubeCon Talk', subheading: '', startDate: '', endDate: '', location: 'Paris', description: 'On lakes.', achievements: ['Full room'] }] },
     ],
-    profileSettings: { includeSoftSkills: true, includeStrengths: true },
+    resumeSettings: { includeSoftSkills: true, includeStrengths: true },
     createdAt: '',
     updatedAt: '',
     ...extra,
@@ -188,7 +188,7 @@ const KIND_HEADINGS = ['Certifications', 'Projects', 'Volunteering', 'Awards', '
 
 /**
  * Every entry once - except a strength or a soft skill on a template with no
- * section for it, which `profileForTemplate` turns off exactly as the PDF
+ * section for it, which `resumeForTemplate` turns off exactly as the PDF
  * always has (burgundy-rule, navy-rule, charcoal-sidebar; ink-ledger has no
  * Soft Skills).
  */
@@ -215,12 +215,12 @@ test('every built-in prints every section in the stored order within each column
 
   const templates = await getAllTemplates();
   assert.equal(templates.length, 19);
-  const profile = fullProfile({ sectionOrder: FULL_REVERSED });
+  const resume = fullResume({ sectionOrder: FULL_REVERSED });
 
   const { warnings } = await warningsOf(async () => {
     for (const template of templates) {
       const supports = { strengths: template.supportsStrengths, softSkills: template.supportsSoftSkills };
-      const html = await generatePreviewHTML(profile, template);
+      const html = await generatePreviewHTML(resume, template);
       assertEverythingPrintsOnce(html, template.id, supports);
       const groups = groupedRefs(html, locator);
       assert.ok(groups.length > 0, `${template.id}: sections located in the render`);
@@ -233,7 +233,7 @@ test('every built-in prints every section in the stored order within each column
       }
       // Both layouts: the skills rewrite runs after the reorder and must not undo it.
       const flat = await generatePreviewHTML(
-        { ...profile, profileSettings: { ...profile.profileSettings, technicalSkillsLayout: 'flat' } },
+        { ...resume, resumeSettings: { ...resume.resumeSettings, technicalSkillsLayout: 'flat' } },
         template
       );
       assertEverythingPrintsOnce(flat, `${template.id} (flat)`, supports);
@@ -248,10 +248,10 @@ test('with no stored order nothing moves: every built-in prints its classic sect
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
 
   const templates = await getAllTemplates();
-  const profile = fullProfile();
+  const resume = fullResume();
   const { warnings } = await warningsOf(async () => {
     for (const template of templates) {
-      const html = await generatePreviewHTML(profile, template);
+      const html = await generatePreviewHTML(resume, template);
       assertEverythingPrintsOnce(html, template.id, { strengths: template.supportsStrengths, softSkills: template.supportsSoftSkills });
       const refs = refsOf(html);
       const kinds = refs.filter((ref) => !ref.startsWith('custom:'));
@@ -296,7 +296,7 @@ test('an unlisted section follows the listed ones in the template\'s own order, 
   // column; strengths, skills, soft skills, education in the right. Education
   // listed first moves to the top of ITS column; the unlisted ones follow in
   // the template's order; custom:cs-beta moves above the summary in the left.
-  const html = await generatePreviewHTML(fullProfile({ sectionOrder: ['education', 'custom:cs-beta', 'summary'] }), template);
+  const html = await generatePreviewHTML(fullResume({ sectionOrder: ['education', 'custom:cs-beta', 'summary'] }), template);
   const groups = groupedRefs(html, locator);
   const left = groups.find((group) => group.includes('summary'));
   const right = groups.find((group) => group.includes('education'));
@@ -307,14 +307,14 @@ test('an unlisted section follows the listed ones in the template\'s own order, 
   // Listed with nothing in it: no heading, no block. (The skill library's
   // "Languages" category still heads the skills block, so the block's own
   // markers are what is checked, not the word.)
-  const empty = await generatePreviewHTML(fullProfile({ languages: [], courses: [], sectionOrder: ['languages', 'summary'] }), template);
+  const empty = await generatePreviewHTML(fullResume({ languages: [], courses: [], sectionOrder: ['languages', 'summary'] }), template);
   assert.doesNotMatch(seen(empty), /Courses|French/);
   assert.equal(refsOf(empty).includes('languages'), false);
   assert.equal(refsOf(empty).includes('courses'), false);
   assert.equal(empty.includes('data-section="languages"'), false);
 
   // Two orders are two documents.
-  const other = await generatePreviewHTML(fullProfile({ sectionOrder: ['summary', 'education'] }), template);
+  const other = await generatePreviewHTML(fullResume({ sectionOrder: ['summary', 'education'] }), template);
   assert.notEqual(html, other);
   assert.deepEqual(groupedRefs(other, locator).find((group) => group.includes('education')), ['education', 'strengths', 'skills', 'softSkills']);
   assert.deepEqual(groupedRefs(other, locator).find((group) => group.includes('summary')).slice(0, 2), ['summary', 'experience']);
@@ -338,7 +338,7 @@ test('an uploaded-style template with no markers is reordered through its headin
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   const template = uploaded('uploaded-plain', UPLOADED);
   const { result: html, warnings } = await warningsOf(() =>
-    generatePreviewHTML(fullProfile({ sectionOrder: ['projects', 'education', 'skills', 'experience', 'summary'] }), template)
+    generatePreviewHTML(fullResume({ sectionOrder: ['projects', 'education', 'skills', 'experience', 'summary'] }), template)
   );
   assert.deepEqual(warnings, []);
   const text = seen(html);
@@ -366,10 +366,10 @@ test('a section the locator cannot find prints where it is and is said so once; 
       '<h2>Summary</h2><p>{{summary}}</p></div>'
   );
   const order = ['summary', 'education', 'experience'];
-  const first = await warningsOf(() => generatePreviewHTML(fullProfile({ sectionOrder: order }), headless));
-  const second = await warningsOf(() => generatePreviewHTML(fullProfile({ sectionOrder: order, name: 'Again' }), headless));
+  const first = await warningsOf(() => generatePreviewHTML(fullResume({ sectionOrder: order }), headless));
+  const second = await warningsOf(() => generatePreviewHTML(fullResume({ sectionOrder: order, name: 'Again' }), headless));
   assert.equal(first.warnings.length, 1);
-  assert.match(first.warnings[0], /Template "uploaded-headless" has a experience section the profile's order cannot move/);
+  assert.match(first.warnings[0], /Template "uploaded-headless" has a experience section the resume's order cannot move/);
   assert.deepEqual(second.warnings, [], 'said once');
   const text = seen(first.result);
   assert.ok(text.indexOf('Acme Widgets') < text.indexOf('A summary'), 'Experience stays first; the two found sections are reordered after it');
@@ -382,10 +382,10 @@ test('a section the locator cannot find prints where it is and is said so once; 
     '<div class="main"><div class="section section-summary"><h2>Summary</h2>{{#if summary}}<p>{{summary}}</p></div>{{/if}}' +
       '<div class="section section-education"><h2>Education</h2>{{#each education}}<p>{{degree}}</p>{{/each}}</div></div>'
   );
-  const kept = await warningsOf(() => generatePreviewHTML(fullProfile({ sectionOrder: ['education', 'summary'] }), crossed));
-  const again = await warningsOf(() => generatePreviewHTML(fullProfile({ sectionOrder: ['education', 'summary'], name: 'B' }), crossed));
+  const kept = await warningsOf(() => generatePreviewHTML(fullResume({ sectionOrder: ['education', 'summary'] }), crossed));
+  const again = await warningsOf(() => generatePreviewHTML(fullResume({ sectionOrder: ['education', 'summary'], name: 'B' }), crossed));
   assert.equal(kept.warnings.length, 1);
-  assert.match(kept.warnings[0], /Template "uploaded-crossed-order" cannot be drawn in the profile's section order/);
+  assert.match(kept.warnings[0], /Template "uploaded-crossed-order" cannot be drawn in the resume's section order/);
   assert.deepEqual(again.warnings, []);
   const keptText = seen(kept.result);
   assert.ok(keptText.indexOf('A summary') < keptText.indexOf('BSc Computing'), 'the template\'s own order');
@@ -401,7 +401,7 @@ test('a template that prints a kind itself beside the macro prints it once', asy
       '<h2>Certifications</h2><ul>{{#each certifications}}<li>{{name}}, {{issuer}} ({{dates}})</li>{{/each}}</ul>' +
       '{{> extra-sections sectionClass="section"}}</div>'
   );
-  const html = await generatePreviewHTML(fullProfile(), template);
+  const html = await generatePreviewHTML(fullResume(), template);
   const text = seen(html);
   assert.equal(text.split('AWS Solutions Architect').length - 1, 1, 'the template\'s own block, not the macro\'s too');
   assert.match(text, /AWS Solutions Architect, Amazon \(2022 - 2025\)/, 'the prepared dates reach the template\'s own loop');
@@ -418,7 +418,7 @@ test('the DOCX follows the stored order, prints the canonical order without one,
   const { buildResumeDocxHTML } = require('../dist/generators/docxGenerator');
 
   const headingsOf = (html) => [...html.matchAll(/<u>([^<]+)<\/u>/g)].map((match) => match[1]);
-  const canonical = buildResumeDocxHTML(prepareResumeRenderData(fullProfile()));
+  const canonical = buildResumeDocxHTML(prepareResumeRenderData(fullResume()));
   assert.deepEqual(headingsOf(canonical), [
     'Professional Summary', 'Key Strengths', 'Technical Skills', 'Soft Skills', 'Professional Experience', 'Education',
     'Certifications', 'Projects', 'Volunteering', 'Awards', 'Publications', 'Courses', 'Languages', 'Interests', 'References',
@@ -429,7 +429,7 @@ test('the DOCX follows the stored order, prints the canonical order without one,
   }
   assert.doesNotMatch(canonical, /javascript:/);
 
-  const ordered = buildResumeDocxHTML(prepareResumeRenderData(fullProfile({ sectionOrder: ['custom:cs-beta', 'projects', 'education', 'summary'] })));
+  const ordered = buildResumeDocxHTML(prepareResumeRenderData(fullResume({ sectionOrder: ['custom:cs-beta', 'projects', 'education', 'summary'] })));
   assert.deepEqual(headingsOf(ordered).slice(0, 4), ['Talks', 'Projects', 'Education', 'Professional Summary']);
   assert.deepEqual(headingsOf(ordered).slice(4), [
     'Key Strengths', 'Technical Skills', 'Soft Skills', 'Professional Experience',
@@ -439,7 +439,7 @@ test('the DOCX follows the stored order, prints the canonical order without one,
   // Nothing in a kind: no heading. A custom section with no title: entries, no heading.
   const sparse = buildResumeDocxHTML(
     prepareResumeRenderData(
-      fullProfile({
+      fullResume({
         languages: [],
         awards: [],
         customSections: [{ key: 'cs-x', title: '', entries: [{ heading: 'Untitled entry', subheading: '', startDate: '', endDate: '', location: '', description: '', achievements: [] }] }],

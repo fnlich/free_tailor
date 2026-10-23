@@ -139,7 +139,7 @@ export type PublicFailure = {
 export type PublicFailureOptions = {
   /** Whether the reader is an administrator, which is what earns `detail`. */
   admin?: boolean;
-  /** What the route was doing, for the generic sentence: "Failed to fetch groups". */
+  /** What the route was doing, for the generic sentence: "Failed to fetch profiles". */
   fallback?: string;
   /** The status for a failure that is not public. 500 unless the route knows better. */
   status?: number;
@@ -262,7 +262,7 @@ function describeRequest(req: Request): string {
  * `res.status(..).json({ error: error instanceof Error ? error.message : '...' })`
  * on a route somebody other than an administrator can reach.
  *
- * `fallback` names what failed ("Failed to fetch groups"); `status` is for a
+ * `fallback` names what failed ("Failed to fetch profiles"); `status` is for a
  * failure that is not public and is not the server's fault either.
  */
 export function sendPublicError(
@@ -286,7 +286,7 @@ export function sendPublicError(
 }
 
 /**
- * The sentence for ONE item in a list a response carries - a profile that could
+ * The sentence for ONE item in a list a response carries - a resume that could
  * not be tailored, a job that could not be analysed.
  *
  * Public errors and AI failures say their own public sentence; anything else is

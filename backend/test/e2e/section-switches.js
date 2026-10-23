@@ -1,5 +1,5 @@
 /*
- * The profile editor's preview with Strengths and Soft Skills switched off:
+ * The resume editor's preview with Strengths and Soft Skills switched off:
  * does each section go WHOLE - its heading with its list - and does nothing
  * else go with it?
  *
@@ -13,7 +13,7 @@
  *     "References / Available upon request" block, and Soft Skills in the
  *     main column under a divider (`<h2>Soft Skills</h2><hr><ul>...`). Before
  *     the fix the photo, References and the whole sidebar went with Strengths
- *     switched off - every profile's default - and the Soft Skills heading
+ *     switched off - every resume's default - and the Soft Skills heading
  *     stayed;
  *   - two columns: a bold "Strengths" label and a line break before its loop
  *     in a column holding the summary and a static line, and Soft Skills
@@ -26,14 +26,21 @@
  * everything static beside the sections always there. A state the frame
  * never reaches fails with the text it last showed.
  *
- * The editor is a column of collapsible section cards (components/profile/
+ * The editor is a column of collapsible section cards (components/resume/
  * SectionCard.tsx): a card's body stays mounted while it is closed, so the
  * switches can be clicked at DOM level either way, but the Soft skills and
  * Strengths cards - closed until opened, as every section card starts - are
  * expanded first (`expandSection`) so a screenshot shows what was clicked.
  * The template select and the layout radios are on the Customize tab (the
  * Template and Layout cards), which stays mounted while Content is showing,
- * so they are set at DOM level too.
+ * so they are set at DOM level too. Every template is offered to every
+ * resume (any resume may use any template), so the select lists all of them,
+ * the saved ones included, with none disabled.
+ *
+ * A resume lives in a profile (a person), so the script makes its own profile
+ * first and files the resume under it (`POST /resumes?profileId=`); the editor
+ * is at /admin/resumes/<id> as ever, and its Back button reads the profile's
+ * name. At the end the profile is deleted, which takes the resume with it.
  *
  * Not part of `npm test`: it needs both servers up - the backend with a
  * preload that keeps it off Google (README.md, at the top: one started
@@ -41,7 +48,7 @@
  * backend/ holds a credential) - and DB_DIR naming the backend's database,
  * because the session is seeded straight into it. The templates are saved
  * through the admin API, so they land in the backend's own templates
- * directory, and removed again at the end with the profile.
+ * directory, and removed again at the end with the resume.
  *
  * Usage, from backend/:
  *   DB_DIR=/path/to/db PORT=3001 node --require ./test/e2e/no-google.js dist/index.js   # the backend
@@ -241,6 +248,7 @@ async function main() {
   const token = users.createSession(account.id);
 
   const saved = [];
+  let resumeId = '';
   let profileId = '';
   const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
   let failures = 0;
@@ -258,7 +266,13 @@ async function main() {
     if (!builtIn) throw new Error('No built-in template prints both sections.');
     const templates = [...UPLOADED, { id: builtIn.id, name: builtIn.name, keepsText: [], keepsSelectors: [] }];
 
-    const profile = await api(token, 'POST', '/profiles', {
+    // A resume is filed under a person: make one, and put the resume in it
+    // (without `?profileId=` the server would file it under "Pat Example").
+    const profile = await api(token, 'POST', '/profiles', { name: 'E2E Section Switches' });
+    profileId = profile.id || profile.profile?.id || '';
+    if (!profileId) throw new Error(`Creating the profile answered ${JSON.stringify(profile).slice(0, 300)}`);
+
+    const resume = await api(token, 'POST', `/resumes?profileId=${encodeURIComponent(profileId)}`, {
       name: 'Pat Example',
       title: 'Engineer',
       contact: { email: 'pat@example.com', phone: '555 0100', location: 'Remote' },
@@ -278,18 +292,18 @@ async function main() {
       softSkills: ['Persistence', 'Clear writing'],
       skills: ['Python', 'Docker'],
       preferredTemplate: UPLOADED[0].id,
-      profileSettings: { includeStrengths: true, includeSoftSkills: true },
+      resumeSettings: { includeStrengths: true, includeSoftSkills: true },
     });
-    profileId = profile.id || profile.profile?.id;
-    if (!profileId) throw new Error(`Creating the profile answered ${JSON.stringify(profile).slice(0, 300)}`);
+    resumeId = resume.id || resume.resume?.id;
+    if (!resumeId) throw new Error(`Creating the resume answered ${JSON.stringify(resume).slice(0, 300)}`);
 
     const page = await browser.newPage();
     // Changing the template or a switch dirties the draft; nothing here leaves the page.
     page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
     await page.setViewport({ width: 1440, height: 1000 });
     await signIn(page, token);
-    await page.goto(`${APP}/admin/profiles/${profileId}`, { waitUntil: 'networkidle2' });
-    await page.waitForSelector('#profile-template option[value]:not([value=""])', { timeout: 15_000 });
+    await page.goto(`${APP}/admin/resumes/${resumeId}`, { waitUntil: 'networkidle2' });
+    await page.waitForSelector('#resume-template option[value]:not([value=""])', { timeout: 15_000 });
     await expandSection(page, 'Soft skills');
     await expandSection(page, 'Strengths');
 
@@ -301,12 +315,12 @@ async function main() {
       ['both ticked again', { strengths: true, softSkills: true }],
     ];
     for (const template of templates) {
-      await setSwitch(page, 'profile-include-strengths', true);
-      await setSwitch(page, 'profile-include-soft-skills', true);
-      await page.select('#profile-template', template.id);
+      await setSwitch(page, 'resume-include-strengths', true);
+      await setSwitch(page, 'resume-include-soft-skills', true);
+      await page.select('#resume-template', template.id);
       for (const [label, expected] of STEPS) {
-        await setSwitch(page, 'profile-include-strengths', expected.strengths);
-        await setSwitch(page, 'profile-include-soft-skills', expected.softSkills);
+        await setSwitch(page, 'resume-include-strengths', expected.strengths);
+        await setSwitch(page, 'resume-include-soft-skills', expected.softSkills);
         try {
           await waitForState(page, template, expected, label);
           console.log(`ok      ${template.name.padEnd(20)} ${label}`);
@@ -318,7 +332,9 @@ async function main() {
     }
   } finally {
     await browser.close();
-    if (profileId) await api(token, 'DELETE', `/profiles/${profileId}`).catch((error) => console.warn(error.message));
+    if (resumeId) await api(token, 'DELETE', `/resumes/${resumeId}`).catch((error) => console.warn(error.message));
+    // The person goes too (an empty profile would stay in the account for ever).
+    if (profileId) await api(token, 'DELETE', `/profiles/${encodeURIComponent(profileId)}`).catch((error) => console.warn(error.message));
     for (const id of saved) await api(token, 'DELETE', `/templates/${id}`).catch((error) => console.warn(error.message));
   }
 

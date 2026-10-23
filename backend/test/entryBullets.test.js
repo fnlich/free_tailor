@@ -7,8 +7,8 @@ const express = require('express');
 const { captureErrorLog, useAdminEmails, useTempStorage } = require('./helpers');
 
 /**
- * Write Entry Bullets: the profile editor's Write with AI / Improve with AI,
- * `POST /api/profiles/entries/bullets` (services/entryBullets.ts).
+ * Write Entry Bullets: the resume editor's Write with AI / Improve with AI,
+ * `POST /api/resumes/entries/bullets` (services/entryBullets.ts).
  *
  *   - the prompt is given exactly its four variables - the entry as typed,
  *     five facts about the person (never contact details), the code's task
@@ -44,7 +44,7 @@ function entry(extra = {}) {
   };
 }
 
-const PROFILE = {
+const RESUME_RECORD = {
   name: 'Samuel A',
   title: 'Senior DevOps Engineer',
   totalYearsExperience: 10,
@@ -111,12 +111,12 @@ async function serve(name) {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
   app.use(attachUser);
-  app.use('/api/profiles', require('../dist/routes/profiles').default);
+  app.use('/api/resumes', require('../dist/routes/resumes').default);
   const server = app.listen(0);
   const port = server.address().port;
 
   const call = async (who, body) => {
-    const response = await fetch(`http://127.0.0.1:${port}/api/profiles/entries/bullets`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/resumes/entries/bullets`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(who ? { authorization: `Bearer ${tokens[who]}` } : {}) },
       body: JSON.stringify(body),
@@ -133,7 +133,7 @@ async function serve(name) {
   return { call, seats, close: () => server.close(), users, alice, bob, rita };
 }
 
-const body = (extra = {}) => ({ kind: 'experience', entry: entry(), profile: PROFILE, task: 'write', ...extra });
+const body = (extra = {}) => ({ kind: 'experience', entry: entry(), resume: RESUME_RECORD, task: 'write', ...extra });
 
 /* -------------------------------------------------------- prompt values */
 
@@ -161,8 +161,8 @@ test('the prompt is given exactly its four variables: the entry as typed, five f
   assert.equal(bullets.readEntryForBullets('project', { name: 'Lakehouse', role: 'Lead' }).organization, 'Lead');
   assert.equal(bullets.readEntryForBullets('volunteering', { role: 'Mentor', organization: 'Code Club' }).organization, 'Code Club');
 
-  const profile = bullets.readProfileForBullets(PROFILE);
-  assert.deepEqual(profile, {
+  const resume = bullets.readResumeForBullets(RESUME_RECORD);
+  assert.deepEqual(resume, {
     name: 'Samuel A',
     title: 'Senior DevOps Engineer',
     totalYearsExperience: 10,
@@ -170,7 +170,7 @@ test('the prompt is given exactly its four variables: the entry as typed, five f
     skills: ['Terraform', 'Azure', 'AKS'],
   });
 
-  const values = bullets.buildWriteEntryBulletsPromptValues(read, profile, 'write', '');
+  const values = bullets.buildWriteEntryBulletsPromptValues(read, resume, 'write', '');
   assert.deepEqual(Object.keys(values).sort(), ['entryJson', 'instructions', 'profileJson', 'task']);
   assert.doesNotMatch(values.entryJson + values.profileJson, /never@sent|Not sent|000/);
   assert.equal(values.instructions, '');
@@ -260,8 +260,8 @@ test('a builder gets sanitised bullets back: bold out, dashes backstopped, an em
     assert.match(call.stableSystem, /achievement bullets of ONE entry/);
 
     // Nothing stored.
-    const { listProfilesFor } = require('../dist/database/profileRepository');
-    assert.deepEqual(listProfilesFor(h.alice, { includeDisabled: true }), []);
+    const { listResumesFor } = require('../dist/database/resumeRepository');
+    assert.deepEqual(listResumesFor(h.alice, { includeDisabled: true }), []);
   } finally {
     h.close();
   }
@@ -338,7 +338,7 @@ test('every seat locked is the AI-unavailable sentence with no ref; an unparsabl
     assert.equal(result.status, 500, JSON.stringify(result.body));
     assert.equal(result.body.error, 'Failed to write the bullets. Please try again, or contact your administrator.');
     assert.match(result.body.ref, REF);
-    assert.match(loggedUnder(result.body.ref, lines), /POST \/api\/profiles\/entries\/bullets/);
+    assert.match(loggedUnder(result.body.ref, lines), /POST \/api\/resumes\/entries\/bullets/);
     assert.match(loggedUnder(result.body.ref, lines), /not JSON|without a bullets list/);
 
     h.seats.answer = () => JSON.stringify({ bullets: ['<b></b>', '   '] });

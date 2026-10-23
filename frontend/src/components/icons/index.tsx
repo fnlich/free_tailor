@@ -57,8 +57,8 @@ export const IconUser = (p: IconProps) => (
   </Icon>
 );
 
-/** Resume profiles - the career data a resume is built from. */
-export const IconProfile = (p: IconProps) => (
+/** A document with a person on it: the stored resume, the career data a built resume starts from. */
+export const IconResume = (p: IconProps) => (
   <Icon {...p}>
     <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
     <path d="M14 3v5h5" />
@@ -67,7 +67,8 @@ export const IconProfile = (p: IconProps) => (
   </Icon>
 );
 
-export const IconGroups = (p: IconProps) => (
+/** Two people: interpersonal skills (the Soft Skills card). */
+export const IconPeople = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="9" cy="8" r="3" />
     <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
@@ -153,7 +154,7 @@ export const IconReport = (p: IconProps) => (
   </Icon>
 );
 
-/** Manage accounts - people, not profiles. */
+/** Manage accounts - people, not resumes. */
 export const IconAccounts = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="10" cy="8" r="3.2" />
@@ -254,12 +255,12 @@ export const IconPlus = (p: IconProps) => (
   </Icon>
 );
 
-/* ------------------------------------------------------ the profile editor */
+/* ------------------------------------------------------ the resume editor */
 
 /*
- * The section cards of the profile editor: a grip to drag a card by, a pencil
+ * The section cards of the resume editor: a grip to drag a card by, a pencil
  * for the header card, a sparkle for Write with AI, and one glyph per section
- * kind (lib/profileSections.ts names them). Six dots drawn as zero-length
+ * kind (lib/sectionCatalogue.ts names them). Six dots drawn as zero-length
  * strokes - round caps make them dots at this stroke weight.
  */
 
@@ -396,9 +397,9 @@ export const IconList = (p: IconProps) => (
   </Icon>
 );
 
-/* -------------------------------------------------------- profile editor */
+/* -------------------------------------------------------- resume editor */
 
-/** Every profile - nine dots, the editor's way back to the list. */
+/** Every resume - nine dots, the editor's way back to the list. */
 export const IconGrid = (p: IconProps) => (
   <Icon {...p}>
     <path d="M6 6h.01M12 6h.01M18 6h.01M6 12h.01M12 12h.01M18 12h.01M6 18h.01M12 18h.01M18 18h.01" />
@@ -494,7 +495,7 @@ export const IconUpload = (p: IconProps) => (
   </Icon>
 );
 
-/** Shown again - a profile switched back on. */
+/** Shown again - a resume switched back on. */
 export const IconEye = (p: IconProps) => (
   <Icon {...p}>
     <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
@@ -502,7 +503,7 @@ export const IconEye = (p: IconProps) => (
   </Icon>
 );
 
-/** Put aside - a profile switched off. */
+/** Put aside - a resume switched off. */
 export const IconEyeOff = (p: IconProps) => (
   <Icon {...p}>
     <path d="M9.9 5.7A9.9 9.9 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4M6.3 7.6C3.9 9.3 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.3-1" />
@@ -532,9 +533,9 @@ export const IconExpand = (p: IconProps) => (
  * when asking "who can see what", and it is easier to read without markup in it.
  */
 export const ICONS = {
-  profile: IconProfile,
+  resume: IconResume,
   user: IconUser,
-  groups: IconGroups,
+  people: IconPeople,
   build: IconBuild,
   orders: IconOrders,
   report: IconReport,

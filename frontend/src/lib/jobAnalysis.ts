@@ -3,7 +3,7 @@
  *
  * The server analyses a posting once, ever (services/jobAnalysis/gate.ts):
  * the first request that needs it pays for one model call, and every later one
- * - this page again, another profile, another model, an order, the Job Filter -
+ * - this page again, another resume, another model, an order, the Job Filter -
  * is answered from the store. A page that already holds the analysis still
  * should not ask again: it sends the stored `analysisId` instead, which costs
  * the server one indexed read rather than a lookup by text, and cannot be
@@ -90,7 +90,7 @@ export function holdAnalysis<T extends { analysisId: string }>(
 /**
  * The held analysis when it is the one for the description on the page now,
  * else null - edited text is another posting, and is analysed (or found in the
- * store) as one. Changing the company, the role, the profile or the model
+ * store) as one. Changing the company, the role, the resume or the model
  * changes nothing here: the analysis reads the posting, and only the posting.
  */
 export function heldAnalysisFor<T>(

@@ -289,9 +289,64 @@ function storeJobAnalysis(analysis = {}, posting = {}) {
   return row.id;
 }
 
+/**
+ * Seeds one PROFILE (a person) holding resumes, for tests that need a tree to
+ * stand on and are not about how it grows.
+ *
+ * `inputs` are resume payloads (CreateResumeDTO; an `id` in one is kept). They
+ * are filed under the new profile in order - the first becomes its default, and
+ * the resumes' times rise by a millisecond each, so "oldest" is the first one
+ * whichever clock a rule reads. Returns `{ profileId, resumeIds }`.
+ *
+ * It goes round the HTTP routes and the profile limit on purpose: a seed is
+ * not a request, so a Default account can be given three people to prove what
+ * it may then do (the raw writers never count the limit, as filing does not).
+ * The profile row is written straight into the `profiles` table on the
+ * connection the test's own dist modules use, in the stored shape `{ id,
+ * ownerId, name, defaultResumeId?, createdAt, updatedAt }`; each resume then
+ * goes through the repository's raw `saveResume` carrying its `profileId`,
+ * which that writer places on as long as the profile is the same owner's.
+ */
+function seedProfileWithResumes(owner, name, inputs = []) {
+  const { randomUUID } = require('crypto');
+  const { getDb } = require('../dist/database/sqlite');
+  const resumes = require('../dist/database/resumeRepository');
+  const { buildNewResume } = require('../dist/services/resumeDocument');
+
+  const base = Date.now();
+  const stamp = (offset) => new Date(base + offset).toISOString();
+  const profileId = randomUUID();
+  const resumeIds = inputs.map((input) => (typeof input.id === 'string' && input.id ? input.id : randomUUID()));
+
+  const document = {
+    id: profileId,
+    ownerId: owner.id,
+    name,
+    ...(resumeIds.length > 0 ? { defaultResumeId: resumeIds[0] } : {}),
+    createdAt: stamp(0),
+    updatedAt: stamp(0),
+  };
+  getDb()
+    .prepare('INSERT INTO profiles (id, name, data, created_at, updated_at, owner_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(profileId, name, JSON.stringify(document), document.createdAt, document.updatedAt, owner.id);
+
+  inputs.forEach((input, index) => {
+    resumes.saveResume({
+      ...buildNewResume(input, resumeIds[index]),
+      createdAt: stamp(index + 1),
+      updatedAt: stamp(index + 1),
+      ownerId: owner.id,
+      profileId,
+    });
+  });
+
+  return { profileId, resumeIds };
+}
+
 module.exports = {
   captureErrorLog,
   openTestDb,
+  seedProfileWithResumes,
   storeJobAnalysis,
   loadFresh,
   refAndLog,
